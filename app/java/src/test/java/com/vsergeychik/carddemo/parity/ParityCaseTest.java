@@ -1666,12 +1666,103 @@ class ParityCaseTest {
                 .isEqualTo(SEED_ROW_80);
         }
 
-        @Test
-        @DisplayName("a USRSEC image too short to hold the span is returned unchanged, not truncated")
-        void aShortImageIsReturnedUnchanged() {
-            String short55 = "x".repeat(55);
+        @ParameterizedTest(name = "a {0}-character USRSEC image discloses no credential byte")
+        @DisplayName("a USRSEC image truncated INSIDE the credential span is masked, not passed through")
+        @ValueSource(ints = {49, 50, 51, 52, 53, 54, 55})
+        void aTruncatedImageIsMaskedAcrossTheIntersection(int width) {
+            // The case this method used to get wrong. "Too short to hold the span" was read as "holds
+            // none of it", and an image of 49 to 55 characters holds one to seven password bytes at
+            // offset 48 - which were written into the failure report verbatim. These widths are not
+            // hypothetical: FieldDiffer renders an observed row at whatever width the unit wrote it, and
+            // a unit that truncated a USRSEC row is precisely the defect this harness exists to catch.
+            String truncated = SEED_ROW_80.substring(0, width);
+            String masked = Redaction.maskRecordImage(USRSEC, truncated);
 
-            Assertions.assertThat(Redaction.maskRecordImage(USRSEC, short55)).isEqualTo(short55);
+            int disclosed = width - Redaction.SENSITIVE_SPAN_OFFSET;
+            Assertions.assertThat(masked)
+                .as("%d character(s) of SEC-USR-PWD were present and must not be rendered", disclosed)
+                .hasSize(width)
+                .isEqualTo(SEED_ROW_80.substring(0, Redaction.SENSITIVE_SPAN_OFFSET)
+                    + "*".repeat(disclosed));
+            // Asserted on the credential's own bytes as well as on the whole rendering, so the case
+            // cannot pass because the prefix happened to differ.
+            Assertions.assertThat(masked)
+                .doesNotContain("PASSWORD".substring(0, disclosed));
+            // The leading fields survive, because a truncation leaves them in place and they are what
+            // makes the failure diagnosable.
+            Assertions.assertThat(masked).startsWith("ADMIN001");
+        }
+
+        @Test
+        @DisplayName("an image ending at or before the span's offset carries no credential and is kept")
+        void anImageEndingBeforeTheSpanIsReturnedUnchanged() {
+            // 48 is the boundary: offset 48 is the credential's first character, so an image of exactly
+            // 48 ends one character before it and holds nothing to mask. Masking here would destroy
+            // diagnostic value for no gain, which is a different mistake from the one above.
+            for (int width : new int[] {0, 1, 47, 48}) {
+                String tooShort = SEED_ROW_80.substring(0, width);
+                Assertions.assertThat(Redaction.maskRecordImage(USRSEC, tooShort))
+                    .as("a %d-character image holds no byte of SEC-USR-PWD", width)
+                    .isEqualTo(tooShort);
+            }
+        }
+
+        @Test
+        @DisplayName("an image of any width other than 80 is masked from the span to its end")
+        void aWrongWidthImageIsMaskedToItsEnd() {
+            // Once the total width is wrong no offset past the credential's is trustworthy: a span that
+            // is short or long moves every byte after it, so the password's bytes may sit anywhere from
+            // 48 to the end. FieldDiffer applies the same reasoning when it stops comparing fields on a
+            // width mismatch. The rendered length is still preserved, which is what keeps the width
+            // itself diagnosable.
+            String overWide = SEED_ROW_80 + "PASSWORD";
+            String masked = Redaction.maskRecordImage(USRSEC, overWide);
+            Assertions.assertThat(masked)
+                .hasSameSizeAs(overWide)
+                .doesNotContain("PASSWORD")
+                .startsWith("ADMIN001")
+                .endsWith("*");
+
+            String short79 = SEED_ROW_80.substring(0, 79);
+            Assertions.assertThat(Redaction.maskRecordImage(USRSEC, short79))
+                .as("79 characters is a dropped byte somewhere, so 48 onwards cannot be trusted")
+                .hasSize(79)
+                .doesNotContain("PASSWORD");
+        }
+
+        @Test
+        @DisplayName("the declared width is the copybook's own total, so the trusted case is trusted")
+        void theDeclaredWidthIsTheCopybooksTotal() {
+            Assertions.assertThat(Redaction.SENSITIVE_RECORD_LENGTH)
+                .as("SEC-USR-ID 8 + FNAME 20 + LNAME 20 + PWD 8 + TYPE 1 + FILLER 23 = 80")
+                .isEqualTo(8 + 20 + 20 + 8 + 1 + 23)
+                .isEqualTo(SEED_ROW_80.length());
+        }
+
+        @Test
+        @DisplayName("no USRSEC width whatsoever renders a credential byte")
+        void noWidthAtAllRendersACredentialByte() {
+            // The property stated once over the whole domain rather than per interesting width, because
+            // the defect was a boundary nobody had enumerated. Every width from empty to over-wide is
+            // driven, and the assertion is the one that matters: the rendered length is unchanged and
+            // no part of the credential survives.
+            for (int width = 0; width <= SEED_ROW_80.length() + 8; width++) {
+                String image = width <= SEED_ROW_80.length()
+                    ? SEED_ROW_80.substring(0, width)
+                    : SEED_ROW_80 + "PASSWORD".substring(0, width - SEED_ROW_80.length());
+                String masked = Redaction.maskRecordImage(USRSEC, image);
+
+                Assertions.assertThat(masked)
+                    .as("a %d-character USRSEC image must render at the same length", width)
+                    .hasSize(width);
+                if (width > Redaction.SENSITIVE_SPAN_OFFSET) {
+                    int present = Math.min(width - Redaction.SENSITIVE_SPAN_OFFSET,
+                        Redaction.SENSITIVE_SPAN_LENGTH);
+                    Assertions.assertThat(masked)
+                        .as("a %d-character USRSEC image renders %d credential byte(s)", width, present)
+                        .doesNotContain("PASSWORD".substring(0, present));
+                }
+            }
         }
 
         @Test

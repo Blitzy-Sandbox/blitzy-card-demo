@@ -990,7 +990,11 @@ public record CardRecord(String cardNum,
      *
      * <p>The expiry date and active status stay legible. Neither identifies a person once the number is
      * masked, and both are what a card-validation parity failure - {@code CBTRN02C}'s expiration stage,
-     * for one - has to be read from.
+     * for one - has to be read from. They are still routed through
+     * {@link SensitiveDiagnostics#plain(Object)} rather than concatenated raw: both are {@code PIC X}
+     * spans, so a stored CR or LF in either would append a log line of the writer's choosing to a string
+     * this method's contract calls safe to log (CWE-117). Staying legible and staying on one line are
+     * separate properties, and this rendering needs both.
      *
      * <p>The earlier rationale for rendering everything was that a failing parity case needs the whole
      * stored value. That need is real, and it is served by asking for the value by name:
@@ -1008,8 +1012,8 @@ public record CardRecord(String cardNum,
                 + SensitiveDiagnostics.maskIdentifier(cardAcctId, CARD_ACCT_ID_LENGTH)
                 + ", CARD-CVV-CD=" + SensitiveDiagnostics.redacted()
                 + ", CARD-EMBOSSED-NAME='" + SensitiveDiagnostics.describeText(cardEmbossedName)
-                + "', CARD-EXPIRAION-DATE='" + cardExpiraionDate
-                + "', CARD-ACTIVE-STATUS='" + cardActiveStatus
+                + "', CARD-EXPIRAION-DATE='" + SensitiveDiagnostics.plain(cardExpiraionDate)
+                + "', CARD-ACTIVE-STATUS='" + SensitiveDiagnostics.plain(cardActiveStatus)
                 + "', FILLER=" + FILLER_LENGTH + " space(s)}";
     }
 

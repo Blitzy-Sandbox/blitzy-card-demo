@@ -4,6 +4,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.nio.charset.Charset;
 import java.util.Collections;
@@ -637,28 +638,52 @@ public record SecUserRecord(String secUsrId,
     // =============================================================================================
 
     /**
-     * A diagnostic rendering that <strong>never</strong> includes the password.
+     * A diagnostic rendering that <strong>never</strong> includes the password, and never the user's
+     * name either.
      *
      * <p>The record's automatically generated rendering would print all six components, including
      * {@code SEC-USR-PWD} in plaintext, and would then leak it into any log line, exception message
-     * or debugger dump that touched a record. This override replaces the password with a fixed
-     * placeholder while leaving the fields the legacy screens themselves display. Padding is shown as
-     * it is held, since it is part of each field's value.
+     * or debugger dump that touched a record. This override withholds the password behind
+     * {@code <omitted>}, and it withholds {@code SEC-USR-FNAME} and {@code SEC-USR-LNAME}
+     * as well.
      *
-     * <p>The password remains fully available through {@link #secUsrPwd()} for the plaintext
-     * comparison the sign-on program performs, and through {@link #fieldImages()} for parity
-     * comparison. Only this rendering withholds it.
+     * <p>Withholding the two names is the part that is easy to talk out of. They are not credentials,
+     * the legacy screens display them, and a person reading a log would find them useful - which is
+     * exactly the problem: a name is the personal datum that makes every other value in the line
+     * attributable, and a security file's rendering ends up in far more logs than a screen ever paints
+     * (CWE-532). This module's disclosure policy already draws that line and draws it here:
+     * {@link SensitiveDiagnostics#describeText(String)} is documented for names, address lines and
+     * telephone numbers precisely because a surname has no useful prefix to reveal - the last four
+     * characters of a surname are still part of the surname - so the shape is reported and the content
+     * is not. Two fields declared {@code PIC X(20)} that turn out to hold nineteen characters is a real
+     * defect and the shape is what finds it; who the person is has never once been needed to diagnose
+     * one.
      *
-     * @return a single-line description of the record with the password masked
+     * <p>{@code SEC-USR-ID} stays legible, deliberately. It is the record's VSAM key and the value
+     * {@code COSGN00C} matches on, so a sign-on parity failure is diagnosed from it and no other field
+     * will do; and it is an eight-character operator id assigned by an administrator, not a name a
+     * cardholder supplied. It is routed through {@link SensitiveDiagnostics#plain(Object)} rather than
+     * concatenated raw, as is {@code SEC-USR-TYPE}: both are {@code PIC X} spans read from a dataset, so
+     * either can hold a carriage return, and a value that reaches a log line unescaped can append a
+     * forged entry after it (CWE-117).
+     *
+     * <p>Nothing about the record's stored bytes changes here. The password remains fully available
+     * through {@link #secUsrPwd()} for the plaintext comparison the sign-on program performs; both names
+     * remain available through {@link #secUsrFname()}, {@link #secUsrLname()} and {@link #image(String)};
+     * and {@link #fieldImages()} still returns all six fields at their declared widths, untrimmed, for
+     * parity comparison. Only this rendering withholds anything, and it withholds it only because
+     * something rendered the object rather than because a caller asked for a value by name.
+     *
+     * @return a single-line description of the record with the password and both names withheld
      */
     @Override
     public String toString() {
         return GROUP_NAME + "["
-                + FIELD_SEC_USR_ID + "='" + secUsrId + "', "
-                + FIELD_SEC_USR_FNAME + "='" + secUsrFname + "', "
-                + FIELD_SEC_USR_LNAME + "='" + secUsrLname + "', "
+                + FIELD_SEC_USR_ID + "='" + SensitiveDiagnostics.plain(secUsrId) + "', "
+                + FIELD_SEC_USR_FNAME + "=" + SensitiveDiagnostics.describeText(secUsrFname) + ", "
+                + FIELD_SEC_USR_LNAME + "=" + SensitiveDiagnostics.describeText(secUsrLname) + ", "
                 + FIELD_SEC_USR_PWD + "=" + PASSWORD_PLACEHOLDER + ", "
-                + FIELD_SEC_USR_TYPE + "='" + secUsrType + "', "
+                + FIELD_SEC_USR_TYPE + "='" + SensitiveDiagnostics.plain(secUsrType) + "', "
                 + FIELD_SEC_USR_FILLER + ".length=" + secUsrFiller.length()
                 + "]";
     }

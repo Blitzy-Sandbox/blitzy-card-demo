@@ -10,9 +10,12 @@ import java.util.ArrayList;
 import java.util.List;
 import javax.sql.DataSource;
 
+import com.vsergeychik.carddemo.common.DatasetIntegrityException;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -206,6 +209,72 @@ class DatasetUnitOfWorkTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> DatasetUnitOfWork.requireActive("A read-for-update", null))
                     .withMessageContaining("dataset name is required");
+        }
+    }
+
+    @Nested
+    @DisplayName("The refusal a rewrite that changed too much raises")
+    class Refusal {
+
+        @Test
+        @DisplayName("inside a unit of work the throw is the rollback: nothing the body did commits")
+        void insideAUnitOfWorkTheThrowIsTheRollback() {
+            DataSource dataSource = singleConnection();
+            DatasetUnitOfWork unitOfWork = unitOfWork(dataSource);
+            JdbcTemplate template = new JdbcTemplate(dataSource);
+            template.execute("CREATE TABLE REFUSAL (IMAGE VARCHAR(8))");
+
+            // The body writes a row and then discovers that the write must not stand. A file status
+            // returned from there would let the row commit on the way out - which is exactly the
+            // outcome BD-03 describes - so the refusal is a throw and the row must be gone afterwards.
+            assertThatExceptionOfType(DatasetIntegrityException.class)
+                    .isThrownBy(() -> unitOfWork.execute("a rewrite that fanned out", () -> {
+                        template.update("INSERT INTO REFUSAL VALUES ('DAMAGE')");
+                        throw DatasetUnitOfWork.commitRefusal("The rewrite of account 00000*****",
+                                "2 rows were replaced where the key selected exactly one");
+                    }))
+                    .withMessageContaining("must not be allowed to stand")
+                    .withMessageContaining("2 rows were replaced")
+                    .withMessageContaining("rolled back rather than reported as a file status");
+
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM REFUSAL", Integer.class))
+                    .as("the refused write must not have committed")
+                    .isZero();
+            assertThat(DatasetUnitOfWork.active()).isFalse();
+        }
+
+        @Test
+        @DisplayName("outside one it says the change has already committed, because it has")
+        void outsideOneItSaysTheChangeHasAlreadyCommitted() {
+            assertThatExceptionOfType(DatasetIntegrityException.class)
+                    .isThrownBy(() -> {
+                        throw DatasetUnitOfWork.commitRefusal("The rewrite of account 00000*****",
+                                "3 rows were replaced where the key selected exactly one");
+                    })
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("already been committed by the connection's own autocommit")
+                    .withMessageContaining(DatasetUnitOfWork.class.getSimpleName() + ".execute");
+        }
+
+        @Test
+        @DisplayName("the operation is carried as a component, so a caller need not match prose")
+        void theOperationIsCarriedAsAComponent() {
+            DatasetIntegrityException refusal =
+                    DatasetUnitOfWork.commitRefusal("The rewrite of account 00000*****", "a reason");
+
+            assertThat(refusal.operation()).isEqualTo("The rewrite of account 00000*****");
+            assertThat(refusal).isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        @DisplayName("both arguments are required, so a refusal can always be attributed")
+        void bothArgumentsAreRequired() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> DatasetUnitOfWork.commitRefusal(null, "a reason"))
+                    .withMessageContaining("operation name is required");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> DatasetUnitOfWork.commitRefusal("a rewrite", null))
+                    .withMessageContaining("reason is required");
         }
     }
 }

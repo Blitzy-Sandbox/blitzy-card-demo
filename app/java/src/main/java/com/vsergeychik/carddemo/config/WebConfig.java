@@ -532,7 +532,8 @@ public class WebConfig implements WebMvcConfigurer {
             Objects.requireNonNull(abend, "An abend is required to log one");
             LOG.error("Abend answered with HTTP " + HttpStatus.INTERNAL_SERVER_ERROR.value()
                     + ": program=" + abend.getProgram()
-                    + " RETURN-CODE=" + abend.getReturnCode(), abend);
+                    + " RETURN-CODE=" + abend.getReturnCode()
+                    + ", raised as " + abend.getClass().getName());
         }
 
         /**
@@ -596,7 +597,11 @@ public class WebConfig implements WebMvcConfigurer {
                 // stopped at without any of it reaching the caller. Only field NAMES are taken from
                 // the mapping path - never the parser's message, which is where the payload is quoted -
                 // and each is escaped, because a JSON property name is caller-supplied text and an
-                // unescaped newline in a log line is a forged log entry (CWE-117).
+                // unescaped newline in a log line is a forged log entry (CWE-117). The exception is not
+                // handed to the logger either, which is what makes the sentence above true: passing it
+                // emits the parser's message - the one place the payload IS quoted - along with its whole
+                // cause chain. Its type is logged instead, which says what refused without saying what
+                // it was reading.
                 final String namedFields = unreadableBodyResponse(unreadable).fieldErrors().stream()
                         .map(FieldMessage::field)
                         .map(DiagnosticText::singleLine)
@@ -604,8 +609,8 @@ public class WebConfig implements WebMvcConfigurer {
                 LOG.debug("Request body rejected with HTTP " + HttpStatus.BAD_REQUEST.value()
                         + "; unreadable at field(s): "
                         + (namedFields.isEmpty() ? "none named - the document itself is unreadable"
-                                : namedFields),
-                        unreadable);
+                                : namedFields)
+                        + "; raised as " + unreadable.getClass().getName());
             }
         }
 
@@ -838,12 +843,15 @@ public class WebConfig implements WebMvcConfigurer {
          * {@code 400} is the honest status - {@code 500} would blame the server for the caller's
          * input.
          *
-         * <p>The exception's message is deliberately <strong>not</strong> copied. Those guards are
-         * handed the value they are judging and their messages name the field, its declared width and
-         * the category of the failure; a fixed sentence is returned here instead, because a guard added
-         * later must not be able to widen this response by wording its message differently. The full
-         * message stays in the server log, where the operator who needs it can see it and an
-         * unauthenticated caller cannot.
+         * <p>The exception's message is deliberately <strong>not</strong> copied, and it does not reach
+         * the log either. Those guards are handed the value they are judging, and several of them quote it
+         * back - {@code UserListRequest} names the over-long value, {@code SignOnResponse} names the
+         * over-long field - so the message is caller-supplied content, which is precisely what a log line
+         * must not carry (CWE-532) and precisely what a control character inside it could use to forge a
+         * second entry (CWE-117). A fixed sentence is returned to the caller, because a guard added later
+         * must not be able to widen this response by wording its message differently, and the log records
+         * the exception's TYPE and the status - which says which class of guard refused without saying
+         * what it was handed.
          *
          * @param rejected the guard failure
          * @return {@code 400} with a fixed, value-free explanation
@@ -852,8 +860,8 @@ public class WebConfig implements WebMvcConfigurer {
         public ResponseEntity<FaultResponse> handleRejectedValue(
                 final IllegalArgumentException rejected) {
             LOG.warn("Rejected a request because a field value did not fit its COBOL picture; "
-                    + "responding " + HttpStatus.BAD_REQUEST.value() + " with no value echoed.",
-                    rejected);
+                    + "responding " + HttpStatus.BAD_REQUEST.value() + " with no value echoed"
+                    + "; raised as " + rejected.getClass().getName() + ".");
             return ResponseEntity.badRequest().body(rejectedValueResponse());
         }
 
@@ -876,8 +884,12 @@ public class WebConfig implements WebMvcConfigurer {
          * <p>An {@link IllegalStateException} in this module means a dataset binding is missing or
          * contradictory, a repository handle was used after being closed, or a locking read was issued
          * outside a unit of work. None of those is anything the caller did, so {@code 500} is correct
-         * and {@code 400} would be a lie. As with a rejected value the message is logged rather than
-         * published, because these messages name dataset names and configuration keys.
+         * and {@code 400} would be a lie. As with a rejected value the message is neither published nor
+         * logged: these messages name dataset names and configuration keys, and one of the three cases -
+         * a handle used after closing - is raised from a path that has just been handed a record, so the
+         * class of exception is not a reliable guarantee about its text. The log records the status and
+         * the exception's type, which is what an operator pages on; the fault's own detail reaches the
+         * server's startup and configuration diagnostics, which are not request-scoped.
          *
          * @param fault the state fault
          * @return {@code 500} with a fixed, value-free explanation
@@ -886,7 +898,8 @@ public class WebConfig implements WebMvcConfigurer {
         public ResponseEntity<FaultResponse> handleInternalState(final IllegalStateException fault) {
             LOG.error("A request could not be served because the server is not in a state to serve "
                     + "it; responding " + HttpStatus.INTERNAL_SERVER_ERROR.value()
-                    + " with no configuration detail echoed.", fault);
+                    + " with no configuration detail echoed; raised as "
+                    + fault.getClass().getName() + ".");
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(internalStateResponse());
         }

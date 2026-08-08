@@ -1,12 +1,14 @@
 package com.vsergeychik.carddemo.card;
 
 import com.vsergeychik.carddemo.card.model.CardRecord;
+import com.vsergeychik.carddemo.common.DatasetObservation;
 import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.DatasetRelation.KeySpan;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -471,6 +473,15 @@ public class CardRepository {
      */
     private static final int DUPLICATE_DETECTION_ROW_LIMIT = 2;
 
+    /**
+     * How many rows the pre-rewrite probe looks at: two.
+     *
+     * <p>The question is "none, one, or more than one" - the three outcomes a rewrite distinguishes - and
+     * the third is settled by the second row. Counting further would transfer rows to refine a number
+     * nothing reads.
+     */
+    private static final int FAN_OUT_PROBE_LIMIT = 2;
+
 
     /**
      * The {@code CARDDAT} primary key span, {@code CARD-NUM PIC X(16)} at offset 0, taken from the
@@ -526,6 +537,19 @@ public class CardRepository {
     private final FixedWidthCodec codec;
 
     /**
+     * The one representation every read, write and comparison operand of this dataset uses.
+     *
+     * <p>Injected rather than decided here, and its arrival deleted the worst symptom in this file: this
+     * repository used to read the record image as bytes and, if the driver returned none, read the same
+     * column again as characters and encode it - a fallback across two representations of one column - and
+     * then bind text on the way back out. A fallback like that cannot be wrong loudly. It returns a
+     * plausible 150 bytes either way, so a driver presenting the column as the other type produced records
+     * that decoded into fields at the right offsets holding the wrong values. There is now one answer, it
+     * comes from configuration, and there is no second path to fall back to.
+     */
+    private final RecordImageForm recordImageForm;
+
+    /**
      * The base cluster as this module reaches it: the validated dataset name, its delimited rendering,
      * the record-image column it discovers, and every statement composed over it.
      *
@@ -575,6 +599,8 @@ public class CardRepository {
      * @param datasetBindings the {@code carddemo.datasets} catalogue, from which this repository
      *                        resolves its two dataset names by key
      * @param datasetCharset  the active dataset code page
+     * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
+     *                        {@value RecordImageForm#FORM_PROPERTY}
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if either binding is absent, declares no usable dataset name, or
      *                               contradicts the copybook - see the canonical constructor
@@ -582,13 +608,15 @@ public class CardRepository {
     @Autowired
     public CardRepository(JdbcTemplate jdbcTemplate,
                           DatasetBindings datasetBindings,
-                          @Qualifier(DATASET_CHARSET_BEAN_NAME) Charset datasetCharset) {
+                          @Qualifier(DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
+                          RecordImageForm recordImageForm) {
         this(jdbcTemplate,
                 datasetBindings,
                 new FixedWidthCodec(Objects.requireNonNull(datasetCharset,
                         "A dataset charset is required: a fixed-width mainframe record is bytes in a "
                                 + "specific code page, so the code page is stated explicitly and never "
-                                + "taken from the platform")));
+                                + "taken from the platform")),
+                recordImageForm);
     }
 
     /**
@@ -614,6 +642,8 @@ public class CardRepository {
      * @param jdbcTemplate    the module's single template
      * @param datasetBindings the {@code carddemo.datasets} catalogue
      * @param codec           the fixed-width codec, carrying the dataset code page
+     * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
+     *                        {@value RecordImageForm#FORM_PROPERTY}
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if either binding is absent, declares a record width other than
      *                               {@value #RECORD_LENGTH}, declares no usable dataset name, or
@@ -621,13 +651,19 @@ public class CardRepository {
      */
     public CardRepository(JdbcTemplate jdbcTemplate,
                           DatasetBindings datasetBindings,
-                          FixedWidthCodec codec) {
+                          FixedWidthCodec codec,
+                          RecordImageForm recordImageForm) {
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required: the card "
                 + "file is reached through the module's single template");
         this.codec = Objects.requireNonNull(codec, "A fixed-width codec is required: it carries the "
                 + "dataset code page and owns the MOVE semantics every key is built with");
         Objects.requireNonNull(datasetBindings, "The carddemo.datasets binding catalogue is required: "
                 + "dataset names live in configuration and are never written in Java");
+        this.recordImageForm = Objects.requireNonNull(recordImageForm, "A record-image representation is "
+                + "required: whether this deployment's driver presents a record image as characters or as "
+                + "bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided per "
+                + "repository");
+        RecordImageForm.requireSingleByteCodePage(this.codec.charset());
 
         DatasetBinding base = requireCardRecordBinding(datasetBindings, BASE_DD_NAME);
         DatasetBinding alternateIndex = requireCardRecordBinding(datasetBindings,
@@ -870,9 +906,22 @@ public class CardRepository {
      *       read would move it. A rewrite cannot change the key of the record it replaces;</li>
      *   <li>a rewrite that replaced no record is a failure, not a silent success. In CICS a
      *       {@code REWRITE} without a held record is an invalid request, and that is what is reported,
-     *       with the number of records actually replaced as the reason code so the diagnostic says
-     *       what happened.</li>
+     *       with the number of records the key actually selected carried as a labelled
+     *       {@link DatasetObservation} so the diagnostic says what happened.</li>
      * </ul>
+     *
+     * <p><strong>Fan-out is precluded, not reported afterwards.</strong> The predicate is an escaped
+     * {@code LIKE} confined to the key span, and {@code CARD-NUM} is the base cluster's unique primary
+     * key, so it selects one row. If a deployment's relation does not enforce that uniqueness, the same
+     * {@code UPDATE} replaces every matching row with this one record - and reading that off the
+     * affected-row count is reading it after the rows are already gone, which is a report of damage that
+     * the enclosing unit of work then commits on the way out. So the key is required to select exactly
+     * one row first, in the same transaction and, when one is open, under the same {@code FOR UPDATE}
+     * lock the write will use; the write is not issued otherwise. Should the count still come back wrong
+     * afterwards, the unit of work is refused rather than reported - see
+     * {@link DatasetUnitOfWork#commitRefusal(String, String)}, which explains why that one case cannot be
+     * a status. This is the same seam the account master's rewrite uses, deliberately: one rule for
+     * one-record rewrites across the module.
      *
      * <p>This method does <strong>not</strong> check whether anyone else changed the record first. That
      * check is real and must not be lost - it is {@code 9300-CHECK-CHANGE-IN-REC}, a field-by-field
@@ -884,7 +933,12 @@ public class CardRepository {
      * @param record the record to write. Its card number identifies the record replaced
      * @return the write outcome: normal when exactly one record was replaced, otherwise the failure arm
      *         carrying the raw response pair. Never {@code null}
-     * @throws NullPointerException if {@code record} is {@code null}
+     * @throws NullPointerException  if {@code record} is {@code null}
+     * @throws IllegalStateException as a
+     *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException}
+     *                               if the write replaced more rows than the key selected when it was
+     *                               checked, in which case the unit of work is refused rather than a
+     *                               response returned
      */
     public CardWriteResult rewrite(CardRecord record) {
         Objects.requireNonNull(record, "A card record is required to rewrite one; there is no "
@@ -899,34 +953,72 @@ public class CardRepository {
         // width by the record's own constructor. Re-testing an invariant that cannot fail would add a
         // branch no test could reach, and an unreachable branch is worse than no branch: it looks like
         // a case someone forgot to cover.
-        // Bound as text, matching the way this repository reads it back and the way the module's other
-        // repositories bind theirs. Symmetry against one column matters more than the marginal
-        // directness of binding bytes: the configured code page is single-byte for zoned data, so a
-        // record's character form and its byte form correspond one-to-one and nothing is lost either
-        // way, whereas writing bytes into a column this class also reads as characters would be an
-        // asymmetry against the same column.
-        String recordImage = record.encodeToImage(codec.charset());
+        // Bound through the configured record-image representation - the same one this repository reads
+        // with, and the same one every other dataset access in the module uses. The old comment here
+        // argued that binding text was safe because the code page is single-byte; that argument was
+        // sound and beside the point, because it was an argument this class made locally about a column
+        // whose type only the deployment's driver knows. The representation is now stated once, in
+        // configuration, so read and write cannot disagree and neither can two repositories.
+        byte[] recordImage = record.encode(codec.charset());
         String keyPattern = BASE_KEY_SPAN.pattern(baseKeyOf(record.cardNum()));
         PreparedStatementSetter binder = parameters -> {
-            parameters.setString(1, recordImage);
-            parameters.setString(2, keyPattern);
+            recordImageForm.bindImage(parameters, 1, recordImage, codec.charset());
+            recordImageForm.bindOperand(parameters, 2, keyPattern, codec.charset());
         };
+
+        // Establish how many rows the key selects BEFORE any of them is replaced. Under an open unit of
+        // work the probe takes the same row lock the UPDATE will use, so the two see the same rows;
+        // without one nothing can be atomic anyway, and the probe is still what keeps a fan-out from
+        // being discovered only from the affected-row count.
+        boolean locking = DatasetUnitOfWork.active();
+        int selected;
+        Statements sql;
         try {
-            int replaced = jdbcTemplate.update(resolveStatements().rewrite(), binder);
-            if (replaced == SINGLE_ROW) {
-                return CardWriteResult.normal();
-            }
-            LOG.error("Rewrite of " + BASE_CICS_FILE_NAME.trim() + " replaced " + replaced
-                    + " record(s) where exactly " + SINGLE_ROW + " was expected; reporting the "
-                    + "invalid-request response, which is what CICS reports for a REWRITE with no "
-                    + "held record");
-            return CardWriteResult.failed(FileStatus.INVREQ, replaced);
+            sql = resolveStatements();
+            selected = fetch(locking ? sql.selectForUpdateByCardNumber() : sql.selectByCardNumber(),
+                    keyPattern, FAN_OUT_PROBE_LIMIT).rowCount();
         } catch (DataAccessException rejected) {
             return CardWriteResult.failed(
                     responseOf(logRefusal(REWRITE_OPERATION_NAME, BASE_CICS_FILE_NAME,
-                            "at full record width", rejected)),
-                    NO_REASON_CODE);
+                            "while establishing how many records its key selects", rejected)));
         }
+        if (selected != SINGLE_ROW) {
+            // Nothing has been written, and nothing will be. No row means a REWRITE with no held record,
+            // which CICS reports as an invalid request; more than one means the relation is not the KSDS
+            // the copybook describes, and issuing the write would replace all of them with this record.
+            LOG.error("The key of a " + BASE_CICS_FILE_NAME.trim() + " record selects " + selected
+                    + " row(s) where exactly " + SINGLE_ROW + " was expected; reporting the "
+                    + "invalid-request response, which is what CICS reports for a REWRITE with no held "
+                    + "record, without issuing the write. No row has been changed.");
+            return CardWriteResult.failed(FileStatus.INVREQ,
+                    DatasetObservation.matchingRows(selected));
+        }
+
+        int replaced;
+        try {
+            replaced = jdbcTemplate.update(sql.rewrite(), binder);
+        } catch (DataAccessException rejected) {
+            return CardWriteResult.failed(
+                    responseOf(logRefusal(REWRITE_OPERATION_NAME, BASE_CICS_FILE_NAME,
+                            "at full record width", rejected)));
+        }
+        if (replaced == SINGLE_ROW) {
+            return CardWriteResult.normal();
+        }
+        if (replaced == 0) {
+            // The row the probe found is gone. Nothing was written, so this is the same invalid request a
+            // REWRITE with no held record is - which is what it would have been had the row never existed.
+            LOG.error("A rewrite of " + BASE_CICS_FILE_NAME.trim() + " replaced no record although its "
+                    + "key selected one when it was checked; reporting the invalid-request response");
+            return CardWriteResult.failed(FileStatus.INVREQ, DatasetObservation.replacedRows(replaced));
+        }
+        // The probe said one row and the UPDATE replaced several, so the relation changed underneath it.
+        // The damage is done and a response would let it commit, so the unit of work is refused instead.
+        throw DatasetUnitOfWork.commitRefusal(
+                "The rewrite of a record of " + BASE_CICS_FILE_NAME.trim(),
+                replaced + " rows were replaced where the key selected exactly one when it was checked "
+                        + "under " + (locking ? "a row lock" : "no row lock, because no unit of work was "
+                        + "open"));
     }
 
     // =================================================================================================
@@ -1036,19 +1128,70 @@ public class CardRepository {
      * @param operation the operation name for the diagnostic
      * @return the read outcome; never {@code null}
      */
-    private CardReadResult browseStep(String statement, String parameter, String operation) {
+    private BrowseStep browseStep(String statement, String parameter, String operation) {
+        return browseStep(keyedStatement(statement, parameter, SINGLE_ROW), operation);
+    }
+
+    /**
+     * Executes one browse step that advances past a stored record image.
+     *
+     * <p>The image is bound as an <em>image</em> and not as a comparison operand composed here, because
+     * that is what it is: the exact bytes the backend handed over on the previous step. Binding it any
+     * other way would send a re-encoding of a stored value and compare it with the stored values it was
+     * derived from - which is the whole of finding BD-08 in a different disguise.
+     *
+     * @param statement the advancing statement for the browse's direction
+     * @param position  the previous row's record image, exactly as the backend presented it
+     * @param operation the operation name for the diagnostic
+     * @return the outcome and, on a record, the exact image it came from; never {@code null}
+     */
+    private BrowseStep browseStepAfter(String statement, byte[] position, String operation) {
+        return browseStep(imageStatement(statement, position, SINGLE_ROW), operation);
+    }
+
+    /**
+     * The shared body of both browse steps.
+     *
+     * @param creator   the prepared, limited and bound statement
+     * @param operation the operation name for the diagnostic
+     * @return the outcome and, on a record, the exact image it came from; never {@code null}
+     */
+    private BrowseStep browseStep(PreparedStatementCreator creator, String operation) {
         try {
-            FetchedRows rows = fetch(statement, parameter, SINGLE_ROW);
+            ResultSetExtractor<FetchedRows> extractor = resultSet -> extractRows(resultSet, SINGLE_ROW);
+            FetchedRows fetched = jdbcTemplate.query(creator, extractor);
+            FetchedRows rows = fetched == null ? FetchedRows.empty() : fetched;
             if (rows.rowCount() == 0) {
                 // WHEN DFHRESP(ENDFILE). COCRDLIC:1233-1245 and :1215-1221 rely on this being
                 // distinguishable: it is what terminates paging and what sets the "no more records to
                 // show" message and the no-next-page flag.
-                return CardReadResult.endOfFile();
+                return new BrowseStep(CardReadResult.endOfFile(), null);
             }
-            return classifyRead(rows, false);
+            // The exact image travels back with the outcome so the browse can advance past the bytes it
+            // was actually given, rather than past a re-encoding of the record decoded from them.
+            return new BrowseStep(classifyRead(rows, false), rows.firstImage());
         } catch (DataAccessException rejected) {
-            return failedRead(operation, BASE_CICS_FILE_NAME, "during a browse", rejected);
+            return new BrowseStep(
+                    failedRead(operation, BASE_CICS_FILE_NAME, "during a browse", rejected), null);
         }
+    }
+
+    /**
+     * Builds a statement whose single parameter is a stored record image, capped at a row limit.
+     *
+     * @param statement the statement text
+     * @param image     the stored image to bind
+     * @param rowLimit  the row limit to apply
+     * @return a creator that prepares and binds the statement
+     */
+    private PreparedStatementCreator imageStatement(String statement, byte[] image, int rowLimit) {
+        return connection -> {
+            PreparedStatement prepared = connection.prepareStatement(statement);
+            prepared.setMaxRows(rowLimit);
+            prepared.setFetchSize(rowLimit);
+            recordImageForm.bindImage(prepared, 1, image, codec.charset());
+            return prepared;
+        };
     }
 
     /**
@@ -1077,6 +1220,11 @@ public class CardRepository {
      * <p>Package-private so the tests can exercise it directly against a stubbed connection, which is
      * the only way to prove the row limit is actually applied without a backend.
      *
+     * <p>The operand is bound through the configured record-image representation, because every operand
+     * this repository sends - a keyed {@code LIKE} pattern, a browse anchor key, the image a browse
+     * advances past - is compared against the record-image column. Binding it any other way would run the
+     * comparison across two representations of one column.
+     *
      * @param statement the statement text
      * @param key       the single bind value
      * @param rowLimit  the row limit to apply
@@ -1090,7 +1238,7 @@ public class CardRepository {
             // than one record, and a browse step cannot want more than one either.
             prepared.setMaxRows(rowLimit);
             prepared.setFetchSize(rowLimit);
-            prepared.setString(1, key);
+            recordImageForm.bindOperand(prepared, 1, key, codec.charset());
             return prepared;
         };
     }
@@ -1132,12 +1280,7 @@ public class CardRepository {
      * @throws SQLException if reading the value failed
      */
     byte[] readRecordImage(ResultSet resultSet) throws SQLException {
-        byte[] bytes = resultSet.getBytes(RECORD_IMAGE_COLUMN_INDEX);
-        if (bytes != null) {
-            return bytes;
-        }
-        String image = resultSet.getString(RECORD_IMAGE_COLUMN_INDEX);
-        return image == null ? null : codec.encodeImage(image, "a CARD-RECORD row image");
+        return recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX, codec.charset());
     }
 
     /**
@@ -1166,7 +1309,7 @@ public class CardRepository {
             LOG.error("A row of " + BASE_CICS_FILE_NAME.trim() + " carries no record image at "
                     + "position " + RECORD_IMAGE_COLUMN_INDEX + "; reporting the invalid-request "
                     + "response rather than reporting a record that is present as absent");
-            return CardReadResult.failed(FileStatus.INVREQ, NO_REASON_CODE);
+            return CardReadResult.failed(FileStatus.INVREQ);
         }
         if (recordImage.length != RECORD_LENGTH) {
             // The receiver is CARD-RECORD, declared 150 bytes by app/cpy/CVACT02Y.cpy. A row of any
@@ -1178,7 +1321,8 @@ public class CardRepository {
                     + " byte(s) wide, but CARD-RECORD is declared " + RECORD_LENGTH
                     + " bytes by app/cpy/CVACT02Y.cpy; reporting a length error rather than decoding "
                     + "fields from offsets that would not be theirs");
-            return CardReadResult.failed(FileStatus.LENGERR, recordImage.length);
+            return CardReadResult.failed(FileStatus.LENGERR,
+                    DatasetObservation.recordWidth(recordImage.length));
         }
         CardRecord record = CardRecord.decode(recordImage, codec);
         if (alternateIndex && rows.rowCount() > 1) {
@@ -1201,6 +1345,30 @@ public class CardRepository {
         Objects.requireNonNull(cardNumber, "A card number is required to key the card file; a COBOL "
                 + "alphanumeric field is never absent, so to search for spaces pass spaces");
         return codec.movePicX(cardNumber, BASE_KEY_SPAN.length());
+    }
+
+    /**
+     * Reads the base cluster's key out of a stored record image.
+     *
+     * <p>The leading {@link FieldSpan} of the layout, decoded in the dataset code page - so a browse's
+     * remembered key comes out of the same bytes as its remembered position and the two cannot disagree.
+     * Used for diagnostics only; nothing branches on it.
+     *
+     * <p>The width is not re-checked here, for the reason the rewrite gives for not re-checking it
+     * either: it is guaranteed where it belongs. The only caller is the browse, which reaches this line
+     * only on a record that {@code classifyRead} has already established is exactly
+     * {@value #RECORD_LENGTH} bytes - a row of any other width never becomes a returned record at all. A
+     * second test of that invariant would add a branch no test could reach, and an unreachable branch is
+     * worse than no branch: it reads as a case someone forgot to cover.
+     *
+     * @param recordImage the stored image of a returned record, and so exactly
+     *                    {@value #RECORD_LENGTH} bytes
+     * @return the key, exactly {@code CARD-NUM}'s sixteen characters
+     * @throws NullPointerException if {@code recordImage} is {@code null}
+     */
+    private String keyOfImage(byte[] recordImage) {
+        Objects.requireNonNull(recordImage, "A record image is required to read a key out of it");
+        return new String(recordImage, 0, BASE_KEY_SPAN.length(), codec.charset());
     }
 
     // =================================================================================================
@@ -1267,9 +1435,51 @@ public class CardRepository {
         BackendDiagnostic diagnostic = BackendDiagnostic.of(refusal);
         LOG.error("File error: " + operation + " on " + fileName.trim() + " " + qualifier
                 + " was rejected - " + diagnostic.describe() + "; reporting response "
-                + responseOf(diagnostic) + " and reason code " + NO_REASON_CODE + " to the caller",
-                refusal);
+                + responseOf(diagnostic) + " and reason code " + NO_REASON_CODE + " to the caller");
         return diagnostic;
+    }
+
+    /**
+     * Requires a response that classifies as the {@code WHEN OTHER} arm.
+     *
+     * <p>Shared by the read and write failure factories so the rule exists once: an arm the guard chain
+     * names explicitly - not found, duplicate key, end of file, normal - must be reached through its own
+     * factory, or a caller switching on the outcome and a caller switching on the response would land in
+     * different places.
+     *
+     * @param resp the response to check
+     * @throws IllegalArgumentException if it classifies as anything but {@link Outcome#OTHER}
+     */
+    private static void requireOtherArm(int resp) {
+        Outcome classified = FileStatus.outcomeOfCicsResp(resp);
+        if (classified != Outcome.OTHER) {
+            throw new IllegalArgumentException("CICS response " + resp + " classifies as "
+                    + classified + ", which is an arm the guard chain names explicitly, so it "
+                    + "cannot be reported as WHEN OTHER. Use the factory for that arm.");
+        }
+    }
+
+    /**
+     * Requires a value that could be a CICS reason code.
+     *
+     * <p>A reason code is what CICS puts in {@code RESP2}, and {@code COCRDUPC} renders it verbatim onto
+     * a screen ({@code app/cbl/COCRDUPC.cbl:1410}). A negative value cannot be one, and a negative value
+     * arriving here means something that is not a reason code - a vendor error number, a signed count -
+     * was put where the reason code belongs. That is the substitution this guard exists to catch; the
+     * quantities that used to be smuggled through here now travel as a
+     * {@link DatasetObservation} instead.
+     *
+     * @param resp2 the value to check
+     * @throws IllegalArgumentException if it is negative
+     */
+    private static void requireReasonCode(int resp2) {
+        if (resp2 < 0) {
+            throw new IllegalArgumentException("A CICS reason code is " + resp2
+                    + "; reason codes are non-negative, and a negative one means something that is not "
+                    + "a reason code was reported as one. Report " + NO_REASON_CODE
+                    + " and carry the measurement as a " + DatasetObservation.class.getSimpleName()
+                    + " instead.");
+        }
     }
 
     /**
@@ -1284,7 +1494,7 @@ public class CardRepository {
     private static CardReadResult failedRead(String operation, String fileName, String qualifier,
                                              Throwable refusal) {
         return CardReadResult.failed(
-                responseOf(logRefusal(operation, fileName, qualifier, refusal)), NO_REASON_CODE);
+                responseOf(logRefusal(operation, fileName, qualifier, refusal)));
     }
 
     // =================================================================================================
@@ -1489,6 +1699,24 @@ public class CardRepository {
     }
 
     /**
+     * One browse step's outcome together with the exact bytes it came from.
+     *
+     * <p>Package-private and an implementation detail. It exists because a browse has to advance past the
+     * record it just returned, and the only value that identifies that record unambiguously is the image
+     * the backend handed over - not the record decoded from it, and not a re-encoding of that record. A
+     * re-encoding is byte-identical only when every span of the stored row already holds what the model
+     * would write there, and a row whose reserved span holds anything but spaces is precisely the row for
+     * which it is not: the browse would then ask for the first image after a value that no row has, and
+     * hand back the same record again.
+     *
+     * @param result     the outcome the caller branches on
+     * @param exactImage the bytes the row's record-image column held, or {@code null} when no record was
+     *                   returned
+     */
+    record BrowseStep(CardReadResult result, byte[] exactImage) {
+    }
+
+    /**
      * Which way a browse is walked.
      *
      * <p>Two constants because the legacy code issues two separate {@code STARTBR}s, one per direction:
@@ -1533,15 +1761,32 @@ public class CardRepository {
      * for the three responses that genuinely have no two-character equivalent, rather than reporting a
      * fabricated one for them.
      *
+     * <h2>{@code RESP2} carries a CICS reason code and nothing else</h2>
+     *
+     * <p>It used to carry, on the length-error arm, the width the row turned out to be - on the argument
+     * that the width is the most useful reason code there is for a length error. It is indeed the most
+     * useful <em>number</em>, and it is not a reason code, and {@code COCRDUPC} renders
+     * {@code ERROR-RESP2} verbatim onto an operator's screen ({@code app/cbl/COCRDUPC.cbl:1410}) with no
+     * way for the reader to know which of the two they are looking at. The very same paragraph of this
+     * class already refused to report a driver's vendor error number as a reason code, for exactly that
+     * reason; the width was the same substitution wearing a more convincing argument.
+     *
+     * <p>So {@code resp2} is now the adapter's reason code or {@link CardRepository#NO_REASON_CODE},
+     * which is what CICS itself reports when a condition has no further reason, and a measured quantity
+     * travels beside it in {@link #observation()} under the name of what was measured.
+     *
      * @param resp    the raw CICS response, one of the {@link FileStatus} response constants
-     * @param resp2   the reason code, or {@link CardRepository#NO_REASON_CODE} when none is available.
-     *               A length error carries the width actually found, which is the most useful reason
-     *               code there is for one
+     * @param resp2   the CICS reason code the deployment's adapter reported, or
+     *                {@link CardRepository#NO_REASON_CODE} where none is available. Never a width, a row
+     *                count or a vendor error number
      * @param outcome the classification of {@code resp}, agreeing with it by construction
      * @param record  the record on the two arms that return one - the normal arm and the duplicate-key
      *                arm - and empty on every other arm. Never {@code null}
+     * @param observation what the operation measured, where a measurement is what explains the outcome -
+     *                a row's actual width, for instance. Empty on every arm that measured nothing
      */
-    public record CardReadResult(int resp, int resp2, Outcome outcome, Optional<CardRecord> record) {
+    public record CardReadResult(int resp, int resp2, Outcome outcome, Optional<CardRecord> record,
+            Optional<DatasetObservation> observation) {
 
         /**
          * Rejects any result whose parts contradict each other.
@@ -1556,6 +1801,9 @@ public class CardRepository {
                     + "absent");
             Objects.requireNonNull(record, "A read result carries an empty record rather than a null "
                     + "one, so no null escapes the type");
+            Objects.requireNonNull(observation, "A read result carries an empty observation rather than "
+                    + "a null one, so no null escapes the type");
+            requireReasonCode(resp2);
             Outcome classified = FileStatus.outcomeOfCicsResp(resp);
             if (outcome != classified) {
                 throw new IllegalArgumentException("CICS response " + resp + " classifies as "
@@ -1582,7 +1830,7 @@ public class CardRepository {
         public static CardReadResult normal(CardRecord record) {
             Objects.requireNonNull(record, "The normal arm carries the record that was read");
             return new CardReadResult(FileStatus.NORMAL, NO_REASON_CODE, Outcome.OK,
-                    Optional.of(record));
+                    Optional.of(record), Optional.empty());
         }
 
         /**
@@ -1597,7 +1845,7 @@ public class CardRepository {
             Objects.requireNonNull(record, "The duplicate-key arm carries the first record sharing the "
                     + "alternate key; the record is returned, which is what makes it not an error");
             return new CardReadResult(FileStatus.DUPKEY, NO_REASON_CODE, Outcome.DUPLICATE,
-                    Optional.of(record));
+                    Optional.of(record), Optional.empty());
         }
 
         /**
@@ -1608,7 +1856,7 @@ public class CardRepository {
          */
         public static CardReadResult notFound() {
             return new CardReadResult(FileStatus.NOTFND, NO_REASON_CODE, Outcome.NOT_FOUND,
-                    Optional.empty());
+                    Optional.empty(), Optional.empty());
         }
 
         /**
@@ -1620,7 +1868,7 @@ public class CardRepository {
          */
         public static CardReadResult endOfFile() {
             return new CardReadResult(FileStatus.ENDFILE, NO_REASON_CODE, Outcome.END_OF_FILE,
-                    Optional.empty());
+                    Optional.empty(), Optional.empty());
         }
 
         /**
@@ -1634,14 +1882,60 @@ public class CardRepository {
          * @throws IllegalArgumentException if {@code resp} classifies as anything other than
          *                                  {@link Outcome#OTHER}
          */
-        public static CardReadResult failed(int resp, int resp2) {
-            Outcome classified = FileStatus.outcomeOfCicsResp(resp);
-            if (classified != Outcome.OTHER) {
-                throw new IllegalArgumentException("CICS response " + resp + " classifies as "
-                        + classified + ", which is an arm the guard chain names explicitly, so it "
-                        + "cannot be reported as WHEN OTHER. Use the factory for that arm.");
-            }
-            return new CardReadResult(resp, resp2, Outcome.OTHER, Optional.empty());
+        public static CardReadResult failed(int resp) {
+            return failed(resp, Optional.empty());
+        }
+
+        /**
+         * The {@code WHEN OTHER} arm, carrying what the operation measured.
+         *
+         * <p>For a failure a number explains: a row that is not the declared width, a key that selected
+         * the wrong number of rows. The number goes here, labelled, and <strong>not</strong> into
+         * {@code resp2}, which reports {@link CardRepository#NO_REASON_CODE} because CICS has no reason
+         * code for it.
+         *
+         * @param resp        the raw CICS response, which must classify as {@link Outcome#OTHER}
+         * @param observation what was measured
+         * @return the result
+         * @throws NullPointerException     if {@code observation} is {@code null}
+         * @throws IllegalArgumentException if {@code resp} classifies as anything other than
+         *                                  {@link Outcome#OTHER}
+         */
+        public static CardReadResult failed(int resp, DatasetObservation observation) {
+            Objects.requireNonNull(observation, "This factory carries an observation; use failed(int) "
+                    + "where there is nothing measured to report");
+            return failed(resp, Optional.of(observation));
+        }
+
+        /**
+         * The {@code WHEN OTHER} arm with a reason code the deployment's adapter actually reported.
+         *
+         * <p>Named for what it is, so that reaching for it to carry something that is not a reason code
+         * reads as wrong at the call site. Every failure this module raises itself uses
+         * {@link #failed(int)} or {@link #failed(int, DatasetObservation)} instead.
+         *
+         * @param resp  the raw CICS response, which must classify as {@link Outcome#OTHER}
+         * @param resp2 the reason code the adapter reported
+         * @return the result
+         * @throws IllegalArgumentException if {@code resp} classifies as anything other than
+         *                                  {@link Outcome#OTHER}, or if {@code resp2} is negative
+         */
+        public static CardReadResult reportedFailure(int resp, int resp2) {
+            requireOtherArm(resp);
+            return new CardReadResult(resp, resp2, Outcome.OTHER, Optional.empty(), Optional.empty());
+        }
+
+        /**
+         * The shared body of the two {@code WHEN OTHER} factories that report no adapter reason code.
+         *
+         * @param resp        the raw CICS response
+         * @param observation what was measured, possibly nothing
+         * @return the result
+         */
+        private static CardReadResult failed(int resp, Optional<DatasetObservation> observation) {
+            requireOtherArm(resp);
+            return new CardReadResult(resp, NO_REASON_CODE, Outcome.OTHER, Optional.empty(),
+                    observation);
         }
 
         /**
@@ -1740,13 +2034,20 @@ public class CardRepository {
      * {@code LOCKED-BUT-UPDATE-FAILED} flag on anything other than a normal response, so
      * {@link #isNormal()} reproduces it exactly, and the raw values remain available for a diagnostic.
      *
+     * <p>{@code resp2} carries a CICS reason code and nothing else, for the reason set out on
+     * {@link CardReadResult}: it used to carry the number of records the {@code UPDATE} actually
+     * replaced, which is a JDBC affected-row count and not a quantity CICS has ever reported. A measured
+     * quantity now travels beside it in {@link #observation()}.
+     *
      * @param resp    the raw CICS response
-     * @param resp2   the reason code, or {@link CardRepository#NO_REASON_CODE} when none is available.
-     *               An invalid request carries the number of records actually replaced, and a length
-     *               error the width actually produced
+     * @param resp2   the CICS reason code the deployment's adapter reported, or
+     *                {@link CardRepository#NO_REASON_CODE} where none is available. Never a row count
      * @param outcome the classification of {@code resp}, agreeing with it by construction
+     * @param observation what the write measured, where a measurement explains the outcome - the number
+     *                of rows a key selected, for instance. Empty where nothing was measured
      */
-    public record CardWriteResult(int resp, int resp2, Outcome outcome) {
+    public record CardWriteResult(int resp, int resp2, Outcome outcome,
+            Optional<DatasetObservation> observation) {
 
         /**
          * Rejects a result whose parts contradict each other.
@@ -1757,6 +2058,9 @@ public class CardRepository {
         public CardWriteResult {
             Objects.requireNonNull(outcome, "A write result carries the arm it landed on; it is never "
                     + "absent");
+            Objects.requireNonNull(observation, "A write result carries an empty observation rather "
+                    + "than a null one, so no null escapes the type");
+            requireReasonCode(resp2);
             Outcome classified = FileStatus.outcomeOfCicsResp(resp);
             if (outcome != classified) {
                 throw new IllegalArgumentException("CICS response " + resp + " classifies as "
@@ -1771,20 +2075,72 @@ public class CardRepository {
          * @return the result
          */
         public static CardWriteResult normal() {
-            return new CardWriteResult(FileStatus.NORMAL, NO_REASON_CODE, Outcome.OK);
+            return new CardWriteResult(FileStatus.NORMAL, NO_REASON_CODE, Outcome.OK,
+                    Optional.empty());
         }
 
         /**
          * The failure arm, on which the legacy code sets its update-failed flag.
          *
-         * @param resp  the response to report; it must classify as {@link Outcome#OTHER}, which every
-         *              way a rewrite can fail does
-         * @param resp2 the reason code, or {@link CardRepository#NO_REASON_CODE}
-         * @return the result
+         * @param resp the response to report; it must classify as {@link Outcome#OTHER}, which every
+         *             way a rewrite can fail does
+         * @return the result, reporting {@link CardRepository#NO_REASON_CODE}
          * @throws IllegalArgumentException if {@code resp} classifies as anything other than
          *                                  {@link Outcome#OTHER}
          */
-        public static CardWriteResult failed(int resp, int resp2) {
+        public static CardWriteResult failed(int resp) {
+            return failed(resp, Optional.empty());
+        }
+
+        /**
+         * The failure arm, carrying what the write measured.
+         *
+         * @param resp        the response to report; it must classify as {@link Outcome#OTHER}
+         * @param observation what was measured - a row count, never a reason code
+         * @return the result, reporting {@link CardRepository#NO_REASON_CODE} as its reason
+         * @throws NullPointerException     if {@code observation} is {@code null}
+         * @throws IllegalArgumentException if {@code resp} classifies as anything other than
+         *                                  {@link Outcome#OTHER}
+         */
+        public static CardWriteResult failed(int resp, DatasetObservation observation) {
+            Objects.requireNonNull(observation, "This factory carries an observation; use failed(int) "
+                    + "where there is nothing measured to report");
+            return failed(resp, Optional.of(observation));
+        }
+
+        /**
+         * The failure arm with a reason code the deployment's adapter actually reported.
+         *
+         * @param resp  the response to report; it must classify as {@link Outcome#OTHER}
+         * @param resp2 the reason code the adapter reported
+         * @return the result
+         * @throws IllegalArgumentException if {@code resp} classifies as anything other than
+         *                                  {@link Outcome#OTHER}, or if {@code resp2} is negative
+         */
+        public static CardWriteResult reportedFailure(int resp, int resp2) {
+            requireRewriteFailureArm(resp);
+            return new CardWriteResult(resp, resp2, Outcome.OTHER, Optional.empty());
+        }
+
+        /**
+         * The shared body of the two failure factories that report no adapter reason code.
+         *
+         * @param resp        the response to report
+         * @param observation what was measured, possibly nothing
+         * @return the result
+         */
+        private static CardWriteResult failed(int resp, Optional<DatasetObservation> observation) {
+            requireRewriteFailureArm(resp);
+            return new CardWriteResult(resp, NO_REASON_CODE, Outcome.OTHER, observation);
+        }
+
+        /**
+         * Requires a response a rewrite can actually report.
+         *
+         * @param resp the response to check
+         * @throws IllegalArgumentException if it classifies as anything but {@link Outcome#OTHER}
+         */
+        private static void requireRewriteFailureArm(int resp) {
             Outcome classified = FileStatus.outcomeOfCicsResp(resp);
             if (classified != Outcome.OTHER) {
                 throw new IllegalArgumentException("CICS response " + resp + " classifies as "
@@ -1792,7 +2148,6 @@ public class CardRepository {
                         + "record or fails. Only a response classifying as WHEN OTHER may be reported "
                         + "as a failure.");
             }
-            return new CardWriteResult(resp, resp2, Outcome.OTHER);
         }
 
         /**
@@ -1858,20 +2213,37 @@ public class CardRepository {
         private String positionKey;
 
         /**
-         * The whole record image of the record last returned, or {@code null} before the first read.
+         * The exact bytes of the record last returned, or {@code null} before the first read.
          *
-         * <p>The whole image and not the key, and that is load-bearing. An advancing step asks for the
-         * first record whose image sorts strictly after the position, and a bare sixteen-byte key would
-         * compare as <em>less than</em> the very record it came from - {@code '4444333322221111'} sorts
-         * before {@code '4444333322221111…'} - so a browse positioned by key alone would hand back the
-         * same record for ever. The full image excludes it strictly, and because the card number is
-         * unique the comparison always resolves inside the leading sixteen bytes, which is what makes it
-         * equivalent to the key ordering a CICS browse follows.
+         * <p>Three things about this, and all three are load-bearing.
+         *
+         * <p><strong>The whole image and not the key.</strong> An advancing step asks for the first record
+         * whose image sorts strictly after the position, and a bare sixteen-byte key would compare as
+         * <em>less than</em> the very record it came from - {@code '4444333322221111'} sorts before
+         * {@code '4444333322221111…'} - so a browse positioned by key alone would hand back the same
+         * record for ever. The full image excludes it strictly, and because the card number is unique and
+         * every image is exactly {@value CardRepository#RECORD_LENGTH} bytes the comparison always
+         * resolves inside the leading sixteen, which is what makes it equivalent to the key ordering a
+         * CICS browse follows ({@code app/cbl/COCRDLIC.cbl:1129-1154}, {@code :1273-1302}).
+         *
+         * <p><strong>The bytes the backend gave, not a re-encoding of the record decoded from them.</strong>
+         * Those two are the same value only when every span of the stored row already holds what the model
+         * would write there. {@code CVACT02Y}'s trailing {@code FILLER PIC X(59)} is written as spaces, so
+         * a stored row whose reserved span holds anything else re-encodes to an image that is <em>lower</em>
+         * than the row it came from - and the browse then asks for the first record after a value no row
+         * has, and returns the same record again. Retaining the exact bytes removes the possibility rather
+         * than relying on every stored row being tidy.
+         *
+         * <p><strong>Bytes and not text.</strong> A stored image decoded and re-encoded through a
+         * {@code String} is width-preserving under a single-byte code page and not, in general,
+         * byte-preserving: IBM037 maps {@code X'25'} to a character that encodes back as {@code X'15'}.
+         * The position is therefore held and bound as the bytes it is.
          *
          * <p>{@link #positionKey} is kept alongside it for diagnostics, because a key is what a reader of
-         * a log or a test failure recognises.
+         * a log or a test failure recognises. It is read out of these same bytes rather than out of the
+         * decoded record, so the two cannot disagree.
          */
-        private String positionImage;
+        private byte[] positionImage;
 
         /** Whether a record has been returned, and so whether the next read advances or anchors. */
         private boolean positioned;
@@ -1975,7 +2347,7 @@ public class CardRepository {
                 // request for a browse operation without a browse, and so does this.
                 LOG.error("A read was requested on a browse of " + BASE_CICS_FILE_NAME.trim()
                         + " that has already been ended; reporting the invalid-request response");
-                return CardReadResult.failed(FileStatus.INVREQ, NO_REASON_CODE);
+                return CardReadResult.failed(FileStatus.INVREQ);
             }
             if (direction != required) {
                 // The legacy code positions a separate browse for each direction and never reads one
@@ -1985,7 +2357,7 @@ public class CardRepository {
                         + BASE_CICS_FILE_NAME.trim() + " positioned for " + direction
                         + "; reporting the invalid-request response rather than reversing a browse the "
                         + "legacy code never reverses");
-                return CardReadResult.failed(FileStatus.INVREQ, NO_REASON_CODE);
+                return CardReadResult.failed(FileStatus.INVREQ);
             }
             Statements sql;
             try {
@@ -1998,17 +2370,19 @@ public class CardRepository {
             // The anchor compares against the key - "at or after this key" is exactly what a
             // sixteen-byte key expresses - while every step after it compares against the whole image,
             // for the reason set out on positionImage.
-            String statement = positioned ? advanceStatement.apply(sql) : sql.browseAnchor();
-            String parameter = positioned ? positionImage : anchorKey;
-            CardReadResult result = repository.browseStep(statement, parameter,
-                    CardRepository.READ_OPERATION_NAME);
+            BrowseStep step = positioned
+                    ? repository.browseStepAfter(advanceStatement.apply(sql), positionImage,
+                            CardRepository.READ_OPERATION_NAME)
+                    : repository.browseStep(sql.browseAnchor(), anchorKey,
+                            CardRepository.READ_OPERATION_NAME);
+            CardReadResult result = step.result();
             if (result.isRecordReturned()) {
-                // Advance only on a record. An end of file leaves the position alone, so repeating the
-                // read reports the end of the file again; a failure likewise, so a caller that retries
-                // retries the same step rather than skipping one.
-                CardRecord returned = result.requireRecord();
-                positionKey = repository.baseKeyOf(returned.cardNum());
-                positionImage = returned.encodeToImage(repository.codec.charset());
+                // Advance only on a record, and advance to the bytes the backend actually presented. An
+                // end of file leaves the position alone, so repeating the read reports the end of the file
+                // again; a failure likewise, so a caller that retries retries the same step rather than
+                // skipping one.
+                positionImage = step.exactImage().clone();
+                positionKey = repository.keyOfImage(positionImage);
                 positioned = true;
             }
             return result;

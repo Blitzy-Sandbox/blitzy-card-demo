@@ -1496,6 +1496,29 @@ class CardXrefRecordTest {
             assertThat(rendered).isEqualTo(new CardXrefRecord("ABC", 50, 50L).toString());
             assertThat(sample().toString()).isNotNull().doesNotContain("@");
         }
+
+        @Test
+        @DisplayName("a control character in the retained suffix cannot forge a second log line")
+        void theRetainedSuffixCannotForgeALogLine() {
+            // XREF-CARD-NUM is PIC X(16), so this record holds whatever the CCXREF dataset holds and
+            // nothing here validates it as digits. The mask covers the first twelve characters; the four
+            // it reveals are exactly where a stored CR or LF survives, and appending them raw to a
+            // string documented as safe to log lets the dataset append a log entry of its own (CWE-117).
+            String rendered = new CardXrefRecord("411111111111\r\nOK", 50, 50L).toString();
+
+            assertThat(rendered)
+                    .doesNotContain("\r")
+                    .doesNotContain("\n")
+                    .contains(CardXrefRecord.XREF_CARD_NUM_NAME + "='" + "*".repeat(12)
+                            + "X'0D'X'0A'OK'");
+            assertThat(rendered.lines())
+                    .as("this rendering is documented as safe to log, which means one line")
+                    .hasSize(1);
+            // Lossless and rendering-only: the stored image is byte-identical to what was supplied,
+            // because the parity harness reads it by name and must see the real bytes.
+            assertThat(new CardXrefRecord("411111111111\r\nOK", 50, 50L).xrefCardNum())
+                    .isEqualTo("411111111111\r\nOK");
+        }
     }
 
     @Nested

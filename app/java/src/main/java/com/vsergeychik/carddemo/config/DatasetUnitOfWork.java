@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.config;
 
+import com.vsergeychik.carddemo.common.DatasetIntegrityException;
 import java.util.Objects;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Component;
@@ -35,6 +36,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>{@link #execute(String, Supplier)} runs a body inside a transaction, joining a caller's
  *       transaction if one is already open, so every statement inside it shares one connection and one
  *       commit. That is the Java equivalent of the CICS task boundary.</li>
+ *   <li>{@link #commitRefusal(String, String)} lets an operation that has already changed rows
+ *       <em>stop</em> the commit, for the one case where reporting a status would report damage that
+ *       then stands.</li>
  *   <li>{@link #requireActive(String, String)} lets a locking read <em>refuse</em> to run outside one.
  *       Issuing {@code FOR UPDATE} with nothing to hold the lock is not a smaller guarantee than a real
  *       lock - it is the appearance of one, which is worse, because it silences the question rather than
@@ -163,5 +167,72 @@ public final class DatasetUnitOfWork {
                 + "caller could use it. A read-for-update, the comparison that follows it and the "
                 + "rewrite that follows that are one unit of work in CICS; run them inside "
                 + DatasetUnitOfWork.class.getSimpleName() + ".execute(..) so they are one here too");
+    }
+
+    /**
+     * Builds the refusal to let the current unit of work commit, because something it has already done
+     * must not stand. The caller throws what this returns.
+     *
+     * <h2>Why a status is not enough here</h2>
+     * <p>A repository normally reports a bad outcome as a {@code FILE STATUS} and lets the caller's guard
+     * chain decide, which is faithful: that is what the COBOL does. That model holds while the failed
+     * operation changed nothing. It breaks for exactly one case - a rewrite that matched more rows than
+     * the key names - because by the time the row count is known the rows have already been replaced. A
+     * status returned from there is a report of damage, and returning it normally lets
+     * {@link #execute(String, java.util.function.Supplier)} commit on the way out. The caller sees an
+     * error and the dataset keeps the change.
+     *
+     * <p>A CICS {@code REWRITE} cannot produce that state. It writes the record the task holds a lock on,
+     * one record, so there is no multi-record outcome for the COBOL to have code for -
+     * {@code app/cbl/CBACT04C.cbl:352-356} rewrites the record it read,
+     * {@code app/cbl/COACTUPC.cbl:4065-4081} the one it locked, {@code app/cbl/COCRDUPC.cbl:1477-1492}
+     * likewise. Preserving behaviour therefore means the state cannot reach the dataset, and the only way
+     * to guarantee that is to stop the commit.
+     *
+     * <h2>Why the mechanism is a throw and not a rollback-only flag</h2>
+     * <p>Marking the transaction rollback-only would need the {@code TransactionStatus} this module's
+     * boundary is holding, and that status is reachable only from the declarative interceptor's own
+     * scope - {@code TransactionAspectSupport.currentTransactionStatus()} raises
+     * {@code NoTransactionException} inside a {@link TransactionTemplate} body even though a real
+     * transaction is open, because the template does not publish it. The alternative, publishing it
+     * through a thread-local of this class's own, would be exactly the static mutable state this module
+     * refuses everywhere else.
+     *
+     * <p>Throwing needs none of that and is stronger. {@link TransactionTemplate} rolls back on any
+     * unchecked exception, so inside {@link #execute(String, java.util.function.Supplier)} the throw
+     * <em>is</em> the rollback and the caller cannot swallow the refusal by ignoring a return value. The
+     * type thrown extends {@link IllegalStateException}, so every layer that already treats one of those
+     * from the data-access layer as non-recoverable keeps working unchanged.
+     *
+     * <h2>Why no transaction is still a throw</h2>
+     * <p>Without a transaction the change was already committed by the connection's own autocommit before
+     * this method was reached. There is nothing left to roll back and nothing truthful to report as a
+     * status, so the honest response is to fail loudly at the wiring defect that allowed a rewrite outside
+     * a unit of work. That is the same trade {@link #requireActive(String, String)} makes, and for the
+     * same reason: a loud wiring bug is worth far more than a silent correctness one. Only the message
+     * differs between the two cases, because only the remedy does.
+     *
+     * @param operation the operation being refused, named as the caller's method
+     * @param reason    what went wrong, in terms of what was observed - never a record's content
+     * @return the exception the caller must throw, so that the refusal is visible as a throw at the call
+     *         site rather than hidden inside a helper
+     * @throws NullPointerException if {@code operation} or {@code reason} is {@code null}
+     */
+    public static DatasetIntegrityException commitRefusal(String operation, String reason) {
+        Objects.requireNonNull(operation, "An operation name is required to refuse a commit against");
+        Objects.requireNonNull(reason, "A reason is required so a refused commit can be diagnosed");
+        if (active()) {
+            return new DatasetIntegrityException(operation, operation + " must not be allowed to stand - "
+                    + reason + " - so the unit of work is being rolled back rather than reported as a "
+                    + "file status, because a status would let the change commit on the way out. A CICS "
+                    + "REWRITE writes the one record the task holds a lock on and has no multi-record "
+                    + "outcome, so this state cannot reach the dataset.");
+        }
+        return new DatasetIntegrityException(operation, operation + " must not be allowed to stand - "
+                + reason + " - but no transaction is open on this thread, so the change has already been "
+                + "committed by the connection's own autocommit and cannot be undone. A rewrite is one "
+                + "half of a CICS read-for-update and rewrite pair and belongs inside "
+                + DatasetUnitOfWork.class.getSimpleName() + ".execute(..); run it there so that a "
+                + "refusal can actually refuse.");
     }
 }

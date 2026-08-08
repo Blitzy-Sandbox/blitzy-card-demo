@@ -7,6 +7,7 @@ import com.vsergeychik.carddemo.common.DatasetRelation.KeySpan;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -18,7 +19,6 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -371,6 +371,15 @@ public class CardXrefRepository {
     private static final int DUPLICATE_DETECTION_ROW_LIMIT = 2;
 
     /**
+     * How many rows one browse read transfers: one.
+     *
+     * <p>A {@code READ} of a sequential file returns one record ({@code app/cbl/CBACT03C.cbl:93-96}), so
+     * one row is what a browse read asks for. It is the difference between a browse that reads and a
+     * browse that copies the dataset and then walks the copy.
+     */
+    private static final int BROWSE_ROW_LIMIT = 1;
+
+    /**
      * The width of a CICS {@code FILE} name as the online programs declare it: {@code PIC X(08)}.
      *
      * <p>{@code app/cbl/COTRN02C.cbl:41-42} and its three siblings all hold the file name in an
@@ -485,6 +494,18 @@ public class CardXrefRepository {
      */
     private final FixedWidthCodec codec;
 
+    /**
+     * The one representation every read and comparison operand of this dataset uses.
+     *
+     * <p>Injected rather than chosen here. This repository read the record image as characters while the
+     * sibling card file read it as bytes and both statement writers bound bytes - three answers about one
+     * deployment, of which at most one can be right, and the wrong ones are wrong silently because a
+     * driver asked for the type the column does not have converts rather than refuses. The cross-reference
+     * is the record that ties a card number to a customer and an account, so a conversion here mislinks
+     * rather than merely misreads.
+     */
+    private final RecordImageForm recordImageForm;
+
     /** The resolved {@code CCXREF} dataset name, from configuration and never from a literal. */
     private final DatasetRelation baseRelation;
 
@@ -535,6 +556,8 @@ public class CardXrefRepository {
      *                        dataset name is written in Java (gate G46)
      * @param datasetCharset  the dataset code page, injected by bean name so it is stated explicitly
      *                        rather than taken from the platform (practice B8)
+     * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
+     *                        {@value RecordImageForm#FORM_PROPERTY}
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if either binding is absent, declares a record length other than
      *                               {@value #RECORD_LENGTH}, declares no usable dataset name, or
@@ -544,7 +567,8 @@ public class CardXrefRepository {
     public CardXrefRepository(
             JdbcTemplate jdbcTemplate,
             DatasetBindings datasetBindings,
-            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset) {
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
+            RecordImageForm recordImageForm) {
 
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required: the "
                 + "card cross reference is reached through the module's shared template over the "
@@ -554,6 +578,11 @@ public class CardXrefRepository {
         this.codec = new FixedWidthCodec(Objects.requireNonNull(datasetCharset, "A dataset charset is "
                 + "required: a fixed-width mainframe record is bytes in a specific code page, so the "
                 + "code page is stated explicitly and never taken from the platform"));
+        this.recordImageForm = Objects.requireNonNull(recordImageForm, "A record-image representation is "
+                + "required: whether this deployment's driver presents a record image as characters or as "
+                + "bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided per "
+                + "repository");
+        RecordImageForm.requireSingleByteCodePage(datasetCharset);
 
         DatasetBinding base = datasetBindings.binding(BASE_DD_NAME);
         DatasetBinding alternateIndex = datasetBindings.binding(ALTERNATE_INDEX_DD_NAME);
@@ -997,7 +1026,7 @@ public class CardXrefRepository {
             PreparedStatement prepared = connection.prepareStatement(statement);
             prepared.setMaxRows(DUPLICATE_DETECTION_ROW_LIMIT);
             prepared.setFetchSize(DUPLICATE_DETECTION_ROW_LIMIT);
-            prepared.setString(1, pattern);
+            recordImageForm.bindOperand(prepared, 1, pattern, codec.charset());
             return prepared;
         };
         RowMapper<String> recordImageMapper = this::mapRecordImage;
@@ -1028,7 +1057,7 @@ public class CardXrefRepository {
     private static ReadResult other(String ddName, Throwable refusal, String attempt) {
         BackendDiagnostic diagnostic = BackendDiagnostic.of(refusal);
         LOG.error("Could not " + attempt + " - " + diagnostic.describe() + "; reporting file status "
-                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", refusal);
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
         return ReadResult.other(ddName, PERMANENT_ERROR_STATUS, diagnostic);
     }
 
@@ -1057,12 +1086,30 @@ public class CardXrefRepository {
      * is also why a browse cannot be "reset": a caller that wants to start again opens another one,
      * exactly as the COBOL closes and reopens.
      *
-     * <p>The rows are fetched here, at open, because that is what {@code OPEN INPUT} means - the file
-     * is positioned at its first record and the program's very next act is to read it. A failure to
-     * reach the dataset therefore surfaces from this call, as {@link BrowseCursor#openStatus()} of
-     * {@link #PERMANENT_ERROR_STATUS}, which is the status {@code CBACT03C} tests at {@code :121} before
-     * moving {@code 12} into {@code APPL-RESULT} and abending. Nothing is thrown: the open reports, and
-     * the caller's guard chain decides.
+     * <h2>The open opens, and the reads read</h2>
+     *
+     * <p>{@code CBACT03C} has three paragraphs, each with its own status and its own abend:
+     * {@code 0000-XREFFILE-OPEN} at {@code :118-134} displays {@code 'ERROR OPENING XREFFILE'},
+     * {@code 1000-XREFFILE-GET-NEXT} at {@code :92-116} displays {@code 'ERROR READING XREFFILE'}, and
+     * {@code 9000-XREFFILE-CLOSE} at {@code :136-151} displays {@code 'ERROR CLOSING XREFFILE'}. Three
+     * failures, three messages, three places an operator can look.
+     *
+     * <p>This method therefore <strong>establishes that the dataset can be read and transfers no row</strong>.
+     * It used to fetch every row of the cross reference here and let {@link BrowseCursor#readNext()} walk
+     * the copy, which collapsed all three paragraphs into one: a backend that failed on the four
+     * thousandth row reported it as a failure to <em>open</em>, a read could only ever fail by finding a
+     * row with no image, and a close could not fail at all. Each paragraph now owns its own failure,
+     * which is what makes the abend the caller takes point at what actually broke.
+     *
+     * <p>The probe is the same dataset-scoped describe every keyed read uses, so an absent or unreachable
+     * dataset still fails here - which is what {@code OPEN INPUT} would report - and is reported as
+     * {@link BrowseCursor#openStatus()} of {@link #PERMANENT_ERROR_STATUS}, the status
+     * {@code CBACT03C} tests at {@code :121} before moving {@code 12} into {@code APPL-RESULT} and
+     * abending. Nothing is thrown: the open reports, and the caller's guard chain decides.
+     *
+     * <p><strong>All browse state lives on the returned cursor</strong>, and after this change that state
+     * is one record image rather than the whole dataset - so two callers browsing at once hold two
+     * positions and neither holds a copy of the file.
      *
      * <p>The cursor is {@link AutoCloseable}, so a caller may use try-with-resources, and
      * {@link BrowseCursor#close()} is idempotent so an explicit close inside the block is safe too.
@@ -1075,10 +1122,11 @@ public class CardXrefRepository {
      *         open succeeded; never {@code null}
      */
     public BrowseCursor openBrowse() {
-        List<String> rows;
         try {
-            RowMapper<String> recordImageMapper = this::mapRecordImage;
-            rows = jdbcTemplate.query(resolveStatements().browseInKeyOrder(), recordImageMapper);
+            // The dataset is described, not read: the probe's predicate is false on every row, so this
+            // establishes that the relation exists and presents a record-image column without any of it
+            // crossing the wire. That is what an OPEN INPUT establishes too.
+            resolveStatements();
         } catch (DataAccessException translated) {
             // ERROR OPENING XREFFILE. app/cbl/CBACT03C.cbl:121-127 moves 12 into APPL-RESULT for any
             // status but '00', then displays and abends - all of which is the caller's, not ours. What
@@ -1086,23 +1134,73 @@ public class CardXrefRepository {
             BackendDiagnostic diagnostic = BackendDiagnostic.of(translated);
             LOG.error("Could not open a browse of the " + BASE_DD_NAME + " base cluster - "
                     + diagnostic.describe() + "; reporting file status "
-                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", translated);
-            return new BrowseCursor(this, PERMANENT_ERROR_STATUS, null);
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
+            return new BrowseCursor(this, PERMANENT_ERROR_STATUS);
         }
-        if (rows == null) {
-            // The template yielded no result at all, which is not an empty dataset. Reported as a
-            // failed open rather than as a browse that is immediately at end of file.
-            LOG.error("A browse of the " + BASE_DD_NAME + " base cluster yielded no result object at "
-                    + "all; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                    + " rather than treating it as an empty dataset");
-            return new BrowseCursor(this, PERMANENT_ERROR_STATUS, null);
+        return new BrowseCursor(this, FileStatus.OK);
+    }
+
+    /**
+     * Reads one row of a sequential browse, or reports that there is none.
+     *
+     * <p>One row per call, capped on the statement, so a browse of a large dataset never materialises it
+     * and a failure on the four thousandth row is reported by the read that reached it.
+     *
+     * @param statement the first-read statement or the advancing one
+     * @param position  the image to advance past, or {@code null} for the first read
+     * @return whether a row arrived and, if it did, the image it carried; never {@code null}
+     * @throws DataAccessException if the backend refused the read
+     */
+    private BrowseRow browseRow(String statement, byte[] position) {
+        PreparedStatementCreator creator = connection -> {
+            PreparedStatement prepared = connection.prepareStatement(statement);
+            prepared.setMaxRows(BROWSE_ROW_LIMIT);
+            prepared.setFetchSize(BROWSE_ROW_LIMIT);
+            if (position != null) {
+                // A stored image, bound as an image: the comparison then runs against the column in its
+                // own representation, and "the next record after this one" means the same on both sides.
+                recordImageForm.bindImage(prepared, 1, position, codec.charset());
+            }
+            return prepared;
+        };
+        ResultSetExtractor<BrowseRow> extractor = resultSet -> resultSet.next()
+                ? new BrowseRow(true,
+                        recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX,
+                                codec.charset()))
+                : BrowseRow.none();
+        BrowseRow row = jdbcTemplate.query(creator, extractor);
+        // The template returns what the extractor returned, and this extractor never returns null. The
+        // check keeps a driver that somehow produced one from becoming a NullPointerException in the
+        // cursor instead of a diagnosable failure here.
+        return row == null ? BrowseRow.none() : row;
+    }
+
+    /**
+     * Whether a browse read found a row, and the image it carried.
+     *
+     * <p>Three states, because the COBOL distinguishes three: no row is {@code AT END}
+     * ({@code app/cbl/CBACT03C.cbl:98-99}, which {@code :108} turns into
+     * {@code MOVE 'Y' TO END-OF-FILE}); a row whose record-image column holds nothing is a record that is
+     * present and unreadable, which is an I/O failure and emphatically not an end of file; and a row with
+     * an image is a record. Collapsing the first two onto one {@code null} would let a browse stop early
+     * and silently, which is the worst of the three outcomes to get wrong.
+     *
+     * @param present whether a row arrived at all
+     * @param image   the row's record image, which may be {@code null} even when a row arrived
+     */
+    private record BrowseRow(boolean present, byte[] image) {
+
+        /** The shared end-of-browse answer. */
+        private static final BrowseRow NONE = new BrowseRow(false, null);
+
+        /**
+         * The answer for a browse that has run past its last record.
+         *
+         * @return the end-of-browse answer
+         */
+        static BrowseRow none() {
+            return NONE;
         }
-        // Defensively copied and made unmodifiable so the pass cannot be perturbed once it starts.
-        // Deliberately NOT List.copyOf, which rejects a null element: a row whose record image is
-        // absent is a real condition that readNext classifies, and it must survive the copy to be
-        // classified rather than being turned into a NullPointerException here.
-        return new BrowseCursor(this, FileStatus.OK,
-                Collections.unmodifiableList(new ArrayList<>(rows)));
     }
 
     // =================================================================================================
@@ -1115,7 +1213,10 @@ public class CardXrefRepository {
      * Maps one result-set row to its record image, by column position.
      *
      * <p>Position {@value #RECORD_IMAGE_COLUMN_INDEX}, never a column name, for the reason set out under
-     * residual risk R-E on this class.
+     * residual risk R-E on this class. Whether that column is read as characters or as bytes is
+     * {@link RecordImageForm}'s decision and not this method's; the bytes it yields are then decoded in
+     * the configured code page, so the text this returns is the stored record and not a driver's opinion
+     * about it.
      *
      * @param resultSet the row, positioned by the template
      * @param rowNumber the zero-based row index. Part of the {@link RowMapper} contract and
@@ -1126,7 +1227,8 @@ public class CardXrefRepository {
      * @throws SQLException if the driver cannot supply the column
      */
     private String mapRecordImage(ResultSet resultSet, int rowNumber) throws SQLException {
-        return resultSet.getString(RECORD_IMAGE_COLUMN_INDEX);
+        byte[] image = recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX, codec.charset());
+        return image == null ? null : codec.decodeImage(image, "a CARD-XREF-RECORD row image");
     }
 
     /**
@@ -1164,6 +1266,29 @@ public class CardXrefRepository {
         return CardXrefRecord.decodeSpan(wrapRow(rowImage), codec);
     }
 
+    /**
+     * Decodes a stored row image that is already bytes, by absolute offset.
+     *
+     * <p>The browse reads its rows as the bytes the backend presented and keeps them as bytes, so this is
+     * the path it decodes through. Going by way of a {@code String} would be width-preserving under a
+     * single-byte code page and not, in general, byte-preserving - IBM037 maps {@code X'25'} to a
+     * character that encodes back as {@code X'15'} - and a browse whose position is the stored bytes must
+     * not decode a value that differs from them.
+     *
+     * <p>The width is enforced by {@link FixedWidthCodec#wrap(byte[], FixedWidthRecord.RecordLayout)},
+     * which requires exactly {@value #RECORD_LENGTH} bytes, for the reason set out on
+     * {@link #wrapRow(String)}: the 36-byte fixture form is the parity harness's to widen, not this
+     * class's to accept.
+     *
+     * @param rowImage the stored image, exactly as the configured representation presented it
+     * @return the decoded record
+     * @throws IllegalArgumentException if the image is not exactly {@value #RECORD_LENGTH} bytes, or
+     *                                  holds a non-digit in a numeric span
+     */
+    private CardXrefRecord decodeRow(byte[] rowImage) {
+        return CardXrefRecord.decodeSpan(codec.wrap(rowImage, CardXrefRecord.LAYOUT), codec);
+    }
+
     // =================================================================================================
     // Statement resolution. One place decides the text of every statement this repository sends, and one
     // describe per relation - a statement that returns no row - learns the column name needed to compose
@@ -1194,7 +1319,8 @@ public class CardXrefRepository {
             resolved = new Statements(
                     baseRelation.selectByKey(baseColumn),
                     alternateIndexRelation.selectByKey(alternateColumn),
-                    baseRelation.selectAllAscending(baseColumn));
+                    baseRelation.selectAllAscending(baseColumn),
+                    baseRelation.selectAfterAscending(baseColumn));
             this.statements = resolved;
         }
         return resolved;
@@ -1225,11 +1351,17 @@ public class CardXrefRepository {
      *                            offset 0
      * @param selectByAccountId   {@code READ} through the alternate-index path, keyed on
      *                            {@code XREF-ACCT-ID} at offset 25
-     * @param browseInKeyOrder    the sequential browse of the base cluster, in ascending key order
+     * @param browseInKeyOrder    the first read of a sequential browse of the base cluster, in ascending
+     *                            key order
+     * @param browseAfterInKeyOrder every read after the first: the lowest key strictly above the record
+     *                            already returned. It takes that record's stored image as its parameter,
+     *                            which is what makes a browse advance one record per read instead of
+     *                            transferring the dataset once and walking a copy of it
      */
     record Statements(String selectByCardNumber,
                       String selectByAccountId,
-                      String browseInKeyOrder) {
+                      String browseInKeyOrder,
+                      String browseAfterInKeyOrder) {
     }
 
     /**
@@ -1606,30 +1738,51 @@ public class CardXrefRepository {
         private final String openStatus;
 
         /**
-         * The rows this pass will return, in base-key order, or {@code null} when the open failed. An
-         * immutable copy, so the pass cannot be perturbed after it starts.
+         * Whether the open succeeded, and so whether this cursor may read at all.
+         *
+         * <p>Held as its own flag rather than inferred from a rows list, because after the browse became
+         * lazy there is no rows list: what a successful open leaves behind is permission to read, not a
+         * copy of the dataset.
          */
-        private final List<String> rows;
+        private final boolean opened;
 
-        /** How many records this pass has returned so far. The only mutable state in the class. */
-        private int position;
+        /**
+         * The exact bytes of the record last returned, or {@code null} before the first read.
+         *
+         * <p>The browse advances by asking for the lowest key strictly above this image, which is what
+         * {@code ACCESS MODE IS SEQUENTIAL} on {@code RECORD KEY IS FD-XREF-CARD-NUM}
+         * ({@code app/cbl/CBACT03C.cbl:29-33}) does. The whole image and not the key alone, because a
+         * bare key sorts <em>below</em> the record that carries it and a browse positioned by key would
+         * return the same record for ever; and the bytes the backend gave rather than a re-encoding of the
+         * record decoded from them, because those two differ for any stored row that does not already hold
+         * exactly what the model would write - the same reasoning finding BD-08 records for the card
+         * file's browse.
+         */
+        private byte[] position;
+
+        /** How many records this pass has returned so far. */
+        private int returned;
+
+        /** Whether the browse has run past its last record. */
+        private boolean exhausted;
 
         /** Whether {@link #close()} has been called. */
         private boolean closed;
 
         /**
          * Constructed only by {@link CardXrefRepository#openBrowse()}, which is what guarantees that a
-         * successful open always arrives with its rows and a failed one never does.
+         * cursor's permission to read reflects what the open actually established.
          *
          * @param repository the opening repository
          * @param openStatus the status the open reported
-         * @param rows       the rows for a successful open, or {@code null} for a failed one
          */
-        private BrowseCursor(CardXrefRepository repository, String openStatus, List<String> rows) {
+        private BrowseCursor(CardXrefRepository repository, String openStatus) {
             this.repository = repository;
             this.openStatus = openStatus;
-            this.rows = rows;
-            this.position = 0;
+            this.opened = FileStatus.isOk(openStatus);
+            this.position = null;
+            this.returned = 0;
+            this.exhausted = false;
             this.closed = false;
         }
 
@@ -1671,7 +1824,7 @@ public class CardXrefRepository {
          * @return {@code true} when {@link #readNext()} will report an I/O outcome rather than throw
          */
         public boolean isOpen() {
-            return !closed && rows != null;
+            return !closed && opened;
         }
 
         /**
@@ -1681,7 +1834,7 @@ public class CardXrefRepository {
          * @return the count; never negative
          */
         public int position() {
-            return position;
+            return returned;
         }
 
         /**
@@ -1738,45 +1891,109 @@ public class CardXrefRepository {
                         + "once, at :138, after its loop has ended - reading afterwards is a defect in "
                         + "the caller, not a file status. Open another browse instead.");
             }
-            if (rows == null) {
+            if (!opened) {
                 // The open never succeeded. Its own status is reported, not a fresh one, so the caller
                 // sees the failure that actually happened.
                 return ReadResult.other(BASE_DD_NAME, openStatus);
             }
-            if (position >= rows.size()) {
-                // AT END. app/cbl/CBACT03C.cbl:98-99 then :108.
+            if (exhausted) {
+                // AT END, reported again. app/cbl/CBACT03C.cbl:98-99 then :108: the loop stops on the
+                // flag and never resumes, so repeating the read repeats the answer.
                 return ReadResult.endOfFile(BASE_DD_NAME);
             }
-            String rowImage = rows.get(position);
-            // The position advances for an unreadable row too: the read consumed it, exactly as a COBOL
-            // READ advances past the record it reported an error on, so a caller that chooses to
-            // continue does not re-read the same broken row forever.
-            position++;
+
+            Statements sql;
+            BrowseRow row;
+            try {
+                sql = repository.resolveStatements();
+                row = position == null
+                        ? repository.browseRow(sql.browseInKeyOrder(), null)
+                        : repository.browseRow(sql.browseAfterInKeyOrder(), position);
+            } catch (DataAccessException refused) {
+                // ERROR READING XREFFILE - app/cbl/CBACT03C.cbl:100-107, the read's own failure and its
+                // own message. The position is left where it was, so a caller that retries retries the
+                // same read rather than skipping a record.
+                return CardXrefRepository.other(BASE_DD_NAME, refused, "read the next record of the "
+                        + BASE_DD_NAME + " base cluster during a browse");
+            }
+
+            if (!row.present()) {
+                // AT END. app/cbl/CBACT03C.cbl:98-99 then :108. Recorded, so every later read reports it
+                // without another round trip.
+                exhausted = true;
+                return ReadResult.endOfFile(BASE_DD_NAME);
+            }
+            byte[] rowImage = row.image();
             if (rowImage == null) {
+                // There is a record and it cannot be read: an I/O defect, not an end of file. The browse
+                // cannot advance past a row whose image it does not have, so it stops here rather than
+                // silently skipping the row or re-reading it for ever.
+                exhausted = true;
                 LOG.error("The cross-reference base cluster '" + repository.baseDatasetName() + "' (DD "
                         + BASE_DD_NAME + ") presented a row with no record image at column position "
                         + RECORD_IMAGE_COLUMN_INDEX + " during a browse; reporting file status "
                         + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
                 return ReadResult.other(BASE_DD_NAME, PERMANENT_ERROR_STATUS);
             }
+            // Advance to the bytes the backend presented, then decode. Decoding can fail on a malformed
+            // row, and the position must already have moved past it if it does, exactly as a COBOL READ
+            // advances past the record it reported an error on.
+            position = rowImage.clone();
+            returned++;
             return ReadResult.found(BASE_DD_NAME, repository.decodeRow(rowImage));
         }
 
         /**
          * Closes this pass: the Java form of {@code 9000-XREFFILE-CLOSE}
-         * ({@code app/cbl/CBACT03C.cbl:136-150}).
+         * ({@code app/cbl/CBACT03C.cbl:136-151}).
          *
-         * <p>Nothing is buffered and no handle is held between calls - the shared template borrows and
-         * returns a connection per operation - so there is no flush to fail and no resource to release
-         * beyond dropping this cursor's own position. The status is therefore always
-         * {@link FileStatus#OK}, and the call is <strong>idempotent</strong>, which is what makes
-         * try-with-resources safe alongside an explicit close in the same block.
+         * <p>{@code CBACT03C} tests this status and abends on {@code 'ERROR CLOSING XREFFILE'}, so it is
+         * an outcome and not a formality. It used to be the constant {@link FileStatus#OK}, which meant
+         * the paragraph could not fail - and a close that cannot fail is a guard the caller keeps writing
+         * for no reason.
          *
-         * @return {@link FileStatus#OK}; never {@code null}, always two characters
+         * <p>What it reports now comes from real state. <strong>Closing a browse that never opened is a
+         * failure</strong>, which is what COBOL reports for a {@code CLOSE} of a file that is not open,
+         * and it is reachable exactly when a caller ignored {@link #openStatus()} - so the close tells it
+         * the same thing the open did rather than reporting success over a dataset it never reached.
+         * A browse that did open reports {@link FileStatus#OK}: no connection, cursor or buffer is held
+         * between reads - the shared template borrows and returns a connection per read, which is what
+         * keeps the online layer free of server-side conversation state - so there is genuinely nothing
+         * left to flush or release beyond this cursor's own position, and reporting a failure would be
+         * inventing one.
+         *
+         * <p>The call is <strong>idempotent</strong>, which is what makes try-with-resources safe
+         * alongside an explicit close in the same block, and it reports the same status every time for the
+         * same reason.
+         *
+         * @return {@link FileStatus#OK} for a browse that was open, or
+         *         {@link CardXrefRepository#PERMANENT_ERROR_STATUS} for one that never opened; never
+         *         {@code null}, always two characters
          */
         public String closeBrowse() {
             closed = true;
-            return FileStatus.OK;
+            if (opened) {
+                return FileStatus.OK;
+            }
+            LOG.error("A browse of the " + BASE_DD_NAME + " base cluster was closed although it never "
+                    + "opened - its open reported file status " + FileStatus.toStatusImage(openStatus)
+                    + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                    + " from the close as well, because a CLOSE of a file that is not open is not a "
+                    + "success");
+            return PERMANENT_ERROR_STATUS;
+        }
+
+        /**
+         * The {@code APPL-RESULT} the close sets: {@code 0} on success and {@code 12} otherwise, the
+         * ladder at {@code app/cbl/CBACT03C.cbl:139-145}.
+         *
+         * @return {@link FileStatus#APPL_AOK} or {@link CardXrefRepository#APPL_RESULT_FATAL}
+         */
+        public int closeApplResult() {
+            // The same condition closeBrowse() reports on, so the status and the APPL-RESULT cannot
+            // disagree. Whether the cursor has since been closed is irrelevant: closing twice is
+            // idempotent and reports the same outcome both times.
+            return opened ? FileStatus.APPL_AOK : APPL_RESULT_FATAL;
         }
 
         /**

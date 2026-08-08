@@ -1220,7 +1220,7 @@ class FileStatusTest {
         private static final List<String> PUBLISHED_CONSTANT_NAMES = List.of(
                 "OK", "END_OF_FILE", "DUPLICATE", "NOT_FOUND", "STATUS_LENGTH",
                 "STATUS_IMAGE_LENGTH", "NORMAL", "NOTFND", "DUPREC", "DUPKEY", "INVREQ", "NOTOPEN",
-                "ENDFILE", "LENGERR", "APPL_AOK", "APPL_EOF", "DISPLAY_PREFIX");
+                "ENDFILE", "LENGERR", "NO_REASON_CODE", "APPL_AOK", "APPL_EOF", "DISPLAY_PREFIX");
 
         @Test
         @DisplayName("the class is final, so no subclass can add state to it")

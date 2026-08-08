@@ -1967,6 +1967,33 @@ class CardRecordTest {
                     .doesNotContain(ROW_1_NAME)
                     .contains("CARD-CVV-CD=[redacted]");
         }
+
+        @Test
+        @DisplayName("No stored byte can forge a second log line out of this rendering")
+        void theDiagnosticRenderingCannotBeUsedToForgeALogLine() {
+            // CARD-NUM is PIC X(16) and neither this type nor CardRepository validates it as digits -
+            // deliberately, because rejecting a stored card key would be a behaviour change the COBOL
+            // never makes. So a CR or LF really can be in the dataset, and it survives in the four
+            // characters the mask reveals. CARD-EXPIRAION-DATE and CARD-ACTIVE-STATUS are PIC X spans
+            // rendered in full, so either can carry one too. All three paths are asserted, because
+            // closing one and leaving the others is indistinguishable from closing none (CWE-117).
+            CardRecord forged = new CardRecord("411111111111\r\nOK", 1L, 123, "A\rB",
+                    "2025-\n1-01", "\n");
+
+            String rendering = forged.toString();
+            assertThat(rendering)
+                    .doesNotContain("\r")
+                    .doesNotContain("\n")
+                    .contains("X'0D'", "X'0A'");
+            assertThat(rendering.lines())
+                    .as("a rendering documented as safe to log must occupy exactly one line")
+                    .hasSize(1);
+            // The escape is lossless and applied only to the rendering: the stored values, which the
+            // parity harness reads by name, are byte-identical to what was supplied.
+            assertThat(forged.cardNum()).isEqualTo("411111111111\r\nOK");
+            assertThat(forged.cardExpiraionDate()).isEqualTo("2025-\n1-01");
+            assertThat(forged.cardActiveStatus()).isEqualTo("\n");
+        }
     }
 
     // =================================================================================================

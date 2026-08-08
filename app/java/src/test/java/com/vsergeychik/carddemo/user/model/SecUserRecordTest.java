@@ -458,17 +458,30 @@ class SecUserRecordTest {
         }
 
         @Test
-        @DisplayName("the rendering omits the password but keeps the displayed fields")
+        @DisplayName("the rendering withholds the password and both names, and keeps the key legible")
         void renderingOmitsThePassword() {
             SecUserRecord record = SecUserRecord.decode(ebcdicRows().get(0), EBCDIC);
             String rendered = record.toString();
 
             assertThat(rendered).doesNotContain(SEED_PASSWORD);
             assertThat(rendered).contains("<omitted>");
-            assertThat(rendered).contains("SEC-USER-DATA", "ADMIN001", "MARGARET", "GOLD");
-            // The password stays reachable where behaviour genuinely needs it.
+            // SEC-USR-ID is the VSAM key and the value COSGN00C matches on, so a sign-on parity
+            // failure is diagnosed from it and no other field will do. It stays.
+            assertThat(rendered).contains("SEC-USER-DATA", "ADMIN001");
+            // SEC-USR-FNAME and SEC-USR-LNAME are personal data. The seed card's names were
+            // published verbatim by the earlier rendering; now only their shape is reported, which
+            // is what still finds a PIC X(20) field holding the wrong number of characters.
+            assertThat(rendered).doesNotContain("MARGARET", "GOLD");
+            assertThat(rendered).contains("SEC-USR-FNAME=[text len=20]", "SEC-USR-LNAME=[text len=20]");
+            // Nothing stored changed: every value is still reachable by name, at full width.
             assertThat(record.secUsrPwd()).isEqualTo(SEED_PASSWORD);
             assertThat(record.image("SEC-USR-PWD")).isEqualTo(SEED_PASSWORD);
+            assertThat(record.secUsrFname()).isEqualTo(pad("MARGARET", 20));
+            assertThat(record.secUsrLname()).isEqualTo(pad("GOLD", 20));
+            assertThat(record.image("SEC-USR-FNAME")).isEqualTo(pad("MARGARET", 20));
+            assertThat(record.image("SEC-USR-LNAME")).isEqualTo(pad("GOLD", 20));
+            assertThat(record.fieldImages().get("SEC-USR-FNAME")).isEqualTo(pad("MARGARET", 20));
+            assertThat(record.fieldImages().get("SEC-USR-LNAME")).isEqualTo(pad("GOLD", 20));
         }
 
         @Test
@@ -477,6 +490,50 @@ class SecUserRecordTest {
             SecUserRecord record = SecUserRecord.of("USER0001", "LAWRENCE", "THOMAS", "S3cr3tPW",
                     "U", ASCII);
             assertThat(record.toString()).doesNotContain("S3cr3tPW").contains("<omitted>");
+        }
+
+        @Test
+        @DisplayName("no name reaches the rendering, however unusual it is")
+        void renderingWithholdsAnyName() {
+            // A surname is not guessable, so a guard that only rejected the seed cards' names would
+            // pass while still publishing every real one. Assert on values that appear in no fixture.
+            SecUserRecord record = SecUserRecord.of("USER0002", "ZQXVOLYA", "TREMBLAY-OKONKWO",
+                    SEED_PASSWORD, "U", ASCII);
+            assertThat(record.toString())
+                    .doesNotContain("ZQXVOLYA")
+                    .doesNotContain("TREMBLAY-OKONKWO")
+                    .contains("SEC-USR-FNAME=[text len=20]", "SEC-USR-LNAME=[text len=20]");
+            assertThat(record.secUsrFname()).isEqualTo(pad("ZQXVOLYA", 20));
+            assertThat(record.secUsrLname()).isEqualTo(pad("TREMBLAY-OKONKWO", 20));
+        }
+
+        @Test
+        @DisplayName("a blank name is reported as blank rather than as a width, which is a real defect")
+        void renderingDistinguishesABlankNameFromAPresentOne() {
+            // The shape is reported because the shape is what a fixed-width defect looks like: an
+            // entirely blank SEC-USR-LNAME is a user card that was written without one.
+            SecUserRecord record = SecUserRecord.of("USER0003", "ANNA", "", SEED_PASSWORD, "U",
+                    ASCII);
+            assertThat(record.toString())
+                    .contains("SEC-USR-FNAME=[text len=20]")
+                    .contains("SEC-USR-LNAME=[blank]");
+        }
+
+        @Test
+        @DisplayName("a control character in a rendered field cannot forge a second log line")
+        void renderingCannotForgeALogLine() {
+            // SEC-USR-ID and SEC-USR-TYPE are PIC X spans read straight out of USRSEC, so either can
+            // hold CR or LF. Rendered raw, the value appends a log line of its own choosing - CWE-117.
+            SecUserRecord record = SecUserRecord.of("A\r\nFAKE", "ANNA", "SMITH", SEED_PASSWORD,
+                    "\n", ASCII);
+            String rendered = record.toString();
+
+            assertThat(rendered).doesNotContain("\r").doesNotContain("\n");
+            assertThat(rendered.lines()).hasSize(1);
+            assertThat(rendered).contains("X'0D'", "X'0A'");
+            // The escape is lossless: the stored bytes are untouched and still say what was there.
+            assertThat(record.secUsrId()).isEqualTo("A\r\nFAKE ");
+            assertThat(record.secUsrType()).isEqualTo("\n");
         }
 
         @Test

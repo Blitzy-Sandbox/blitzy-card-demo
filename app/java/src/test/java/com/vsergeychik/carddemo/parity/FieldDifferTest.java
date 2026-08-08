@@ -1448,6 +1448,95 @@ class FieldDifferTest {
                 .doesNotContain("PASSWORD");
         }
 
+        @ParameterizedTest(name = "an unexpected {0}-character USRSEC row prints no credential byte")
+        @DisplayName("an unexpected USRSEC row of the WRONG width still masks what it carries")
+        @ValueSource(ints = {49, 50, 51, 52, 53, 54, 55, 56, 57, 79})
+        void anExtraRowOfTheWrongWidthStillMasksItsCredentialSpan(int width) {
+            // The widths the redactor used to pass straight through. Not contrived values: an
+            // EXTRA_RECORD difference renders the row the unit actually WROTE, at whatever width it
+            // wrote it, and a unit that truncated a USRSEC row is exactly the defect this harness
+            // exists to catch. Catching it printed one to seven characters of SEC-USR-PWD into the
+            // report, and the report is a build log and a CI artefact (CWE-532).
+            String truncated = USRSEC_ROW.substring(0, width);
+
+            DiffResult result = differ().compare(
+                finalStateCase(pin(USRSEC, 0, SecUserRecord.FIELD_SEC_USR_ID, "ADMIN001")),
+                finalState(output(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW, truncated)));
+
+            Diff extra = onlyDiffOfKind(result, DiffKind.EXTRA_RECORD);
+            // Asserted on the rendered value itself rather than on the whole report text, because at a
+            // width holding one credential character a text search for "P" proves nothing: the letter
+            // occurs all over a field-named report. The value is where the guarantee has to hold.
+            assertNoCredentialSurvives(extra.actual(), width);
+            Assertions.assertThat(extra.length())
+                .as("the width is itself the finding and must still be reported")
+                .isEqualTo(width);
+            Assertions.assertThat(extra.actual())
+                .as("a truncation leaves the leading fields in place, and they make it diagnosable")
+                .startsWith("ADMIN001");
+        }
+
+        @ParameterizedTest(name = "a missing record whose expected image is {0} characters")
+        @DisplayName("a missing USRSEC record masks a WRONG-width expected image too")
+        @ValueSource(ints = {49, 50, 51, 52, 53, 54, 55, 56, 57, 79})
+        void aMissingRecordMasksAWrongWidthExpectedImage(int width) {
+            // The other of the two call sites, and the one whose width is decided by whoever authored
+            // the fixture rather than by the unit. A MISSING_RECORD difference prints the image the case
+            // PINNED, so a fixture typed one character short published a password byte in every report
+            // that expectation ever failed in.
+            String truncated = USRSEC_ROW.substring(0, width);
+
+            DiffResult result = differ().compare(
+                finalStateCase(new ExpectedRecord(USRSEC, 0, Map.of(), truncated)),
+                Fingerprint.ofReturnCode(0));
+
+            Diff missing = onlyDiffOfKind(result, DiffKind.MISSING_RECORD);
+            assertNoCredentialSurvives(missing.expected(), width);
+            Assertions.assertThat(missing.expected()).startsWith("ADMIN001");
+        }
+
+        /**
+         * The single diff of a kind, so an assertion reads the value the differ actually rendered rather
+         * than searching the whole report for a substring.
+         *
+         * @param result the comparison result
+         * @param kind   the kind expected exactly once
+         * @return that difference
+         */
+        private static Diff onlyDiffOfKind(DiffResult result, DiffKind kind) {
+            List<Diff> matching = new ArrayList<>();
+            for (Diff diff : result.entries()) {
+                if (diff.kind() == kind) {
+                    matching.add(diff);
+                }
+            }
+            Assertions.assertThat(matching).as("exactly one %s was expected", kind).hasSize(1);
+            return matching.get(0);
+        }
+
+        /**
+         * Insists a rendered {@code USRSEC} image of the given width discloses no credential character,
+         * and that its length is unchanged so the width itself stays diagnosable.
+         *
+         * @param rendered the value the differ rendered
+         * @param width    the width of the image it was rendered from
+         */
+        private static void assertNoCredentialSurvives(String rendered, int width) {
+            int present = Math.min(width - Redaction.SENSITIVE_SPAN_OFFSET,
+                Redaction.SENSITIVE_SPAN_LENGTH);
+            Assertions.assertThat(rendered)
+                .as("the rendered length must equal the image's, or a width difference is hidden")
+                .hasSize(width);
+            // Position by position over the whole credential span, which is the only formulation that is
+            // meaningful when a single character of it is present.
+            for (int index = Redaction.SENSITIVE_SPAN_OFFSET; index < width; index++) {
+                Assertions.assertThat(rendered.charAt(index))
+                    .as("character %d of a %d-character USRSEC image (%d credential character(s) "
+                        + "present) must be masked", index, width, present)
+                    .isEqualTo('*');
+            }
+        }
+
         @Test
         @DisplayName("a send carrying PASSWDO does not print its value")
         void aSendCarryingPasswdoDoesNotPrintIt() {

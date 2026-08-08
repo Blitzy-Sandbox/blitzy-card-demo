@@ -277,6 +277,41 @@ carddemo:
     dataset: IBM037
 
   # -------------------------------------------------------------------------------------------
+  # RECORD-IMAGE REPRESENTATION - how the deployment's driver presents a record image over JDBC.
+  #
+  # A dataset is a relation whose FIRST column carries the whole record image; common/DatasetRelation
+  # settles that, and it is the only structural assumption this module makes about the backend. What
+  # DatasetRelation cannot settle is what JDBC TYPE that column has, and that is a separate decision
+  # with the same power to corrupt every record - so it is stated here, once, and common/RecordImageForm
+  # is the single authority every read, every write and every key or browse comparison operand goes
+  # through. No repository chooses getString or getBytes for itself and none carries a fallback from one
+  # to the other.
+  #
+  # Two values, and only two:
+  #   CHARACTER - the record image is a character column in the code page named by charset.dataset
+  #               above. The bytes are recovered by encoding the returned text in that code page, which
+  #               is exact because both supported code pages are total and single-byte, so a zoned
+  #               DISPLAY sign overpunch - X'C0' for +0 and X'D0' for -0 under IBM037 - survives the
+  #               round trip. This is what a gateway surfacing a KSDS as CHAR/VARCHAR presents.
+  #   BINARY    - the record image is a binary column carrying the stored bytes unconverted. The
+  #               strictest of the two: it cannot be wrong about a code page because it never applies
+  #               one. This is what a gateway surfacing a KSDS as BINARY/VARBINARY presents.
+  #
+  # THIS KEY IS REQUIRED AND CARRIES NO DEFAULT, for the same reason charset.dataset carries none. A
+  # default would let a deployment that never named its driver's record-image type start anyway and
+  # then hand every record to a conversion nobody chose, silently and with no error to show for it.
+  # config/DataSourceConfig binds it with a bare placeholder, so removing it fails the context at
+  # startup naming this exact key.
+  #
+  # CHARACTER here, because this document's bindings below address the mainframe datasets through a
+  # site-supplied gateway driver that presents them as character columns in the configured code page.
+  # A deployment whose driver presents them as binary sets BINARY on this one line and changes nothing
+  # else; no Java source names a JDBC type.
+  # -------------------------------------------------------------------------------------------
+  record-image:
+    form: CHARACTER
+
+  # -------------------------------------------------------------------------------------------
   # DATASET BINDINGS - 27 entries: the 8 CICS FILE definitions plus the 19 batch-only DD names.
   #
   # Keys are the DD / CICS FILE names exactly as the JCL and the CSD spell them, in upper case.

@@ -6,10 +6,13 @@ import com.vsergeychik.carddemo.account.AccountRepository.ReadResult;
 import com.vsergeychik.carddemo.account.AccountRepository.Statements;
 import com.vsergeychik.carddemo.account.AccountRepository.WriteResult;
 import com.vsergeychik.carddemo.account.model.AccountRecord;
+import com.vsergeychik.carddemo.common.CicsResponse;
+import com.vsergeychik.carddemo.common.DatasetIntegrityException;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -50,6 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -170,7 +174,7 @@ class AccountRepositoryTest {
      * @return the repository
      */
     private static AccountRepository repository(JdbcTemplate template) {
-        return new AccountRepository(template, validBindings(), ASCII);
+        return new AccountRepository(template, validBindings(), ASCII, RecordImageForm.CHARACTER);
     }
 
     /**
@@ -335,6 +339,67 @@ class AccountRepositoryTest {
         Mockito.when(preparedStatement.getResultSet()).thenReturn(emptyResultSet);
         Mockito.when(preparedStatement.getUpdateCount()).thenReturn(0);
         Mockito.when(emptyResultSet.next()).thenReturn(false);
+        return new JdbcTemplate(dataSource);
+    }
+
+    /**
+     * A mocked chain whose keyed count finds exactly one row and whose {@code UPDATE} then reports two.
+     *
+     * <p>The race the pre-write count cannot close: between the count and the {@code UPDATE} the relation
+     * changed, so the write replaced rows the count never saw. It is unreachable against a unique primary
+     * key and is mocked rather than assumed away, because the outcome it produces - rows already
+     * overwritten - is the one outcome a file status must not carry.
+     *
+     * @return a template whose count says one and whose update says two
+     * @throws SQLException never; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate describingThenFanningOutOnUpdate() throws SQLException {
+        return countingOneThenReportingUpdateCount(2);
+    }
+
+    /**
+     * A mocked chain whose keyed count finds exactly one row and whose {@code UPDATE} then reports none.
+     *
+     * <p>The other side of the race the count cannot close: the row the count saw was deleted before the
+     * write reached it. Nothing was written, so the outcome is the invalid-key condition - which is what
+     * it would have been had the row never existed - and must not be confused with the fan-out case,
+     * where something <em>was</em> written.
+     *
+     * @return a template whose count says one and whose update says none
+     * @throws SQLException never; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate describingThenLosingTheRowBeforeUpdate() throws SQLException {
+        return countingOneThenReportingUpdateCount(0);
+    }
+
+    /**
+     * A mocked chain whose keyed count finds exactly one row and whose {@code UPDATE} reports the count
+     * asked for.
+     *
+     * @param updateCount what {@code executeUpdate} should report
+     * @return a template over the mocked chain
+     * @throws SQLException never; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate countingOneThenReportingUpdateCount(int updateCount)
+            throws SQLException {
+        DataSource dataSource = Mockito.mock(DataSource.class);
+        Connection connection = Mockito.mock(Connection.class);
+        Statement statement = Mockito.mock(Statement.class);
+        ResultSet probeResultSet = Mockito.mock(ResultSet.class);
+        ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+        PreparedStatement preparedStatement = Mockito.mock(PreparedStatement.class);
+        ResultSet oneRow = Mockito.mock(ResultSet.class);
+        Mockito.when(dataSource.getConnection()).thenReturn(connection);
+        Mockito.when(connection.createStatement()).thenReturn(statement);
+        Mockito.when(statement.executeQuery(Mockito.anyString())).thenReturn(probeResultSet);
+        Mockito.when(probeResultSet.getMetaData()).thenReturn(metaData);
+        Mockito.when(metaData.getColumnCount()).thenReturn(1);
+        Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
+        Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(preparedStatement);
+        Mockito.when(preparedStatement.executeQuery()).thenReturn(oneRow);
+        // One row, then exhausted: the count the rewrite requires before it writes.
+        Mockito.when(oneRow.next()).thenReturn(true, false);
+        Mockito.when(preparedStatement.executeUpdate()).thenReturn(updateCount);
         return new JdbcTemplate(dataSource);
     }
 
@@ -528,7 +593,7 @@ class AccountRepositoryTest {
         @DisplayName("accepts a declared key length of eleven")
         void acceptsADeclaredKeyLengthOfEleven() {
             AccountRepository repository = new AccountRepository(new JdbcTemplate(),
-                    bindings(TEST_DSNAME, TEST_DSNAME, THREE_HUNDRED, ELEVEN), ASCII);
+                    bindings(TEST_DSNAME, TEST_DSNAME, THREE_HUNDRED, ELEVEN), ASCII, RecordImageForm.CHARACTER);
 
             assertThat(repository.datasetName()).isEqualTo(TEST_DSNAME);
         }
@@ -539,7 +604,7 @@ class AccountRepositoryTest {
             DatasetBindings wrongKey = bindings(TEST_DSNAME, TEST_DSNAME, THREE_HUNDRED, 12);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), wrongKey, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), wrongKey, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("key length")
                     .withMessageContaining("ACCT-ID PIC 9(11)");
         }
@@ -550,7 +615,7 @@ class AccountRepositoryTest {
             DatasetBindings wrongWidth = bindings(TEST_DSNAME, TEST_DSNAME, 350, null);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), wrongWidth, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), wrongWidth, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("record length")
                     .withMessageContaining("RECLN 300");
         }
@@ -561,7 +626,7 @@ class AccountRepositoryTest {
             DatasetBindings split = bindings(TEST_DSNAME, "TEST.OTHER.KSDS", THREE_HUNDRED, null);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), split, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), split, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("different datasets");
         }
 
@@ -573,7 +638,7 @@ class AccountRepositoryTest {
                     false, "FB", null, THREE_HUNDRED, "CVACT01Y", null, null, null, null));
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), incomplete, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), incomplete, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining(AccountRepository.CICS_FILE_NAME);
         }
 
@@ -584,7 +649,7 @@ class AccountRepositoryTest {
             DatasetBindings blankName = bindings(blank, blank, THREE_HUNDRED, null);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), blankName, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), blankName, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("declares no dataset name");
         }
 
@@ -594,7 +659,7 @@ class AccountRepositoryTest {
             DatasetBindings absentName = bindings(null, null, THREE_HUNDRED, null);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), absentName, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), absentName, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("declares no dataset name");
         }
 
@@ -607,7 +672,7 @@ class AccountRepositoryTest {
             // The grammar decides, so the diagnostic names the offending position rather than the
             // category of character - which is what a reader needs to correct the configured value.
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), corruptName, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), corruptName, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
         }
 
@@ -617,13 +682,13 @@ class AccountRepositoryTest {
             DatasetBindings catalogue = validBindings();
 
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AccountRepository(null, catalogue, ASCII))
+                    .isThrownBy(() -> new AccountRepository(null, catalogue, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("JdbcTemplate");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), null, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), null, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("carddemo.datasets");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), catalogue, null))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), catalogue, null, RecordImageForm.CHARACTER))
                     .withMessageContaining("charset");
         }
     }
@@ -656,7 +721,7 @@ class AccountRepositoryTest {
             // rather than quoted into an identifier. The grammar is the defence; the delimited rendering
             // that follows it is belt and braces, and is asserted directly on DatasetRelation.
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), quoted, ASCII))
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), quoted, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
         }
 
@@ -925,27 +990,60 @@ class AccountRepositoryTest {
         }
 
         @Test
-        @DisplayName("widens a short stored image with spaces rather than misplacing every field")
-        void widensAShortStoredImage() {
+        @DisplayName("reports a short stored image rather than padding it into a different record")
+        void reportsAShortStoredImage() {
+            // The row is the first fixture record with its trailing FILLER X(178) removed, which is
+            // exactly the shape a backend that trims a character column presents. Widening it back with
+            // spaces would be right if the missing bytes were certainly the trailing ones - and nothing
+            // about a short row says they are. A row that lost bytes anywhere else pads into a record
+            // whose every field decodes from an offset that is not its own, and ACCT-CURR-BAL read from
+            // the wrong span is still a number, so the caller could not tell.
             String full = fixtureRows().get(0);
             String trimmed = full.substring(0, THREE_HUNDRED - FILLER_WIDTH);
 
             try (AccountFile file = openedInput(seeded(List.of(trimmed)))) {
-                AccountRecord account = file.readNext().account().orElseThrow();
+                ReadResult result = file.readNext();
 
-                assertThat(account.toFixedWidthString()).isEqualTo(full);
-                assertThat(account.getFiller()).isEqualTo(" ".repeat(FILLER_WIDTH));
+                assertThat(result.isOther()).isTrue();
+                assertThat(result.account()).isEmpty();
+                assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(result.applResult()).isEqualTo(AccountRepository.APPL_RESULT_FATAL);
+                // LENGERR is what CICS reports when a record does not fit its receiver, and the actual
+                // width is named in the log line rather than carried as a reason code.
+                assertThat(result.cicsResp()).hasValue(FileStatus.LENGERR);
+                assertThat(result.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
             }
         }
 
         @Test
-        @DisplayName("rejects a stored image wider than the copybook declares")
-        void rejectsAnOverWideStoredImage() {
+        @DisplayName("reports a stored image wider than the copybook declares")
+        void reportsAnOverWideStoredImage() {
             String overWide = fixtureRows().get(0) + " ";
 
             try (AccountFile file = openedInput(seeded(List.of(overWide), THREE_HUNDRED + 1))) {
-                assertThatIllegalArgumentException().isThrownBy(file::readNext)
-                        .withMessageContaining("wider than the declared width");
+                ReadResult result = file.readNext();
+
+                assertThat(result.isOther()).isTrue();
+                assertThat(result.account()).isEmpty();
+                assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(result.cicsResp()).hasValue(FileStatus.LENGERR);
+                assertThat(result.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
+            }
+        }
+
+        @Test
+        @DisplayName("a row of exactly the declared width is decoded, so the check is a width check and "
+                + "not a refusal to read")
+        void aRowOfExactlyTheDeclaredWidthIsDecoded() {
+            String full = fixtureRows().get(0);
+
+            try (AccountFile file = openedInput(seeded(List.of(full)))) {
+                ReadResult result = file.readNext();
+
+                assertThat(result.isFound()).isTrue();
+                assertThat(result.account().orElseThrow().toFixedWidthString()).isEqualTo(full);
+                assertThat(result.account().orElseThrow().getFiller())
+                        .isEqualTo(" ".repeat(FILLER_WIDTH));
             }
         }
 
@@ -978,6 +1076,11 @@ class AccountRepositoryTest {
                 assertThat(result.isOther()).isTrue();
                 assertThat(result.isEndOfFile()).isFalse();
                 assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                // The permanent status is this module's own; the condition it stands for has a
+                // determinate CICS counterpart, and carrying it is what lets an online caller render
+                // ' Resp:' ERROR-RESP ' Reas:' ERROR-RESP2 for a row it could not read.
+                assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
+                assertThat(result.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
             }
         }
     }
@@ -1135,8 +1238,18 @@ class AccountRepositoryTest {
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
             assertThat(repository(describingThenRefusing()).readByKey(1L).status())
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
-            assertThat(repository(describingThenReturningNoImage()).readByKey(1L).status())
-                    .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            ReadResult noImage = repository(describingThenReturningNoImage()).readByKey(1L);
+            assertThat(noImage.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(noImage.cicsResp()).hasValue(FileStatus.INVREQ);
+
+            // A backend refusal has no determinate CICS counterpart, and inventing one would be exactly
+            // the fabrication a carried pair exists to prevent, so the response is reported as absent and
+            // the driver's own SQLSTATE travels in the diagnostic instead.
+            ReadResult refused = repository(describingThenRefusing()).readByKey(1L);
+            assertThat(refused.cicsResp()).isEmpty();
+            assertThat(refused.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
+            assertThat(refused.response().describe()).isEqualTo("Resp:none Reas:0");
+            assertThat(refused.diagnostic()).isPresent();
         }
 
         @Test
@@ -1275,16 +1388,139 @@ class AccountRepositoryTest {
         }
 
         @Test
-        @DisplayName("reports a permanent error when more than one row carries the key")
-        void reportsAPermanentErrorWhenSeveralRowsCarryTheKey() {
+        @DisplayName("refuses before writing when more than one row carries the key, and changes neither")
+        void refusesBeforeWritingWhenSeveralRowsCarryTheKey() {
+            // The seeded relation deliberately has no key constraint, which is the shape of a deployment
+            // whose primary key is absent or declared over the wrong span. A KSDS key is unique, so the
+            // rewrite's LIKE predicate names one row; here it names two, and the same UPDATE would
+            // replace BOTH with this one record. Learning that from the affected-row count is learning it
+            // after the fact, so the count is established first and nothing is written at all.
             String duplicated = fixtureRows().get(0);
-            AccountRepository repository = repository(seeded(List.of(duplicated, duplicated)));
+            JdbcTemplate template = seeded(List.of(duplicated, duplicated));
+            AccountRepository repository = repository(template);
             AccountRecord account = AccountRecord.decode(duplicated, ASCII);
+            account.setAcctGroupId("OVERWRITE");
 
             WriteResult result = repository.rewrite(account);
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.applResult()).isEqualTo(AccountRepository.APPL_RESULT_FATAL);
+            // INVREQ is what CICS reports for a request the file cannot satisfy; the row count is named
+            // in the log line rather than carried as a reason code, because a count is not a reason code.
+            assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
+            assertThat(result.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
+
+            // The whole point: both rows are still exactly as they were seeded.
+            assertThat(template.queryForList("SELECT " + RECORD_IMAGE_COLUMN + " FROM \""
+                    + TEST_DSNAME + "\"", String.class))
+                    .as("a refused rewrite must not have changed a single row")
+                    .containsExactly(duplicated, duplicated);
+        }
+
+        @Test
+        @DisplayName("refuses the whole unit of work when the update fans out after the count was one")
+        void refusesTheUnitOfWorkWhenTheUpdateFansOutAfterTheProbe() throws SQLException {
+            // The one case a status cannot carry. The probe saw exactly one row, so the rewrite was
+            // issued - and the driver then reports two rows replaced, meaning the relation changed
+            // underneath it. The damage is already done, and a status returned from here would let the
+            // enclosing unit of work commit it, so the commit is refused instead.
+            AccountRepository repository = repository(describingThenFanningOutOnUpdate());
+            AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
+
+            assertThatExceptionOfType(DatasetIntegrityException.class)
+                    .isThrownBy(() -> repository.rewrite(account))
+                    .withMessageContaining("must not be allowed to stand")
+                    .withMessageContaining("2 rows were replaced")
+                    .withMessageContaining("no row lock, because no unit of work was open");
+        }
+
+        @Test
+        @DisplayName("inside a unit of work the refusal says the count was taken under a row lock")
+        void insideAUnitOfWorkTheRefusalNamesTheRowLock() throws SQLException {
+            // The same race, with a unit of work open. The refusal has to say which it was, because the
+            // remedy differs: under a lock the relation itself changed, and without one there was never
+            // anything holding it still.
+            JdbcTemplate template = describingThenFanningOutOnUpdate();
+            AccountRepository repository = repository(template);
+            AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
+
+            assertThatExceptionOfType(DatasetIntegrityException.class)
+                    .isThrownBy(() -> transactionOver(template)
+                            .execute(status -> repository.rewrite(account)))
+                    .withMessageContaining("2 rows were replaced")
+                    .withMessageContaining("under a row lock")
+                    .withMessageContaining("rolled back rather than reported as a file status");
+        }
+
+        @Test
+        @DisplayName("a row that disappears between the count and the write is '23', not a refusal")
+        void aRowThatDisappearsBetweenTheCountAndTheWriteIsInvalidKey() throws SQLException {
+            // Nothing was written, so nothing has to be undone: this is the invalid-key condition, which
+            // is exactly what it would have been had the row never existed. Only a write that changed too
+            // much refuses the commit.
+            AccountRepository repository = repository(describingThenLosingTheRowBeforeUpdate());
+            AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
+
+            WriteResult result = repository.rewrite(account);
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
+            assertThat(result.applResult()).isEqualTo(AccountRepository.APPL_RESULT_FATAL);
+        }
+
+        @Test
+        @DisplayName("the pre-write count is taken under the row lock when a unit of work is open")
+        void thePreWriteCountIsTakenUnderTheRowLock() throws SQLException {
+            List<String> prepared = new ArrayList<>();
+            JdbcTemplate template = recordingPreparedStatements(prepared);
+            AccountRepository repository = repository(template);
+            AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
+
+            // Outside a unit of work there is no lock to share, and requiring one would refuse a rewrite
+            // the COBOL performs, so the count is taken with a plain keyed read.
+            repository.rewrite(account);
+            assertThat(prepared).hasSize(1);
+            assertThat(prepared.get(0)).doesNotContain("FOR UPDATE");
+
+            // Inside one, the count and the UPDATE must see the same rows, so the count takes the same
+            // lock the UPDATE will use.
+            prepared.clear();
+            transactionOver(template).execute(status -> repository.rewrite(account));
+            assertThat(prepared).isNotEmpty();
+            assertThat(prepared.get(0)).endsWith("FOR UPDATE");
+        }
+
+        @Test
+        @DisplayName("a rewrite whose key selects nothing issues no UPDATE at all")
+        void aRewriteWhoseKeySelectsNothingIssuesNoUpdate() throws SQLException {
+            // Reporting '23' without issuing the UPDATE is the same outcome the UPDATE would have
+            // reported, and one statement fewer against a dataset that has no such record.
+            List<String> prepared = new ArrayList<>();
+            AccountRepository repository = repository(recordingPreparedStatements(prepared));
+            AccountRecord absent = new AccountRecord(ASCII);
+            absent.setAcctId(ABSENT_ACCT_ID);
+
+            assertThat(repository.rewrite(absent).isNotFound()).isTrue();
+            assertThat(prepared)
+                    .as("the count found no row, so no UPDATE should have been prepared")
+                    .noneMatch(sql -> sql.startsWith("UPDATE"));
+        }
+
+        @Test
+        @DisplayName("a refused count is reported as a permanent error, not as a missing record")
+        void aRefusedCountIsAPermanentError() throws SQLException {
+            // The count is a statement like any other and the backend can refuse it. That must not be
+            // mistaken for "no such record", which is what a count of zero means.
+            AccountRepository repository = repository(describingThenRefusing());
+            AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
+
+            WriteResult result = repository.rewrite(account);
+
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.diagnostic()).isPresent();
         }
 
         @Test
@@ -1742,7 +1978,7 @@ class AccountRepositoryTest {
 
             assertThatIllegalArgumentException().isThrownBy(
                     () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, account,
-                            Optional.empty()))
+                            Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.END_OF_FILE)))
                     .withMessageContaining("carries no record");
         }
 
@@ -1751,7 +1987,7 @@ class AccountRepositoryTest {
         void aStatusAndItsClassificationMustAgree() {
             assertThatIllegalArgumentException().isThrownBy(
                     () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.NOT_FOUND, Optional.empty(),
-                            Optional.empty()))
+                            Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.END_OF_FILE)))
                     .withMessageContaining("must agree");
         }
 
@@ -1763,16 +1999,21 @@ class AccountRepositoryTest {
             assertThatNullPointerException().isThrownBy(() -> ReadResult.of(null))
                     .withMessageContaining("two-character file status");
             assertThatNullPointerException().isThrownBy(
-                    () -> new ReadResult(FileStatus.OK, null, Optional.empty(), Optional.empty()))
+                    () -> new ReadResult(FileStatus.OK, null, Optional.empty(), Optional.empty(),
+                            CicsResponse.ofBatchStatus(FileStatus.OK)))
                     .withMessageContaining("classification");
             assertThatNullPointerException().isThrownBy(
                     () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, null,
-                            Optional.empty()))
+                            Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.END_OF_FILE)))
                     .withMessageContaining("empty record");
             assertThatNullPointerException().isThrownBy(
                     () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, Optional.empty(),
-                            null))
+                            null, CicsResponse.ofBatchStatus(FileStatus.END_OF_FILE)))
                     .withMessageContaining("empty diagnostic");
+            assertThatNullPointerException().isThrownBy(
+                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, Optional.empty(),
+                            Optional.empty(), null))
+                    .withMessageContaining("CICS response pair");
         }
 
         @Test

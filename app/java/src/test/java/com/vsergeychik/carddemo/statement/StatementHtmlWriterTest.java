@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
@@ -11,6 +12,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -24,6 +26,8 @@ import com.vsergeychik.carddemo.statement.StatementHtmlWriter.HtmlRecordSink;
 import com.vsergeychik.carddemo.statement.StatementHtmlWriter.HtmlStatementFile;
 import com.vsergeychik.carddemo.statement.StatementHtmlWriter.JdbcHtmlRecordSink;
 import com.vsergeychik.carddemo.statement.StatementHtmlWriter.TransactionField;
+import com.vsergeychik.carddemo.common.RecordImageForm;
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -120,11 +124,28 @@ class StatementHtmlWriterTest {
      */
     private static StatementHtmlWriter newWriter(final JdbcTemplate template, final int recordLength,
                                                  final String dsname) {
+        return newWriter(template, recordLength, dsname, RecordImageForm.CHARACTER);
+    }
+
+    /**
+     * A writer over the given template, geometry and record-image representation.
+     *
+     * <p>The representation is a parameter because it is a property of the deployment's driver and both
+     * of its values have to be exercised: the sink's binding is asserted under each.
+     *
+     * @param template      the template the sink issues its insert through
+     * @param recordLength  the configured record width
+     * @param dsname        the configured dataset name
+     * @param form          how a record image crosses JDBC
+     * @return the writer
+     */
+    private static StatementHtmlWriter newWriter(final JdbcTemplate template, final int recordLength,
+                                                 final String dsname, final RecordImageForm form) {
         DatasetBindings bindings = new DatasetBindings();
         bindings.put(StatementHtmlWriter.HTMLFILE_DD_NAME, new DatasetBinding(
                 dsname, "sequential", false, "FB", StatementHtmlWriter.BLOCK_SIZE, recordLength,
                 null, null, null, null, null));
-        return new StatementHtmlWriter(template, StandardCharsets.US_ASCII, bindings);
+        return new StatementHtmlWriter(template, StandardCharsets.US_ASCII, bindings, form);
     }
 
     /**
@@ -199,7 +220,7 @@ class StatementHtmlWriterTest {
             DatasetBindings empty = new DatasetBindings();
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> new StatementHtmlWriter(template, StandardCharsets.US_ASCII,
-                            empty))
+                            empty, RecordImageForm.CHARACTER))
                     .withMessageContaining(StatementHtmlWriter.HTMLFILE_DD_NAME);
         }
 
@@ -1253,7 +1274,7 @@ class StatementHtmlWriterTest {
             textCatalogue.put("STMTFILE", new DatasetBinding(shared, "sequential", false, "FB",
                     8000, 80, null, null, null, null, null));
             StatementTextWriter textWriter = new StatementTextWriter(mock(JdbcTemplate.class),
-                    StandardCharsets.US_ASCII, textCatalogue);
+                    StandardCharsets.US_ASCII, textCatalogue, RecordImageForm.CHARACTER);
 
             JdbcHtmlRecordSink htmlSink = newWriter(mock(JdbcTemplate.class),
                     StatementHtmlWriter.RECORD_LENGTH, shared).defaultSink();
@@ -1274,27 +1295,39 @@ class StatementHtmlWriterTest {
         }
 
         @Test
-        @DisplayName("The record image is bound as bytes on parameter 1, as the sibling writer binds")
-        void theRecordImageIsBoundAsBytes() throws SQLException {
-            // Not merely a stylistic match with StatementTextWriter. An untyped argument leaves the
-            // driver to pick a type for a byte[]; setBytes states it. The image is already the final
-            // 100 bytes in the injected code page, so the two writers must ask for the same thing in
-            // the same words or one of them can be silently re-encoded.
-            DataSource dataSource = mock(DataSource.class);
-            Connection connection = mock(Connection.class);
-            PreparedStatement statement = mock(PreparedStatement.class);
-            when(dataSource.getConnection()).thenReturn(connection);
-            when(connection.prepareStatement(anyString())).thenReturn(statement);
+        @DisplayName("binds the record image through the configured representation, never an untyped "
+                + "argument")
+        void theRecordImageIsBoundThroughTheConfiguredForm() throws SQLException {
+            // Not merely a stylistic match with StatementTextWriter, and no longer this sink's decision.
+            // An untyped argument leaves the driver to pick a type for a byte[]; naming the type states
+            // it. WHICH type is right is a property of the deployment's driver, so it comes from
+            // configuration and every reader and writer in the module asks for the same one. Both forms
+            // are exercised here, so neither is theoretical.
+            for (RecordImageForm form : RecordImageForm.values()) {
+                DataSource dataSource = mock(DataSource.class);
+                Connection connection = mock(Connection.class);
+                PreparedStatement statement = mock(PreparedStatement.class);
+                when(dataSource.getConnection()).thenReturn(connection);
+                when(connection.prepareStatement(anyString())).thenReturn(statement);
 
-            byte[] image = new byte[StatementHtmlWriter.RECORD_LENGTH];
-            image[0] = (byte) 'X';
+                byte[] image = new byte[StatementHtmlWriter.RECORD_LENGTH];
+                java.util.Arrays.fill(image, (byte) ' ');
+                image[0] = (byte) 'X';
 
-            assertThat(newWriter(new JdbcTemplate(dataSource), StatementHtmlWriter.RECORD_LENGTH,
-                    TEST_DSNAME).defaultSink().write(image)).isEqualTo(FileStatus.OK);
+                assertThat(newWriter(new JdbcTemplate(dataSource), StatementHtmlWriter.RECORD_LENGTH,
+                        TEST_DSNAME, form).defaultSink().write(image)).isEqualTo(FileStatus.OK);
 
-            verify(connection).prepareStatement("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)");
-            verify(statement).setBytes(1, image);
-            verify(statement).executeUpdate();
+                verify(connection).prepareStatement("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)");
+                if (form == RecordImageForm.BINARY) {
+                    verify(statement).setBytes(1, image);
+                    verify(statement, never()).setString(anyInt(), anyString());
+                } else {
+                    verify(statement).setString(1,
+                            new String(image, StandardCharsets.US_ASCII));
+                    verify(statement, never()).setBytes(anyInt(), any());
+                }
+                verify(statement).executeUpdate();
+            }
         }
 
         @Test
@@ -1309,8 +1342,37 @@ class StatementHtmlWriterTest {
                     .isEqualTo(StatementHtmlWriter.PERMANENT_ERROR_STATUS);
             assertThat(FileStatus.outcomeOfStatus(StatementHtmlWriter.PERMANENT_ERROR_STATUS))
                     .isEqualTo(FileStatus.Outcome.OTHER);
-            assertThat(sink.lastFailure()).containsInstanceOf(
-                    DataAccessResourceFailureException.class);
+            // The diagnosis survives; the exception does not. A driver's message is prose the backend
+            // composed around the record it refused, and an HTML statement record carries a customer's
+            // name, address and transactions - so publishing the exception published those (CWE-532), in
+            // text a control character could split into a forged log entry (CWE-117). What remains is
+            // what an operator acts on.
+            assertThat(sink.lastFailure()).isPresent();
+            DatasetRelation.BackendDiagnostic reported = sink.lastFailure().orElseThrow();
+            assertThat(reported.exceptionType())
+                    .isEqualTo(DataAccessResourceFailureException.class.getName());
+            assertThat(reported.toString()).doesNotContain("no driver");
+            assertThat(reported.describe()).doesNotContain("no driver");
+        }
+
+        @Test
+        @DisplayName("a driver message carrying record content never reaches lastFailure()")
+        void aDriverMessageCarryingRecordContentIsNotRetained() {
+            String customer = "MARGARET GOLD, 1 HIGH STREET";
+            doThrow(new DataAccessResourceFailureException("rejected: " + customer,
+                    new java.sql.SQLException("value '" + customer + "' too long", "22001", 1)))
+                    .when(StatementHtmlWriterTest.this.jdbcTemplate)
+                    .update(anyString(), any(PreparedStatementSetter.class));
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.write(new byte[StatementHtmlWriter.RECORD_LENGTH]))
+                    .isEqualTo(StatementHtmlWriter.PERMANENT_ERROR_STATUS);
+            DatasetRelation.BackendDiagnostic reported = sink.lastFailure().orElseThrow();
+            assertThat(reported.toString()).doesNotContain(customer);
+            assertThat(reported.describe()).doesNotContain(customer);
+            // The codes that distinguish one refusal from another are all still there.
+            assertThat(reported.sqlState()).isEqualTo("22001");
+            assertThat(reported.vendorCode()).isEqualTo(1);
         }
 
         @Test

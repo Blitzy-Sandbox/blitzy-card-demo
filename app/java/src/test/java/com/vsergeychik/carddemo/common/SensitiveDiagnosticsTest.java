@@ -141,6 +141,66 @@ class SensitiveDiagnosticsTest {
         void anEmptyValueReportsAsEmpty() {
             assertThat(SensitiveDiagnostics.maskPan("")).isEqualTo("[text len=0]");
         }
+
+        @Test
+        @DisplayName("the revealed tail is control-character escaped, so it cannot forge a log line")
+        void theRevealedTailCannotForgeALogLine() {
+            // CARD-NUM and XREF-CARD-NUM are PIC X(16): alphanumeric pictures, holding whatever the
+            // dataset holds, which no repository here validates as digits. A CR or LF in the last four
+            // bytes therefore survives the mask, and appending it raw lets the stored value append a
+            // log line of its own - CWE-117. The escape is what makes the guarantee cover the whole
+            // rendering rather than only the masked part.
+            String forged = "411111111111\r\nOK";
+
+            assertThat(SensitiveDiagnostics.maskPan(forged))
+                    .isEqualTo("************X'0D'X'0A'OK")
+                    .doesNotContain("\r")
+                    .doesNotContain("\n");
+            assertThat(SensitiveDiagnostics.maskPan(forged).lines()).hasSize(1);
+            assertThat(SensitiveDiagnostics.maskIdentifier(forged))
+                    .isEqualTo(SensitiveDiagnostics.maskPan(forged));
+        }
+
+        @Test
+        @DisplayName("the mask keeps its own width even when an escape lengthens the visible tail")
+        void theMaskKeepsItsWidth() {
+            // The two properties are separate and both are required. The mask must stay as wide as the
+            // part of the field it covers, because that is how the rendering still reports the stored
+            // width; the escaped tail is necessarily longer, because X'0A' is five characters for one
+            // byte, and that is the correct trade - the escape is lossless and unambiguous.
+            String stored = "0000000000000\u000109";
+
+            String rendered = SensitiveDiagnostics.maskPan(stored);
+            assertThat(rendered).startsWith("*".repeat(stored.length() - 4));
+            assertThat(rendered.chars().filter(c -> c == '*').count())
+                    .isEqualTo(stored.length() - 4);
+            assertThat(rendered).endsWith("X'01'09");
+        }
+
+        @Test
+        @DisplayName("this and DiagnosticText agree - one policy cannot be rendered two ways")
+        void theTwoHelpersAgree() {
+            // Before this fix the two disagreed: DiagnosticText.masked escaped its retained suffix and
+            // SensitiveDiagnostics.maskTrailing did not, which is how a reviewer ends up auditing every
+            // call site instead of reading the policy once. Asserted rather than commented, so the two
+            // cannot drift apart again silently.
+            for (String stored : new String[] {"4111111111111111", "00000000011", "1234", "1",
+                                               "411111111111\r\nOK", "00000000\u009F11"}) {
+                assertThat(SensitiveDiagnostics.maskPan(stored))
+                        .as("maskPan and DiagnosticText.masked must render '%s' identically",
+                                stored.replace("\r", "<CR>").replace("\n", "<LF>"))
+                        .isEqualTo(DiagnosticText.masked(stored));
+            }
+            // Two divergences remain, and both are deliberate rather than drift, so they are pinned
+            // here instead of being left to look like an oversight. Each class names an absent and an
+            // empty value in its own vocabulary - this one is called from hand-written toString methods
+            // that already print "null", the other from a label-driven loop - and neither rendering
+            // discloses anything, which is the property that has to hold.
+            assertThat(SensitiveDiagnostics.maskPan((String) null)).isEqualTo("null");
+            assertThat(DiagnosticText.masked(null)).isEqualTo("<absent>");
+            assertThat(SensitiveDiagnostics.maskPan("")).isEqualTo("[text len=0]");
+            assertThat(DiagnosticText.masked("")).isEmpty();
+        }
     }
 
     @Nested

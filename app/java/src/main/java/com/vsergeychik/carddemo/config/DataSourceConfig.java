@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.config;
 
 import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -12,6 +13,7 @@ import javax.sql.DataSource;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -410,6 +412,40 @@ public class DataSourceConfig {
     @Bean
     public JdbcTemplate jdbcTemplate(DataSource dataSource) {
         return new JdbcTemplate(dataSource);
+    }
+
+    /**
+     * The one record-image representation every dataset read, write and comparison operand uses,
+     * resolved from {@value RecordImageForm#FORM_PROPERTY}.
+     *
+     * <h2>Why this is a bean and not a constant</h2>
+     * <p>{@link DatasetRelation} settles that a dataset is a relation whose column
+     * {@value DatasetRelation#RECORD_IMAGE_COLUMN_INDEX} carries the whole record image. It does not, and
+     * cannot, settle what JDBC type that column has: a gateway that surfaces a KSDS as a character
+     * column and one that surfaces it as a binary column are both real, and which of them this
+     * deployment talks to is a property of its driver. The driver is a deployment-time input - the prompt
+     * names JDBC to the existing VSAM backend and no driver, and production connectivity is not
+     * reachable from this build (residual risk R-E) - so the representation is configuration.
+     *
+     * <p>Publishing it as a bean is what makes it <em>one</em> decision. The three repositories, the two
+     * statement writers and the date-parameter reader inject this instance; none of them chooses
+     * {@code getString} or {@code getBytes} for itself, and none carries a fallback from one to the
+     * other. A fallback is exactly how the card file came to read bytes from a column it wrote
+     * characters to.
+     *
+     * <p>The placeholder is bare, with no default. A deployment that never stated its representation
+     * fails here, naming the key, rather than starting and letting its driver choose a code-page
+     * conversion for every record - the same reasoning that leaves {@code carddemo.charset.dataset}
+     * without a default.
+     *
+     * @param configured the configured representation name, {@code CHARACTER} or {@code BINARY}
+     * @return the resolved representation
+     * @throws IllegalArgumentException if the configured value names no representation
+     */
+    @Bean(RecordImageForm.FORM_BEAN_NAME)
+    public RecordImageForm carddemoRecordImageForm(
+            @Value("${" + RecordImageForm.FORM_PROPERTY + "}") String configured) {
+        return RecordImageForm.parse(configured);
     }
 
     /**

@@ -163,6 +163,10 @@ public final class SensitiveDiagnostics {
      * rendering of a different length would misreport the record's shape - which is the one thing a
      * fixed-width diagnostic still needs to be right about.
      *
+     * <p>The four revealed characters are control-character escaped, so a card key that holds CR or LF -
+     * which {@code CARD-NUM PIC X(16)} permits and no repository here rejects - cannot forge a second log
+     * line out of the part of itself the mask leaves visible (CWE-117).
+     *
      * @param pan the stored card number image, or {@code null}
      * @return the masked rendering, {@value #ABSENT} when {@code pan} is {@code null}, never
      *         {@code null} itself
@@ -189,7 +193,8 @@ public final class SensitiveDiagnostics {
      *
      * <p>The same treatment as a card number, deliberately. An account identifier is not a payment
      * credential, but it is what links a masked record to a person, so disclosing it in full would
-     * undo the rest of this policy.
+     * undo the rest of this policy. The revealed tail is control-character escaped for the same reason it
+     * is on a card number, since an identifier read out of a {@code PIC X} span can hold anything.
      *
      * @param identifier the stored identifier image, or {@code null}
      * @return the masked rendering, {@value #ABSENT} when {@code identifier} is {@code null}
@@ -262,6 +267,26 @@ public final class SensitiveDiagnostics {
      * <p>A value at or below the revealed length is masked <strong>entirely</strong> rather than
      * disclosed in full: revealing four of four characters would disclose the whole field, which is the
      * opposite of the intent, and a short value here means the field was not what the copybook declares.
+     *
+     * <p>The surviving characters are escaped by {@link DiagnosticText#singleLine(String)} before they
+     * are appended, and that is not decoration. {@code CARD-NUM} is {@code PIC X(16)} and
+     * {@code XREF-CARD-NUM} is {@code PIC X(16)}: alphanumeric pictures, which hold whatever bytes the
+     * dataset holds, and neither the repositories nor these record types validate them as digits -
+     * deliberately, because rejecting a stored card key would be a behaviour change the COBOL never
+     * makes. A carriage return or line feed sitting in the last four bytes therefore reaches this method,
+     * and appending it raw would let the stored value append a log line of its own: a forged entry that a
+     * reader cannot distinguish from a real one (CWE-117). Masking removes control characters from every
+     * position it covers, but the revealed tail is by definition not covered, so the escape is what makes
+     * the guarantee hold for the whole rendering rather than for most of it.
+     *
+     * <p>The mask itself is unchanged in width: exactly {@code length - }{@value
+     * #REVEALED_TRAILING_DIGITS} mask characters, so the rendering still reports the field's stored
+     * width, which is the one shape fact a fixed-width diagnostic has to keep. An escaped control
+     * character does lengthen the visible tail - a line feed becomes the five characters {@code X'0A'} -
+     * and that is the correct trade: the escape is lossless, so the diagnostic still says exactly which
+     * byte was there, and it is unambiguous, because {@code X'0A'} contains no control character to
+     * escape in turn. {@link DiagnosticText#masked(String)} makes the same trade, and these two must not
+     * disagree about it - one policy rendered two ways is how a reviewer ends up auditing each call site.
      */
     private static String maskTrailing(String value) {
         if (value == null) {
@@ -275,7 +300,7 @@ public final class SensitiveDiagnostics {
             return String.valueOf(MASK_CHARACTER).repeat(length);
         }
         return String.valueOf(MASK_CHARACTER).repeat(length - REVEALED_TRAILING_DIGITS)
-                + value.substring(length - REVEALED_TRAILING_DIGITS);
+                + DiagnosticText.singleLine(value.substring(length - REVEALED_TRAILING_DIGITS));
     }
 
     /**

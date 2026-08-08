@@ -2,8 +2,10 @@ package com.vsergeychik.carddemo.statement;
 
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
@@ -1185,6 +1187,18 @@ public class StatementTextWriter {
     private final JdbcTemplate jdbcTemplate;
 
     /**
+     * The one representation this writer's record image crosses JDBC in.
+     *
+     * <p>Injected rather than decided here. This writer bound bytes and the account, cross-reference and
+     * date-parameter access of the same deployment read characters - which cannot both be right about one
+     * column, and neither would fail if it were wrong. The argument for bytes was sound in isolation: the
+     * code page was already applied when the line area encoded the image, so binding the bytes transmits
+     * exactly what the dataset should contain. What was missing was that the same argument had to be made
+     * once, for the deployment, rather than separately by each class.
+     */
+    private final RecordImageForm recordImageForm;
+
+    /**
      * The fixed-width codec, constructed over the injected dataset {@link Charset}.
      *
      * <p>Immutable and holds only that charset, so sharing one across every handle is safe. Every
@@ -1250,10 +1264,15 @@ public class StatementTextWriter {
     public StatementTextWriter(
             JdbcTemplate jdbcTemplate,
             @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
-            DatasetBindings datasetBindings) {
+            DatasetBindings datasetBindings,
+            RecordImageForm recordImageForm) {
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required to "
                 + "write the " + DD_NAME + " dataset; the data-source configuration declares the "
                 + "single instance this module shares");
+        this.recordImageForm = Objects.requireNonNull(recordImageForm, "A record-image representation is "
+                + "required: whether this deployment's driver takes a record image as characters or as "
+                + "bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided per "
+                + "writer");
         Objects.requireNonNull(datasetCharset, "A dataset charset is required: a fixed-width "
                 + "mainframe record is bytes in a specific code page, so the code page is injected "
                 + "explicitly and is never derived from the platform");
@@ -1261,6 +1280,7 @@ public class StatementTextWriter {
                 + "resolve the " + DD_NAME + " dataset; dataset names are never hard-coded in Java");
 
         this.codec = new FixedWidthCodec(datasetCharset);
+        RecordImageForm.requireSingleByteCodePage(datasetCharset);
         this.binding = datasetBindings.binding(DD_NAME);
         if (binding.recordLength() != RECORD_LENGTH) {
             throw new IllegalStateException("carddemo.datasets." + DD_NAME + " declares "
@@ -1340,7 +1360,8 @@ public class StatementTextWriter {
      *                               as {@link #insertStatement()} describes
      */
     public StatementFile openOutput() {
-        return new StatementFile(new JdbcRecordSink(jdbcTemplate, insertStatement()));
+        return new StatementFile(new JdbcRecordSink(jdbcTemplate, insertStatement(), recordImageForm,
+                codec.charset()));
     }
 
     /**
@@ -1423,11 +1444,12 @@ public class StatementTextWriter {
      * borrowed and returned inside each call, which is why {@link RecordSink#close()} has nothing to
      * do and is left defaulted.
      *
-     * <p>The record image is bound as <strong>bytes</strong>, not as text. The code page decision was
-     * already taken - explicitly, by the injected charset - when the line area encoded the image, so
-     * binding the bytes transmits exactly what the dataset is meant to contain. Binding a string
-     * would hand the driver a second, unstated encoding decision and could silently re-encode every
-     * record (practice B8).
+     * <p>The record image is bound through the injected {@link RecordImageForm} - the module's single
+     * authority on whether a record image crosses JDBC as characters or as bytes. The code page decision
+     * was already taken, explicitly, when the line area encoded the image; what this sink must not do is
+     * take a second decision about the column's JDBC type, because the account, cross-reference and
+     * date-parameter access of the same deployment used to take that decision differently and nothing
+     * reconciled them (practice B8).
      *
      * <p>The row count the statement returns is deliberately not inspected. The COBOL
      * {@code WRITE FD-STMTFILE-REC FROM ...} statements declare no {@code INVALID KEY} and no
@@ -1443,15 +1465,26 @@ public class StatementTextWriter {
         /** The parameterised statement, built once by {@link StatementTextWriter#insertStatement()}. */
         private final String statement;
 
+        /** How the record image crosses JDBC: the deployment's answer, not this sink's. */
+        private final RecordImageForm recordImageForm;
+
+        /** The dataset code page, needed by the representation to bind a character image. */
+        private final Charset charset;
+
         /**
          * Creates the sink.
          *
-         * @param jdbcTemplate the template that issues the insert
-         * @param statement    the parameterised statement
+         * @param jdbcTemplate     the template that issues the insert
+         * @param statement        the parameterised statement
+         * @param recordImageForm  how a record image crosses JDBC in this deployment
+         * @param charset          the dataset code page
          */
-        JdbcRecordSink(JdbcTemplate jdbcTemplate, String statement) {
+        JdbcRecordSink(JdbcTemplate jdbcTemplate, String statement, RecordImageForm recordImageForm,
+                       Charset charset) {
             this.jdbcTemplate = jdbcTemplate;
             this.statement = statement;
+            this.recordImageForm = recordImageForm;
+            this.charset = charset;
         }
 
         /**
@@ -1469,17 +1502,23 @@ public class StatementTextWriter {
          */
         @Override
         public FileStatus.Outcome write(byte[] recordImage) {
-            PreparedStatementSetter binder = parameters -> parameters.setBytes(1, recordImage);
+            PreparedStatementSetter binder = parameters ->
+                    recordImageForm.bindImage(parameters, 1, recordImage, charset);
             try {
                 jdbcTemplate.update(statement, binder);
                 return FileStatus.Outcome.OK;
             } catch (DataAccessException rejected) {
-                // The cause is logged here because the outcome that travels back to the caller is
-                // deliberately coarse - the COBOL guard chain has a single WHEN OTHER arm - and
-                // discarding the reason would leave a production abend undiagnosable.
+                // The reason is logged because the outcome travelling back to the caller is deliberately
+                // coarse - the COBOL guard chain has a single WHEN OTHER arm - and discarding it would
+                // leave a production abend undiagnosable. What is logged is the backend's SQLSTATE, vendor
+                // code and exception type; the exception itself is not, because a driver's message is prose
+                // it composed around the record it refused, and a statement record carries a customer's
+                // identity and their transactions (CWE-532), in text a control character could split into
+                // a second log entry (CWE-117).
                 LOG.error("Rejected write of a " + RECORD_LENGTH + "-byte " + DD_NAME
-                        + " record; reporting FILE STATUS outcome "
-                        + FileStatus.Outcome.OTHER.name() + " to the caller", rejected);
+                        + " record - " + BackendDiagnostic.of(rejected).describe()
+                        + "; reporting FILE STATUS outcome "
+                        + FileStatus.Outcome.OTHER.name() + " to the caller");
                 return FileStatus.Outcome.OTHER;
             }
         }

@@ -15,6 +15,7 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.transaction.DateParmReader.DateParm;
 import com.vsergeychik.carddemo.transaction.DateParmReader.ReadResult;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -121,8 +122,14 @@ class DateParmReaderTest {
      *                     the template yield no result object at all
      */
     private static void stubRows(JdbcTemplate jdbcTemplate, List<String> rows) {
-        when(jdbcTemplate.query(eq(SELECT_SQL), ArgumentMatchers.<RowMapper<String>>any()))
-                .thenReturn(rows);
+        // The row mapper now yields the stored BYTES, because the record-image representation - not this
+        // reader - decides whether the column is read as characters or as bytes. The fixture rows stay
+        // text here, where they are legible, and are encoded in the same code page the reader is given.
+        List<byte[]> images = rows == null
+                ? null
+                : rows.stream().map(row -> row == null ? null : row.getBytes(ASCII)).toList();
+        when(jdbcTemplate.query(eq(SELECT_SQL), ArgumentMatchers.<RowMapper<byte[]>>any()))
+                .thenReturn(images);
     }
 
     /**
@@ -133,7 +140,7 @@ class DateParmReaderTest {
      */
     private static DateParmReader reader(JdbcTemplate jdbcTemplate) {
         stubDescribe(jdbcTemplate);
-        return new DateParmReader(jdbcTemplate, validBindings(), ASCII);
+        return new DateParmReader(jdbcTemplate, validBindings(), ASCII, RecordImageForm.CHARACTER);
     }
 
     // =================================================================================================
@@ -171,13 +178,13 @@ class DateParmReaderTest {
             DatasetBindings catalogue = validBindings();
 
             assertThatNullPointerException()
-                    .isThrownBy(() -> new DateParmReader(null, catalogue, ASCII))
+                    .isThrownBy(() -> new DateParmReader(null, catalogue, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("JdbcTemplate is required");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), null, ASCII))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), null, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("carddemo.datasets");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), catalogue, null))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), catalogue, null, RecordImageForm.CHARACTER))
                     .withMessageContaining("code page is stated explicitly");
         }
 
@@ -187,7 +194,7 @@ class DateParmReaderTest {
             DatasetBindings wrong = bindings(DSNAME, 79);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), wrong, ASCII))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), wrong, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("record length of 79");
         }
 
@@ -198,7 +205,7 @@ class DateParmReaderTest {
             DatasetBindings absent = bindings(dsname, DateParmReader.RECORD_LENGTH);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), absent, ASCII))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), absent, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("carddemo.datasets." + DateParmReader.DD_NAME);
         }
 
@@ -209,7 +216,7 @@ class DateParmReaderTest {
             DatasetBindings malformed = bindings(dsname, DateParmReader.RECORD_LENGTH);
 
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), malformed, ASCII))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), malformed, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
         }
 
@@ -250,7 +257,7 @@ class DateParmReaderTest {
             // would then hand the job an end of file it should have seen as a failed open. This probe
             // names the dataset, so an absent one fails here - which is what an OPEN INPUT reports.
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
             ResultSetMetaData metaData = mock(ResultSetMetaData.class);
             when(metaData.getColumnCount()).thenReturn(1);
             when(metaData.getColumnName(1)).thenReturn(COLUMN);
@@ -268,7 +275,7 @@ class DateParmReaderTest {
         @DisplayName("a relation with no record-image column is unusable, not a successful open")
         void aRelationWithNoImageColumnIsUnusable() throws SQLException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
             ResultSetMetaData metaData = mock(ResultSetMetaData.class);
             when(metaData.getColumnCount()).thenReturn(0);
             ResultSet described = mock(ResultSet.class);
@@ -287,7 +294,7 @@ class DateParmReaderTest {
         @DisplayName("a driver that supplies no metadata at all is unusable rather than successful")
         void noMetadataIsUnusable() throws SQLException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
             ResultSet described = mock(ResultSet.class);
             when(described.getMetaData()).thenReturn(null);
             when(jdbc.query(eq(DESCRIBE_SQL), ArgumentMatchers.<ResultSetExtractor<String>>any()))
@@ -304,7 +311,7 @@ class DateParmReaderTest {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
                     .thenReturn(null);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
 
             assertThat(reader.open()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
             assertThat(reader.close()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
@@ -317,7 +324,7 @@ class DateParmReaderTest {
             when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
                     .thenThrow(new DataAccessResourceFailureException("gone",
                             new SQLException("gone", "08006", 17_002)));
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
 
             assertThat(reader.open()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
             assertThat(reader.close()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
@@ -423,6 +430,58 @@ class DateParmReaderTest {
         }
 
         @Test
+        @DisplayName("a stored row that is not 80 bytes is WHEN OTHER, never a padded date range")
+        void aRowOfTheWrongWidthIsAnIoDefect() {
+            // Finding BD-05. Padded, this row would have decoded to the end date '2022-07   ' - a real
+            // range, three weeks short of the one the operator asked for - and the job would have reported
+            // it successfully with nothing anywhere saying the parameter had been altered. Reported on the
+            // WHEN OTHER arm instead, which is where CBTRN03C displays 'ERROR READING DATEPARM FILE',
+            // renders the status and abends.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            DateParmReader reader = reader(jdbc);
+            stubRows(jdbc, List.of("2022-01-01 2022-07"));
+
+            ReadResult result = reader.read();
+
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.isFound()).isFalse();
+            assertThat(result.isEndOfFile()).isFalse();
+            assertThat(result.dateParm()).isEmpty();
+            assertThat(result.status()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
+            assertThat(result.applResult()).isEqualTo(DateParmReader.APPL_RESULT_FATAL);
+            assertThat(result.diagnostic())
+                    .as("no backend refusal occurred; the row itself is the defect")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("an over-wide stored row is WHEN OTHER too, so the width check is symmetric")
+        void anOverWideStoredRowIsAlsoAnIoDefect() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            DateParmReader reader = reader(jdbc);
+            stubRows(jdbc, List.of(RECORD + " "));
+
+            ReadResult result = reader.read();
+
+            assertThat(result.isOther()).isTrue();
+            assertThat(result.status()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("a row of exactly 80 bytes still decodes, so the check is a width check")
+        void aRowOfExactlyEightyBytesStillDecodes() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            DateParmReader reader = reader(jdbc);
+            stubRows(jdbc, List.of(RECORD));
+
+            ReadResult result = reader.read();
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(result.dateParm().orElseThrow().receiverImage())
+                    .isEqualTo("2022-01-01 2022-12-31");
+        }
+
+        @Test
         @DisplayName("only the first record is read: CBTRN03C performs 0550-DATEPARM-READ exactly once")
         void onlyTheFirstRecordIsRead() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
@@ -453,13 +512,37 @@ class DateParmReaderTest {
         }
 
         @Test
-        @DisplayName("a short image is widened to the declared width before it is decoded")
-        void aShortImageIsWidened() {
+        @DisplayName("a short image is refused rather than padded into a different reporting range")
+        void aShortImageIsRefused() {
+            // The receiver move takes the first 21 bytes, so padding a short row is not the harmless
+            // repair it looks like: a row truncated inside WS-END-DATE pads into a range the dataset
+            // never held, and decodes without complaint. The 21-byte image here is the extreme case -
+            // exactly the receiver - and it is refused like any other wrong width.
             DateParmReader reader = reader(mock(JdbcTemplate.class));
 
-            DateParm range = reader.decode("2022-01-01 2022-12-31");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> reader.decode("2022-01-01 2022-12-31"))
+                    .withMessageContaining("declared PIC X(" + DateParmReader.RECORD_LENGTH + ")")
+                    .withMessageContaining("stored record width in bytes = 21")
+                    .withMessageContaining("80-into-21 move");
+        }
 
-            assertThat(range.endDate()).isEqualTo("2022-12-31");
+        @Test
+        @DisplayName("a row truncated inside the end date is refused, not turned into another range")
+        void aRowTruncatedInsideTheEndDateIsRefused() {
+            // The case the finding names. Padded, '2022-01-01 2022-07-06' truncated at 17 bytes would
+            // have decoded to the end date '2022-07   ' - a real range, three weeks short, reported
+            // successfully.
+            DateParmReader reader = reader(mock(JdbcTemplate.class));
+            String truncated = "2022-01-01 2022-07";
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> reader.decode(truncated))
+                    .withMessageContaining("stored record width in bytes = 18");
+            // And the same range at its full declared width decodes exactly as it always did, so the
+            // check is a width check and not a refusal to read.
+            String full = truncated + "-06" + " ".repeat(DateParmReader.RECORD_LENGTH - 21);
+            assertThat(reader.decode(full).endDate()).isEqualTo("2022-07-06");
         }
 
         @Test
@@ -468,7 +551,8 @@ class DateParmReaderTest {
             DateParmReader reader = reader(mock(JdbcTemplate.class));
 
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> reader.decode(RECORD + " "));
+                    .isThrownBy(() -> reader.decode(RECORD + " "))
+                    .withMessageContaining("stored record width in bytes = 81");
         }
 
         @Test
@@ -559,9 +643,16 @@ class DateParmReaderTest {
         @Test
         @DisplayName("a status the EVALUATE names explicitly cannot be classified as WHEN OTHER")
         void anExplicitlyNamedStatusIsNotWhenOther() {
+            // Both of them: the EVALUATE names '00' and '10', and neither may arrive dressed as the
+            // catch-all, or a caller switching on the outcome would take a different arm from one
+            // switching on the status.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new ReadResult(FileStatus.OK, Outcome.OTHER, Optional.empty(),
                             Optional.empty()))
+                    .withMessageContaining("cannot be classified as WHEN OTHER");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new ReadResult(FileStatus.END_OF_FILE, Outcome.OTHER,
+                            Optional.empty(), Optional.empty()))
                     .withMessageContaining("cannot be classified as WHEN OTHER");
         }
 

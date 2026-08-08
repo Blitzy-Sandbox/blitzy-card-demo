@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.zaxxer.hikari.HikariDataSource;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
@@ -203,6 +204,16 @@ class DataSourceConfigTest {
     private static final String IN_MEMORY_URL_PROPERTY =
             "spring.datasource.url=jdbc:h2:mem:carddemo_datasourceconfigtest;DB_CLOSE_DELAY=-1";
 
+    /**
+     * The record-image representation, supplied inline by the no-document slices.
+     *
+     * <p>{@value RecordImageForm#FORM_PROPERTY} carries no default, so a slice with no configuration
+     * document has to state it or no bean graph can be built at all - which is the property
+     * {@link RecordImageRepresentation} asserts directly.
+     */
+    private static final String RECORD_IMAGE_FORM_PROPERTY =
+            RecordImageForm.FORM_PROPERTY + "=CHARACTER";
+
     /** JUnit factory for the twenty-seven configured DD names. */
     static Stream<String> allDatasetKeys() {
         return ALL_DATASET_KEYS.stream();
@@ -244,6 +255,7 @@ class DataSourceConfigTest {
     private ApplicationContextRunner withInlinePropertiesOnly(String... inlineProperties) {
         return new ApplicationContextRunner()
                 .withUserConfiguration(DataSourceConfig.class)
+                .withPropertyValues(RECORD_IMAGE_FORM_PROPERTY)
                 .withPropertyValues(inlineProperties);
     }
 
@@ -1227,7 +1239,7 @@ class DataSourceConfigTest {
      * and stop the context from starting at all.
      */
     @Nested
-    @DisplayName("The negative contract - five beans, no transaction manager, and nothing "
+    @DisplayName("The negative contract - six beans, no transaction manager, and nothing "
             + "schema-shaped")
     class NegativeContract {
 
@@ -1238,12 +1250,12 @@ class DataSourceConfigTest {
          */
         private static final List<Class<?>> PERMITTED_BEAN_TYPES = List.of(
                 DataSourceConfig.class, HikariDataSource.class, JdbcTemplate.class,
-                DataSourceProperties.class, DatasetBindings.class);
+                DataSourceProperties.class, DatasetBindings.class, RecordImageForm.class);
 
         @Test
-        @DisplayName("the configuration contributes exactly five beans, and each is one of the five "
+        @DisplayName("the configuration contributes exactly six beans, and each is one of the six "
                 + "it is answerable for")
-        void theConfigurationContributesExactlyFiveBeans() {
+        void theConfigurationContributesExactlySixBeans() {
             shippedDefaultProfile().run(context -> {
                 List<String> contributed = new ArrayList<>();
                 for (String beanName : context.getBeanDefinitionNames()) {
@@ -1265,6 +1277,64 @@ class DataSourceConfigTest {
                         .containsExactlyInAnyOrderElementsOf(PERMITTED_BEAN_TYPES);
                 assertThat(contributed).hasSameSizeAs(PERMITTED_BEAN_TYPES);
             });
+        }
+
+        @Test
+        @DisplayName("the sixth bean is the record-image representation, and it is the only one of its "
+                + "kind")
+        void theRecordImageRepresentationIsTheSixthAndOnlyOne() {
+            // One authority means one bean. Two definitions would let two repositories be injected with
+            // different representations of the same column, which is the divergence this bean exists to
+            // end - so the count is asserted, not just the presence.
+            shippedDefaultProfile().run(context -> {
+                assertThat(context.getBeanNamesForType(RecordImageForm.class))
+                        .containsExactly(RecordImageForm.FORM_BEAN_NAME);
+                assertThat(context.getBean(RecordImageForm.class))
+                        .isSameAs(RecordImageForm.CHARACTER);
+            });
+        }
+
+        @Test
+        @DisplayName("the shipped test profile states the representation too, so neither profile "
+                + "defaults it")
+        void theTestProfileStatesTheRepresentationAsWell() {
+            shippedTestProfile().run(context ->
+                    assertThat(context.getBean(RecordImageForm.class))
+                            .isSameAs(RecordImageForm.CHARACTER));
+        }
+
+        @Test
+        @DisplayName("with the representation unstated the context refuses to start, naming the key")
+        void anUnstatedRepresentationRefusesStartup() {
+            // The whole reason the key carries no default: a deployment that never said how its driver
+            // presents a record image must not start and then hand every record to a conversion nobody
+            // chose. Asserted against the no-document slice, because that is the only place where the
+            // absence is reachable - both shipped profiles state it.
+            new ApplicationContextRunner()
+                    .withUserConfiguration(DataSourceConfig.class)
+                    .withPropertyValues(Stream.concat(minimalValidCatalogue(),
+                            Stream.of(IN_MEMORY_URL_PROPERTY)).toArray(String[]::new))
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @ParameterizedTest(name = "carddemo.record-image.form={0} is refused")
+        @ValueSource(strings = { "CHAR", "BINARY_LARGE_OBJECT", "TEXT", "utf8", "1" })
+        @DisplayName("a representation the module does not implement is refused by name, never "
+                + "defaulted")
+        void anUnknownRepresentationRefusesStartup(String configured) {
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    RecordImageForm.FORM_PROPERTY + "=" + configured)
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @ParameterizedTest(name = "carddemo.record-image.form={0} resolves")
+        @ValueSource(strings = { "CHARACTER", "BINARY", "character", " binary ", "Character" })
+        @DisplayName("both representations resolve, case-insensitively and whitespace-tolerantly")
+        void bothRepresentationsResolve(String configured) {
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    RecordImageForm.FORM_PROPERTY + "=" + configured)
+                    .run(context -> assertThat(context.getBean(RecordImageForm.class))
+                            .isSameAs(RecordImageForm.parse(configured)));
         }
 
         @Test

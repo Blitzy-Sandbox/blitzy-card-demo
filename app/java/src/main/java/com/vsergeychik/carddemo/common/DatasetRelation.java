@@ -659,15 +659,30 @@ public final class DatasetRelation {
      * and putting one where the other belongs produces a diagnostic that looks authoritative and means
      * nothing.
      *
+     * <h2>What is deliberately NOT carried: the driver's message text</h2>
+     * <p>The three values above are <em>codes</em>. A driver's message text is prose, and prose composed
+     * by the backend around the values it refused - which is to say around a record image. A rejected
+     * card operation's message can read {@code value '4444333322221111' rejected}, so a diagnostic that
+     * carried the text would put a primary account number into every log line, exception message and
+     * assertion failure that rendered it (CWE-532), and into a log line that a control character in the
+     * same text could split in two (CWE-117). This record once carried it, and being a {@code record}
+     * meant the generated {@link #toString()} published it the first time anything rendered a refusal.
+     *
+     * <p>So the text is dropped where the diagnostic is read, not merely omitted from
+     * {@link #describe()}: there is no accessor, no component and nothing for a future call site to
+     * reach for. What survives - {@code SQLSTATE}, vendor code, exception type - is what distinguishes
+     * "the dataset is not there" from "the credentials are wrong" from "the connection dropped", which
+     * is the whole of what an operator needs and none of what a cardholder would object to. A deployment
+     * that needs the driver's own words has them in the driver's own log, which is access-controlled as
+     * an application log is not.
+     *
      * @param sqlState     the {@code SQLSTATE} the driver reported, or {@code null} if it reported none
      * @param vendorCode   the driver's own error number, or {@code 0} if it reported none
      * @param exceptionType the fully qualified type of the exception the driver or framework raised
-     * @param message      the exception's message, or {@code null}
      */
     public record BackendDiagnostic(String sqlState,
                                     int vendorCode,
-                                    String exceptionType,
-                                    String message) {
+                                    String exceptionType) {
 
         /** The {@code SQLSTATE} class of a connection exception. */
         public static final String CONNECTION_EXCEPTION_CLASS = "08";
@@ -702,6 +717,9 @@ public final class DatasetRelation {
          * because knowing which layer refused is useful, but it is reported <em>as well as</em> the
          * driver's own words rather than instead of them.
          *
+         * <p>The failure's message is read from neither the wrapper nor the {@link SQLException}: see the
+         * note on this record about why the driver's message text is not carried at all.
+         *
          * @param failure the exception raised
          * @return the diagnostic, with a {@code null} {@code SQLSTATE} when no {@link SQLException} is in
          *         the chain
@@ -713,8 +731,7 @@ public final class DatasetRelation {
             return new BackendDiagnostic(
                     reported == null ? null : reported.getSQLState(),
                     reported == null ? 0 : reported.getErrorCode(),
-                    failure.getClass().getName(),
-                    failure.getMessage());
+                    failure.getClass().getName());
         }
 
         /** The first {@link SQLException} in a cause chain, or {@code null} when there is none. */

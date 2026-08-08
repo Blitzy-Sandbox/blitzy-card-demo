@@ -297,6 +297,23 @@ public final class FileStatus {
      */
     public static final int LENGERR = 22;
 
+    /**
+     * The CICS {@code RESP2} value meaning "no reason code": {@code 0}.
+     *
+     * <p>{@code RESP2} is a <em>reason</em> code that qualifies a {@code RESP}, and CICS sets it to zero
+     * where a condition has no further reason. Every online program in this estate captures both -
+     * {@code RESP(WS-RESP-CD) RESP2(WS-REAS-CD)} - and renders them side by side, so
+     * {@code app/cbl/COACTUPC.cbl:3722-3729} strings {@code ERROR-RESP} and {@code ERROR-RESP2} into one
+     * message and {@code app/cbl/COCRDUPC.cbl:1410} does the same.
+     *
+     * <p>Named so that a repository has something honest to report when the backend supplied no reason
+     * code, which in this migration is the usual case: a driver's own error number is a vendor's number
+     * and putting it where a CICS reason code belongs yields a screen that looks authoritative and means
+     * nothing. Reporting zero says "the condition had no further reason", which is a true statement about
+     * what is known.
+     */
+    public static final int NO_REASON_CODE = 0;
+
     // ---------------------------------------------------------------------------------------
     // APPL-RESULT condition values
     //

@@ -1,10 +1,12 @@
 package com.vsergeychik.carddemo.transaction;
 
+import com.vsergeychik.carddemo.common.DatasetObservation;
 import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
@@ -417,6 +419,17 @@ public class DateParmReader {
     private final FixedWidthCodec codec;
 
     /**
+     * The one representation this reader's row transfer uses.
+     *
+     * <p>Injected rather than chosen here. This reader used {@code getString}, the statement writers of the
+     * same deployment bound {@code setBytes}, and nothing reconciled the two. The date-parameter record is
+     * the least sensitive record in the estate and the most consequential to misread: its 21 leading bytes
+     * are the report's date range, so a conversion that shifted or substituted one byte would produce a
+     * report over a different period, with no error anywhere to say so.
+     */
+    private final RecordImageForm recordImageForm;
+
+    /**
      * The dataset as this module reaches it: the validated name, its delimited rendering, and the
      * statements composed over it.
      *
@@ -468,6 +481,8 @@ public class DateParmReader {
      * @param datasetBindings the DD-name-keyed dataset catalogue bound from {@code carddemo.datasets}
      * @param datasetCharset the active dataset code page, selected by bean name so the choice is
      *                       explicit at the injection point
+     * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
+     *                        {@value RecordImageForm#FORM_PROPERTY}
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if no binding is configured for {@link #DD_NAME}, if that binding
      *                               declares a record length other than {@link #RECORD_LENGTH}, or if
@@ -476,7 +491,8 @@ public class DateParmReader {
     public DateParmReader(
             JdbcTemplate jdbcTemplate,
             DatasetBindings datasetBindings,
-            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset) {
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
+            RecordImageForm recordImageForm) {
 
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required: the "
                 + "report date range is read from the " + DD_NAME + " dataset through the module's "
@@ -486,6 +502,11 @@ public class DateParmReader {
         this.codec = new FixedWidthCodec(Objects.requireNonNull(datasetCharset, "A dataset charset is "
                 + "required: a fixed-width mainframe record is bytes in a specific code page, so the "
                 + "code page is stated explicitly and never taken from the platform"));
+        this.recordImageForm = Objects.requireNonNull(recordImageForm, "A record-image representation is "
+                + "required: whether this deployment's driver presents a record image as characters or as "
+                + "bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided per "
+                + "reader");
+        RecordImageForm.requireSingleByteCodePage(datasetCharset);
 
         DatasetBinding binding = datasetBindings.binding(DD_NAME);
         if (binding.recordLength() != RECORD_LENGTH) {
@@ -645,7 +666,11 @@ public class DateParmReader {
      *
      * <p>Logged: what was attempted and the {@code SQLSTATE}, vendor code and exception type the driver
      * reported. Not logged: the record image - the date-parameter record is innocuous, but the rule is
-     * the module's and is applied uniformly rather than judged per dataset.
+     * the module's and is applied uniformly rather than judged per dataset - and not the exception
+     * either. A driver's message is prose it composed around the values it refused, so handing the
+     * {@link Throwable} to the logger emits that text and its whole cause chain verbatim (CWE-532) in a
+     * form a control character can split into a forged entry (CWE-117). Sanitising the summary and
+     * attaching the raw exception beside it sanitises nothing.
      *
      * @param refusal the exception raised
      * @param attempt what was being attempted, phrased to complete "Could not ..."
@@ -654,7 +679,7 @@ public class DateParmReader {
     private static BackendDiagnostic logRefusal(Throwable refusal, String attempt) {
         BackendDiagnostic diagnostic = BackendDiagnostic.of(refusal);
         LOG.error("Could not " + attempt + " - " + diagnostic.describe() + "; reporting file status "
-                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", refusal);
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
         return diagnostic;
     }
 
@@ -687,21 +712,29 @@ public class DateParmReader {
      * is faithful, because the program performs this paragraph once and never resumes from a saved
      * position.
      *
-     * <p>A short row is widened with spaces before decoding, because the absent bytes could only be
-     * trailing {@code FILLER} and a {@code FILLER} carrying no literal holds spaces - the same
-     * faithful repair the codec applies to the one under-width fixture in this repository. A row
-     * <em>wider</em> than the record is a contract violation rather than an I/O outcome and is thrown,
-     * for the reason set out under "Statuses model I/O outcomes" on this class.
+     * <p><strong>A row that is not exactly {@link #RECORD_LENGTH} bytes is reported, not repaired.</strong>
+     * The record is fixed-length, so widening a short one with spaces looks like the faithful repair -
+     * the absent bytes could only be trailing {@code FILLER}, and a {@code FILLER} carrying no literal
+     * holds spaces. What makes that reasoning wrong <em>here</em> is what the record is: the very next
+     * thing done to it is the deliberate 80-into-21 move of {@code READ ... INTO WS-DATEPARM-RECORD},
+     * which takes the first 21 bytes as the range. A row truncated inside {@code WS-END-DATE} pads to a
+     * different end date - {@code '2022-07-06'} becomes {@code '2022-07   '} - and the job then reports a
+     * different range, successfully and silently, with no operator anywhere told that the parameter it
+     * ran on was not the parameter it was given. The report is wrong and nothing says so.
+     *
+     * <p>So the width is required first. {@code app/cbl/CBTRN03C.cbl:L87-L88} declares
+     * {@code 01 FD-DATEPARM-REC PIC X(80)} and {@code app/cbl/CORPT00C.cbl:L117-L121} emits exactly 80
+     * bytes into the queue this dataset is fed from, so a row of any other width can only mean the
+     * backend is not serving this layout. It is reported on the {@code WHEN OTHER} arm, which is where
+     * {@code CBTRN03C} displays {@code 'ERROR READING DATEPARM FILE'}, renders the status and abends -
+     * exactly the path a parameter it cannot trust should take.
      *
      * @return the discriminated outcome; never {@code null}
-     * @throws IllegalArgumentException if the stored row is wider than {@link #RECORD_LENGTH} bytes,
-     *                                  meaning the driver is not presenting the record this reader is
-     *                                  configured for
      */
     public ReadResult read() {
-        List<String> rows;
+        List<byte[]> rows;
         try {
-            RowMapper<String> recordImageMapper = this::mapRecordImage;
+            RowMapper<byte[]> recordImageMapper = this::mapRecordImage;
             rows = jdbcTemplate.query(relation.selectAll(), recordImageMapper);
         } catch (DataAccessException translated) {
             // WHEN OTHER. An I/O failure, reported as a status so the caller's own guard chain decides
@@ -715,7 +748,7 @@ public class DateParmReader {
             // body empty. This is real legacy behaviour and is reported, never substituted.
             return ReadResult.endOfFile();
         }
-        String recordImage = rows.get(0);
+        byte[] recordImage = rows.get(0);
         if (recordImage == null) {
             // A row whose record image is absent is not a readable 80-byte record. It is an I/O-level
             // defect rather than an end of file - there IS a record, it just cannot be read - so it is
@@ -724,6 +757,18 @@ public class DateParmReader {
             LOG.error("The " + DD_NAME + " dataset presented a row with no record image at column "
                     + "position " + RECORD_IMAGE_COLUMN_INDEX + "; reporting file status "
                     + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
+            return ReadResult.other(PERMANENT_ERROR_STATUS);
+        }
+        if (recordImage.length != RECORD_LENGTH) {
+            // WHEN OTHER. Reported rather than padded, because the 80-into-21 receiver move that follows
+            // would turn a truncated row into a different date range and the report would come out wrong
+            // with nothing said. The observed width is named in the log line, labelled as what it is.
+            LOG.error("The " + DD_NAME + " dataset presented a row whose "
+                    + DatasetObservation.recordWidth(recordImage.length).describe() + ", but "
+                    + "FD-DATEPARM-REC is declared PIC X(" + RECORD_LENGTH + ") by "
+                    + "app/cbl/CBTRN03C.cbl:L87-L88; reporting file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " rather than padding the row "
+                    + "into a date range the dataset does not contain");
             return ReadResult.other(PERMANENT_ERROR_STATUS);
         }
         // WHEN '00'.
@@ -743,8 +788,8 @@ public class DateParmReader {
      * @return the row's record image, which may be {@code null} if the column holds no value
      * @throws SQLException if the driver cannot supply the column
      */
-    private String mapRecordImage(ResultSet resultSet, int rowNumber) throws SQLException {
-        return resultSet.getString(RECORD_IMAGE_COLUMN_INDEX);
+    private byte[] mapRecordImage(ResultSet resultSet, int rowNumber) throws SQLException {
+        return recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX, codec.charset());
     }
 
     // =================================================================================================
@@ -762,10 +807,11 @@ public class DateParmReader {
      * {@link #decode(byte[])}, so a caller that already has the row as text does not have to choose a
      * code page of its own - there is one code page for the data layer and this class holds it.
      *
-     * @param recordImage the stored record image, up to {@link #RECORD_LENGTH} characters
+     * @param recordImage the stored record image, exactly {@link #RECORD_LENGTH} characters
      * @return the decoded range; both dates exactly 10 characters, untrimmed
      * @throws NullPointerException     if {@code recordImage} is {@code null}
-     * @throws IllegalArgumentException if {@code recordImage} is wider than {@link #RECORD_LENGTH}
+     * @throws IllegalArgumentException if {@code recordImage} does not encode to exactly
+     *                                  {@link #RECORD_LENGTH} bytes
      */
     public DateParm decode(String recordImage) {
         Objects.requireNonNull(recordImage, "A record image is required to decode the " + DD_NAME
@@ -780,11 +826,12 @@ public class DateParmReader {
      * <p>Three steps, in this order, and each one is the faithful counterpart of something the COBOL
      * does:
      * <ol>
-     *   <li><strong>widen a short row with spaces</strong> to the declared {@link #RECORD_LENGTH}. The
-     *       record is fixed-length on the mainframe, so any absent trailing bytes could only be
-     *       {@code FILLER}, and a {@code FILLER} with no literal holds spaces. An over-long row is
-     *       rejected by the codec rather than truncated, because it means the data and the layout
-     *       disagree;</li>
+     *   <li><strong>require exactly {@link #RECORD_LENGTH} bytes</strong>, in either direction. An
+     *       over-long row means the data and the layout disagree, and a short one is no better here even
+     *       though the absent bytes could only be trailing {@code FILLER}: the next step takes the first
+     *       21 bytes as the date range, so a row truncated inside {@code WS-END-DATE} would pad into a
+     *       <em>different</em> range and decode successfully. A decoder that silently answers a question
+     *       it was not asked is worse than one that declines, so this one declines;</li>
      *   <li><strong>address the record by absolute offset</strong> through the layout whose arithmetic
      *       already proved it is 80 bytes wide (gate G21);</li>
      *   <li><strong>read the three receiver spans untrimmed</strong> and discard bytes 22 to 80, which
@@ -797,16 +844,25 @@ public class DateParmReader {
      * fractional numeric conversion arises here at all (gate G22), and none is performed. The dates are
      * compared as characters by the mainline, and characters are what this returns.
      *
-     * @param recordBytes the stored record bytes, up to {@link #RECORD_LENGTH} of them
+     * @param recordBytes the stored record bytes, exactly {@link #RECORD_LENGTH} of them
      * @return the decoded range; both dates exactly 10 characters, untrimmed
      * @throws NullPointerException     if {@code recordBytes} is {@code null}
-     * @throws IllegalArgumentException if {@code recordBytes} is wider than {@link #RECORD_LENGTH}
+     * @throws IllegalArgumentException if {@code recordBytes} is not exactly {@link #RECORD_LENGTH}
+     *                                  bytes
      */
     public DateParm decode(byte[] recordBytes) {
         Objects.requireNonNull(recordBytes, "Record bytes are required to decode the " + DD_NAME
                 + " record; an absent record is an end-of-file outcome, not a decodable image");
-        byte[] widened = codec.padToDeclaredWidth(recordBytes, RECORD_LENGTH);
-        FixedWidthRecord record = codec.wrap(widened, layout);
+        if (recordBytes.length != RECORD_LENGTH) {
+            throw new IllegalArgumentException("The " + DD_NAME + " record is declared PIC X("
+                    + RECORD_LENGTH + ") at app/cbl/CBTRN03C.cbl:L87-L88 and this image is "
+                    + recordBytes.length + " byte(s). It is not padded to width: the next step is the "
+                    + "80-into-21 move of READ ... INTO WS-DATEPARM-RECORD, so a row truncated inside "
+                    + "WS-END-DATE would pad into a different reporting range and decode without "
+                    + "complaint. " + DatasetObservation.recordWidth(recordBytes.length).describe()
+                    + ".");
+        }
+        FixedWidthRecord record = codec.wrap(recordBytes, layout);
         return new DateParm(
                 codec.readPicX(record, startDateSpan),
                 codec.readPicX(record, separatorSpan),

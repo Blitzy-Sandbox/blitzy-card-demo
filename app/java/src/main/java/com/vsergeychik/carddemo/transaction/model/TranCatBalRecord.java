@@ -1,10 +1,12 @@
 package com.vsergeychik.carddemo.transaction.model;
 
 import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
@@ -1211,19 +1213,64 @@ public final class TranCatBalRecord {
      * precisely when a diagnostic is wanted. It depends on no locale, no time zone and no default
      * charset.
      *
+     * <h4>What it withholds, and why each decision goes the way it does</h4>
+     * Reading raw spans keeps the rendering callable on a corrupt record, but it is not on its own a
+     * reason to publish them. This record is one account's balance for one transaction category: it
+     * carries {@code TRANCAT-ACCT-ID} and, beside it, money. Rendering both put an account holder's
+     * financial position, attributable to that account, into any log line or assertion failure that
+     * touched a {@code TCATBALF} row - and nothing in {@code CBACT04C} or {@code CBTRN02C} requires it,
+     * because COBOL has no {@code toString}. The disclosure was purely an artefact of the target
+     * language, which is the test this module's policy applies (see {@link SensitiveDiagnostics}).
+     *
+     * <ul>
+     *   <li>{@code TRANCAT-ACCT-ID} is <strong>masked</strong> to its last four characters at its full
+     *       stored width, by {@link SensitiveDiagnostics#maskIdentifier(String)}. An account identifier
+     *       is not a credential, but it is what makes the rest of the line attributable to a person, and
+     *       four characters are enough to correlate two log lines about the same row - which is the only
+     *       reason to reveal any of it. The width survives because the mask is the same length as the
+     *       span, so an eleven-byte field that turns out to hold ten is still visible as a defect.</li>
+     *   <li>{@code TRAN-CAT-BAL} is <strong>omitted entirely</strong>, by
+     *       {@link DiagnosticText#omitted()} - not masked, and not reported as a length either. That is
+     *       the stricter of the two treatments and it is the right one: a balance has no
+     *       safely-revealable part, and its width is already stated by {@code PIC S9(9)V99}, so even a
+     *       digit count would disclose the magnitude without telling a reader anything the copybook
+     *       does not. The value stays reachable by name through {@link #tranCatBal()} and
+     *       {@link #tranCatBalImage()}, which is where a parity comparison reads it from.</li>
+     *   <li>{@code TRANCAT-TYPE-CD} and {@code TRANCAT-CD} stay <strong>legible</strong>. A transaction
+     *       type and category identify a kind of activity, not a person, and they are exactly what an
+     *       interest-calculation parity failure is diagnosed from - {@code CBACT04C} selects a
+     *       disclosure-group rate by this pair. They are routed through
+     *       {@link SensitiveDiagnostics#plain(Object)} rather than concatenated raw, because
+     *       {@code TRANCAT-TYPE-CD} is {@code PIC X(02)} and both are read straight out of a dataset: a
+     *       stored carriage return would otherwise append a log line of its own to a rendering this
+     *       method's contract calls safe to log (CWE-117).</li>
+     *   <li>{@code FILLER} is <strong>summarised</strong> rather than printed. It is reserved pad with
+     *       no field semantics, so twenty-two bytes of it would only lengthen the line; but whether it is
+     *       blank still matters, because a {@code FILLER} that is not spaces means the row was written by
+     *       something that did not honour the copybook. {@link SensitiveDiagnostics#describeText(String)}
+     *       reports exactly that distinction and none of the content.</li>
+     * </ul>
+     *
+     * <p>None of this changes a stored byte. {@link #encode()}, {@link #rawImage()},
+     * {@link #fieldImages()} and every per-field accessor return the real values at their declared
+     * widths, because a caller asked for them by name; what is withdrawn here is only disclosure that
+     * happens because something rendered the object.
+     *
      * @return for example
-     *         <code>TRAN-CAT-BAL-RECORD[TRANCAT-ACCT-ID=00000000001, TRANCAT-TYPE-CD=01,
-     *         TRANCAT-CD=0001, TRAN-CAT-BAL=0000000000&#123;,
-     *         FILLER=0000000000000000000000]</code>
+     *         <code>TRAN-CAT-BAL-RECORD[TRANCAT-ACCT-ID=*******0001, TRANCAT-TYPE-CD=01,
+     *         TRANCAT-CD=0001, TRAN-CAT-BAL=&lt;omitted&gt;, FILLER=[blank]]</code>
      */
     @Override
     public String toString() {
         return RECORD_NAME
-                + "[" + TRANCAT_ACCT_ID_NAME + "=" + area.readSpan(TRANCAT_ACCT_ID_SPAN)
-                + ", " + TRANCAT_TYPE_CD_NAME + "=" + area.readSpan(TRANCAT_TYPE_CD_SPAN)
-                + ", " + TRANCAT_CD_NAME + "=" + area.readSpan(TRANCAT_CD_SPAN)
-                + ", " + TRAN_CAT_BAL_NAME + "=" + area.readSpan(TRAN_CAT_BAL_SPAN)
-                + ", FILLER=" + area.readSpan(FILLER_SPAN)
+                + "[" + TRANCAT_ACCT_ID_NAME + "="
+                + SensitiveDiagnostics.maskIdentifier(area.readSpan(TRANCAT_ACCT_ID_SPAN))
+                + ", " + TRANCAT_TYPE_CD_NAME + "="
+                + SensitiveDiagnostics.plain(area.readSpan(TRANCAT_TYPE_CD_SPAN))
+                + ", " + TRANCAT_CD_NAME + "="
+                + SensitiveDiagnostics.plain(area.readSpan(TRANCAT_CD_SPAN))
+                + ", " + TRAN_CAT_BAL_NAME + "=" + DiagnosticText.omitted()
+                + ", FILLER=" + SensitiveDiagnostics.describeText(area.readSpan(FILLER_SPAN))
                 + "]";
     }
 }

@@ -1675,6 +1675,15 @@ public record ParityCase(
         /** The width of the credential span within a {@link #SENSITIVE_DATASET} row. */
         public static final int SENSITIVE_SPAN_LENGTH = 8;
 
+        /**
+         * The declared width of a {@link #SENSITIVE_DATASET} row: {@code 8 + 20 + 20 + 8 + 1 + 23}.
+         *
+         * <p>Held here because it is what tells {@link #maskRecordImage(String, String)} whether the
+         * credential offset can be trusted. An image at this width has its spans where the copybook puts
+         * them; an image at any other width does not, and the two cases cannot be masked the same way.
+         */
+        public static final int SENSITIVE_RECORD_LENGTH = 80;
+
         /** No instance: this is a policy, not an object. */
         private Redaction() {
             throw new AssertionError("Redaction is a policy holder and is never instantiated");
@@ -1708,25 +1717,62 @@ public record ParityCase(
         /**
          * Masks the credential span inside a whole-record image of a sensitive dataset.
          *
-         * <p>The rest of the image is untouched, which is what keeps the rendering useful: a
-         * reviewer still sees the user id, both names, the type and the filler, and sees that the
-         * password span is present and how wide it is.
+         * <p>At the declared width the rest of the image is untouched, which is what keeps the rendering
+         * useful: a reviewer still sees the user id, both names, the type and the filler, and sees that
+         * the password span is present and how wide it is.
+         *
+         * <h2>An image of the wrong width is the case that matters</h2>
+         * <p>This method used to return an image shorter than {@code offset + length} <em>unchanged</em>,
+         * on the reasoning that it was too short to hold the span. It was not too short to hold part of
+         * it. A 49-to-55 character {@code USRSEC} image holds one to seven bytes of
+         * {@code SEC-USR-PWD} at offset 48, and every one of them was written out verbatim.
+         *
+         * <p>That is not a hypothetical width. Both callers in {@code FieldDiffer} pass images whose
+         * width is arbitrary <strong>by construction</strong>, and on the very paths a wrong width
+         * produces: an {@code EXTRA_RECORD} difference renders a row the unit actually wrote, at
+         * whatever width it wrote it, and a {@code MISSING_RECORD} difference renders the image a case
+         * fixture pinned, at whatever width its author typed. A unit that truncated a {@code USRSEC}
+         * row is exactly the defect this harness exists to catch, and catching it printed the password
+         * into the failure report - into a build log, a CI artefact and an assertion message
+         * (CWE-532).
+         *
+         * <p>So the width decides which of two treatments applies, and both preserve the rendered length
+         * so a width difference stays diagnosable:
+         * <ul>
+         *   <li><strong>Exactly {@value #SENSITIVE_RECORD_LENGTH}</strong> - the spans are where
+         *       {@code CSUSR01Y} puts them, so exactly the credential span is masked and everything else
+         *       stays legible. This is the ordinary case and its rendering is unchanged.</li>
+         *   <li><strong>Any other width</strong> - the record does not match the copybook, so no offset
+         *       past the credential's is trustworthy: a span that is short or long moves every byte after
+         *       it, and the password's bytes may now sit anywhere from offset 48 to the end. Everything
+         *       from offset 48 onwards is therefore masked. It is the same reasoning
+         *       {@code FieldDiffer} already applies when it stops comparing fields on a width mismatch -
+         *       once the total width is wrong, offsets address the wrong bytes - and it costs only the
+         *       type and the filler of a row that is malformed anyway, while the user id and both names,
+         *       which a truncation leaves in place, stay visible for diagnosis.</li>
+         * </ul>
+         *
+         * <p>An image that ends at or before offset 48 is returned unchanged: it holds no byte of the
+         * credential span to mask, and masking nothing is not the same as having nothing to mask.
          *
          * @param dataset the dataset binding key the image belongs to; may be {@code null}
          * @param image the record image; may be {@code null}
-         * @return the image with the credential span replaced by asterisks, or the image unchanged
+         * @return the image with every credential byte it could hold replaced by asterisks, at the same
+         *         rendered length, or the image unchanged when it carries none
          */
         public static String maskRecordImage(String dataset, String image) {
             if (image == null || !SENSITIVE_DATASET.equals(dataset)) {
                 return image;
             }
-            int end = SENSITIVE_SPAN_OFFSET + SENSITIVE_SPAN_LENGTH;
-            if (image.length() < end) {
+            if (image.length() <= SENSITIVE_SPAN_OFFSET) {
                 return image;
             }
+            int maskEnd = image.length() == SENSITIVE_RECORD_LENGTH
+                ? SENSITIVE_SPAN_OFFSET + SENSITIVE_SPAN_LENGTH
+                : image.length();
             return image.substring(0, SENSITIVE_SPAN_OFFSET)
-                + "*".repeat(SENSITIVE_SPAN_LENGTH)
-                + image.substring(end);
+                + "*".repeat(maskEnd - SENSITIVE_SPAN_OFFSET)
+                + image.substring(maskEnd);
         }
 
         /**

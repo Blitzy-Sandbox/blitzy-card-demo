@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.statement.StatementTextWriter.SlotKind;
 import com.vsergeychik.carddemo.statement.StatementTextWriter.StatementFile;
 import com.vsergeychik.carddemo.statement.StatementTextWriter.StatementLine;
 import com.vsergeychik.carddemo.statement.StatementTextWriter.StatementSlot;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -120,7 +121,7 @@ class StatementTextWriterTest {
      * @return the writer
      */
     private static StatementTextWriter writer(Charset charset) {
-        return new StatementTextWriter(new JdbcTemplate(), charset, bindings(EIGHTY));
+        return new StatementTextWriter(new JdbcTemplate(), charset, bindings(EIGHTY), RecordImageForm.CHARACTER);
     }
 
     /** A writer over {@link #ASCII}. */
@@ -140,7 +141,7 @@ class StatementTextWriterTest {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put("STMTFILE", new DatasetBinding(dsname, "sequential", false, "FB", 8000,
                 EIGHTY, null, null, null, null, null));
-        return new StatementTextWriter(new JdbcTemplate(), ASCII, catalogue);
+        return new StatementTextWriter(new JdbcTemplate(), ASCII, catalogue, RecordImageForm.CHARACTER);
     }
 
     /**
@@ -1182,7 +1183,7 @@ class StatementTextWriterTest {
             DatasetBindings wrong = bindings(100);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, wrong))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, wrong, RecordImageForm.CHARACTER))
                     .withMessageContaining("record-length 100")
                     .withMessageContaining("CBSTM03A.CBL:L45")
                     .withMessageContaining("CREASTMT.JCL:L89");
@@ -1194,7 +1195,7 @@ class StatementTextWriterTest {
             DatasetBindings empty = new DatasetBindings();
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, empty))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, empty, RecordImageForm.CHARACTER))
                     .withMessageContaining("STMTFILE");
         }
 
@@ -1204,13 +1205,13 @@ class StatementTextWriterTest {
             DatasetBindings catalogue = bindings(EIGHTY);
 
             assertThatNullPointerException()
-                    .isThrownBy(() -> new StatementTextWriter(null, ASCII, catalogue))
+                    .isThrownBy(() -> new StatementTextWriter(null, ASCII, catalogue, RecordImageForm.CHARACTER))
                     .withMessageContaining("JdbcTemplate");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), null, catalogue))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), null, catalogue, RecordImageForm.CHARACTER))
                     .withMessageContaining("code page");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, null))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, null, RecordImageForm.CHARACTER))
                     .withMessageContaining("carddemo.datasets");
         }
     }
@@ -1309,25 +1310,39 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("binds the whole 80-byte record image as bytes on parameter 1")
-        void bindsTheRecordImageAsBytes() throws SQLException {
-            DataSource dataSource = Mockito.mock(DataSource.class);
-            Connection connection = Mockito.mock(Connection.class);
-            PreparedStatement statement = Mockito.mock(PreparedStatement.class);
-            Mockito.when(dataSource.getConnection()).thenReturn(connection);
-            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+        @DisplayName("binds the whole 80-byte record image through the configured representation")
+        void bindsTheRecordImageThroughTheConfiguredForm() throws SQLException {
+            // The image reaches the driver as one parameter in one representation, and WHICH one is the
+            // deployment's answer rather than this writer's. It used to be this writer's: it bound bytes
+            // while the account, cross-reference and date-parameter access of the same deployment read
+            // characters, and nothing reconciled them. Both forms are exercised, so neither is theoretical.
+            for (RecordImageForm form : RecordImageForm.values()) {
+                DataSource dataSource = Mockito.mock(DataSource.class);
+                Connection connection = Mockito.mock(Connection.class);
+                PreparedStatement statement = Mockito.mock(PreparedStatement.class);
+                Mockito.when(dataSource.getConnection()).thenReturn(connection);
+                Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
 
-            StatementTextWriter writer = new StatementTextWriter(new JdbcTemplate(dataSource),
-                    ASCII, bindings(EIGHTY));
-            StatementFile file = writer.openOutput();
+                StatementTextWriter writer = new StatementTextWriter(new JdbcTemplate(dataSource),
+                        ASCII, bindings(EIGHTY), form);
+                StatementFile file = writer.openOutput();
 
-            assertThat(file.writeLine(StatementLine.ST_LINE12))
-                    .isEqualTo(FileStatus.Outcome.OK);
+                assertThat(file.writeLine(StatementLine.ST_LINE12))
+                        .isEqualTo(FileStatus.Outcome.OK);
 
-            Mockito.verify(connection)
-                    .prepareStatement("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)");
-            Mockito.verify(statement).setBytes(1, "-".repeat(EIGHTY).getBytes(ASCII));
-            Mockito.verify(statement).executeUpdate();
+                Mockito.verify(connection)
+                        .prepareStatement("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)");
+                if (form == RecordImageForm.BINARY) {
+                    Mockito.verify(statement).setBytes(1, "-".repeat(EIGHTY).getBytes(ASCII));
+                    Mockito.verify(statement, Mockito.never())
+                            .setString(Mockito.anyInt(), Mockito.anyString());
+                } else {
+                    Mockito.verify(statement).setString(1, "-".repeat(EIGHTY));
+                    Mockito.verify(statement, Mockito.never())
+                            .setBytes(Mockito.anyInt(), Mockito.any());
+                }
+                Mockito.verify(statement).executeUpdate();
+            }
         }
 
         @Test
@@ -1338,7 +1353,7 @@ class StatementTextWriterTest {
                     .thenThrow(new SQLException("dataset unavailable"));
 
             StatementTextWriter writer = new StatementTextWriter(new JdbcTemplate(dataSource),
-                    ASCII, bindings(EIGHTY));
+                    ASCII, bindings(EIGHTY), RecordImageForm.CHARACTER);
             StatementFile file = writer.openOutput();
 
             assertThat(file.writeLine(StatementLine.ST_LINE0))

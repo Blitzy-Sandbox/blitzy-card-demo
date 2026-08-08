@@ -6,12 +6,15 @@ import com.vsergeychik.carddemo.card.CardRepository.CardReadResult;
 import com.vsergeychik.carddemo.card.CardRepository.CardWriteResult;
 import com.vsergeychik.carddemo.card.CardRepository.FetchedRows;
 import com.vsergeychik.carddemo.card.model.CardRecord;
+import com.vsergeychik.carddemo.common.DatasetIntegrityException;
+import com.vsergeychik.carddemo.common.DatasetObservation;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -53,6 +56,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -121,7 +125,7 @@ class CardRepositoryTest {
     void setUp() {
         jdbcTemplate = mock(JdbcTemplate.class);
         codec = new FixedWidthCodec(StandardCharsets.US_ASCII);
-        repository = new CardRepository(jdbcTemplate, bindings(), codec);
+        repository = new CardRepository(jdbcTemplate, bindings(), codec, RecordImageForm.CHARACTER);
         stubDescribe(repository);
     }
 
@@ -435,7 +439,7 @@ class CardRepositoryTest {
             CardRepository rebound = new CardRepository(jdbcTemplate,
                     bindings(cardDatBinding("OTHER.PLACE.ENTIRELY", CardRecord.RECORD_LENGTH),
                             cardAixBinding()),
-                    codec);
+                    codec, RecordImageForm.CHARACTER);
 
             CardRepository.Statements sql = statementsOf(rebound);
             assertThat(sql.selectByCardNumber()).contains("OTHER.PLACE.ENTIRELY");
@@ -454,7 +458,7 @@ class CardRepositoryTest {
                     .isThrownBy(() -> new CardRepository(jdbcTemplate,
                             bindings(cardDatBinding("ODD\"NAME", CardRecord.RECORD_LENGTH),
                                     cardAixBinding()),
-                            codec))
+                            codec, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
         }
 
@@ -462,7 +466,7 @@ class CardRepositoryTest {
         @DisplayName("the wiring constructor accepts a code page and builds the codec from it")
         void wiringConstructorTakesACodePage() {
             CardRepository wired =
-                    new CardRepository(jdbcTemplate, bindings(), StandardCharsets.US_ASCII);
+                    new CardRepository(jdbcTemplate, bindings(), StandardCharsets.US_ASCII, RecordImageForm.CHARACTER);
 
             assertThat(wired.baseDatasetName()).isEqualTo("CARDDEMO.CARDDATA.KSDS");
         }
@@ -481,13 +485,13 @@ class CardRepositoryTest {
         void refusesMissingCollaborators() {
             DatasetBindings catalogue = bindings();
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new CardRepository(null, catalogue, codec));
+                    () -> new CardRepository(null, catalogue, codec, RecordImageForm.CHARACTER));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new CardRepository(jdbcTemplate, null, codec));
+                    () -> new CardRepository(jdbcTemplate, null, codec, RecordImageForm.CHARACTER));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new CardRepository(jdbcTemplate, catalogue, (FixedWidthCodec) null));
+                    () -> new CardRepository(jdbcTemplate, catalogue, (FixedWidthCodec) null, RecordImageForm.CHARACTER));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new CardRepository(jdbcTemplate, catalogue, (Charset) null));
+                    () -> new CardRepository(jdbcTemplate, catalogue, (Charset) null, RecordImageForm.CHARACTER));
         }
 
         @ParameterizedTest(name = "a missing \"{0}\" binding is reported against its own key")
@@ -500,7 +504,7 @@ class CardRepositoryTest {
                     : bindings(cardDatBinding(), null);
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, partial, codec))
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, partial, codec, RecordImageForm.CHARACTER))
                     .withMessageContaining(missing);
         }
 
@@ -515,11 +519,11 @@ class CardRepositoryTest {
                     cardAixBinding(CardRepository.BASE_DD_NAME, "CARD-ACCT-ID", declaredWidth));
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, wrongBase, codec))
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, wrongBase, codec, RecordImageForm.CHARACTER))
                     .withMessageContaining(CardRepository.BASE_DD_NAME)
                     .withMessageContaining("CVACT02Y");
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, wrongPath, codec))
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, wrongPath, codec, RecordImageForm.CHARACTER))
                     .withMessageContaining(CardRepository.ALTERNATE_INDEX_DD_NAME);
         }
 
@@ -530,7 +534,7 @@ class CardRepositoryTest {
                     cardAixBinding("CCXREF", "CARD-ACCT-ID", CardRecord.RECORD_LENGTH));
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, foreignPath, codec))
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, foreignPath, codec, RecordImageForm.CHARACTER))
                     .withMessageContaining("CCXREF")
                     .withMessageContaining(CardRepository.BASE_DD_NAME);
         }
@@ -543,7 +547,7 @@ class CardRepositoryTest {
                             CardRecord.RECORD_LENGTH));
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, wrongKey, codec))
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, wrongKey, codec, RecordImageForm.CHARACTER))
                     .withMessageContaining("XREF-ACCT-ID")
                     .withMessageContaining("CARD-ACCT-ID");
         }
@@ -555,7 +559,7 @@ class CardRepositoryTest {
                     cardAixBinding(null, null, CardRecord.RECORD_LENGTH));
 
             assertThatNoException()
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, silent, codec));
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, silent, codec, RecordImageForm.CHARACTER));
         }
 
         @ParameterizedTest(name = "an absent dataset name [{0}] is rejected")
@@ -566,7 +570,7 @@ class CardRepositoryTest {
                     bindings(cardDatBinding(dsname, CardRecord.RECORD_LENGTH), cardAixBinding());
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, unusable, codec))
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, unusable, codec, RecordImageForm.CHARACTER))
                     .withMessageContaining("carddemo.datasets." + CardRepository.BASE_DD_NAME);
         }
 
@@ -579,7 +583,7 @@ class CardRepositoryTest {
                     bindings(cardDatBinding(dsname, CardRecord.RECORD_LENGTH), cardAixBinding());
 
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new CardRepository(jdbcTemplate, unusable, codec))
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, unusable, codec, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
         }
 
@@ -661,8 +665,15 @@ class CardRepositoryTest {
             CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
 
             assertThat(result.resp()).isEqualTo(FileStatus.LENGERR);
-            assertThat(result.resp2()).as("the reason code carries the width actually found")
-                    .isEqualTo(width);
+            // The width is a measurement of the stored row, not a CICS reason code. It travels labelled,
+            // beside the response pair, because COCRDUPC:1410 renders ERROR-RESP2 verbatim onto a screen
+            // and a reader has no way to tell a width reported there from a genuine reason code.
+            assertThat(result.resp2()).as("a width is not a reason code")
+                    .isEqualTo(CardRepository.NO_REASON_CODE);
+            assertThat(result.observation()).isPresent();
+            assertThat(result.observation().orElseThrow().value()).isEqualTo(width);
+            assertThat(result.observation().orElseThrow().describe())
+                    .isEqualTo("stored record width in bytes = " + width);
             assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
             assertThat(result.batchStatus()).isEmpty();
         }
@@ -972,7 +983,7 @@ class CardRepositoryTest {
             verify(fromLong).setString(1, expected);
 
             jdbcTemplate = mock(JdbcTemplate.class);
-            repository = new CardRepository(jdbcTemplate, bindings(), codec);
+            repository = new CardRepository(jdbcTemplate, bindings(), codec, RecordImageForm.CHARACTER);
             stubDescribe(repository);
             stubFetch(FetchedRows.empty());
             repository.readByAccountIdViaAltIndex("10000000010");
@@ -1007,6 +1018,18 @@ class CardRepositoryTest {
     @DisplayName("rewrite - COCRDUPC:1477-1483")
     class RewriteTest {
 
+        /**
+         * Stubs the count the rewrite takes before it writes, so a test reaches the write at all.
+         *
+         * <p>The rewrite establishes that its key selects exactly one row before it replaces anything -
+         * finding BD-03 - so a mocked template that answers nothing to that count refuses the write
+         * without issuing it. Every test that is about the write itself therefore has to say that the
+         * record is there, which is also what makes the tests below say out loud that the count happens.
+         */
+        private void stubTheRowIsThere() {
+            stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
+        }
+
         /** Captures the two bind values the rewrite sends. */
         private PreparedStatement bindRewrite() throws SQLException {
             ArgumentCaptor<PreparedStatementSetter> captor =
@@ -1022,6 +1045,7 @@ class CardRepositoryTest {
         @DisplayName("gates G19 and G21: sends all 150 bytes, with FILLER as 59 spaces")
         void sendsTheWholeRecordIncludingFiller() throws SQLException {
             CardRecord updated = cardRecord(FIRST_FIXTURE_CARD_NUM);
+            stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
 
             assertThat(repository.rewrite(updated).isNormal()).isTrue();
@@ -1041,6 +1065,7 @@ class CardRepositoryTest {
         @Test
         @DisplayName("keys the rewrite on the record's own card number, moved to sixteen characters")
         void keysOnTheRecordsOwnCardNumber() throws SQLException {
+            stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
 
             repository.rewrite(cardRecord("12345"));
@@ -1048,26 +1073,136 @@ class CardRepositoryTest {
             verify(bindRewrite()).setString(2, "12345           " + "%");
         }
 
-        @ParameterizedTest(name = "replacing {0} records is an invalid request")
+        @ParameterizedTest(name = "a key selecting {0} rows is an invalid request")
         @ValueSource(ints = { 0, 2 })
-        @DisplayName("a rewrite that did not replace exactly one record is a failure")
-        void rewriteThatReplacedTheWrongNumberOfRecords(int replaced) {
-            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class)))
-                    .thenReturn(replaced);
+        @DisplayName("a key that does not select exactly one row is refused before anything is written")
+        void aKeyThatDoesNotSelectOneRowIsRefusedBeforeWriting(int selected) {
+            // Nothing is written and nothing needs undoing: the count comes first, so a fan-out is
+            // precluded rather than discovered from the affected-row count once the rows are gone.
+            stubFetch(new FetchedRows(cardRecord(FIRST_FIXTURE_CARD_NUM).encode(codec), selected));
 
             CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
 
             assertThat(result.isNormal()).isFalse();
             assertThat(result.isFailure()).isTrue();
             assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
-            assertThat(result.resp2()).as("the reason code says how many were replaced")
-                    .isEqualTo(replaced);
             assertThat(result.batchStatus()).isEmpty();
+            // The count is a measurement, so it travels labelled - it is emphatically NOT reported as a
+            // CICS reason code, which COCRDUPC:1410 renders verbatim onto an operator's screen.
+            assertThat(result.resp2()).isEqualTo(CardRepository.NO_REASON_CODE);
+            assertThat(result.observation()).isPresent();
+            assertThat(result.observation().orElseThrow().value()).isEqualTo(selected);
+            assertThat(result.observation().orElseThrow().describe())
+                    .isEqualTo("rows selected by the key = " + selected);
+
+            verify(jdbcTemplate, never()).update(anyString(), any(PreparedStatementSetter.class));
+        }
+
+        @Test
+        @DisplayName("the count is a plain keyed read outside a unit of work and a locking one inside")
+        void theCountIsTakenUnderTheRowLockInsideAUnitOfWork() throws SQLException {
+            stubTheRowIsThere();
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+            // Outside a unit of work there is no lock to share, and requiring one would refuse a rewrite
+            // the COBOL performs, so the count is taken with a plain keyed read.
+            assertThat(repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)).isNormal()).isTrue();
+            assertThat(statementPreparedByTheCount())
+                    .isEqualTo(repository.resolvedStatements().selectByCardNumber())
+                    .doesNotContain("FOR UPDATE");
+
+            // Inside one, the count and the UPDATE must see the same rows, so the count takes the very
+            // lock the UPDATE will use.
+            clearInvocations(jdbcTemplate);
+            stubTheRowIsThere();
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+            assertThat(inUnitOfWork(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)))
+                    .isNormal()).isTrue();
+            assertThat(statementPreparedByTheCount())
+                    .isEqualTo(repository.resolvedStatements().selectForUpdateByCardNumber())
+                    .endsWith("FOR UPDATE");
+        }
+
+        /**
+         * The statement text the pre-write count prepared.
+         *
+         * @return that text
+         * @throws SQLException never; declared because the JDBC API declares it
+         */
+        private String statementPreparedByTheCount() throws SQLException {
+            ArgumentCaptor<PreparedStatementCreator> captor =
+                    ArgumentCaptor.forClass(PreparedStatementCreator.class);
+            verify(jdbcTemplate).query(captor.capture(),
+                    CardRepositoryTest.<FetchedRows>anyExtractor());
+            Connection connection = mock(Connection.class);
+            when(connection.prepareStatement(anyString())).thenReturn(mock(PreparedStatement.class));
+            captor.getValue().createPreparedStatement(connection);
+            ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+            verify(connection).prepareStatement(sql.capture());
+            return sql.getValue();
+        }
+
+        @Test
+        @DisplayName("a write that replaces more rows than the count saw refuses the unit of work")
+        void aWriteThatFansOutAfterTheCountRefusesTheUnitOfWork() {
+            // The one case a response cannot carry: the rows are already replaced, so returning a status
+            // would report damage that the enclosing unit of work then commits on the way out.
+            stubTheRowIsThere();
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(2);
+
+            assertThatExceptionOfType(DatasetIntegrityException.class)
+                    .isThrownBy(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)))
+                    .withMessageContaining("2 rows were replaced")
+                    .withMessageContaining("must not be allowed to stand");
+        }
+
+        @Test
+        @DisplayName("inside a unit of work the refusal says the count was taken under a row lock")
+        void insideAUnitOfWorkTheRefusalNamesTheRowLock() {
+            stubTheRowIsThere();
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(3);
+
+            assertThatExceptionOfType(DatasetIntegrityException.class)
+                    .isThrownBy(() -> inUnitOfWork(
+                            () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM))))
+                    .withMessageContaining("3 rows were replaced")
+                    .withMessageContaining("under a row lock")
+                    .withMessageContaining("rolled back rather than reported as a file status");
+        }
+
+        @Test
+        @DisplayName("a row that disappears between the count and the write is an invalid request")
+        void aRowThatDisappearsBetweenTheCountAndTheWrite() {
+            stubTheRowIsThere();
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(0);
+
+            CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+
+            assertThat(result.isFailure()).isTrue();
+            assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
+            assertThat(result.resp2()).isEqualTo(CardRepository.NO_REASON_CODE);
+            assertThat(result.observation().orElseThrow().describe())
+                    .isEqualTo("rows replaced by the write = 0");
+        }
+
+        @Test
+        @DisplayName("a refused count is a failure of the rewrite, not a missing record")
+        void aRefusedCountIsAFailure() {
+            stubRejection(new DataAccessResourceFailureException("gone",
+                    new SQLException("gone", "08003", VENDOR_ERROR_CODE)));
+
+            CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+
+            assertThat(result.isFailure()).isTrue();
+            assertThat(result.resp()).isEqualTo(FileStatus.NOTOPEN);
+            assertThat(result.observation()).isEmpty();
+            verify(jdbcTemplate, never()).update(anyString(), any(PreparedStatementSetter.class));
         }
 
         @Test
         @DisplayName("LOCKED-BUT-UPDATE-FAILED: a rejected rewrite reports the response pair")
         void rejectedRewrite() {
+            stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class)))
                     .thenThrow(new InvalidResultSetAccessException(
                             new SQLException("write refused", "22001", VENDOR_ERROR_CODE)));
@@ -1085,6 +1220,7 @@ class CardRepositoryTest {
         @Test
         @DisplayName("an unreachable dataset is reported as not open")
         void unreachableDatasetOnRewrite() {
+            stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class)))
                     .thenThrow(new DataAccessResourceFailureException("gone",
                             new SQLException("gone", "08003", VENDOR_ERROR_CODE)));
@@ -1160,6 +1296,68 @@ class CardRepositoryTest {
                     .as("the first read anchors with GTEQ; every read after it advances")
                     .containsExactly(repository.resolvedStatements().browseAnchor(),
                             repository.resolvedStatements().browseForward());
+        }
+
+        @Test
+        @DisplayName("the browse advances past the exact bytes the row held, not a re-encoding of them")
+        void advancesPastTheExactStoredImage() throws SQLException {
+            // Finding BD-08. The stored row is a real card record whose trailing FILLER X(59) holds
+            // something other than spaces - which a dataset written by anything but this model may well
+            // do. Re-encoding the record decoded from it yields an image with the FILLER space-filled,
+            // and spaces sort BELOW the stored bytes, so a browse advancing by the re-encoded value would
+            // ask for the first image after a value no row has - and hand back this same record again,
+            // for ever. Advancing by the bytes the backend gave excludes it strictly.
+            CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
+            byte[] exact = stored.encode(codec);
+            byte[] reEncoded = exact.clone();
+            for (int index = CardRecord.FILLER_OFFSET;
+                    index < CardRecord.FILLER_OFFSET + CardRecord.FILLER_LENGTH; index++) {
+                exact[index] = (byte) 'X';
+            }
+            assertThat(exact).as("the stored row differs from what the model would write")
+                    .isNotEqualTo(reEncoded);
+
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor()))
+                    .thenReturn(new FetchedRows(exact, 1), FetchedRows.empty());
+
+            CardBrowse browse = repository.startBrowse(FIRST_FIXTURE_CARD_NUM,
+                    BrowseDirection.FORWARD);
+            assertThat(browse.readNext().isRecordReturned()).isTrue();
+            assertThat(browse.positionKey()).contains(FIRST_FIXTURE_CARD_NUM);
+            assertThat(browse.readNext().isEndOfFile()).isTrue();
+
+            // The advancing step's bind value is the stored bytes verbatim.
+            ArgumentCaptor<PreparedStatementCreator> creators =
+                    ArgumentCaptor.forClass(PreparedStatementCreator.class);
+            verify(jdbcTemplate, times(2)).query(creators.capture(),
+                    CardRepositoryTest.<FetchedRows>anyExtractor());
+            PreparedStatement advancing = mock(PreparedStatement.class);
+            Connection connection = mock(Connection.class);
+            when(connection.prepareStatement(anyString())).thenReturn(advancing);
+            creators.getAllValues().get(1).createPreparedStatement(connection);
+            ArgumentCaptor<String> bound = ArgumentCaptor.forClass(String.class);
+            verify(advancing).setString(eq(1), bound.capture());
+            assertThat(bound.getValue().getBytes(codec.charset()))
+                    .as("the browse advances past the stored bytes, not a re-encoded record")
+                    .isEqualTo(exact)
+                    .isNotEqualTo(reEncoded);
+        }
+
+        @Test
+        @DisplayName("a browse read that yields no result object at all is the end of the file, not a null")
+        void aBrowseReadThatYieldsNothingIsEndOfFile() {
+            // A template that answers with no object has told the browse nothing, and "nothing" is not a
+            // record. It must not become a NullPointerException inside the handle either, so it is read as
+            // the end of the pass - the same outcome an empty answer has.
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(null);
+
+            CardBrowse browse = repository.startBrowse(FIRST_FIXTURE_CARD_NUM,
+                    BrowseDirection.FORWARD);
+
+            assertThat(browse.readNext().isEndOfFile()).isTrue();
+            assertThat(browse.positionKey()).isEmpty();
         }
 
         @Test
@@ -1365,36 +1563,74 @@ class CardRepositoryTest {
     class RowReadingTest {
 
         @Test
-        @DisplayName("takes a binary record image as the bytes it already is")
+        @DisplayName("under BINARY it takes the bytes the column holds, and asks for nothing else")
         void readsABinaryImage() throws SQLException {
             byte[] stored = cardRecord(FIRST_FIXTURE_CARD_NUM).encode(codec);
             ResultSet resultSet = mock(ResultSet.class);
             when(resultSet.getBytes(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(stored);
 
-            assertThat(repository.readRecordImage(resultSet)).isEqualTo(stored);
+            assertThat(binaryRepository().readRecordImage(resultSet)).isEqualTo(stored);
             verify(resultSet, never()).getString(CardRepository.RECORD_IMAGE_COLUMN_INDEX);
         }
 
         @Test
-        @DisplayName("encodes a character record image with the dataset code page, never a default")
+        @DisplayName("under CHARACTER it reads the column as text, and asks for nothing else")
         void readsACharacterImage() throws SQLException {
             CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
             ResultSet resultSet = mock(ResultSet.class);
-            when(resultSet.getBytes(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(null);
             when(resultSet.getString(CardRepository.RECORD_IMAGE_COLUMN_INDEX))
                     .thenReturn(stored.encodeToImage(StandardCharsets.US_ASCII));
 
             assertThat(repository.readRecordImage(resultSet)).isEqualTo(stored.encode(codec));
+            verify(resultSet, never()).getBytes(CardRepository.RECORD_IMAGE_COLUMN_INDEX);
         }
 
         @Test
-        @DisplayName("a row carrying neither shape carries no image")
+        @DisplayName("neither form falls back to the other: one column has one JDBC type")
+        void thereIsNoFallbackBetweenTheTwoForms() throws SQLException {
+            // This is the finding, expressed as a test. The repository used to read getBytes and, when
+            // the driver returned none, read the SAME column again as getString and encode it - a
+            // fallback across two representations of one column. It could not fail loudly: it returned a
+            // plausible 150 bytes either way, so a driver presenting the column as the other type yielded
+            // records whose fields sat at the right offsets holding the wrong values. A column has one
+            // type, configuration states which, and a form that finds nothing reports nothing.
+            byte[] stored = cardRecord(FIRST_FIXTURE_CARD_NUM).encode(codec);
+
+            ResultSet textOnly = mock(ResultSet.class);
+            when(textOnly.getBytes(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(null);
+            when(textOnly.getString(CardRepository.RECORD_IMAGE_COLUMN_INDEX))
+                    .thenReturn(cardRecord(FIRST_FIXTURE_CARD_NUM)
+                            .encodeToImage(StandardCharsets.US_ASCII));
+            assertThat(binaryRepository().readRecordImage(textOnly))
+                    .as("a BINARY deployment does not silently re-read its column as text")
+                    .isNull();
+
+            ResultSet bytesOnly = mock(ResultSet.class);
+            when(bytesOnly.getBytes(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(stored);
+            when(bytesOnly.getString(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(null);
+            assertThat(repository.readRecordImage(bytesOnly))
+                    .as("a CHARACTER deployment does not silently re-read its column as bytes")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("a row whose column holds no value carries no image, under either form")
         void readsNoImageAtAll() throws SQLException {
             ResultSet resultSet = mock(ResultSet.class);
             when(resultSet.getBytes(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(null);
             when(resultSet.getString(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(null);
 
             assertThat(repository.readRecordImage(resultSet)).isNull();
+            assertThat(binaryRepository().readRecordImage(resultSet)).isNull();
+        }
+
+        /**
+         * The same repository over the same bindings, reading its record image as bytes.
+         *
+         * @return a repository whose deployment presents the record image as a binary column
+         */
+        private CardRepository binaryRepository() {
+            return new CardRepository(jdbcTemplate, bindings(), codec, RecordImageForm.BINARY);
         }
 
         @ParameterizedTest(name = "{0} available rows under a limit of {1} yields {2}")
@@ -1410,7 +1646,8 @@ class CardRepositoryTest {
             remaining[available] = Boolean.FALSE;
             when(resultSet.next()).thenReturn(remaining[0],
                     java.util.Arrays.copyOfRange(remaining, 1, remaining.length));
-            when(resultSet.getBytes(CardRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(stored);
+            when(resultSet.getString(CardRepository.RECORD_IMAGE_COLUMN_INDEX))
+                    .thenReturn(new String(stored, StandardCharsets.US_ASCII));
 
             FetchedRows rows = repository.extractRows(resultSet, rowLimit);
 
@@ -1464,9 +1701,9 @@ class CardRepositoryTest {
                     .contains(FileStatus.DUPLICATE);
             assertThat(CardReadResult.notFound().batchStatus()).contains(FileStatus.NOT_FOUND);
             assertThat(CardReadResult.endOfFile().batchStatus()).contains(FileStatus.END_OF_FILE);
-            assertThat(CardReadResult.failed(FileStatus.INVREQ, 1).batchStatus()).isEmpty();
+            assertThat(CardReadResult.failed(FileStatus.INVREQ).batchStatus()).isEmpty();
             assertThat(CardWriteResult.normal().batchStatus()).contains(FileStatus.OK);
-            assertThat(CardWriteResult.failed(FileStatus.NOTOPEN, 0).batchStatus()).isEmpty();
+            assertThat(CardWriteResult.failed(FileStatus.NOTOPEN).batchStatus()).isEmpty();
         }
 
         @Test
@@ -1498,9 +1735,38 @@ class CardRepositoryTest {
         @DisplayName("a named arm cannot be smuggled through the failure factory")
         void namedArmsAreRefusedByTheFailureFactory(int resp) {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> CardReadResult.failed(resp, 0));
+                    .isThrownBy(() -> CardReadResult.failed(resp));
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> CardWriteResult.failed(resp, 0));
+                    .isThrownBy(() -> CardWriteResult.failed(resp));
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> CardReadResult.failed(resp,
+                            DatasetObservation.recordWidth(91)));
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> CardWriteResult.failed(resp,
+                            DatasetObservation.matchingRows(2)));
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> CardReadResult.reportedFailure(resp, 0));
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> CardWriteResult.reportedFailure(resp, 0));
+        }
+
+        @Test
+        @DisplayName("a negative reason code is refused, because it is not one")
+        void aNegativeReasonCodeIsRefused() {
+            // The guard exists because a negative value in RESP2 means something that is not a reason code
+            // was reported as one - which is finding BD-07 in its most literal form. A driver's vendor
+            // error number is routinely negative.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> CardReadResult.reportedFailure(FileStatus.INVREQ, -1))
+                    .withMessageContaining("reason codes are non-negative")
+                    .withMessageContaining("DatasetObservation");
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> CardWriteResult.reportedFailure(FileStatus.INVREQ, -911))
+                    .withMessageContaining("reason codes are non-negative");
+            // And the positive form is accepted, because an adapter that reports a real reason code must
+            // be able to.
+            assertThat(CardReadResult.reportedFailure(FileStatus.LENGERR, 80).resp2()).isEqualTo(80);
+            assertThat(CardWriteResult.reportedFailure(FileStatus.NOTOPEN, 12).resp2()).isEqualTo(12);
         }
 
         @Test
@@ -1510,9 +1776,10 @@ class CardRepositoryTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OTHER,
-                            Optional.of(stored)));
+                            Optional.of(stored), Optional.empty()));
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
-                    () -> new CardWriteResult(FileStatus.NORMAL, 0, Outcome.OTHER));
+                    () -> new CardWriteResult(FileStatus.NORMAL, 0, Outcome.OTHER,
+                            Optional.empty()));
         }
 
         @Test
@@ -1522,20 +1789,32 @@ class CardRepositoryTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NOTFND, 0, Outcome.NOT_FOUND,
-                            Optional.of(stored)));
+                            Optional.of(stored), Optional.empty()));
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
-                    () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, Optional.empty()));
+                    () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, Optional.empty(),
+                            Optional.empty()));
         }
 
         @Test
         @DisplayName("a result never carries a null classification or a null record holder")
         void resultsRejectNulls() {
+            CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
+
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new CardReadResult(FileStatus.NORMAL, 0, null, Optional.empty()));
+                    () -> new CardReadResult(FileStatus.NORMAL, 0, null, Optional.empty(),
+                            Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, null));
+                    () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, null,
+                            Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new CardWriteResult(FileStatus.NORMAL, 0, null));
+                    () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, Optional.of(stored),
+                            null))
+                    .withMessageContaining("empty observation");
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                    () -> new CardWriteResult(FileStatus.NORMAL, 0, null, Optional.empty()));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                    () -> new CardWriteResult(FileStatus.NORMAL, 0, Outcome.OK, null))
+                    .withMessageContaining("empty observation");
         }
 
         @Test
@@ -1557,7 +1836,8 @@ class CardRepositoryTest {
             CardReadResult duplicate = CardReadResult.duplicateKey(stored);
             CardReadResult notFound = CardReadResult.notFound();
             CardReadResult endOfFile = CardReadResult.endOfFile();
-            CardReadResult failed = CardReadResult.failed(FileStatus.LENGERR, 91);
+            CardReadResult failed =
+                    CardReadResult.failed(FileStatus.LENGERR, DatasetObservation.recordWidth(91));
 
             assertThat(normal.isNormal()).isTrue();
             assertThat(normal.isDuplicateKey()).isFalse();
@@ -1576,8 +1856,8 @@ class CardRepositoryTest {
             assertThat(failed.isNotFound()).isFalse();
             assertThat(CardWriteResult.normal().isNormal()).isTrue();
             assertThat(CardWriteResult.normal().isFailure()).isFalse();
-            assertThat(CardWriteResult.failed(FileStatus.INVREQ, 0).isNormal()).isFalse();
-            assertThat(CardWriteResult.failed(FileStatus.INVREQ, 0).isFailure()).isTrue();
+            assertThat(CardWriteResult.failed(FileStatus.INVREQ).isNormal()).isFalse();
+            assertThat(CardWriteResult.failed(FileStatus.INVREQ).isFailure()).isTrue();
         }
     }
 

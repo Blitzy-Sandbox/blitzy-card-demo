@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.account;
 
 import com.vsergeychik.carddemo.account.model.AccountRecord;
+import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.DatasetRelation.KeySpan;
 import com.vsergeychik.carddemo.common.DatasetRelation;
@@ -10,6 +11,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -204,11 +206,16 @@ import java.util.OptionalInt;
  * image it writes is that wide, {@code FILLER X(178)} included - the 178 bytes are written as spaces
  * rather than dropped, which is what makes the width provable rather than assumed.
  *
- * <p>A backend that trims trailing spaces from a character column is accommodated on the way in: a
- * short image is widened back to the declared width with spaces before it is decoded, which is the
- * faithful repair because the only bytes it can be missing are trailing {@code FILLER}, and a
- * {@code FILLER} carrying no literal holds spaces. An image <em>wider</em> than the record is rejected
- * instead, because that means the data and the layout disagree.
+ * <p>A stored image of any other width is <strong>reported, not repaired</strong>. Widening a short one
+ * back with spaces looks faithful - the only bytes it could be missing are trailing {@code FILLER}, and
+ * a {@code FILLER} carrying no literal holds spaces - but that reasoning holds only if the missing bytes
+ * really are the trailing ones, and nothing about a short row says they are. A row that lost bytes
+ * anywhere else, or that was written against a different layout, pads into a record whose every field
+ * then decodes from an offset that is not its own: a balance read from the wrong span is still a number,
+ * so the defect arrives at the caller as plausible data rather than as a failure. Every record of
+ * {@code app/data/ASCII/acctdata.txt} measures exactly 300, so a row of any other width can only mean the
+ * backend is not serving this layout, and that is worth saying out loud. It is reported as
+ * {@link FileStatus#LENGERR}, which is what CICS reports when a record does not fit its receiver.
  *
  * <h2>What this class deliberately does not have</h2>
  *
@@ -362,6 +369,18 @@ public class AccountRepository {
      */
     private static final String FOR_UPDATE = " FOR UPDATE";
 
+    /**
+     * How many rows the pre-rewrite probe will look at: two.
+     *
+     * <p>The probe exists to answer "does this key select no row, one row, or more than one" - the three
+     * outcomes a rewrite has to distinguish - and the third is settled by the second row. Counting
+     * further would transfer rows to refine a number nothing reads, and against a relation whose key
+     * column really is not unique it would transfer the whole relation to say what two rows already say.
+     *
+     * @see #matchingRowCount(String, String)
+     */
+    private static final int FAN_OUT_PROBE_LIMIT = 2;
+
     // =================================================================================================
     // Collaborators and resolved configuration. Every one of them is final and every one arrives
     // through the constructor; nothing here is discovered from a static context or a service locator.
@@ -376,8 +395,8 @@ public class AccountRepository {
     /**
      * The module's hand-written fixed-width codec, holding the injected code page.
      *
-     * <p>Used for exactly one thing here - widening a short image back to the declared record width -
-     * and as the single place the code page is kept, so no call site in this class chooses one.
+     * <p>Used here as the single place the code page is kept, so no call site in this class chooses one,
+     * and as the renderer of the escaped key patterns the keyed statements carry.
      */
     private final FixedWidthCodec codec;
 
@@ -393,6 +412,19 @@ public class AccountRepository {
      * than once per repository.
      */
     private final DatasetRelation relation;
+
+    /**
+     * The one representation every read, write and comparison operand of this dataset uses.
+     *
+     * <p>Injected rather than chosen here. Whether the record image is a character column or a binary
+     * one is a property of the deployment's driver, and this repository once decided it for itself -
+     * {@code getString} on the way in, {@code setString} on the way out - while the sibling card file and
+     * both statement writers decided differently about the same deployment. One of those had to be
+     * wrong, and a wrong answer is silent: a driver asked for a character value converts the stored bytes
+     * through a code page of its own choosing. {@link RecordImageForm} is now the single authority, so
+     * there is no per-repository choice left to disagree about.
+     */
+    private final RecordImageForm recordImageForm;
 
     // =================================================================================================
     // There is no mutable per-instance state, and that is the point. A Spring singleton that held an
@@ -434,6 +466,9 @@ public class AccountRepository {
      * @param datasetBindings the DD-name-keyed dataset catalogue bound from {@code carddemo.datasets}
      * @param datasetCharset  the active dataset code page, selected by bean name so the choice is
      *                        explicit at the injection point
+     * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
+     *                        {@value RecordImageForm#FORM_PROPERTY}; the module's single authority on
+     *                        that, so this class never chooses a JDBC type for itself
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if either DD name is unconfigured, if either binding declares a
      *                               record width other than {@link #RECORD_LENGTH} or a key width other
@@ -443,7 +478,8 @@ public class AccountRepository {
     public AccountRepository(
             JdbcTemplate jdbcTemplate,
             DatasetBindings datasetBindings,
-            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset) {
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
+            RecordImageForm recordImageForm) {
 
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required: the "
                 + "account master is reached through the module's shared template");
@@ -452,6 +488,11 @@ public class AccountRepository {
         this.codec = new FixedWidthCodec(Objects.requireNonNull(datasetCharset, "A dataset charset is "
                 + "required: a fixed-width mainframe record is bytes in a specific code page, so the "
                 + "code page is stated explicitly and never taken from the platform"));
+        this.recordImageForm = Objects.requireNonNull(recordImageForm, "A record-image representation is "
+                + "required: whether this deployment's driver presents a record image as characters or "
+                + "as bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided "
+                + "per repository");
+        RecordImageForm.requireSingleByteCodePage(datasetCharset);
 
         DatasetBinding cicsBinding = requireAccountGeometry(datasetBindings, CICS_FILE_NAME);
         DatasetBinding batchBinding = requireAccountGeometry(datasetBindings, BATCH_DD_NAME);
@@ -684,8 +725,7 @@ public class AccountRepository {
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException     if {@code acctIdAsChar11} is {@code null}
      * @throws IllegalArgumentException if {@code acctIdAsChar11} is not exactly {@link #KEY_LENGTH}
-     *                                  characters, or if the stored image is wider than
-     *                                  {@link #RECORD_LENGTH}
+     *                                  characters
      * @throws IllegalStateException    if no unit of work is open, or if the backend presents the dataset
      *                                  with no usable record-image column
      */
@@ -736,25 +776,46 @@ public class AccountRepository {
      *       invalid-key condition and not a success. The caller reaches its fatal arm, which for
      *       {@code CBACT04C} is {@code DISPLAY 'ERROR RE-WRITING ACCOUNT FILE'} at {@code L365} and for
      *       {@code COACTUPC} is {@code SET LOCKED-BUT-UPDATE-FAILED TO TRUE} at {@code L4079};</li>
-     *   <li>anything else - a permanent error status, including the case of more than one row matching,
-     *       which a unique primary key makes impossible and which is therefore reported rather than
-     *       assumed away.</li>
+     *   <li>more than one row would be rewritten - a permanent error status, reported <em>before</em>
+     *       anything is written. See below.</li>
      * </ul>
      *
-     * <p>The image is bound as text, and that choice is deliberate rather than incidental. This
-     * repository <em>reads</em> the record image from the same single column as a character value, so
-     * writing it as one keeps both directions in one projection of one code page; binding bytes on the
-     * way out while reading characters on the way in would be an asymmetry against the same column. The
-     * configured code page is single-byte for zoned data - {@link AccountRecord} refuses a charset that
-     * is not - so the character form and the byte form of a record are in one-to-one correspondence and
-     * nothing is lost either way. A deployment whose gateway presents the record image as binary supplies
-     * a driver that accepts the character form for it; the driver is a deployment-time input.
+     * <p><strong>Fan-out is precluded, not reported after the fact.</strong> The predicate the rewrite
+     * carries selects the rows whose leading {@link #KEY_LENGTH} bytes are the key, and a KSDS primary
+     * key is unique, so it names one row. If a deployment's relation does not enforce that uniqueness -
+     * no primary key, or a key declared over the wrong span - then the same {@code UPDATE} replaces
+     * every matching row with this one record. Discovering that from the affected-row count is
+     * discovering it too late: the rows have already been overwritten, and a status returned from there
+     * reports damage that the enclosing unit of work then commits on the way out. So the key is
+     * required to name exactly one row <em>first</em>, in the same transaction and - when one is open -
+     * under the same {@code FOR UPDATE} lock the {@code UPDATE} will use, and the write is not issued
+     * at all unless it does. Should the count still come back wrong afterwards, the unit of work is
+     * refused rather than reported: see
+     * {@link DatasetUnitOfWork#commitRefusal(String, String)}, which explains why that one case cannot
+     * be a file status.
+     *
+     * <p>The cost is one extra bounded {@code SELECT} per rewrite, capped at two rows because "0, 1 or
+     * more than 1" is the whole question. That is accepted deliberately: this migration is explicitly
+     * not a performance refactoring, and a CICS {@code REWRITE} cannot produce a multi-record outcome
+     * for the COBOL to have code for, so the state must not be reachable.
+     *
+     * <p>The image is bound through the configured {@link RecordImageForm}, which is also what reads it
+     * back, so the two directions cannot disagree about one column. That used to be argued locally here -
+     * bind text because this class reads text - and the argument was sound about this class and silent
+     * about the deployment: the sibling card file and both statement writers bound bytes to the same kind
+     * of column. Whether the column is character or binary is a property of the deployment's driver, the
+     * driver is a deployment-time input, and so the answer comes from configuration and there is exactly
+     * one of it.
      *
      * @param record the record to write, complete and already mutated by the caller
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}
      * @throws IllegalStateException if the backend presents the dataset with no usable record-image
-     *                               column
+     *                               column, or - as a
+     *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException} -
+     *                               if the write replaced more rows than the key selected when it was
+     *                               checked, in which case the unit of work is refused rather than a
+     *                               status returned
      */
     public WriteResult rewrite(AccountRecord record) {
         Objects.requireNonNull(record, "A record is required to rewrite it; a COBOL REWRITE writes the "
@@ -782,13 +843,46 @@ public class AccountRepository {
      * @return the discriminated outcome; never {@code null}
      */
     private WriteResult rewrite(Statements sql, AccountRecord record) {
-        String recordImage = record.toFixedWidthString();
+        byte[] recordImage = record.toByteArray();
         String keyPattern = asPrefixPattern(record.keyImage());
+        String maskedKey = SensitiveDiagnostics.maskIdentifier(record.keyImage());
+
+        // Establish that the key names exactly one row BEFORE any row is replaced. Where a unit of work
+        // is open the probe takes the same row lock the UPDATE will use, so nothing can change between
+        // the two; where none is open nothing can be atomic anyway - which is what requireActive says
+        // about the locking read - and the probe is still what keeps a fan-out from being discovered
+        // only from the affected-row count, after the damage.
+        boolean locking = DatasetUnitOfWork.active();
+        int matching;
+        try {
+            matching = matchingRowCount(locking ? sql.selectByKeyForUpdate() : sql.selectByKey(),
+                    keyPattern);
+        } catch (DataAccessException rejected) {
+            return reportWrite(rejected, "establish how many rows the key of a record selects in the "
+                    + "account master dataset '" + datasetName + "' before rewriting it");
+        }
+        if (matching == 0) {
+            // An invalid-key condition: there is no such record to rewrite. Reported without issuing the
+            // UPDATE, which is the same outcome the UPDATE would have reported and one statement fewer.
+            return WriteResult.notFound();
+        }
+        if (matching > 1) {
+            // Nothing has been written, and nothing will be. A KSDS primary key is unique, so a relation
+            // in which this key selects several rows is not the dataset the copybook describes; issuing
+            // the rewrite would replace all of them with this one record.
+            LOG.error("The key of account " + maskedKey + " selects more than one row of dataset '"
+                    + datasetName + "'; a KSDS primary key is unique, so the rewrite is being refused "
+                    + "before it is issued and file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " reported to the caller. "
+                    + "No row has been changed.");
+            return WriteResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
+        }
+
         int rewritten;
         try {
             PreparedStatementSetter binder = parameters -> {
-                parameters.setString(1, recordImage);
-                parameters.setString(2, keyPattern);
+                recordImageForm.bindImage(parameters, 1, recordImage, codec.charset());
+                recordImageForm.bindOperand(parameters, 2, keyPattern, codec.charset());
             };
             rewritten = jdbcTemplate.update(sql.rewrite(), binder);
         } catch (DataAccessException rejected) {
@@ -800,18 +894,51 @@ public class AccountRepository {
             return WriteResult.written();
         }
         if (rewritten == 0) {
-            // An invalid-key condition: there is no such record to rewrite.
+            // The row the probe found is gone. Nothing was written, so this is the invalid-key condition
+            // exactly as it would be had the row never been there.
             return WriteResult.notFound();
         }
-        // Unreachable against a unique primary key, and precisely for that reason not assumed away: if
-        // the backend really did rewrite several rows for one key, the dataset is not the KSDS the
-        // copybook describes and the caller must be told the operation failed.
-        LOG.error("Rewrite of account " + SensitiveDiagnostics.maskIdentifier(record.keyImage())
-                + " in dataset '" + datasetName
-                + "' reported " + rewritten + " affected rows; a KSDS primary key is unique, so "
-                + "reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                + " to the caller");
-        return WriteResult.of(PERMANENT_ERROR_STATUS);
+        // The probe said one row and the UPDATE replaced several, so the rows changed underneath it. The
+        // damage is done and a status would let it commit, so the unit of work is refused instead.
+        throw DatasetUnitOfWork.commitRefusal(
+                "The rewrite of account " + maskedKey + " in dataset '" + datasetName + "'",
+                rewritten + " rows were replaced where the key selected exactly one when it was checked "
+                        + "under " + (locking ? "a row lock" : "no row lock, because no unit of work was "
+                        + "open"));
+    }
+
+    /**
+     * Counts the rows a keyed predicate selects, stopping as soon as the answer is known.
+     *
+     * <p>The question a rewrite has to answer is not "how many rows" but "none, one, or more than one",
+     * so the statement is capped at two rows and the returned count saturates at two. A dataset whose
+     * key column is not unique therefore costs two row transfers to detect rather than the whole
+     * relation, and the normal case costs exactly one - the same as the keyed read that preceded it.
+     *
+     * <p>When the statement carries {@code FOR UPDATE} the rows it returns are locked for the rest of the
+     * transaction, which is precisely why this is the probe a rewrite uses: the count and the write then
+     * see the same rows.
+     *
+     * @param statement the keyed select, with or without {@code FOR UPDATE}
+     * @param pattern   the escaped key pattern from {@link #asPrefixPattern(String)}
+     * @return {@code 0}, {@code 1}, or {@code 2} meaning "at least two"
+     * @throws DataAccessException if the backend refuses the statement
+     */
+    private int matchingRowCount(String statement, String pattern) {
+        ResultSetExtractor<Integer> rowCounter = resultSet -> {
+            int counted = 0;
+            while (counted < FAN_OUT_PROBE_LIMIT && resultSet.next()) {
+                counted++;
+            }
+            return counted;
+        };
+        Integer counted = jdbcTemplate.query(boundedMatching(statement, pattern, FAN_OUT_PROBE_LIMIT),
+                rowCounter);
+        // JdbcTemplate returns what the extractor returned, and this extractor never returns null; the
+        // check exists so that a null could not become a NullPointerException at the unboxing instead of
+        // a diagnosable one here.
+        Objects.requireNonNull(counted, "The row counter returns a count, never null");
+        return counted;
     }
 
     // =================================================================================================
@@ -857,11 +984,10 @@ public class AccountRepository {
      * @return the discriminated outcome; never {@code null}
      */
     private ReadResult readKeyed(String statement, String keyImage, String subject) {
-        List<String> rows;
+        List<byte[]> rows;
         try {
-            RowMapper<String> recordImageMapper = AccountRepository::mapRecordImage;
-            rows = jdbcTemplate.query(firstRowOf(statement, asPrefixPattern(keyImage)),
-                    recordImageMapper);
+            rows = jdbcTemplate.query(firstRowMatching(statement, asPrefixPattern(keyImage)),
+                    recordImageMapper());
         } catch (DataAccessException translated) {
             return reportRead(translated, "read " + subject + " from the account master dataset '"
                     + datasetName + "'");
@@ -873,15 +999,18 @@ public class AccountRepository {
             // identifier before it decides what to do - see readByKey(long).
             return ReadResult.notFound();
         }
-        String recordImage = rows.get(0);
+        byte[] recordImage = rows.get(0);
         if (recordImage == null) {
             LOG.error("The account master dataset '" + datasetName + "' presented " + subject
                     + " with no record image at column position " + RECORD_IMAGE_COLUMN_INDEX
                     + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
                     + " to the caller");
-            return ReadResult.of(PERMANENT_ERROR_STATUS);  // No backend refusal: nothing to diagnose
+            // No backend refusal, so nothing to diagnose - but the condition does have a determinate CICS
+            // counterpart: a row that is present and unreadable is an invalid request, which is what the
+            // sibling card repository reports for the same shape of row.
+            return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
         }
-        return ReadResult.found(decode(recordImage));
+        return decoded(recordImage, subject);
     }
 
     // =================================================================================================
@@ -898,6 +1027,16 @@ public class AccountRepository {
      * a customer identifier, so a log line that echoed it would put those in a file that is read by more
      * people, retained for longer, and protected less than the dataset itself.
      *
+     * <p>The exception itself is <strong>not</strong> passed to the logger either, and that is the part
+     * worth stating plainly because it looks like a loss. A driver's message is prose the backend composed
+     * around the values it refused, so {@code value '4444333322221111' rejected} is an ordinary thing for
+     * it to say; handing the {@link Throwable} to the logger emits that text and its whole cause chain
+     * verbatim (CWE-532), and a control character anywhere in it splits the entry in two (CWE-117).
+     * Sanitising the summary and then attaching the raw exception beside it sanitises nothing. The codes
+     * that survive are what separate an absent dataset from wrong credentials from a dropped connection,
+     * which is the whole of what an operator acts on; the driver's own words remain in the driver's own
+     * log, which is access-controlled as an application log is not.
+     *
      * @param refusal the exception the backend or the framework raised
      * @param attempt what was being attempted, phrased to complete "Could not ..."
      * @return the diagnostic read out of {@code refusal}
@@ -905,7 +1044,7 @@ public class AccountRepository {
     private BackendDiagnostic logRefusal(Throwable refusal, String attempt) {
         BackendDiagnostic diagnostic = BackendDiagnostic.of(refusal);
         LOG.error("Could not " + attempt + " - " + diagnostic.describe() + "; reporting file status "
-                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", refusal);
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
         return diagnostic;
     }
 
@@ -1042,71 +1181,142 @@ public class AccountRepository {
     }
 
     /**
-     * Maps one result-set row to its record image, by column position.
+     * Maps one result-set row to its record image, through the configured representation.
      *
      * <p>Position {@value #RECORD_IMAGE_COLUMN_INDEX} and never a column name here, for the reason given
      * on this class: a dataset carrying no relational metadata is presented as a single record-image
-     * column. The value is read as text and is <em>not</em> trimmed - the trailing bytes of this record
-     * are {@code FILLER} spaces and they are part of it.
+     * column. Whether that column is read as characters or as bytes is
+     * {@link RecordImageForm}'s decision and not this method's - which is the point, because this
+     * repository used to make it alone and disagreed with its siblings. The value is <em>not</em> trimmed:
+     * the trailing bytes of this record are {@code FILLER} spaces and they are part of it.
      *
-     * @param resultSet the row, positioned by the template
-     * @param rowNumber the 0-based row index, part of the mapper contract and not used: every row of
-     *                  this dataset has the identical shape, so the index carries no meaning here
-     * @return the row's record image, which may be {@code null} if the column holds no value
-     * @throws SQLException if the driver cannot supply the column
+     * @return a mapper yielding each row's record image, or {@code null} for a row whose column holds no
+     *         value - a condition every caller classifies rather than ignores
      */
-    private static String mapRecordImage(ResultSet resultSet, int rowNumber) throws SQLException {
-        return resultSet.getString(RECORD_IMAGE_COLUMN_INDEX);
+    private RowMapper<byte[]> recordImageMapper() {
+        return (resultSet, rowNumber) ->
+                recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX, codec.charset());
     }
 
     /**
-     * Builds a statement that returns at most one row, binding the single parameter when there is one.
+     * Builds a statement that returns at most one row and binds no parameter.
      *
      * <p>The row limit is set on the {@link PreparedStatement} rather than expressed as a row-limiting
      * clause, which keeps every statement in this class free of dialect syntax - no fetch-first and no
      * offset appears anywhere. A driver that declines to honour the limit costs efficiency and nothing
      * else: the first row is taken and the rest ignored, so the outcome is identical either way.
      *
-     * @param sql       the statement text
-     * @param parameter the single parameter to bind, or {@code null} for a statement that takes none
+     * @param sql the statement text
+     * @return a creator for the prepared and limited statement
+     */
+    private PreparedStatementCreator firstRow(String sql) {
+        return connection -> limited(connection.prepareStatement(sql));
+    }
+
+    /**
+     * Builds a one-row statement whose single parameter is a keyed {@code LIKE} pattern.
+     *
+     * <p>The pattern is a composed predicate rather than a stored record, so it is bound as a comparison
+     * operand - in the same representation as the column it is compared with, which is what stops a
+     * keyed read from comparing characters against bytes.
+     *
+     * @param sql     the statement text
+     * @param pattern the escaped pattern from {@link KeySpan#pattern(String)}
      * @return a creator for the prepared, limited and bound statement
      */
-    private static PreparedStatementCreator firstRowOf(String sql, String parameter) {
+    private PreparedStatementCreator firstRowMatching(String sql, String pattern) {
         return connection -> {
-            PreparedStatement statement = connection.prepareStatement(sql);
-            statement.setMaxRows(1);
-            if (parameter != null) {
-                statement.setString(1, parameter);
-            }
+            PreparedStatement statement = limited(connection.prepareStatement(sql));
+            recordImageForm.bindOperand(statement, 1, pattern, codec.charset());
             return statement;
         };
     }
 
     /**
-     * Decodes a stored record image into an {@link AccountRecord}.
+     * Builds a keyed statement capped at a stated number of rows.
      *
-     * <p>Two steps, and both are faithful counterparts of something real:
-     * <ol>
-     *   <li><strong>a short image is widened with spaces</strong> to the declared width. The record is
-     *       fixed-length, so the only bytes it can be missing are trailing ones, and the trailing 178
-     *       bytes are {@code FILLER X(178)} ({@code app/cpy/CVACT01Y.cpy:L17}) - a {@code FILLER}
-     *       carrying no literal holds spaces. A backend that trims a character column is therefore
-     *       repaired exactly, not guessed at. An over-long image is rejected instead of truncated,
-     *       because it means the data and the copybook disagree;</li>
-     *   <li><strong>the record is decoded by absolute offset</strong> against the copybook layout, in the
-     *       injected code page, retaining every byte verbatim - which is what makes decoding and
-     *       re-encoding a stored record byte-identical.</li>
-     * </ol>
+     * <p>The same binding as {@link #firstRowMatching(String, String)} - the pattern is a comparison
+     * operand and is bound as one - with the row cap left to the caller, because the pre-rewrite probe
+     * needs to see a second row to know there is one and every other statement in this class needs at
+     * most the first.
      *
-     * @param recordImage the stored image, up to {@link #RECORD_LENGTH} characters
-     * @return the decoded record
-     * @throws IllegalArgumentException if {@code recordImage} encodes to more than
-     *                                  {@link #RECORD_LENGTH} bytes
+     * @param sql     the statement text
+     * @param pattern the escaped pattern from {@link KeySpan#pattern(String)}
+     * @param maxRows the row cap
+     * @return a creator for the prepared, capped and bound statement
      */
-    private AccountRecord decode(String recordImage) {
-        byte[] widened = codec.padToDeclaredWidth(
-                codec.encodeImage(recordImage, "an ACCOUNT-RECORD row image"), RECORD_LENGTH);
-        return AccountRecord.decode(widened, codec.charset());
+    private PreparedStatementCreator boundedMatching(String sql, String pattern, int maxRows) {
+        return connection -> {
+            PreparedStatement statement = connection.prepareStatement(sql);
+            statement.setMaxRows(maxRows);
+            recordImageForm.bindOperand(statement, 1, pattern, codec.charset());
+            return statement;
+        };
+    }
+
+    /**
+     * Builds a one-row statement whose single parameter is the whole record image a browse advances past.
+     *
+     * <p>A browse position is a stored record image, not a pattern, so it is bound exactly as an image
+     * is: the comparison then runs against the column in its own representation, and "the next record
+     * after this one" means the same thing on both sides of the operator.
+     *
+     * @param sql      the statement text
+     * @param position the previous row's record image, exactly as the backend presented it
+     * @return a creator for the prepared, limited and bound statement
+     */
+    private PreparedStatementCreator firstRowAfter(String sql, byte[] position) {
+        return connection -> {
+            PreparedStatement statement = limited(connection.prepareStatement(sql));
+            recordImageForm.bindImage(statement, 1, position, codec.charset());
+            return statement;
+        };
+    }
+
+    /** Caps a prepared statement at one row, so no more than one can ever matter. */
+    private static PreparedStatement limited(PreparedStatement statement) throws SQLException {
+        statement.setMaxRows(1);
+        return statement;
+    }
+
+    /**
+     * Decodes a stored record image, or reports that it is not an account record.
+     *
+     * <p><strong>The width is required, not repaired.</strong> {@code app/cpy/CVACT01Y.cpy:L2} declares
+     * {@code RECLN 300} and every record of {@code app/data/ASCII/acctdata.txt} measures exactly that, so
+     * a row of any other width means the backend is not serving this layout. Widening a short one to the
+     * declared width with spaces would be defensible if the missing bytes were certainly the trailing
+     * {@code FILLER X(178)} ({@code app/cpy/CVACT01Y.cpy:L17}), and they are not: a row that lost bytes
+     * anywhere else, or that was written against a different layout, pads into a record whose fields
+     * decode from offsets that are not theirs. {@code ACCT-CURR-BAL} read from the wrong span is still a
+     * number, and a caller cannot tell it from a real one - so the repair would convert a diagnosable
+     * failure into plausible data, which is the one outcome worse than the failure.
+     *
+     * <p>An over-long image is rejected for the same reason and always was, and this makes the two
+     * symmetrical: the row either is 300 bytes or it is not a record. The width is reported as
+     * {@link FileStatus#LENGERR} - the response CICS gives when a record does not fit its receiver - and
+     * the actual width is named in the log line rather than carried as a reason code, because a byte
+     * count is not a CICS reason code.
+     *
+     * <p>The decode itself is by absolute offset against the copybook layout, in the injected code page,
+     * retaining every byte verbatim - which is what makes decoding and re-encoding a stored record
+     * byte-identical.
+     *
+     * @param recordImage the stored image, exactly as the configured representation presented it
+     * @param subject     how to name the row in a diagnostic - never its content
+     * @return the successful outcome carrying the decoded record, or a permanent-error outcome whose
+     *         CICS response is {@link FileStatus#LENGERR}
+     */
+    private ReadResult decoded(byte[] recordImage, String subject) {
+        if (recordImage.length != RECORD_LENGTH) {
+            LOG.error("The account master dataset '" + datasetName + "' presented " + subject + " as "
+                    + recordImage.length + " byte(s), but ACCOUNT-RECORD is declared " + RECORD_LENGTH
+                    + " bytes by app/cpy/CVACT01Y.cpy; reporting file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " rather than decoding fields "
+                    + "from offsets that would not be theirs");
+            return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.LENGERR));
+        }
+        return ReadResult.found(AccountRecord.decode(recordImage, codec.charset()));
     }
 
     // =================================================================================================
@@ -1426,8 +1636,13 @@ public class AccountRepository {
          * from - {@code '00000000001…'} sorts after {@code '00000000001'} - so a browse positioned by key
          * alone would return the same record for ever. The full image excludes it strictly, and because a
          * KSDS key is unique the comparison always resolves inside the leading eleven bytes.
+         *
+         * <p>Held as the stored <strong>bytes</strong>, exactly as the configured representation presented
+         * them, and bound back as an image rather than as text. Re-encoding a decoded record here would
+         * make the comparison operand a reconstruction rather than the row it came from, which is only
+         * harmless while every reconstruction happens to be byte-identical.
          */
-        private String browsePosition;
+        private byte[] browsePosition;
 
         /** Whether {@link #closeFile()} has been called. */
         private boolean closed;
@@ -1526,7 +1741,8 @@ public class AccountRepository {
          *       caller that ignored {@link #openStatus()} still cannot mistake a dataset it never reached
          *       for one that was empty;</li>
          *   <li><strong>other</strong> carrying {@link AccountRepository#PERMANENT_ERROR_STATUS} for an
-         *       I/O failure or a row whose record image is absent. The COBOL moves {@code 12} and the
+         *       I/O failure, a row whose record image is absent, or a row that is not
+         *       {@link AccountRepository#RECORD_LENGTH} bytes wide. The COBOL moves {@code 12} and the
          *       caller displays the error, renders the status and abends.</li>
          * </ul>
          *
@@ -1546,9 +1762,6 @@ public class AccountRepository {
          *
          * @return the discriminated outcome; never {@code null}
          * @throws IllegalStateException    if this handle has been closed
-         * @throws IllegalArgumentException if a stored image is wider than
-         *                                  {@link AccountRepository#RECORD_LENGTH}, meaning the data and
-         *                                  the copybook disagree
          */
         public ReadResult readNext() {
             requireOpen("read the next record");
@@ -1556,21 +1769,22 @@ public class AccountRepository {
                 return ReadResult.of(openStatus);
             }
 
-            String position = this.browsePosition;
+            byte[] position = this.browsePosition;
             boolean fromStart = position == null;
             String statement = fromStart ? statements.selectFirst() : statements.selectNext();
 
-            List<String> rows;
+            List<byte[]> rows;
             try {
-                RowMapper<String> recordImageMapper = AccountRepository::mapRecordImage;
-                rows = repository.jdbcTemplate.query(firstRowOf(statement, fromStart ? null : position),
-                        recordImageMapper);
+                PreparedStatementCreator creator = fromStart
+                        ? repository.firstRow(statement)
+                        : repository.firstRowAfter(statement, position);
+                rows = repository.jdbcTemplate.query(creator, repository.recordImageMapper());
             } catch (DataAccessException translated) {
                 // The fatal arm. An I/O failure is reported as a status so the caller's own guard chain
                 // decides what to do about it - which, in CBACT01C, is to display and abend.
                 LOG.error("Rejected browse read of the account master dataset '" + datasetName()
-                        + "'; reporting file status "
-                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", translated);
+                        + "' - " + BackendDiagnostic.of(translated).describe() + "; reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
                 return ReadResult.of(PERMANENT_ERROR_STATUS);
             }
 
@@ -1580,7 +1794,7 @@ public class AccountRepository {
                 // AT END with no record read. An expected outcome, not an error.
                 return ReadResult.endOfFile();
             }
-            String recordImage = rows.get(0);
+            byte[] recordImage = rows.get(0);
             if (recordImage == null) {
                 // A row whose record image is absent is not a readable 300-byte record. There IS a record,
                 // it simply cannot be read, so this is an I/O-level defect and not an end of file - it
@@ -1589,13 +1803,13 @@ public class AccountRepository {
                         + "record image at column position " + RECORD_IMAGE_COLUMN_INDEX + "; reporting "
                         + "file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
                         + " to the caller");
-                return ReadResult.of(PERMANENT_ERROR_STATUS);
+                return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
             }
 
             // The position advances to the image exactly as the backend presented it, which is what keeps
             // the next comparison an apples-to-apples one against the stored values.
-            this.browsePosition = recordImage;
-            return ReadResult.found(repository.decode(recordImage));
+            this.browsePosition = recordImage.clone();
+            return repository.decoded(recordImage, "the row at the current browse position");
         }
 
         /**
@@ -1640,9 +1854,7 @@ public class AccountRepository {
          * @return the discriminated outcome; never {@code null}
          * @throws NullPointerException     if {@code acctIdAsChar11} is {@code null}
          * @throws IllegalArgumentException if {@code acctIdAsChar11} is not exactly
-         *                                  {@link AccountRepository#KEY_LENGTH} characters, or if the
-         *                                  stored image is wider than
-         *                                  {@link AccountRepository#RECORD_LENGTH}
+         *                                  {@link AccountRepository#KEY_LENGTH} characters
          * @throws IllegalStateException    if this handle has been closed, or if no transaction is active
          */
         public ReadResult readForUpdate(String acctIdAsChar11) {
@@ -1666,7 +1878,10 @@ public class AccountRepository {
          * @param record the record to write, complete and already mutated by the caller
          * @return the discriminated outcome; never {@code null}
          * @throws NullPointerException  if {@code record} is {@code null}
-         * @throws IllegalStateException if this handle has been closed
+         * @throws IllegalStateException if this handle has been closed, or - as a
+         *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException}
+         *                               - if the write replaced more rows than the key selected when it
+         *                               was checked
          */
         public WriteResult rewrite(AccountRecord record) {
             Objects.requireNonNull(record, "A record is required to rewrite it; a COBOL REWRITE writes "
@@ -1825,17 +2040,32 @@ public class AccountRepository {
      * a successful read. The status and its classification are likewise required to agree, so no
      * inconsistent pair can be constructed at all.
      *
+     * <h2>The CICS pair travels with the outcome</h2>
+     *
+     * <p>The online caller does not test a file status. {@code app/cbl/COACTUPC.cbl:L3703-L3710} issues its
+     * read with {@code RESP(WS-RESP-CD) RESP2(WS-REAS-CD)} and captures <em>both</em>, and
+     * {@code L3722-L3729} renders both into the message the operator reads - {@code ' Resp:' ERROR-RESP}
+     * and {@code ' Reas:' ERROR-RESP2}. A result carrying only a response, from which the reason had to be
+     * assumed, could not compose that message; and a reason code derived from a response is not a reason
+     * code. So the pair is a component of the outcome, built once by whoever knows the outcome and read
+     * verbatim thereafter - {@link CicsResponse}, whose reason code is
+     * {@link FileStatus#NO_REASON_CODE} where the condition genuinely carries no further reason and a
+     * reported value where a deployment's adapter surfaces one.
+     *
      * @param status  the two-character file status the read reported, verbatim
      * @param outcome its classification
      * @param account the decoded record, present exactly when {@code outcome} is {@link Outcome#OK}
      * @param diagnostic what the backend reported when it refused, present only on a failure it
      *                described - so a caller can log the driver's own {@code SQLSTATE} instead of a
      *                status this module synthesised
+     * @param response the CICS {@code RESP}/{@code RESP2} pair for this outcome, carried rather than
+     *                derived on demand
      */
     public record ReadResult(String status,
                             Outcome outcome,
                             Optional<AccountRecord> account,
-                            Optional<BackendDiagnostic> diagnostic) {
+                            Optional<BackendDiagnostic> diagnostic,
+                            CicsResponse response) {
 
         /**
          * Enforces every invariant of the outcome at construction.
@@ -1853,6 +2083,9 @@ public class AccountRepository {
                     + "one, so no null escapes the type");
             Objects.requireNonNull(diagnostic, "A read result carries an empty diagnostic rather than a "
                     + "null one, so no null escapes the type");
+            Objects.requireNonNull(response, "A read result carries a CICS response pair rather than a "
+                    + "null one; use CicsResponse.ofBatchStatus(status) where the outcome is a file "
+                    + "status and CicsResponse.reported(resp, resp2) where a backend surfaced both");
             if (account.isPresent() != (outcome == Outcome.OK)) {
                 throw new IllegalArgumentException(account.isPresent()
                         ? "A read that did not succeed carries no record: outcome " + outcome
@@ -1875,7 +2108,8 @@ public class AccountRepository {
          */
         public static ReadResult found(AccountRecord account) {
             Objects.requireNonNull(account, "A successful read carries the decoded account record");
-            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(account), Optional.empty());
+            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(account), Optional.empty(),
+                    CicsResponse.ofBatchStatus(FileStatus.OK));
         }
 
         /**
@@ -1920,7 +2154,32 @@ public class AccountRepository {
          *                                  {@link FileStatus#OK}
          */
         public static ReadResult of(String status) {
-            return new ReadResult(status, classify(status), Optional.empty(), Optional.empty());
+            // classify(status) first, deliberately: it is this class's own width and null guard, and a
+            // caller that passes a malformed status should read this class's diagnostic rather than one
+            // from the status vocabulary two calls deeper.
+            return new ReadResult(status, classify(status), Optional.empty(), Optional.empty(),
+                    CicsResponse.ofBatchStatus(status));
+        }
+
+        /**
+         * A failed read carrying the CICS pair the outcome should report.
+         *
+         * <p>For an outcome whose response is <em>not</em> the translation of its file status. The width
+         * check is the case that needs it: a row that is not {@link AccountRepository#RECORD_LENGTH} bytes
+         * is a permanent error to the batch guard chain and {@link FileStatus#LENGERR} to the online one,
+         * and neither number can be derived from the other. It is also what a deployment adapter that
+         * surfaces genuine {@code RESP}/{@code RESP2} values uses, so it never has to fabricate the pair.
+         *
+         * @param status   the file status the caller branches on
+         * @param response the pair to report
+         * @return a result carrying {@code status}, its classification, {@code response} and no record
+         * @throws NullPointerException     if {@code status} or {@code response} is {@code null}
+         * @throws IllegalArgumentException if {@code status} is not exactly
+         *                                  {@link FileStatus#STATUS_LENGTH} characters, or is
+         *                                  {@link FileStatus#OK}
+         */
+        public static ReadResult of(String status, CicsResponse response) {
+            return new ReadResult(status, classify(status), Optional.empty(), Optional.empty(), response);
         }
 
         /**
@@ -1939,9 +2198,24 @@ public class AccountRepository {
          * @throws NullPointerException if {@code diagnostic} is {@code null}
          */
         public static ReadResult of(String status, BackendDiagnostic diagnostic) {
+            return of(status, CicsResponse.ofBatchStatus(status), diagnostic);
+        }
+
+        /**
+         * A failed read carrying both the CICS pair to report and what the backend said about it.
+         *
+         * @param status     the file status the caller branches on
+         * @param response   the pair to report
+         * @param diagnostic what the backend reported
+         * @return the outcome
+         * @throws NullPointerException if {@code response} or {@code diagnostic} is {@code null}
+         */
+        public static ReadResult of(String status, CicsResponse response,
+                BackendDiagnostic diagnostic) {
             Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use "
                     + "of(String) where there is no backend refusal to report");
-            return new ReadResult(status, classify(status), Optional.empty(), Optional.of(diagnostic));
+            return new ReadResult(status, classify(status), Optional.empty(), Optional.of(diagnostic),
+                    response);
         }
 
         /**
@@ -1987,18 +2261,35 @@ public class AccountRepository {
         }
 
         /**
-         * The CICS {@code RESP} value equivalent to this outcome, where the correspondence is
-         * one-to-one.
+         * The CICS {@code RESP} value this outcome reports.
          *
          * <p>For the online caller, which tests {@code RESP} rather than a file status and renders it
-         * into its error message as {@code ERROR-RESP} ({@code app/cbl/COACTUPC.cbl:L3721}). Empty where
-         * a status has no single CICS counterpart - see {@link FileStatus#cicsRespOfBatchStatus(String)},
-         * which reports that ambiguity rather than resolving it.
+         * into its error message as {@code ERROR-RESP} ({@code app/cbl/COACTUPC.cbl:L3721}). Read from
+         * the carried {@link #response()} rather than recomputed from the status, so an outcome whose
+         * response is not the translation of its status - the width check reports
+         * {@link FileStatus#LENGERR} against a permanent-error status - reports the response it was built
+         * with. Empty where the outcome has no single CICS counterpart, which
+         * {@link FileStatus#cicsRespOfBatchStatus(String)} reports as an ambiguity rather than resolving.
          *
-         * @return the equivalent response value, or an empty {@code OptionalInt}
+         * @return the response value, or an empty {@code OptionalInt}
          */
         public OptionalInt cicsResp() {
-            return FileStatus.cicsRespOfBatchStatus(status);
+            return response.resp();
+        }
+
+        /**
+         * The CICS {@code RESP2} reason code this outcome reports.
+         *
+         * <p>The second half of what {@code app/cbl/COACTUPC.cbl:L3703-L3710} captures and
+         * {@code L3722-L3729} renders as {@code ' Reas:' ERROR-RESP2}. It is
+         * {@link FileStatus#NO_REASON_CODE} for every outcome a JDBC-backed dataset can produce, because
+         * a file status carries no CICS reason and none is invented here; a deployment whose adapter
+         * surfaces a real one builds the result with {@link CicsResponse#reported(int, int)}.
+         *
+         * @return the reason code, never negative
+         */
+        public int cicsResp2() {
+            return response.resp2();
         }
 
         /**
@@ -2036,10 +2327,19 @@ public class AccountRepository {
      * <p>No record is carried: a COBOL {@code REWRITE} returns a status and nothing else. There is no
      * end-of-file arm either, because a rewrite cannot reach the end of a dataset.
      *
+     * <p>The CICS pair travels with the outcome for the same reason it does on {@link ReadResult}:
+     * {@code app/cbl/COACTUPC.cbl:L4065-L4071} issues its {@code REWRITE} with
+     * {@code RESP(WS-RESP-CD) RESP2(WS-REAS-CD)} and captures both, and a reason code derived from a
+     * response is not a reason code.
+     *
      * @param status  the two-character file status the rewrite reported, verbatim
      * @param outcome its classification
+     * @param diagnostic what the backend reported when it refused, present only on a failure it described
+     * @param response the CICS {@code RESP}/{@code RESP2} pair for this outcome, carried rather than
+     *                derived on demand
      */
-    public record WriteResult(String status, Outcome outcome, Optional<BackendDiagnostic> diagnostic) {
+    public record WriteResult(String status, Outcome outcome, Optional<BackendDiagnostic> diagnostic,
+            CicsResponse response) {
 
         /**
          * Enforces the invariants of the outcome at construction.
@@ -2055,6 +2355,9 @@ public class AccountRepository {
             requireConsistentStatus(status, outcome);
             Objects.requireNonNull(diagnostic, "A write result carries an empty diagnostic rather than a "
                     + "null one, so no null escapes the type");
+            Objects.requireNonNull(response, "A write result carries a CICS response pair rather than a "
+                    + "null one; use CicsResponse.ofBatchStatus(status) where the outcome is a file "
+                    + "status and CicsResponse.reported(resp, resp2) where a backend surfaced both");
             if (outcome == Outcome.END_OF_FILE) {
                 throw new IllegalArgumentException("A rewrite cannot reach the end of a dataset, so "
                         + "status '" + FileStatus.END_OF_FILE + "' is not an outcome it can report.");
@@ -2097,7 +2400,29 @@ public class AccountRepository {
          *                                  {@link FileStatus#END_OF_FILE}
          */
         public static WriteResult of(String status) {
-            return new WriteResult(status, classify(status), Optional.empty());
+            // classify(status) first, for the reason ReadResult.of(String) gives.
+            return new WriteResult(status, classify(status), Optional.empty(),
+                    CicsResponse.ofBatchStatus(status));
+        }
+
+        /**
+         * A result carrying the CICS pair the outcome should report.
+         *
+         * <p>For an outcome whose response is <em>not</em> the translation of its file status - a key that
+         * selects several rows is a permanent error to the batch guard chain and
+         * {@link FileStatus#INVREQ} to the online one - and for a deployment adapter that surfaces genuine
+         * {@code RESP}/{@code RESP2} values.
+         *
+         * @param status   the two-character status the rewrite reported, carried verbatim
+         * @param response the pair to report
+         * @return a result carrying {@code status}, its classification and {@code response}
+         * @throws NullPointerException     if {@code status} or {@code response} is {@code null}
+         * @throws IllegalArgumentException if {@code status} is not exactly
+         *                                  {@link FileStatus#STATUS_LENGTH} characters, or is
+         *                                  {@link FileStatus#END_OF_FILE}
+         */
+        public static WriteResult of(String status, CicsResponse response) {
+            return new WriteResult(status, classify(status), Optional.empty(), response);
         }
 
         /**
@@ -2109,9 +2434,23 @@ public class AccountRepository {
          * @throws NullPointerException if {@code diagnostic} is {@code null}
          */
         public static WriteResult of(String status, BackendDiagnostic diagnostic) {
+            return of(status, CicsResponse.ofBatchStatus(status), diagnostic);
+        }
+
+        /**
+         * A failed write carrying both the CICS pair to report and what the backend said about it.
+         *
+         * @param status     the file status the caller branches on
+         * @param response   the pair to report
+         * @param diagnostic what the backend reported
+         * @return the outcome
+         * @throws NullPointerException if {@code response} or {@code diagnostic} is {@code null}
+         */
+        public static WriteResult of(String status, CicsResponse response,
+                BackendDiagnostic diagnostic) {
             Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use "
                     + "of(String) where there is no backend refusal to report");
-            return new WriteResult(status, classify(status), Optional.of(diagnostic));
+            return new WriteResult(status, classify(status), Optional.of(diagnostic), response);
         }
 
         /**
@@ -2143,13 +2482,27 @@ public class AccountRepository {
         }
 
         /**
-         * The CICS {@code RESP} value equivalent to this outcome, where the correspondence is
-         * one-to-one.
+         * The CICS {@code RESP} value this outcome reports, read from the carried pair rather than
+         * recomputed from the status.
          *
-         * @return the equivalent response value, or an empty {@code OptionalInt}
+         * @return the response value, or an empty {@code OptionalInt}
          */
         public OptionalInt cicsResp() {
-            return FileStatus.cicsRespOfBatchStatus(status);
+            return response.resp();
+        }
+
+        /**
+         * The CICS {@code RESP2} reason code this outcome reports.
+         *
+         * <p>The second half of what {@code app/cbl/COACTUPC.cbl:L4065-L4071} captures.
+         * {@link FileStatus#NO_REASON_CODE} for every outcome a JDBC-backed dataset can produce - a row
+         * count and a record width are neither of them reason codes and are named in the log line
+         * instead.
+         *
+         * @return the reason code, never negative
+         */
+        public int cicsResp2() {
+            return response.resp2();
         }
 
         /**

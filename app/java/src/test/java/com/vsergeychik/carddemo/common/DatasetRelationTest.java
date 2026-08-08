@@ -466,7 +466,8 @@ class DatasetRelationTest {
             assertThat(diagnostic.sqlState()).isEqualTo("08001");
             assertThat(diagnostic.vendorCode()).isEqualTo(17_002);
             assertThat(diagnostic.exceptionType()).isEqualTo(SQLException.class.getName());
-            assertThat(diagnostic.message()).isEqualTo("no route to host");
+            // The driver's message is deliberately absent - see theDriversMessageIsNotCarriedAtAll.
+            assertThat(diagnostic.toString()).doesNotContain("no route to host");
         }
 
         @Test
@@ -540,10 +541,41 @@ class DatasetRelationTest {
                             + SQLException.class.getName())
                     // A failing card operation's record carries a primary account number. A log line is
                     // read by more people, kept for longer and guarded less than the dataset it
-                    // describes, so the record never reaches one - not even by way of the driver's own
-                    // message, which is available on the diagnostic for a caller that needs it.
+                    // describes, so the record never reaches one.
                     .doesNotContain("4444333322221111");
-            assertThat(diagnostic.message()).contains("4444333322221111");
+        }
+
+        @Test
+        @DisplayName("the driver's message is not carried at all, so nothing can render it")
+        void theDriversMessageIsNotCarriedAtAll() {
+            // A driver's message is prose the backend composed AROUND the values it refused, so a
+            // rejected card operation says the card number out loud. Omitting it from describe() was not
+            // enough while the record still had a message component: being a record, its generated
+            // toString published the component the first time anything rendered a refusal, and this
+            // record travels to the caller on every failed ReadResult and WriteResult in the module.
+            // So the text is not carried - there is no component and no accessor to reach for.
+            String pan = "4444333322221111";
+            BackendDiagnostic diagnostic = BackendDiagnostic.of(
+                    new SQLException("value '" + pan + "' rejected", "22001", 1_400));
+
+            assertThat(BackendDiagnostic.class.getRecordComponents())
+                    .as("a component holding the driver's message text is what re-introduces the leak")
+                    .extracting(java.lang.reflect.RecordComponent::getName)
+                    .containsExactly("sqlState", "vendorCode", "exceptionType");
+            assertThat(diagnostic.toString()).doesNotContain(pan);
+            assertThat(diagnostic.describe()).doesNotContain(pan);
+        }
+
+        @Test
+        @DisplayName("a control character in a driver's message cannot reach a rendering either")
+        void aControlCharacterCannotReachARendering() {
+            // CWE-117: had the message survived, a CR or LF inside it would have split a log entry in
+            // two, and whatever composed the message would have chosen the second entry's contents.
+            BackendDiagnostic diagnostic = BackendDiagnostic.of(new SQLException(
+                    "rejected\r\n2026-01-01 INFO  all datasets verified", "22001", 1));
+
+            assertThat(diagnostic.describe()).doesNotContain("\n").doesNotContain("\r");
+            assertThat(diagnostic.toString()).doesNotContain("\n").doesNotContain("\r");
         }
 
         @Test
@@ -551,7 +583,7 @@ class DatasetRelationTest {
         void aDiagnosticRequiresAFailure() {
             assertThatNullPointerException().isThrownBy(() -> BackendDiagnostic.of(null));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new BackendDiagnostic("08001", 1, null, "m"));
+                    .isThrownBy(() -> new BackendDiagnostic("08001", 1, null));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> BackendDiagnostic.of(new SQLException("m")).isClass(null));
         }

@@ -298,6 +298,23 @@ carddemo:
     dataset: US-ASCII
 
   # -------------------------------------------------------------------------------------------
+  # carddemo.record-image.form - how a record image crosses JDBC in this profile.
+  #
+  # CHARACTER, because this profile's relations are in-memory ones created with a character
+  # record-image column: the harness seeds each dataset from a US-ASCII fixture line, so the stored
+  # value IS text in the configured code page. application.yml documents both values and why the key
+  # carries no default; this profile states it for the same reason CobolCharsetConfig's keys are
+  # restated here, so the guarantee is visible where it is exercised.
+  #
+  # The representation is a property of the DRIVER, not of the module, which is exactly why it is a
+  # profile-level key: a deployment whose gateway presents its KSDS clusters as binary columns sets
+  # BINARY and changes nothing else. Both values are exercised by the module's own tests against
+  # both a character and a binary in-memory column, so neither path is theoretical.
+  # -------------------------------------------------------------------------------------------
+  record-image:
+    form: CHARACTER
+
+  # -------------------------------------------------------------------------------------------
   # carddemo.test.* - TEST-PROFILE-ONLY FACTS. Consumed by the parity harness.
   #
   # WHY THIS IS A SEPARATE NAMESPACE AND NOT EXTRA KEYS UNDER carddemo.datasets.

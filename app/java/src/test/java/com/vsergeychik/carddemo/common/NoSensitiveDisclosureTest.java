@@ -528,7 +528,14 @@ class NoSensitiveDisclosureTest {
                 "custssn", "ssn", "custgovtissuedid", "govtissuedid",
                 "custeftaccountid", "eftaccountid", "passwd", "pwd", "password",
                 "fname", "lname", "mname", "custfname", "custlname", "custmname",
-                "embossedname", "cardupdateembossedname", "crdname");
+                "embossedname", "cardupdateembossedname", "crdname",
+                // CSUSR01Y spells its items with a SEC-USR- prefix, and matching by equality means the
+                // unprefixed names above did not select any of them. SecUserRecord was therefore swept
+                // and reported clean while publishing both of a user's names verbatim - the sweep was
+                // looking for components that record does not have. Adding the real names is what makes
+                // it visible; the review found this by reading the file rather than by running the test,
+                // which is exactly the reliance a structural guard is supposed to remove.
+                "secusrfname", "secusrlname", "secusrpwd");
 
         /**
          * Renderings that still disclose, and are knowingly outside this checkpoint's scope.
@@ -558,9 +565,130 @@ class NoSensitiveDisclosureTest {
         private static final Set<String> NOT_SWEPT = Set.of(
                 "com.vsergeychik.carddemo.card.dto.CardUpdateRequest$CardDetails",
                 "com.vsergeychik.carddemo.user.dto.UserDeleteResponse");
+        // A width-validating constructor is no longer a reason on its own to land here: registering a
+        // probe in PROBE_FACTORIES builds the type at its declared widths and gets it genuinely swept,
+        // which is what SecUserRecord needed. These two remain because the review examined both files and
+        // recorded them as PASS, so probing them would extend this checkpoint's scope rather than close a
+        // finding; they are carried in the resolution report as out-of-scope observations.
 
         /** A short sentinel that fits any {@code PIC X} field and appears in no fixture. */
         private static final String PROBE = "ZQX7";
+
+        /**
+         * Span-addressed types this sweep deliberately does not probe, each with the reason.
+         *
+         * <p>Recorded in executable form rather than left out of the discovery, so the set cannot quietly
+         * grow: adding a copybook model means either registering a probe for it or writing down here why
+         * it needs none. Every entry below was read before being listed.
+         *
+         * <ul>
+         *   <li>{@code TranRecord} - its rendering decodes {@code TRAN-AMT} in order to show the image
+         *       and the value together, so it cannot be rendered over the blank area a generic probe
+         *       would supply, and building a valid 350-byte {@code TRANSACT} row here would duplicate the
+         *       fixture its own test already holds. Its PAN masking is asserted directly by
+         *       {@code TranRecordTest.toStringIsCompleteAndUnmasked}, which pins
+         *       {@code TRAN-CARD-NUM='************7065'} and the absence of the full number.</li>
+         *   <li>{@code DisclosureGroupRecord} - {@code CVTRA02Y} holds an account group, a sub-group, a
+         *       type code and {@code DIS-INT-RATE}. There is no identifier and no personal data in it: an
+         *       interest rate is a term of a product, not a fact about a person, and it is what an
+         *       interest parity failure is diagnosed from.</li>
+         *   <li>{@code AccountDateValidator$EditDateState} - a work area for the {@code CSUTLDPY} date
+         *       edits rather than a stored record. It holds the date currently being validated and the
+         *       edit flags, which carry no identifier and are the entire subject of the diagnostic.</li>
+         * </ul>
+         */
+        private static final Set<String> RENDERINGS_NOT_PROBED = Set.of(
+                "com.vsergeychik.carddemo.transaction.model.TranRecord",
+                "com.vsergeychik.carddemo.account.model.DisclosureGroupRecord",
+                "com.vsergeychik.carddemo.account.AccountDateValidator$EditDateState");
+
+        /**
+         * One type populated with sentinel data, together with everything its rendering must not show.
+         *
+         * @param instance  the populated instance
+         * @param forbidden the values that must not appear in {@code instance.toString()}
+         */
+        private record ProbeCase(Object instance, List<String> forbidden) { }
+
+        /**
+         * Hand-built probes for the types the generic sentinel cannot populate.
+         *
+         * <p>Two kinds of type need one, and excusing either into {@link #NOT_SWEPT} would have left the
+         * guard vouching for nothing:
+         * <ul>
+         *   <li>a record whose canonical constructor <strong>validates component widths</strong>. The
+         *       generic probe supplies a four-character sentinel, every field is rejected, and the type
+         *       falls out of the sweep - which is what happened to {@code SecUserRecord} while it was
+         *       publishing both of a user's names. Padding the sentinel to each field's declared width
+         *       makes the type constructible and the sweep real;</li>
+         *   <li>a <strong>non-record</strong> type that addresses its fields by span. It has no
+         *       components at all, so the sentinel has nowhere to go by name; the factory writes it into
+         *       the spans that carry personal data and declares what must not come back out. A numeric
+         *       span cannot hold {@value #PROBE}, so for those the forbidden value is a distinctive
+         *       digit string instead.</li>
+         * </ul>
+         */
+        private static final Map<String, Supplier<ProbeCase>> PROBE_FACTORIES = Map.of(
+                "com.vsergeychik.carddemo.user.model.SecUserRecord",
+                () -> new ProbeCase(
+                        // CSUSR01Y: 8, 20, 20, 8, 1, 23. The probe goes in the id, both names and the
+                        // password - every field the policy has an opinion about.
+                        new com.vsergeychik.carddemo.user.model.SecUserRecord(
+                                atWidth(PROBE, 8), atWidth(PROBE + "FNAME", 20),
+                                atWidth(PROBE + "LNAME", 20), atWidth(PROBE + "PW", 8), "A",
+                                atWidth("", 23)),
+                        // The id itself is legible by design - it is the VSAM key COSGN00C matches on -
+                        // so the bare probe is not forbidden; the names and the password are.
+                        List.of(PROBE + "FNAME", PROBE + "LNAME", PROBE + "PW")),
+
+                "com.vsergeychik.carddemo.transaction.model.TranCatBalRecord",
+                () -> new ProbeCase(
+                        com.vsergeychik.carddemo.transaction.model.TranCatBalRecord
+                                .newInstance(StandardCharsets.US_ASCII)
+                                .trancatAcctId(12345678901L)
+                                .tranCatBal(new java.math.BigDecimal("-987654321.99")),
+                        // TRANCAT-ACCT-ID is PIC 9(11) and TRAN-CAT-BAL is PIC S9(09)V99, so neither can
+                        // hold letters. The full account identifier and every rendering of the balance -
+                        // as digits, and as the zoned image whose last byte carries the sign - are what
+                        // must not appear.
+                        List.of("12345678901", "987654321.99", "98765432199", "9876543219R")),
+
+                "com.vsergeychik.carddemo.account.model.AccountRecord",
+                () -> {
+                    // CVACT01Y is 300 bytes and this rendering reads every field raw, so a blank area is
+                    // renderable - which is the point: the probe is about the key, not the amounts.
+                    com.vsergeychik.carddemo.account.model.AccountRecord account =
+                            com.vsergeychik.carddemo.account.model.AccountRecord.decode(
+                                    " ".repeat(300), StandardCharsets.US_ASCII);
+                    account.setAcctId(12345678901L);
+                    return new ProbeCase(account, List.of("12345678901"));
+                },
+
+                "com.vsergeychik.carddemo.statement.model.TrnxRecord",
+                () -> {
+                    // COSTM01's TRNX-CARD-NUM is PIC X(16), so the sentinel goes in as text. The
+                    // statement files carry a PAN and are written to two output datasets, so this is one
+                    // of the renderings most likely to reach a log.
+                    com.vsergeychik.carddemo.statement.model.TrnxRecord trnx =
+                            com.vsergeychik.carddemo.statement.model.TrnxRecord.decode(
+                                    " ".repeat(350).getBytes(StandardCharsets.US_ASCII),
+                                    StandardCharsets.US_ASCII);
+                    trnx.writeTrnxCardNum(atWidth(PROBE + "CARDNUM", 16));
+                    return new ProbeCase(trnx, List.of(PROBE + "CARDNUM"));
+                });
+
+        /**
+         * Pads or truncates a value to a declared {@code PIC X} width, on the right as COBOL does.
+         *
+         * @param value the value
+         * @param width the receiving field's declared width
+         * @return the value at exactly {@code width} characters
+         */
+        private static String atWidth(String value, int width) {
+            return value.length() >= width
+                    ? value.substring(0, width)
+                    : value + " ".repeat(width - value.length());
+        }
 
         /**
          * Whether a component name is one whose value must never be rendered.
@@ -585,6 +713,84 @@ class NoSensitiveDisclosureTest {
          * @throws Exception if the compiled output cannot be walked
          */
         private static List<Class<?>> allRecords() throws Exception {
+            List<Class<?>> found = new java.util.ArrayList<>();
+            for (Class<?> type : allCompiledTypes()) {
+                if (type.isRecord()) {
+                    found.add(type);
+                }
+            }
+            assertThat(found).as("the module must contain record types to check").isNotEmpty();
+            return found;
+        }
+
+        /**
+         * Every non-record class in this module that renders a span-addressed record area.
+         *
+         * <p>The other half of the gap the review found. {@link #allRecords()} walks
+         * {@code type.isRecord()}, so a copybook model written as a plain {@code final class} was
+         * invisible to it however sensitive its contents - and {@code TranCatBalRecord}, which held an
+         * account identifier beside a balance, is exactly that. Component-name matching cannot reach one
+         * either: such a type holds a single {@link FixedWidthRecord} area and addresses its fields by
+         * span, so there are no component names to match on and no name to add to
+         * {@link #SENSITIVE_COMPONENTS}.
+         *
+         * <p>Selection is therefore <em>structural</em>: a non-record class that declares its own
+         * {@code toString()} and holds a {@link FixedWidthRecord} field is a hand-written rendering over
+         * raw copybook bytes, which is precisely the shape that needs a disclosure decision. Every type
+         * selected must then be either registered in {@link #PROBE_FACTORIES}, so its rendering is
+         * actually exercised, or listed in {@link #RENDERINGS_NOT_PROBED} with a reason - so a new
+         * copybook model cannot be added without somebody choosing one or the other.
+         *
+         * @return every non-record class that renders a fixed-width record area
+         * @throws Exception if the compiled output cannot be walked
+         */
+        private static List<Class<?>> allSpanAddressedTypes() throws Exception {
+            List<Class<?>> found = new java.util.ArrayList<>();
+            for (Class<?> type : allCompiledTypes()) {
+                if (type.isRecord() || type.isInterface() || type.isEnum()) {
+                    continue;
+                }
+                boolean holdsAnArea = java.util.Arrays.stream(type.getDeclaredFields())
+                        .anyMatch(field -> field.getType() == FixedWidthRecord.class);
+                if (holdsAnArea && declaresItsOwnRendering(type)) {
+                    found.add(type);
+                }
+            }
+            assertThat(found)
+                    .as("the module must contain span-addressed types for this guard to be live")
+                    .isNotEmpty();
+            return found;
+        }
+
+        /**
+         * Whether a type declares a {@code toString()} of its own rather than inheriting one.
+         *
+         * @param type the type to inspect
+         * @return {@code true} when the type overrides {@code toString()}
+         */
+        private static boolean declaresItsOwnRendering(Class<?> type) {
+            for (java.lang.reflect.Method method : type.getDeclaredMethods()) {
+                if ("toString".equals(method.getName()) && method.getParameterCount() == 0
+                        && !method.isSynthetic()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Every class compiled into this module's main output, nested types included.
+         *
+         * <p>Enumerated from the compiled output rather than from a hand-written list, because a
+         * hand-written list is exactly what failed here: the per-type cases above cover the types
+         * somebody remembered, and two nested {@code CardUpdateRecord} types added later were invisible
+         * to all of them. Uses only {@code java.nio.file} and reflection - no scanning library is
+         * introduced, since the dependency set is closed.
+         *
+         * @return every loadable class in the module
+         * @throws Exception if the compiled output cannot be walked
+         */
+        private static List<Class<?>> allCompiledTypes() throws Exception {
             java.nio.file.Path classes = java.nio.file.Path.of(NavigationContext.class
                     .getProtectionDomain().getCodeSource().getLocation().toURI());
             assertThat(java.nio.file.Files.isDirectory(classes))
@@ -596,17 +802,14 @@ class NoSensitiveDisclosureTest {
                     String binary = classes.relativize(f).toString()
                             .replace(java.io.File.separatorChar, '.').replaceAll("\\.class$", "");
                     try {
-                        Class<?> type = Class.forName(binary, false,
-                                NavigationContext.class.getClassLoader());
-                        if (type.isRecord()) {
-                            found.add(type);
-                        }
+                        found.add(Class.forName(binary, false,
+                                NavigationContext.class.getClassLoader()));
                     } catch (Throwable unloadable) {
                         // A class that cannot be initialised cannot render anything either.
                     }
                 }
             }
-            assertThat(found).as("the module must contain record types to check").isNotEmpty();
+            assertThat(found).as("the compiled output must contain classes to walk").isNotEmpty();
             return found;
         }
 
@@ -618,6 +821,10 @@ class NoSensitiveDisclosureTest {
          * @return the populated instance, or {@code null} when it cannot be constructed
          */
         private static Object probe(Class<?> type) {
+            Supplier<ProbeCase> registered = PROBE_FACTORIES.get(type.getName());
+            if (registered != null) {
+                return registered.get().instance();
+            }
             java.lang.reflect.RecordComponent[] components = type.getRecordComponents();
             Class<?>[] parameters = java.util.Arrays.stream(components)
                     .map(java.lang.reflect.RecordComponent::getType).toArray(Class<?>[]::new);
@@ -679,9 +886,36 @@ class NoSensitiveDisclosureTest {
                             .contains(type.getName());
                     continue;
                 }
-                (String.valueOf(instance).contains(PROBE) ? disclosing : clean).add(type.getName());
+                (disclosesAnyForbiddenValue(type, instance) ? disclosing : clean).add(type.getName());
             }
             return Map.of(true, disclosing, false, clean);
+        }
+
+        /**
+         * Whether a rendering shows any value that type's probe declared must not appear.
+         *
+         * <p>For a generically probed type that is the bare sentinel. For a registered one it is the
+         * factory's own list, which matters for {@code SecUserRecord}: its {@code SEC-USR-ID} is legible
+         * by design - it is the VSAM key {@code COSGN00C} matches on and the only field a sign-on parity
+         * failure can be diagnosed from - so the sentinel appearing there is correct, while the same
+         * sentinel appearing in a name is not.
+         *
+         * @param type     the type under inspection
+         * @param instance the populated instance
+         * @return {@code true} when the rendering shows something it must withhold
+         */
+        private static boolean disclosesAnyForbiddenValue(Class<?> type, Object instance) {
+            Supplier<ProbeCase> registered = PROBE_FACTORIES.get(type.getName());
+            List<String> forbidden = registered == null
+                    ? List.of(PROBE)
+                    : registered.get().forbidden();
+            String rendered = String.valueOf(instance);
+            for (String value : forbidden) {
+                if (rendered.contains(value)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         @Test
@@ -696,6 +930,54 @@ class NoSensitiveDisclosureTest {
         }
 
         @Test
+        @DisplayName("every span-addressed non-record type is registered or documented")
+        void everySpanAddressedTypeIsAccountedFor() throws Exception {
+            // The structural half of the fix. A non-record copybook model has no components to match on,
+            // so the only way it can be guarded is by being discovered from the compiled output and then
+            // deliberately either probed or excused. TranCatBalRecord was neither, which is why it
+            // published an account identifier and a balance with nothing failing.
+            List<String> unaccounted = new java.util.ArrayList<>();
+            for (Class<?> type : allSpanAddressedTypes()) {
+                if (!PROBE_FACTORIES.containsKey(type.getName())
+                        && !RENDERINGS_NOT_PROBED.contains(type.getName())) {
+                    unaccounted.add(type.getName());
+                }
+            }
+            assertThat(unaccounted)
+                    .as("each of these renders a fixed-width record area and no disclosure decision "
+                            + "has been recorded for it. Register a probe in PROBE_FACTORIES if the "
+                            + "rendering touches personal data, or add it to RENDERINGS_NOT_PROBED with "
+                            + "the reason it does not.")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every registered probe is exercised, and each withholds what it declared")
+        void everyRegisteredProbeWithholdsWhatItDeclared() {
+            // Asserted per type and by name, because a registry whose entries were never run would look
+            // exactly like a passing guard.
+            assertThat(PROBE_FACTORIES).hasSizeGreaterThanOrEqualTo(2)
+                    .containsKeys("com.vsergeychik.carddemo.user.model.SecUserRecord",
+                            "com.vsergeychik.carddemo.transaction.model.TranCatBalRecord");
+            PROBE_FACTORIES.forEach((name, factory) -> {
+                ProbeCase probeCase = factory.get();
+                assertThat(probeCase.forbidden())
+                        .as("%s's probe must declare at least one value to withhold", name)
+                        .isNotEmpty();
+                String rendered = String.valueOf(probeCase.instance());
+                assertThat(rendered).as("%s must render something", name).isNotEmpty();
+                for (String forbidden : probeCase.forbidden()) {
+                    assertThat(rendered)
+                            .as("%s's rendering discloses '%s' - CWE-532", name, forbidden)
+                            .doesNotContain(forbidden);
+                }
+                // And a rendering must stay on one line whatever it holds, or a stored control character
+                // appends a log entry of the writer's choosing after it - CWE-117.
+                assertThat(rendered.lines()).as("%s must render on one line", name).hasSize(1);
+            });
+        }
+
+        @Test
         @DisplayName("the guard is live - it sweeps real types and the fixed ones come back clean")
         void theGuardIsLive() throws Exception {
             // A guard that selected nothing would pass forever. Name the types it must vouch for,
@@ -704,7 +986,12 @@ class NoSensitiveDisclosureTest {
                     .as("the sweep must reach the masked types and find them clean")
                     .contains("com.vsergeychik.carddemo.common.NavigationContext",
                             "com.vsergeychik.carddemo.card.model.CardRecord",
-                            "com.vsergeychik.carddemo.card.dto.CardUpdateRequest$CardUpdateRecord")
+                            "com.vsergeychik.carddemo.card.dto.CardUpdateRequest$CardUpdateRecord",
+                            // Named explicitly because it is the type the sweep silently skipped: its
+                            // components are spelled SEC-USR- and matched none of the unprefixed names,
+                            // and its width-validating constructor then rejected the generic sentinel,
+                            // so it was neither flagged nor vouched for while publishing both names.
+                            "com.vsergeychik.carddemo.user.model.SecUserRecord")
                     .hasSizeGreaterThan(5);
         }
     }

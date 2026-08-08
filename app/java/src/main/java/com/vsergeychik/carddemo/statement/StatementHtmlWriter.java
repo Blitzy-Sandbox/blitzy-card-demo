@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.statement;
 
 import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
@@ -1372,10 +1374,18 @@ public final class StatementHtmlWriter {
      * <p>A {@link DataAccessException} is translated into the COBOL permanent-error status
      * {@value StatementHtmlWriter#PERMANENT_ERROR_STATUS}, which
      * {@link FileStatus#outcomeOfStatus(String)} classifies as {@link FileStatus.Outcome#OTHER} - the
-     * {@code WHEN OTHER} arm every COBOL guard chain in the estate treats as fatal. The exception
-     * itself is retained on {@link #lastFailure()} so the diagnostic is not lost; this is a
+     * {@code WHEN OTHER} arm every COBOL guard chain in the estate treats as fatal. What the backend
+     * reported is retained on {@link #lastFailure()} so the diagnosis is not lost; this is a
      * per-execution sink, created afresh by {@link StatementHtmlWriter#defaultSink()}, so that field
      * is per-run state and never shared (practice B9).
+     *
+     * <p>What is retained is the {@link BackendDiagnostic} - {@code SQLSTATE}, vendor code, exception
+     * type - and <strong>not</strong> the exception. Publishing the exception published the driver's
+     * message with it, and a driver's message is prose the backend composed around the values it
+     * refused: an HTML statement record carries a customer's name, address and transaction history, so
+     * that text is cardholder data (CWE-532) in a form a control character can split into a forged log
+     * entry (CWE-117). The codes that remain are what distinguish an absent dataset from wrong
+     * credentials from a dropped connection, which is the whole of what the caller acts on.
      */
     public static final class JdbcHtmlRecordSink implements HtmlRecordSink {
 
@@ -1401,13 +1411,21 @@ public final class StatementHtmlWriter {
         private final String identifierQuote;
 
         /**
-         * The most recent write failure, or {@code null} when none has occurred.
+         * What the backend reported about the most recent write failure, or {@code null} when none has
+         * occurred.
          *
-         * <p>Per-execution state on a per-execution object. It exists so that translating an
-         * exception into a {@code FILE STATUS} does not discard the exception, which would be an
-         * opaque error handler.
+         * <p>Per-execution state on a per-execution object. It exists so that translating a refusal into
+         * a {@code FILE STATUS} does not discard the diagnosis, which would be an opaque error handler.
+         * It holds the sanitized diagnostic rather than the exception, for the reason set out on this
+         * class.
          */
-        private DataAccessException lastFailure;
+        private BackendDiagnostic lastFailure;
+
+        /** How the record image crosses JDBC: the deployment's answer, not this sink's. */
+        private final RecordImageForm recordImageForm;
+
+        /** The dataset code page, needed by the representation to bind a character image. */
+        private final Charset charset;
 
         /**
          * Composes this sink's single statement over an already-validated dataset name.
@@ -1427,9 +1445,14 @@ public final class StatementHtmlWriter {
          * @param relation     the {@code HTMLFILE} dataset as {@link DatasetRelation} sees it: its name
          *                     already checked against the z/OS dataset-name grammar, and its statement
          *                     text composed by the same renderer the sibling plain-text writer uses
+         * @param recordImageForm how a record image crosses JDBC in this deployment
+         * @param charset      the dataset code page
          */
-        private JdbcHtmlRecordSink(final JdbcTemplate jdbcTemplate, final DatasetRelation relation) {
+        private JdbcHtmlRecordSink(final JdbcTemplate jdbcTemplate, final DatasetRelation relation,
+                                   final RecordImageForm recordImageForm, final Charset charset) {
             this.jdbcTemplate = jdbcTemplate;
+            this.recordImageForm = recordImageForm;
+            this.charset = charset;
             this.dsname = relation.dsname();
             this.identifierQuote = resolveIdentifierQuote(jdbcTemplate);
             this.insertStatement = ANSI_IDENTIFIER_QUOTE.equals(this.identifierQuote)
@@ -1440,12 +1463,13 @@ public final class StatementHtmlWriter {
         /**
          * Writes one record.
          *
-         * <p>The image is bound with {@link java.sql.PreparedStatement#setBytes(int, byte[])}
-         * explicitly, not handed to the driver as an untyped argument. The two are not the same
-         * request: an untyped argument leaves the driver to choose a type for a {@code byte[]}, and the
-         * sibling plain-text writer - same deployment, same driver, same shape of statement - binds it
-         * as bytes. A record that is already the final 100-byte image in the injected code page must
-         * arrive as those bytes, so both writers ask for that in the same words (practice B8, rule R5).
+         * <p>The image is bound through the injected {@link RecordImageForm}, explicitly, and never handed
+         * to the driver as an untyped argument. The two are not the same request: an untyped argument
+         * leaves the driver to choose a type for a {@code byte[]}. Nor is the choice this sink's to make -
+         * it and the sibling plain-text writer bound bytes while three other dataset accesses of the same
+         * deployment read characters, and one of those groups had to be wrong about the column. The
+         * representation is now stated once, in configuration, and every writer and reader asks for it in
+         * the same words (practice B8, rule R5).
          *
          * @param record exactly {@link StatementHtmlWriter#RECORD_LENGTH} bytes
          * @return {@link FileStatus#OK} when the statement succeeded, otherwise
@@ -1453,14 +1477,14 @@ public final class StatementHtmlWriter {
          */
         @Override
         public String write(final byte[] record) {
-            final PreparedStatementSetter binder = parameters ->
-                    parameters.setBytes(DatasetRelation.RECORD_IMAGE_COLUMN_INDEX, record);
+            final PreparedStatementSetter binder = parameters -> this.recordImageForm.bindImage(
+                    parameters, DatasetRelation.RECORD_IMAGE_COLUMN_INDEX, record, this.charset);
             try {
                 this.jdbcTemplate.update(this.insertStatement, binder);
                 this.lastFailure = null;
                 return FileStatus.OK;
             } catch (DataAccessException failure) {
-                this.lastFailure = failure;
+                this.lastFailure = BackendDiagnostic.of(failure);
                 return PERMANENT_ERROR_STATUS;
             }
         }
@@ -1499,10 +1523,12 @@ public final class StatementHtmlWriter {
         /**
          * The most recent write failure.
          *
-         * @return the last {@link DataAccessException}, or an empty {@link Optional} when the most
-         *         recent write succeeded and when no write has been attempted
+         * @return what the backend reported about the last refusal - its {@code SQLSTATE}, vendor code
+         *         and exception type - or an empty {@link Optional} when the most recent write succeeded
+         *         and when no write has been attempted. Never the exception itself, and never the
+         *         driver's message
          */
-        public Optional<DataAccessException> lastFailure() {
+        public Optional<BackendDiagnostic> lastFailure() {
             return Optional.ofNullable(this.lastFailure);
         }
     }
@@ -1529,6 +1555,15 @@ public final class StatementHtmlWriter {
     /** The hand-written fixed-width codec over {@link #datasetCharset}. */
     private final FixedWidthCodec codec;
 
+    /**
+     * The one representation this writer's record image crosses JDBC in, from configuration.
+     *
+     * <p>Held on the writer rather than on the sink because {@link #defaultSink()} builds a fresh sink per
+     * run and each must be given the same answer. A sink a caller injects supplies its own transport and
+     * needs none of this, which is why the field is used only where the production sink is built.
+     */
+    private final RecordImageForm recordImageForm;
+
     /** The resolved {@code carddemo.datasets.HTMLFILE} binding. */
     private final DatasetBinding binding;
 
@@ -1553,6 +1588,8 @@ public final class StatementHtmlWriter {
      *                       {@code CobolCharsetConfig} publishes three {@link Charset} beans and
      *                       declares no primary
      * @param datasetBindings the {@code carddemo.datasets} catalogue
+     * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
+     *                        {@value RecordImageForm#FORM_PROPERTY}
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if no {@code HTMLFILE} binding is configured, or if it declares
      *                               a record length other than {@link #RECORD_LENGTH}
@@ -1560,7 +1597,8 @@ public final class StatementHtmlWriter {
     public StatementHtmlWriter(
             final JdbcTemplate jdbcTemplate,
             @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) final Charset datasetCharset,
-            final DatasetBindings datasetBindings) {
+            final DatasetBindings datasetBindings,
+            final RecordImageForm recordImageForm) {
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate,
                 "A JdbcTemplate is required; config/DataSourceConfig publishes exactly one");
         this.datasetCharset = Objects.requireNonNull(datasetCharset,
@@ -1570,6 +1608,11 @@ public final class StatementHtmlWriter {
         Objects.requireNonNull(datasetBindings,
                 "The carddemo.datasets binding catalogue is required; dataset names are never "
                         + "hard-coded in Java");
+        this.recordImageForm = Objects.requireNonNull(recordImageForm,
+                "A record-image representation is required: whether this deployment's driver takes a "
+                        + "record image as characters or as bytes is stated once, by "
+                        + RecordImageForm.FORM_PROPERTY + ", and never decided per writer");
+        RecordImageForm.requireSingleByteCodePage(datasetCharset);
         this.codec = new FixedWidthCodec(datasetCharset);
         this.binding = datasetBindings.binding(HTMLFILE_DD_NAME);
         if (this.binding.recordLength() != RECORD_LENGTH) {
@@ -1650,7 +1693,9 @@ public final class StatementHtmlWriter {
      */
     public JdbcHtmlRecordSink defaultSink() {
         return new JdbcHtmlRecordSink(this.jdbcTemplate,
-                requireAddressableDataset(this.binding.dsname()));
+                requireAddressableDataset(this.binding.dsname()),
+                this.recordImageForm,
+                this.datasetCharset);
     }
 
     /**
@@ -2378,9 +2423,10 @@ public final class StatementHtmlWriter {
                     }));
         } catch (DataAccessException unreachable) {
             LOG.warn("Could not ask the driver behind " + HTMLFILE_DD_NAME + " for its identifier "
-                    + "quote character; composing the INSERT with the SQL-standard quote. The write "
+                    + "quote character - " + BackendDiagnostic.of(unreachable).describe()
+                    + "; composing the INSERT with the SQL-standard quote. The write "
                     + "itself will report this condition as FILE STATUS " + PERMANENT_ERROR_STATUS
-                    + ".", unreachable);
+                    + ".");
             return ANSI_IDENTIFIER_QUOTE;
         }
     }
