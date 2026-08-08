@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------------------------
+# AWS CardDemo - 'test' profile: fixture-backed configuration for unit tests, the parity harness
+# and local runs.
+#
+# Every dataset binding points at a fixture derived from app/data/ASCII/*.txt (AAP 0.4.2). H2 runs
+# in-memory purely to host the Spring Batch JobRepository metadata tables and the seeded parity
+# datasets - it is a TEST-scope dependency and never a production database (AAP 0.5.5).
+#
+# NOTE on the cardxref fixture: app/data/ASCII/cardxref.txt is 36 bytes per record while CVACT03Y
+# declares 50 (the trailing FILLER X(14) is absent from the fixture). The harness right-pads to 50
+# before comparison - see AAP gate G16 / risk R-F.
+# ---------------------------------------------------------------------------------------------
+spring:
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      # Creates ONLY the Spring Batch metadata tables inside the in-memory H2 instance. This is
+      # test infrastructure, not a migration of the application's data model.
+      initialize-schema: always
+
+  datasource:
+    url: jdbc:h2:mem:carddemo;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=LEGACY
+    username: sa
+    password: ''
+    driver-class-name: org.h2.Driver
+    hikari:
+      pool-name: carddemo-test-pool
+      maximum-pool-size: 5
+      auto-commit: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+carddemo:
+  charset:
+    ebcdic: IBM037
+    ascii: US-ASCII
+
+  # Fixture-backed dataset bindings. Paths resolve on the test classpath
+  # (app/java/src/test/resources/fixtures/) which is derived from app/data/ASCII/.
+  datasets:
+    acctdat: classpath:fixtures/acctdata.txt
+    carddat: classpath:fixtures/carddata.txt
+    cardaix: classpath:fixtures/carddata.txt
+    ccxref: classpath:fixtures/cardxref.txt
+    cxacaix: classpath:fixtures/cardxref.txt
+    custdat: classpath:fixtures/custdata.txt
+    transact: classpath:fixtures/transact.txt
+    usrsec: classpath:fixtures/usrsec.txt
+
+    discgrp: classpath:fixtures/discgrp.txt
+    tcatbalf: classpath:fixtures/tcatbal.txt
+    dalytran: classpath:fixtures/dailytran.txt
+    dalyrejs: ${java.io.tmpdir}/carddemo-test/dalyrejs.txt
+    trantype: classpath:fixtures/trantype.txt
+    trancatg: classpath:fixtures/trancatg.txt
+    dateparm: classpath:fixtures/dateparm.txt
+    trnxfile: classpath:fixtures/trnxfile.txt
+    tranrept: ${java.io.tmpdir}/carddemo-test/tranrept.txt
+    stmtfile: ${java.io.tmpdir}/carddemo-test/statement.txt
+    htmlfile: ${java.io.tmpdir}/carddemo-test/statement.html
+    systran: ${java.io.tmpdir}/carddemo-test/systran.txt
+
+logging:
+  level:
+    root: WARN
+    com.vsergeychik.carddemo: DEBUG
+    org.springframework.batch: INFO

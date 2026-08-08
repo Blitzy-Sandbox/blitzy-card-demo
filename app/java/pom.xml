@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AWS CardDemo - COBOL to Java 21 / Spring Boot 3.x like-for-like migration module.
+
+  Toolchain and dependency versions are fixed by the Agent Action Plan (AAP 0.5.2 - 0.5.4):
+    * Java 21 (LTS)                     - <release>21</release>, never 17/25
+    * Apache Maven 3.9+                 - built and verified with 3.9.16
+    * spring-boot-starter-parent 3.5.16 - highest 3.x; the 4.x line is deliberately rejected
+    * Spring Batch 5.2.6                - inherited from the Boot 3.5.16 BOM, never 6.x
+    * JaCoCo 0.8.15                     - >= 0.90 BRANCH coverage enforced at 'verify'
+  Every library version is inherited from the parent BOM; only the three build plugins named in
+  AAP 0.5.4 carry an explicit <version>. No SNAPSHOT and no LATEST references (AAP gate G2).
+
+  Persistence is plain JDBC against the existing VSAM/DB2 datasets. There is deliberately NO
+  JPA/Hibernate, NO Flyway/Liquibase, NO PostgreSQL driver, NO Spring Security, NO Spring Cloud
+  AWS, NO Micrometer/observability stack, NO Testcontainers, NO WebFlux, NO springdoc, NO Lombok
+  and NO third-party COBOL copybook parser (AAP 0.5.6 - the dependency set is closed).
+
+  The site-specific mainframe JDBC driver is a deployment-time input and is intentionally not
+  hard-coded here (AAP 0.5.5). H2 is present at TEST scope only, where it backs the Spring Batch
+  JobRepository and the fixture-seeded parity harness.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.vsergeychik</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>carddemo</name>
+    <description>AWS CardDemo - COBOL to Java 21 / Spring Boot 3.x like-for-like migration</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Plugin versions pinned explicitly per AAP 0.5.4 -->
+        <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
+        <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
+
+        <!-- Parity gate: >= 90% BRANCH coverage, scoped to this module (AAP G49). Do not lower. -->
+        <jacoco.branch.minimum>0.90</jacoco.branch.minimum>
+    </properties>
+
+    <dependencies>
+        <!-- Online layer: 17 CICS programs become stateless REST controllers -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Batch layer: the 8 JCL-invoked programs plus the orphan CBTRN01C -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Data access: JdbcTemplate + HikariCP for the 12 repositories. No ORM. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!-- Bean Validation on the 17 request DTOs; field lengths come from the symbolic maps -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Test aggregate: JUnit 5, Mockito, AssertJ, Spring Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- TEST SCOPE ONLY: backs the Spring Batch JobRepository and the seeded parity fixtures.
+             Never promoted to runtime scope - production uses the deployment-supplied driver. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>carddemo</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven-compiler-plugin.version}</version>
+                <configuration>
+                    <release>21</release>
+                    <parameters>true</parameters>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <!-- Non-interactive, no watch mode, deterministic ordering for parity runs -->
+                    <useFile>false</useFile>
+                    <trimStackTrace>false</trimStackTrace>
+                    <runOrder>alphabetical</runOrder>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco-maven-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-check-branch-coverage</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.branch.minimum}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>com.vsergeychik.carddemo.CardDemoApplication</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

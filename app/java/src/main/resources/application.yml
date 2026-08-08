@@ -1,0 +1,96 @@
+# ---------------------------------------------------------------------------------------------
+# AWS CardDemo - Java 21 / Spring Boot 3.x migration module: default runtime configuration.
+#
+# Every dataset name lives here and NOWHERE in Java source (AAP gate G46: a source scan must find
+# no hard-coded AWS.M2.CARDDEMO.* literal). The eight VSAM datasets are the FILE definitions in
+# app/csd/CARDDEMO.CSD; the remaining entries are the batch-only DD names taken from app/jcl/*.jcl
+# and app/proc/*.prc.
+#
+# The site-specific mainframe JDBC driver is a DEPLOYMENT-TIME INPUT (AAP 0.5.5 / risk R-E): no
+# driver coordinate is compiled into the build, and no DDL or schema migration is ever performed
+# against the existing backend (AAP gate G44).
+# ---------------------------------------------------------------------------------------------
+spring:
+  application:
+    name: carddemo
+
+  # Batch jobs are launched explicitly (mirroring an EXEC PGM= step), never on context refresh.
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      # NEVER create tables against the existing backend - no DDL, no schema changes.
+      initialize-schema: never
+
+  # Configuration-bound DataSource. Supply these at deployment time; nothing is defaulted to a
+  # concrete database here, because this module must not introduce a database of its own.
+  datasource:
+    url: ${CARDDEMO_DATASOURCE_URL:}
+    username: ${CARDDEMO_DATASOURCE_USERNAME:}
+    password: ${CARDDEMO_DATASOURCE_PASSWORD:}
+    driver-class-name: ${CARDDEMO_DATASOURCE_DRIVER_CLASS:}
+    hikari:
+      pool-name: carddemo-pool
+      maximum-pool-size: ${CARDDEMO_DATASOURCE_MAX_POOL:10}
+      minimum-idle: ${CARDDEMO_DATASOURCE_MIN_IDLE:2}
+      connection-timeout: 30000
+      auto-commit: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+carddemo:
+  # Charsets are always named explicitly - never the platform default (AAP 0.7.2 / rule B8).
+  charset:
+    ebcdic: IBM037
+    ascii: US-ASCII
+
+  datasets:
+    # --- The 8 CICS FILE definitions from app/csd/CARDDEMO.CSD -------------------------------
+    acctdat: ${CARDDEMO_DS_ACCTDAT:AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS}
+    carddat: ${CARDDEMO_DS_CARDDAT:AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}
+    cardaix: ${CARDDEMO_DS_CARDAIX:AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH}
+    ccxref: ${CARDDEMO_DS_CCXREF:AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}
+    cxacaix: ${CARDDEMO_DS_CXACAIX:AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH}
+    custdat: ${CARDDEMO_DS_CUSTDAT:AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS}
+    transact: ${CARDDEMO_DS_TRANSACT:AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}
+    usrsec: ${CARDDEMO_DS_USRSEC:AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}
+
+    # --- Batch-only DD names from app/jcl/*.jcl and app/proc/*.prc --------------------------
+    discgrp: ${CARDDEMO_DS_DISCGRP:AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS}
+    tcatbalf: ${CARDDEMO_DS_TCATBALF:AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}
+    dalytran: ${CARDDEMO_DS_DALYTRAN:AWS.M2.CARDDEMO.DALYTRAN.PS}
+    dalyrejs: ${CARDDEMO_DS_DALYREJS:AWS.M2.CARDDEMO.DALYREJS.PS}
+    trantype: ${CARDDEMO_DS_TRANTYPE:AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS}
+    trancatg: ${CARDDEMO_DS_TRANCATG:AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS}
+    dateparm: ${CARDDEMO_DS_DATEPARM:AWS.M2.CARDDEMO.DATEPARM.PS}
+    trnxfile: ${CARDDEMO_DS_TRNXFILE:AWS.M2.CARDDEMO.TRXFL.SEQ}
+    tranrept: ${CARDDEMO_DS_TRANREPT:AWS.M2.CARDDEMO.TRANREPT.PS}
+    stmtfile: ${CARDDEMO_DS_STMTFILE:AWS.M2.CARDDEMO.STATEMNT.PS}
+    htmlfile: ${CARDDEMO_DS_HTMLFILE:AWS.M2.CARDDEMO.STATEMNT.HTML}
+    systran: ${CARDDEMO_DS_SYSTRAN:AWS.M2.CARDDEMO.SYSTRAN.PS}
+
+  # Fixed record widths asserted by the parity gates G19/G20. Values come from the copybooks in
+  # app/cpy/ and the LRECL declarations in app/jcl/. Reference data - do not tune.
+  record-length:
+    account: 300
+    card: 150
+    card-xref: 50
+    customer: 500
+    transaction: 350
+    daly-tran: 350
+    tran-cat-bal: 50
+    disclosure-group: 50
+    tran-type: 60
+    tran-category: 60
+    sec-user: 80
+    trnx: 350
+    daly-rejects: 430
+    tran-report: 133
+    statement-text: 80
+    statement-html: 100
+
+logging:
+  level:
+    root: INFO
+    com.vsergeychik.carddemo: INFO

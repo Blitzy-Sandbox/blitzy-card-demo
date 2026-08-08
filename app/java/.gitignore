@@ -1,0 +1,13 @@
+# Maven build output - never committed
+target/
+
+# IDE / tooling scratch
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+
+# JaCoCo / surefire artefacts that land outside target/ when invoked ad hoc
+*.exec
