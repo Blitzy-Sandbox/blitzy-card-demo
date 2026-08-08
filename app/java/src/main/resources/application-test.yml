@@ -1,63 +1,477 @@
-# ---------------------------------------------------------------------------------------------
-# AWS CardDemo - 'test' profile: fixture-backed configuration for unit tests, the parity harness
-# and local runs.
+# =============================================================================================
+#  AWS CardDemo - Java 21 / Spring Boot 3.5.16 migration module
+#  'test' PROFILE CONFIGURATION
+# =============================================================================================
 #
-# Every dataset binding points at a fixture derived from app/data/ASCII/*.txt (AAP 0.4.2). H2 runs
-# in-memory purely to host the Spring Batch JobRepository metadata tables and the seeded parity
-# datasets - it is a TEST-scope dependency and never a production database (AAP 0.5.5).
+#  WHAT THIS FILE IS
+#  -----------------
+#  application.yml declares WHAT every CardDemo dataset is - its DD name, its organization, its
+#  record width and its copybook. This file declares only WHERE each one lives when the suite
+#  runs, and it rebinds all of them onto two things that exist entirely inside the build:
 #
-# NOTE on the cardxref fixture: app/data/ASCII/cardxref.txt is 36 bytes per record while CVACT03Y
-# declares 50 (the trailing FILLER X(14) is absent from the fixture). The harness right-pads to 50
-# before comparison - see AAP gate G16 / risk R-F.
-# ---------------------------------------------------------------------------------------------
+#    * the nine fixed-width fixtures on the test classpath, derived from app/data/ASCII/*.txt;
+#    * one in-memory H2 database.
+#
+#  That is what lets the 560-case parity harness and every per-module unit test run offline -
+#  no mainframe, no external database, no network, no container (AAP 0.3.8, 0.4.2, 0.5.5).
+#
+#  Authority: AAP 0.2.5 (in-scope list), 0.3.1 (target tree - "CREATE - fixture-backed test
+#  profile"), 0.4.2 (CREATE from app/data/ASCII/*.txt - "Test profile pointing every dataset
+#  binding at a fixture file"), 0.5.5 (H2 2.3.232 at test scope only, backing the Spring Batch
+#  JobRepository and hosting the harness's seeded fixture data), 0.3.8 (parity harness design).
+#
+#  WHY THIS FILE IS IN src/main/resources AND NOT src/test/resources
+#  ----------------------------------------------------------------
+#  Because AAP 0.3.1 and 0.2.5 both place it there, and gate G5 pins the declared change set to
+#  that path. A profile document shipped in the main resource root is a legitimate Spring
+#  arrangement - it is inert until the "test" profile is active - and moving it to the test tree
+#  would orphan the path the plan declares. It is deliberately where it is; do not relocate it.
+#
+#  HOW THIS PROFILE IS ACTIVATED  (and why there is no activation key below)
+#  -----------------------------
+#  Purely by this file's NAME. Spring Boot loads application-{profile}.yml when {profile} is
+#  active, so "test" alone is sufficient - via @ActiveProfiles("test"), SPRING_PROFILES_ACTIVE
+#  or -Dspring-boot.run.profiles=test.
+#
+#  spring.config.activate.on-profile, spring.profiles.active and spring.profiles.default are all
+#  ILLEGAL in a profile-specific resource and are absent on purpose: Spring Boot 3.5.16 lists
+#  them in InvalidConfigDataPropertyException.PROFILE_SPECIFIC_ERRORS and fails the context with
+#  "... is invalid in a profile specific resource". Adding one would not merely be redundant, it
+#  would stop the application starting.
+#
+#  WHAT A PROFILE MAY AND MAY NOT OVERRIDE  (application.yml L42-L55, gates G19 and G20)
+#  ---------------------------------------
+#  ONLY the "dsname" of a dataset entry. record-length, record-format, block-size, copybook,
+#  key-length, base and alternate-key are copybook-fixed or JCL-fixed and are NEVER restated or
+#  relaxed here. The location of a dataset is environmental; its geometry is not. Every override
+#  below is therefore a single "dsname:" line beneath a DD name spelled exactly as
+#  application.yml spells it - not a replacement entry, and not a bare scalar, either of which
+#  would break the binding and silently stop overriding anything.
+#
+#  Test-only facts that have no home in that schema - a fixture's measured record count, its
+#  on-disk width, and the two right-pad normalisations - live in the separate carddemo.test.*
+#  namespace below rather than being smuggled in as extra keys under carddemo.datasets.
+#
+#  THE READ-ONLY TREES ARE NEVER NAMED AS A LOCATION  (practice B3, gate G5)
+#  ------------------------------------------------
+#  app/cbl, app/cpy, app/cpy-bms, app/bms, app/jcl, app/proc, app/csd, app/ctl, app/catlg and
+#  app/data are the ONLY oracle for behavioural equivalence in this migration. Not one property
+#  VALUE in this file resolves into any of them - the fixture bindings point at the COPIES under
+#  app/java/src/test/resources/fixtures/, reached as classpath resources, and every writable
+#  binding is rooted at carddemo.test.work-dir, which sits outside the repository entirely.
+#  A repository path appears here only inside a comment, as provenance. Pointing a test at the
+#  reference tree would risk a write into the oracle itself, so it is structurally impossible
+#  rather than merely discouraged.
+#
+#  USER-SPECIFIED RULES
+#  --------------------
+#  review_rules returns exactly one line - "No user rules provided." - and that single line is
+#  the entire document. NO user rule governs this file. That absence is not licence to lower the
+#  bar: AAP 0.10.2 elevates twelve enterprise practices to binding constraints instead, and the
+#  ones bearing on this file are cited inline as B1 (exact verified values, no secrets, every
+#  path resolves), B2 (Spring Boot 3.5.16 / Spring Batch 5.2.6 semantics only), B3 (reference
+#  trees immutable), B4 (no scope creep), B6 (security posture unchanged), B7 (deterministic,
+#  non-interactive), B8 (explicit over implicit), B10 (tests are a first-class deliverable) and
+#  B12 (environmental limits documented, not absorbed).
+# =============================================================================================
+
 spring:
+
+  # -------------------------------------------------------------------------------------------
+  # DataSource - in-memory H2, and the ONLY working DataSource anywhere in this build.
+  #
+  # application.yml deliberately ships a driver-free, credential-free, deployment-bound block
+  # (AAP 0.5.5, risk R-E): there is not one EXEC SQL statement in any of the 28 COBOL programs,
+  # indexed VSAM has no Maven-published JDBC driver, and app/java/pom.xml pins no driver
+  # coordinate. That block cannot start a context. This one can, which is why gate G3's
+  # context-load test runs under this profile and not the default one.
+  #
+  # H2 serves exactly two purposes here, both from AAP 0.5.5:
+  #   1. it backs the Spring Batch JobRepository - Spring Batch 5 requires a DataSource-backed
+  #      repository, so without it no job can be launched at all;
+  #   2. it hosts the parity harness's seeded fixture data.
+  # It is a TEST-scope dependency in app/java/pom.xml (com.h2database:h2:2.3.232, resolved by
+  # the Boot 3.5.16 BOM) and is never promoted to compile or runtime scope.
+  #
+  # ISOLATION AND DETERMINISM (practice B7, and gate G18 depends on it)
+  # A "jdbc:h2:mem:" database is private to the JVM that opens it, so two Maven runs - in
+  # parallel clones or one after another - cannot see each other's rows. The name is fixed
+  # rather than randomised or timestamped, so a given run is byte-for-byte reproducible; nothing
+  # here varies with the wall clock or a random seed. Per-CASE isolation within one JVM is the
+  # harness's job: it seeds and clears the datasets it touches for each of the 20 cases.
+  #
+  # DB_CLOSE_DELAY=-1 keeps the database alive for the JVM's lifetime, so the JobRepository
+  # metadata created once at context refresh survives even if the pool drops every connection.
+  # DB_CLOSE_ON_EXIT=FALSE lets the JVM shut down without H2 racing the Spring lifecycle.
+  #
+  # NO SQL COMPATIBILITY MODE IS SET, deliberately. H2 runs in its standard (REGULAR) mode:
+  # Spring Batch's bundled schema-h2.sql targets standard H2, and a compatibility mode would
+  # change SQL semantics underneath a harness whose entire purpose is byte-level parity.
+  #
+  # NO SECRET IS COMMITTED HERE (practice B1). H2's conventional in-memory account is the user
+  # "sa" with an empty password; it grants access to a database that exists only inside the test
+  # JVM and holds only fixture data. It is a test-only non-secret, not a credential.
+  # -------------------------------------------------------------------------------------------
+  datasource:
+    url: jdbc:h2:mem:carddemo_test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ''
+    hikari:
+      # Named distinctly from application.yml's "carddemo-pool" so a thread dump or a JMX view
+      # makes it obvious at a glance which profile is live.
+      pool-name: carddemo-test-pool
+      # Small on purpose. AAP 0.8.6: this is not a performance refactoring, and several jobs
+      # depend on strict record ordering, so there is nothing to gain from a larger pool.
+      maximum-pool-size: 5
+      # At least one connection is always retained. Combined with DB_CLOSE_DELAY=-1 this makes
+      # the lifetime of the in-memory database independent of pool eviction timing - i.e. it
+      # removes a timing-dependent failure mode rather than relying on a default (B7, B8).
+      minimum-idle: 1
+      # UNCHANGED FROM application.yml, AND THAT MATTERS. Commit boundaries belong to the Spring
+      # Batch step and the service layer, mirroring where the COBOL performs its REWRITE; a
+      # driver that committed on its own would break that mapping. Verified safe against the
+      # schema initializer: Spring Framework 6.2.19's DatabasePopulatorUtils.execute checks
+      # Connection.getAutoCommit() and DataSourceUtils.isConnectionTransactional() and issues an
+      # explicit Connection.commit(), so the BATCH_* DDL below is committed even with
+      # auto-commit disabled.
+      auto-commit: false
+
+  # -------------------------------------------------------------------------------------------
+  # Spring Batch.
+  #
+  # THE G44 BOUNDARY, DRAWN EXPLICITLY.
+  # Gate G44 forbids DDL, schema migration files, entity annotations, generated table
+  # definitions, version columns and new indexes; the prompt forbids any database migration at
+  # all. The BATCH_* tables are none of those things - they are Spring Batch's own JobRepository
+  # metadata, framework infrastructure that the framework itself owns. So:
+  #   * application.yml sets initialize-schema: never, because nothing in this module may ever
+  #     issue DDL against the real backend;
+  #   * this profile sets it to always, because the only database this profile can reach is the
+  #     throwaway in-memory H2 instance configured above.
+  # The tables therefore exist in H2 and nowhere else. Do not set "always" in application.yml.
+  #
+  # THE SCRIPT IS THE FRAMEWORK'S, NOT OURS - and it is named rather than left to @@platform@@
+  # substitution so that claim is verifiable by inspection. classpath:org/springframework/batch/
+  # core/schema-h2.sql ships inside spring-batch-core-5.2.6.jar; its first line reads
+  # "-- Autogenerated: do not edit this file" and it creates 6 tables and 3 sequences. This
+  # module authors NO .sql file and creates no db/ or migration/ directory, and no Flyway or
+  # Liquibase artifact exists anywhere in the build.
+  #
+  # job.enabled stays false, exactly as application.yml sets it. Restated here because it is a
+  # published contract (README.md documents explicit per-job launch) and because it is precisely
+  # what keeps "mvn -B clean verify" unattended: no job may auto-run on context refresh, so a
+  # job runs only when a test deliberately launches it - just as a job runs only when JCL
+  # submits an EXEC PGM= step (practice B7, gate G54).
+  # -------------------------------------------------------------------------------------------
   batch:
     job:
       enabled: false
     jdbc:
-      # Creates ONLY the Spring Batch metadata tables inside the in-memory H2 instance. This is
-      # test infrastructure, not a migration of the application's data model.
       initialize-schema: always
+      schema: classpath:org/springframework/batch/core/schema-h2.sql
 
-  datasource:
-    url: jdbc:h2:mem:carddemo;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=LEGACY
-    username: sa
-    password: ''
-    driver-class-name: org.h2.Driver
-    hikari:
-      pool-name: carddemo-test-pool
-      maximum-pool-size: 5
-      auto-commit: false
+  # A second, independent guard on the same G44 boundary, tightened rather than relaxed for the
+  # test run: no schema.sql and no data.sql may be executed against the DataSource, so a stray
+  # script arriving on the test classpath cannot quietly create application tables. Application
+  # data reaches H2 only through the parity harness seeding it from the fixtures below.
+  sql:
+    init:
+      mode: never
 
+# ---------------------------------------------------------------------------------------------
+# Servlet container.
+#
+# PORT 0 - AN EPHEMERAL PORT, NOT 8080 (practice B7, gate G54).
+# A fixed port is a host-global resource. Two builds running side by side - parallel clones, or
+# a developer with the application already up - would collide on it, and the suite would fail
+# for a reason that has nothing to do with the code under test. Port 0 asks the OS for a free
+# port, so there is nothing to collide over. MockMvc controller tests bind no port at all, and
+# @SpringBootTest(webEnvironment = RANDOM_PORT) injects the assigned port through
+# @LocalServerPort.
+#
+# The override key is application.yml's own CARDDEMO_SERVER_PORT, so one variable governs the
+# port in every profile. Everything else under server.* - the context path and the error
+# response shape, whose message and binding errors are parity-relevant because the COBOL returns
+# its diagnostic text in the screen's error field - is inherited unchanged.
+# ---------------------------------------------------------------------------------------------
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${CARDDEMO_SERVER_PORT:0}
 
+# =============================================================================================
+#  carddemo.* - the migration's own configuration namespace
+# =============================================================================================
 carddemo:
+
+  # -------------------------------------------------------------------------------------------
+  # Character sets - ALWAYS NAMED, NEVER THE PLATFORM DEFAULT (practice B8, AAP 0.8.9).
+  #
+  # Restated verbatim rather than inherited, because a platform default charset is the classic
+  # silent corrupter of mainframe data and this is the profile in which the fixtures are actually
+  # decoded. US-ASCII is the code page of the nine authoritative text fixtures under
+  # app/data/ASCII/ and of every copy derived from them, so it is the one that governs every
+  # parity assertion. IBM037 stays declared because CobolCharsetConfig resolves both and must not
+  # fall back to a default for either; app/data/EBCDIC/ is reference-only, and README.md:L65
+  # requires those twelve binary datasets be transferred in binary mode.
+  #
+  # These two values are IDENTICAL to application.yml's on purpose - encoding is a parity
+  # concern, not an environmental one, so the test profile must not be able to differ from
+  # production here. They appear again only so the guarantee is visible where it is exercised.
+  # -------------------------------------------------------------------------------------------
   charset:
     ebcdic: IBM037
     ascii: US-ASCII
 
-  # Fixture-backed dataset bindings. Paths resolve on the test classpath
-  # (app/java/src/test/resources/fixtures/) which is derived from app/data/ASCII/.
+  # -------------------------------------------------------------------------------------------
+  # carddemo.test.* - TEST-PROFILE-ONLY FACTS. Consumed by the parity harness.
   #
-  # A profile override restates ONLY the "dsname" of an entry, keyed by the same upper-case DD
-  # name application.yml declares. Everything else in an entry - record-length, record-format,
-  # block-size, copybook, key-length, base, alternate-key - is copybook-fixed or JCL-fixed and is
-  # deliberately NOT repeated here: the location of a dataset is environmental, its geometry is
-  # not (gates G19, G20). Replacing a whole entry with a bare scalar would break the binding.
+  # WHY THIS IS A SEPARATE NAMESPACE AND NOT EXTRA KEYS UNDER carddemo.datasets.
+  # application.yml L42-L55 permits a profile document to override exactly one field of a dataset
+  # entry - its dsname - and states that everything else there is copybook-fixed or JCL-fixed.
+  # A "pad-to" or "records" key bolted onto carddemo.datasets.CCXREF would violate that ruling
+  # and blur the one auditable width source (practice B11). The facts below are properties of the
+  # FIXTURE FILES, not of the datasets, so they get their own home. Nothing here relaxes a
+  # parity value; every width in carddemo.datasets stays exactly as application.yml declares it
+  # (gates G19, G20).
+  # -------------------------------------------------------------------------------------------
+  test:
+
+    # WRITABLE ROOT for every dataset a test run produces, and the single place to repoint them.
+    #
+    # It is outside the repository entirely, which is what makes practice B3 structural rather
+    # than aspirational: no output can land in app/cbl, app/cpy, app/cpy-bms, app/bms, app/jcl,
+    # app/proc, app/csd, app/ctl, app/catlg or app/data, because none of those is reachable from
+    # here. ${java.io.tmpdir}/carddemo/... is the convention application.yml already uses for its
+    # job-submission destination, so both files agree on where transient output belongs.
+    #
+    # The path is fixed, not randomised or timestamped, so a run is reproducible (practice B7).
+    # Set CARDDEMO_TEST_WORK_DIR to give a CI executor or a parallel checkout its own root
+    # without touching this file.
+    work-dir: ${CARDDEMO_TEST_WORK_DIR:${java.io.tmpdir}/carddemo/test-datasets}
+
+    # -----------------------------------------------------------------------------------------
+    # THE NINE FIXTURES, WITH MEASURED GEOMETRY.
+    #
+    # Every "records" and "bytes-per-record" value below was MEASURED, not inferred, from
+    # app/data/ASCII/*.txt and re-measured on the classpath copies under
+    # app/java/src/test/resources/fixtures/, which are byte-for-byte identical to them. Each
+    # file is LF-terminated, one record per line, with exactly ONE distinct line length - no
+    # ragged records. They are stated here so a context-load test can ASSERT the geometry rather
+    # than assume it (practice B8): these fixtures are the only genuine production-shaped input
+    # the harness has, because AAP 0.7.6 establishes that executing the legacy COBOL is
+    # impossible in this environment and the expected values are derived statically instead.
+    #
+    # FIELD MEANINGS
+    #   resource          the classpath location, i.e. what carddemo.datasets.<DD>.dsname is
+    #                     bound to below. It MUST resolve: a path that does not resolve yields a
+    #                     silently EMPTY dataset and a parity diff that is expensive to trace
+    #                     back to its cause (practice B1). All nine are verified present.
+    #   records           the number of records the file contains.
+    #   bytes-per-record  the fixture's MEASURED ON-DISK width. This is NOT the copybook width -
+    #                     that is carddemo.datasets.<DD>.record-length in application.yml, and it
+    #                     is never restated here. Declaring both is what makes the two of them
+    #                     comparable, which is the whole point.
+    #   pad-to            present ONLY where the fixture is short of its copybook width. The
+    #                     loader right-pads every record with spaces (0x20) to this many bytes
+    #                     before the record is decoded or compared. Its absence means the
+    #                     fixture already matches its copybook exactly, so the set of deviations
+    #                     is machine-enumerable: exactly two entries carry it.
+    #   datasets          the DD names this one file serves. Several DD names address one
+    #                     physical dataset - the CICS name used by the online programs and the
+    #                     batch name used by the JCL - and an alternate-index PATH is a finder
+    #                     over its base cluster, never a second table (gate G45).
+    #   seed              inline records, used ONLY where no fixture file exists at all.
+    # -----------------------------------------------------------------------------------------
+    fixtures:
+
+      # Account master. app/cpy/CVACT01Y.cpy declares 300; the fixture is 300. No pad needed.
+      acctdata:
+        resource: classpath:fixtures/acctdata.txt
+        records: 50
+        bytes-per-record: 300
+        datasets: [ACCTDAT, ACCTFILE]
+
+      # Card master. CVACT02Y declares 150; the fixture is 150.
+      # CARDAIX is the alternate-index PATH over CARDDAT keyed by account id, so it reads THIS
+      # file through a different DD name - not a second table (gate G45).
+      carddata:
+        resource: classpath:fixtures/carddata.txt
+        records: 50
+        bytes-per-record: 150
+        datasets: [CARDDAT, CARDFILE, CARDAIX]
+
+      # Card-to-account cross reference - DEVIATION 1 OF 2 (gate G16, risk R-F).
+      #
+      # app/cpy/CVACT03Y.cpy, whose own header reads "(RECLN 50)", declares:
+      #     05 XREF-CARD-NUM PIC X(16).   16
+      #     05 XREF-CUST-ID  PIC 9(09).    9
+      #     05 XREF-ACCT-ID  PIC 9(11).   11
+      #     05 FILLER        PIC X(14).   14   <- the fixture stops before this
+      #                                   --
+      #                                   50
+      # The fixture supplies the first three fields only, 16+9+11 = 36 bytes, and omits the
+      # trailing FILLER X(14). README.md:L73 independently declares the dataset as 50.
+      #
+      # So the fixture is normalised UP to the copybook, never the copybook down to the fixture:
+      # application.yml keeps record-length 50 and pad-to below restores the missing 14 bytes as
+      # spaces. Configuring 36 anywhere would shift every downstream offset and break the total
+      # record width (gate G21). app/data/ASCII/cardxref.txt is reference-only and is NOT edited
+      # to make the numbers line up - the deviation is recorded, not absorbed (practices B3, B12).
+      #
+      # CXACAIX and XREFFIL1 are both alternate-index PATHs over the CCXREF base and resolve to
+      # the same physical dataset as each other; INTCALC.jcl proves it by opening the cross
+      # reference twice in one step, as XREFFILE on the base and XREFFIL1 on the path.
+      cardxref:
+        resource: classpath:fixtures/cardxref.txt
+        records: 50
+        bytes-per-record: 36
+        pad-to: 50
+        datasets: [CCXREF, CARDXREF, XREFFILE, CXACAIX, XREFFIL1]
+
+      # Customer master. CVCUS01Y declares 500; the fixture is 500.
+      custdata:
+        resource: classpath:fixtures/custdata.txt
+        records: 50
+        bytes-per-record: 500
+        datasets: [CUSTDAT, CUSTFILE]
+
+      # Daily transactions awaiting posting - the input CBTRN02C validates and posts or rejects.
+      # CVTRA06Y declares 350; the fixture is 350, and 300 records is the volume the four-stage
+      # Card / Account / Credit Limit / Expiration cascade is exercised against.
+      dailytran:
+        resource: classpath:fixtures/dailytran.txt
+        records: 300
+        bytes-per-record: 350
+        datasets: [DALYTRAN]
+
+      # Disclosure groups - the interest-rate lookup CBACT04C drives, including the DEFAULT
+      # group it falls back to. CVTRA02Y declares 50; the fixture is 50. DIS-INT-RATE is
+      # PIC S9(04)V99, so it decodes at scale 2 like every other monetary field.
+      discgrp:
+        resource: classpath:fixtures/discgrp.txt
+        records: 51
+        bytes-per-record: 50
+        datasets: [DISCGRP]
+
+      # Transaction category balances, on a 17-byte composite key. CVTRA01Y declares 50.
+      tcatbal:
+        resource: classpath:fixtures/tcatbal.txt
+        records: 50
+        bytes-per-record: 50
+        datasets: [TCATBALF]
+
+      # Transaction categories. CVTRA04Y declares 60; the fixture is 60.
+      trancatg:
+        resource: classpath:fixtures/trancatg.txt
+        records: 18
+        bytes-per-record: 60
+        datasets: [TRANCATG]
+
+      # Transaction types. CVTRA03Y declares 60; the fixture is 60.
+      trantype:
+        resource: classpath:fixtures/trantype.txt
+        records: 7
+        bytes-per-record: 60
+        datasets: [TRANTYPE]
+
+      # -------------------------------------------------------------------------------------
+      # SECURITY USER FILE - THERE IS NO ASCII FIXTURE FOR IT, SO IT IS SEEDED INLINE.
+      #
+      # app/data/ASCII/ holds exactly nine files and none of them is a usrsec fixture; the
+      # USRSEC data exists in the repository only as the EBCDIC binary. README.md:L69 names the
+      # source as "See DEFUSR01.jcl (inline)", but NO app/jcl/DEFUSR01.jcl exists - that README
+      # reference is stale. The real job is app/jcl/DUSRSECJ.jcl, whose STEP01 IEBGENER carries
+      # the seed in stream at SYSUT1 DD *, lines 35-44: exactly ten records, transcribed below
+      # VERBATIM. The stale README reference is recorded here and left uncorrected, because
+      # README.md's dataset table is parity reference material (practices B3, B12).
+      #
+      # Corroboration: README.md:L156-L157 documents signing on as ADMIN001 or USER0001 with
+      # password PASSWORD, which is what these records contain.
+      #
+      # DEVIATION 2 OF 2 - the same class as cardxref, found by measurement rather than assumed.
+      # app/cpy/CSUSR01Y.cpy declares:
+      #     05 SEC-USR-ID     PIC X(08).    8
+      #     05 SEC-USR-FNAME  PIC X(20).   20
+      #     05 SEC-USR-LNAME  PIC X(20).   20
+      #     05 SEC-USR-PWD    PIC X(08).    8
+      #     05 SEC-USR-TYPE   PIC X(01).    1
+      #     05 SEC-USR-FILLER PIC X(23).   23   <- the in-stream data stops before this
+      #                                    --
+      #                                    80
+      # Every one of the ten records below measures exactly 57 bytes, 8+20+20+8+1, and omits
+      # SEC-USR-FILLER X(23). pad-to restores it as spaces, precisely as for cardxref.
+      # DUSRSECJ.jcl corroborates the 80 twice - SYSUT2 at L46-L49 is
+      # DCB=(LRECL=80,RECFM=FB,DSORG=PS,BLKSIZE=0), and the DEFINE CLUSTER at L64-L73 is
+      # KEYS(8,0) RECORDSIZE(80,80) INDEXED - which is also where USRSEC's 8-byte key comes from.
+      #
+      # SEC-USR-PWD PIC X(08) IS PLAINTEXT, AND STAYS PLAINTEXT (practice B6, gate G41).
+      # COSGN00C compares it byte-for-byte with no hashing, so hashing it here would change
+      # observable behaviour, and Spring Security is out of scope in any case. The literal
+      # PASSWORD below is 2022-vintage demo seed data reproduced from a committed sample job so
+      # the sign-on path can be exercised - it is NOT a credential being introduced, it guards
+      # nothing, and it reaches only an in-memory database that is discarded when the test JVM
+      # exits. No secret is added to this repository by this file.
+      #
+      # Layout of each record, by column: 1-8 id, 9-28 first name, 29-48 last name, 49-56
+      # password, 57 user type - 'A' for the five administrators, 'U' for the five regular
+      # users. Single-quoted so every run of interior spaces is preserved exactly as the JCL has
+      # it; the field alignment below IS the data and must not be reflowed.
+      # -------------------------------------------------------------------------------------
+      usrsec:
+        records: 10
+        bytes-per-record: 57
+        pad-to: 80
+        datasets: [USRSEC]
+        # app/jcl/DUSRSECJ.jcl:L35-L44, verbatim.
+        seed:
+          - 'ADMIN001MARGARET            GOLD                PASSWORDA'
+          - 'ADMIN002RUSSELL             RUSSELL             PASSWORDA'
+          - 'ADMIN003RAYMOND             WHITMORE            PASSWORDA'
+          - 'ADMIN004EMMANUEL            CASGRAIN            PASSWORDA'
+          - 'ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA'
+          - 'USER0001LAWRENCE            THOMAS              PASSWORDU'
+          - 'USER0002AJITH               KUMAR               PASSWORDU'
+          - 'USER0003LAURITZ             ALME                PASSWORDU'
+          - 'USER0004AVERARDO            MAZZI               PASSWORDU'
+          - 'USER0005LEE                 TING                PASSWORDU'
+
+  # -------------------------------------------------------------------------------------------
+  # DATASET LOCATION OVERRIDES - all 27 of application.yml's DD names, dsname ONLY.
   #
-  # Where two DD names address the same physical dataset - the CICS name used by the online
-  # programs and the batch name used by the JCL - both are bound to the same fixture, because
-  # application.yml resolves both to one DSNAME: ACCTDAT/ACCTFILE, CARDDAT/CARDFILE,
-  # CCXREF/CARDXREF/XREFFILE, CXACAIX/XREFFIL1, CUSTDAT/CUSTFILE and TRANSACT/TRANFILE.
+  # Keys are the DD / CICS FILE names exactly as application.yml, the JCL and the CSD spell them,
+  # in upper case, so this file diffs against its parent line by line. Spring Boot's map binder
+  # preserves a map key's original form, so ACCTDAT and XREFFIL1 bind as written.
+  #
+  # Every entry is a single "dsname:" line. Nothing else is restated - no record-length, no
+  # record-format, no block-size, no copybook, no key-length, no base, no alternate-key (gates
+  # G19, G20). Overriding a whole entry with a bare scalar instead would break the binding, and
+  # overriding a width would silently break parity.
+  #
+  # ALL 27 ARE OVERRIDDEN, WITH NO EXCEPTIONS. Any DD name left out would keep its
+  # AWS.M2.CARDDEMO.* mainframe default and fail - or worse, resolve to nothing - the moment a
+  # test touched it. The three groups are:
+  #
+  #   17 DD names -> the 9 classpath fixtures  (read-only inputs, one file serving its aliases)
+  #    1 DD name  -> the inline seed above     (USRSEC, which has no fixture file)
+  #    9 DD names -> carddemo.test.work-dir    (written by a job, or seeded per case)
+  #   --
+  #   27
+  # -------------------------------------------------------------------------------------------
   datasets:
-    # --- Account master, 300 B, CVACT01Y ---------------------------------------------------
+
+    # --- Fixture-backed inputs ---------------------------------------------------------------
+
+    # Account master, CVACT01Y, 300 B. Both DD names are one dataset: ACCTDAT is the CICS FILE
+    # the online programs use, ACCTFILE the DD name READACCT.jcl, INTCALC.jcl, POSTTRAN.jcl and
+    # CREASTMT.JCL use.
     ACCTDAT:
       dsname: classpath:fixtures/acctdata.txt
     ACCTFILE:
       dsname: classpath:fixtures/acctdata.txt
 
-    # --- Card master, 150 B, CVACT02Y (CARDAIX is the alternate-index path over CARDDAT) ---
+    # Card master, CVACT02Y, 150 B. CARDDAT is the CICS FILE, CARDFILE the DD name READCARD.jcl
+    # uses, and CARDAIX the alternate-index PATH over the same base keyed by account id - a
+    # finder on the base repository, so it reads the identical fixture (gate G45).
     CARDDAT:
       dsname: classpath:fixtures/carddata.txt
     CARDFILE:
@@ -65,10 +479,14 @@ carddemo:
     CARDAIX:
       dsname: classpath:fixtures/carddata.txt
 
-    # --- Card cross-reference, CVACT03Y. The fixture is 36 B per record where the copybook
-    #     declares 50: app/data/ASCII/cardxref.txt omits the trailing FILLER X(14) and the
-    #     harness right-pads to 50 before comparison (gate G16, risk R-F).
-    #     CXACAIX and XREFFIL1 are alternate-index paths over the same base.
+    # Card-to-account cross reference, CVACT03Y, 50 B - the 36-to-50 right-pad case. The fixture
+    # is 36 bytes per record; carddemo.test.fixtures.cardxref.pad-to restores the missing
+    # FILLER X(14) as spaces before any decode or comparison (gate G16, risk R-F). The
+    # configured record-length in application.yml stays 50 and is not touched here.
+    #
+    # Five DD names, ONE dataset: CCXREF is the CICS FILE, XREFFILE the DD name READXREF.jcl,
+    # INTCALC.jcl, POSTTRAN.jcl and CREASTMT.JCL use, CARDXREF the name TRANREPT.jcl uses, and
+    # CXACAIX and XREFFIL1 are both alternate-index PATHs over that same base.
     CCXREF:
       dsname: classpath:fixtures/cardxref.txt
     CARDXREF:
@@ -80,56 +498,256 @@ carddemo:
     XREFFIL1:
       dsname: classpath:fixtures/cardxref.txt
 
-    # --- Customer master, 500 B, CVCUS01Y --------------------------------------------------
+    # Customer master, CVCUS01Y, 500 B. CUSTDAT is the CICS FILE, CUSTFILE the DD name
+    # READCUST.jcl and CREASTMT.JCL use.
     CUSTDAT:
       dsname: classpath:fixtures/custdata.txt
     CUSTFILE:
       dsname: classpath:fixtures/custdata.txt
 
-    # --- Transaction master, 350 B, CVTRA05Y. No ASCII fixture exists for it: the parity
-    #     harness seeds this dataset itself, so the location is declared but not shipped.
-    TRANSACT:
-      dsname: classpath:fixtures/transact.txt
-    TRANFILE:
-      dsname: classpath:fixtures/transact.txt
-
-    # --- Security file, 80 B, CSUSR01Y. Harness-seeded, as above. -------------------------
-    USRSEC:
-      dsname: classpath:fixtures/usrsec.txt
-
-    # --- Batch-only inputs -----------------------------------------------------------------
-    DISCGRP:
-      dsname: classpath:fixtures/discgrp.txt
-    TCATBALF:
-      dsname: classpath:fixtures/tcatbal.txt
+    # Daily transaction input, CVTRA06Y, 350 B - sequential, browsed front to back.
     DALYTRAN:
       dsname: classpath:fixtures/dailytran.txt
+
+    # Interest-rate disclosure groups, CVTRA02Y, 50 B.
+    DISCGRP:
+      dsname: classpath:fixtures/discgrp.txt
+
+    # Transaction category balances, CVTRA01Y, 50 B, 17-byte composite key.
+    TCATBALF:
+      dsname: classpath:fixtures/tcatbal.txt
+
+    # Transaction type and category lookups, CVTRA03Y / CVTRA04Y, 60 B each.
     TRANTYPE:
       dsname: classpath:fixtures/trantype.txt
     TRANCATG:
       dsname: classpath:fixtures/trancatg.txt
-    # 80-byte report date-range dataset and the statement extract, both harness-seeded.
-    DATEPARM:
-      dsname: classpath:fixtures/dateparm.txt
+
+    # --- Inline-seeded input -----------------------------------------------------------------
+
+    # Security user file, CSUSR01Y, 80 B, 8-byte key. NO fixture file exists for it, so it is
+    # NOT bound to a classpath resource: the harness materialises the ten verbatim records from
+    # carddemo.test.fixtures.usrsec.seed here, right-padded 57 -> 80. Binding this to a
+    # classpath path would name a resource that does not exist and yield a silently empty
+    # dataset, so every sign-on assertion would pass or fail for the wrong reason (practice B1).
+    USRSEC:
+      dsname: ${carddemo.test.work-dir}/usrsec.txt
+
+    # --- Written or seeded during a run: rooted at carddemo.test.work-dir --------------------
+    #
+    # None of these has an ASCII fixture, because each is either produced by a job under test or
+    # seeded per parity case. They resolve to a writable location OUTSIDE the repository, so no
+    # test run can write into a reference tree (practice B3, gate G5). Their widths and record
+    # formats remain exactly as application.yml declares them - DALYREJS 430, TRANREPT 133,
+    # STMTFILE 80, HTMLFILE 100, SYSTRAN 350, TRANSACT / TRANFILE / TRNXFILE 350, DATEPARM 80
+    # (gates G19, G20) - and not one of them is restated below.
+
+    # Transaction master, CVTRA05Y, 350 B. README.md:L76 lists it as "not applicable" for an
+    # ASCII fixture, because it is populated online. TRANSACT is the CICS FILE; TRANFILE is
+    # POSTTRAN.jcl's DD name for the same dataset. Bound to one file so a transaction written by
+    # one program is visible to the next, exactly as one KSDS behaves.
+    TRANSACT:
+      dsname: ${carddemo.test.work-dir}/transact.txt
+    TRANFILE:
+      dsname: ${carddemo.test.work-dir}/transact.txt
+
+    # Statement extract KSDS, COSTM01, 350 B, 32-byte key. CREASTMT.JCL builds it by SORT and
+    # IDCAMS REPRO before CBSTM03A runs, so in a test it is produced, never shipped.
     TRNXFILE:
-      dsname: classpath:fixtures/trnxfile.txt
+      dsname: ${carddemo.test.work-dir}/trnxfile.txt
 
-    # --- Batch outputs. Written during a test run, so they resolve to a writable temp path
-    #     rather than the classpath. Widths stay in application.yml (DALYREJS 430,
-    #     TRANREPT 133, STMTFILE 80, HTMLFILE 100, SYSTRAN 350).
+    # CBTRN03C's report date range, 80 B sequential.
+    #
+    # THE RANGE IS DATA, NOT CONFIGURATION. application.yml is explicit that the date range comes
+    # from this dataset and not from a PARM, and that TRANREPT.jcl's SYMNAMES dates configure the
+    # DFSORT INCLUDE filter only and must never become configurable dates. So this binds to a
+    # writable location and each parity case supplies its own range there. No date literal
+    # appears anywhere in this file, which is also what keeps the suite deterministic: nothing
+    # reads the wall clock (practice B7, gate G54).
+    DATEPARM:
+      dsname: ${carddemo.test.work-dir}/dateparm.txt
+
+    # Rejected daily transactions, 430 B fixed - CBTRN02C's FD-REJECT-RECORD X(350) plus
+    # FD-VALIDATION-TRAILER X(80). Written by the posting job (gate G20).
     DALYREJS:
-      dsname: ${java.io.tmpdir}/carddemo-test/dalyrejs.txt
-    TRANREPT:
-      dsname: ${java.io.tmpdir}/carddemo-test/tranrept.txt
-    STMTFILE:
-      dsname: ${java.io.tmpdir}/carddemo-test/statement.txt
-    HTMLFILE:
-      dsname: ${java.io.tmpdir}/carddemo-test/statement.html
-    SYSTRAN:
-      dsname: ${java.io.tmpdir}/carddemo-test/systran.txt
+      dsname: ${carddemo.test.work-dir}/dalyrejs.txt
 
+    # Transaction detail report, 133 B fixed - the report line width, with CVTRA07Y's edit masks
+    # and its 133-byte ALL '-' separator (gate G20).
+    TRANREPT:
+      dsname: ${carddemo.test.work-dir}/tranrept.txt
+
+    # The two statement outputs CBSTM03A writes: 80 B text and 100 B HTML.
+    # HTMLFILE IS 100, NOT 80 (gate G20, risk R-G) - CREASTMT.JCL declares it twice, and the
+    # STEP040 step that actually creates the file is authoritative over the STEP030 pre-delete.
+    # That width lives in application.yml; only the location is set here.
+    STMTFILE:
+      dsname: ${carddemo.test.work-dir}/statement.txt
+    HTMLFILE:
+      dsname: ${carddemo.test.work-dir}/statement.html
+
+    # CBACT04C's generated interest transactions, 350 B fixed. In INTCALC.jcl this is written
+    # through the DD name TRANSACT, which the job-scoped override below resolves.
+    SYSTRAN:
+      dsname: ${carddemo.test.work-dir}/systran.txt
+
+  # -------------------------------------------------------------------------------------------
+  # JOB-SCOPED DATASET LOCATIONS - the six that carddemo.datasets cannot reach.
+  #
+  # A DD name is not globally unique in this application, so application.yml resolves DD names
+  # job-first: carddemo.jobs.<job>.datasets.<DD> shadows the global carddemo.datasets.<DD>.
+  # Six of those job-scoped entries carry an explicit mainframe DSNAME of their own rather than
+  # an "alias", and a global override therefore cannot reach them - leave them alone and a test
+  # run would still be pointed at AWS.M2.CARDDEMO.TRANSACT.BKUP(+1), .TRANSACT.DALY(+1) and
+  # .TRXFL.SEQ. All six are rebased onto carddemo.test.work-dir here.
+  #
+  # dsname ONLY, again: organization, gdg, record-format, block-size, record-length and copybook
+  # are inherited untouched from application.yml.
+  #
+  # THE "steps" AND "parameters" LISTS ARE DELIBERATELY NOT MENTIONED ANYWHERE BELOW. A list in a
+  # higher-precedence property source REPLACES the parent's list rather than merging with it, so
+  # restating even one element would silently discard the JCL step sequence, the COND=(0,NE)
+  # gating and CBACT04C's parmDate job parameter. Only map entries are safe to override
+  # key-by-key, and only dsname is overridden.
+  #
+  # Where two DD names below share one file, that is not a shortcut: application.yml gives them
+  # the same environment variable and the same default DSNAME, which is the proof that they are
+  # one physical dataset addressed twice.
+  # -------------------------------------------------------------------------------------------
+  jobs:
+
+    # CBTRN03C, app/jcl/TRANREPT.jcl. Three steps: unload the transaction master to a backup
+    # generation, DFSORT it into the daily file, then print the 133-byte report.
+    #   FILEOUT / SORTIN  - the backup generation, written by step 1 and read by step 2.
+    #   SORTOUT / TRANFILE - the sorted daily file, written by step 2 and read by CBTRN03C. This
+    #                        is the override the global TRANFILE default cannot express: for this
+    #                        job TRANFILE is the SORTED DAILY FILE, not the transaction master.
+    # FILEIN needs nothing here: it is an alias of TRANSACT, which is already rebound above.
+    transaction-report-job:
+      datasets:
+        FILEOUT:
+          dsname: ${carddemo.test.work-dir}/transact-bkup.txt
+        SORTIN:
+          dsname: ${carddemo.test.work-dir}/transact-bkup.txt
+        SORTOUT:
+          dsname: ${carddemo.test.work-dir}/transact-daly.txt
+        TRANFILE:
+          dsname: ${carddemo.test.work-dir}/transact-daly.txt
+
+    # CBSTM03A, app/jcl/CREASTMT.JCL. Its intermediate sequential file exists only inside the
+    # job: STEP010's SORT writes it as SORTOUT and STEP020's IDCAMS REPRO reads it back as INFILE
+    # to load the KSDS. One location, addressed under both DD names.
+    # SORTIN (alias of TRANSACT) and OUTFILE (alias of TRNXFILE) need nothing here.
+    statement-generation-job-a:
+      datasets:
+        SORTOUT:
+          dsname: ${carddemo.test.work-dir}/trxfl-seq.txt
+        INFILE:
+          dsname: ${carddemo.test.work-dir}/trxfl-seq.txt
+
+  # -------------------------------------------------------------------------------------------
+  # JOB-SUBMISSION PORT - relocated, not reconfigured (gate G42).
+  #
+  # CORPT00C builds 80-byte JCL skeleton records and writes them to the CICS transient data queue
+  # JOBS. Java has no TDQ, so that write becomes an outbound port. Only its DESTINATION moves,
+  # onto the test work directory, so a test can read back exactly what was emitted and each run
+  # starts from a known place instead of appending to whatever a previous run or a local
+  # application instance left behind.
+  #
+  # The byte contract is untouched and inherited: record-length 80, RECORDFORMAT(FIXED),
+  # BLOCKFORMAT(UNBLOCKED), DISPOSITION(MOD) - transcribed in application.yml from
+  # app/csd/CARDDEMO.CSD:L499-L505. Those are what make the output byte-identical to the COBOL's,
+  # so none of them may be restated or relaxed for a test run.
+  # -------------------------------------------------------------------------------------------
+  job-submission:
+    destination: ${carddemo.test.work-dir}/inreader/JOBS
+
+# ---------------------------------------------------------------------------------------------
+# Logging.
+#
+# root drops to WARN so a surefire run is readable and a genuine failure is not buried in
+# framework chatter. The migrated packages go the other way, to DEBUG: the batch programs DISPLAY
+# their progress and their abend diagnostics, that text is parity-relevant, and when a FieldDiffer
+# reports a non-zero diff count the extra detail is what makes it traceable to the paragraph that
+# produced it. Spring Batch stays at INFO so step transitions and exit statuses remain visible.
+#
+# Levels are fixed values, not placeholders: log configuration must not become another thing that
+# varies between runs (practice B7).
+# ---------------------------------------------------------------------------------------------
 logging:
   level:
     root: WARN
     com.vsergeychik.carddemo: DEBUG
     org.springframework.batch: INFO
+
+# =============================================================================================
+#  DELIBERATELY ABSENT - each omission below is a requirement, not an oversight
+# =============================================================================================
+#
+#  NOTE TO A REVIEWER GREPPING THIS FILE: the excluded technologies are NAMED below on purpose,
+#  so the next engineer learns they are prohibited rather than merely unused. A negative grep for
+#  jpa, hibernate, flyway, liquibase, postgres, testcontainers, localstack, security, jwt, bcrypt,
+#  micrometer, prometheus, jaeger or webflux will therefore match THIS comment block and nothing
+#  else - every hit is a prohibition notice, never a property. The machine-checkable invariant is
+#  that no forbidden token appears on any non-comment line of this file.
+#
+#  * spring.config.activate.on-profile, spring.profiles.active, spring.profiles.default. All
+#    three are illegal in a profile-specific resource and would abort the context with
+#    InvalidConfigDataPropertyException. Activation is by file name alone.
+#
+#  * ANY record-length, record-format, block-size, copybook, key-length, base or alternate-key.
+#    Geometry is copybook-fixed and JCL-fixed and belongs to application.yml alone (gates G19,
+#    G20). A test profile that could shrink a record to fit its fixture would defeat the entire
+#    purpose of the harness - which is exactly why cardxref is padded UP to 50 rather than
+#    reconfigured DOWN to 36.
+#
+#  * PAGINATION PAGE SIZES (gate G39). 7 for the card list (COCRDLIC), 10 for transactions
+#    (COTRN00C) and 10 for users (COUSR00C) are BEHAVIOUR, not configuration. They live as
+#    constants in the services. Making them tunable in a test profile would let a test pass
+#    against a page size the COBOL never produces.
+#
+#  * Testcontainers or LocalStack. The fixture-backed harness needs no container and no cloud
+#    emulator; H2 in-memory is the entire test infrastructure (AAP 0.5.6, practice B4).
+#
+#  * Any PostgreSQL coordinate, spring.jpa.*, Hibernate, or ORM and entity mapping of any kind.
+#    The prompt mandates plain JDBC and forbids schema change. docs/technical-specifications.md
+#    and catalog-info.yaml still describe a superseded PostgreSQL 16 / JPA / Flyway / Java 25 /
+#    cloud / observability design; both are OUT OF SCOPE, are left unmodified, and their
+#    conflicts are documented rather than silently corrected (AAP 0.1.8, gate G58).
+#
+#  * spring.flyway.*, spring.liquibase.*, any DDL, migration script, version column or index
+#    (gate G44). This module authors no .sql file and creates no db/ or migration/ directory. The
+#    only schema executed anywhere is Spring Batch's own bundled schema-h2.sql, against H2 only.
+#
+#  * Spring Security, JWT or password-hashing properties (practice B6, gate G41). Authentication
+#    stays a plaintext SEC-USR-PWD PIC X(08) comparison against USRSEC, exactly as COSGN00C
+#    performs it. Hashing would be a behaviour change, which this migration forbids.
+#
+#  * S3, SQS, SNS, Micrometer, Prometheus, Grafana, Jaeger and WebFlux keys. The dependency set
+#    is closed at Java 21, Maven, Spring Boot 3.x, Spring Batch, Spring Web, JDBC and JUnit 5.
+#
+#  * Spring Boot 4.x or Spring Batch 6.x property spellings. Both lines are published, and both
+#    are excluded: the prompt pins Spring Boot 3.x, so every key here is a Boot 3.5.16 key,
+#    verified against that release's own spring-configuration-metadata.json (practice B2).
+#
+#  * Any committed credential, token or secret (practice B1). The only credential-shaped values
+#    are H2's test-only "sa" with an empty password, and the 2022-vintage demo password reproduced
+#    verbatim from app/jcl/DUSRSECJ.jcl so the sign-on path can be exercised. Neither guards
+#    anything, and neither leaves the test JVM.
+#
+#  * Any watch mode, interactive prompt, wall-clock value or random seed. The suite must run
+#    unattended and reproducibly under
+#    "mvn -f app/java/pom.xml -B clean verify -Dsurefire.useFile=false" (practice B7, gate G54).
+#
+#  * Any path under app/cbl, app/cpy, app/cpy-bms, app/bms, app/jcl, app/proc, app/csd, app/ctl,
+#    app/catlg or app/data as a property VALUE (practice B3, gate G5). Those trees are the sole
+#    oracle for behavioural equivalence and are strictly read-only; they appear here only as
+#    provenance inside comments.
+#
+#  * Any path beginning aws-carddemo-blitzy/. That prefix resolves to the repository root
+#    (AAP 0.1.1); no such directory exists and none may be created.
+#
+#  Ver: CardDemo_v1.0-15-g27d6c6f-68 - the source revision this configuration was derived from,
+#  matching the footer carried by app/cpy/CVACT03Y.cpy, app/cpy/CSUSR01Y.cpy and
+#  app/jcl/DUSRSECJ.jcl.
+# =============================================================================================
