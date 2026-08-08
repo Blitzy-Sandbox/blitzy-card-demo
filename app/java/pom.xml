@@ -1,30 +1,92 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  AWS CardDemo - COBOL to Java 21 / Spring Boot 3.x like-for-like migration module.
+  ==============================================================================================
+  AWS CardDemo - Maven module descriptor for the COBOL to Java 21 / Spring Boot 3.x migration.
 
-  Toolchain and dependency versions are fixed by the Agent Action Plan (AAP 0.5.2 - 0.5.4):
-    * Java 21 (LTS)                     - <release>21</release>, never 17/25
-    * Apache Maven 3.9+                 - built and verified with 3.9.16
-    * spring-boot-starter-parent 3.5.16 - highest 3.x; the 4.x line is deliberately rejected
-    * Spring Batch 5.2.6                - inherited from the Boot 3.5.16 BOM, never 6.x
-    * JaCoCo 0.8.15                     - >= 0.90 BRANCH coverage enforced at 'verify'
-  Every library version is inherited from the parent BOM; only the three build plugins named in
-  AAP 0.5.4 carry an explicit <version>. No SNAPSHOT and no LATEST references (AAP gate G2).
+  This is the ONLY build manifest in the repository. Before this module existed there was no
+  automated build at all: README.md step 4 ("Compile the Programs") directs the reader to "the
+  compile process followed by your mainframe shopfloor". The entire Maven build, the application
+  entry class and the application configuration are therefore net-new scaffolding, created from
+  nothing (AAP implicit requirement I7). There is also no aggregator pom at any level of this
+  repository, which is why the <parent> below carries an EMPTY <relativePath/> - see the note
+  beside it; omitting that single element is the most common way this file breaks.
 
-  Persistence is plain JDBC against the existing VSAM/DB2 datasets. There is deliberately NO
-  JPA/Hibernate, NO Flyway/Liquibase, NO PostgreSQL driver, NO Spring Security, NO Spring Cloud
-  AWS, NO Micrometer/observability stack, NO Testcontainers, NO WebFlux, NO springdoc, NO Lombok
-  and NO third-party COBOL copybook parser (AAP 0.5.6 - the dependency set is closed).
+  WHAT THIS MODULE IS
+    A like-for-like translation of the 28 COBOL programs in app/cbl into Java - not a redesign.
+    The 17 CICS online programs become stateless REST controllers, the 8 JCL-invoked programs
+    plus the untriggered CBTRN01C and the standalone customer reader become Spring Batch jobs,
+    and the 2 CALLed subprograms become injected Spring components. Every observable output -
+    record bytes, field values, numeric scale, message text and return codes - is held identical
+    to what the COBOL produces today.
 
-  The site-specific mainframe JDBC driver is a deployment-time input and is intentionally not
-  hard-coded here (AAP 0.5.5). H2 is present at TEST scope only, where it backs the Spring Batch
-  JobRepository and the fixture-seeded parity harness.
+  VERSION POLICY (AAP 0.5.2 - 0.5.4; binding practices B1 and B2)
+    * Java 21 (LTS)  -> <release>21</release>, and nothing newer. Verified on JDK 21.0.11.
+    * Apache Maven   -> 3.9 or newer is required; this build is verified with 3.9.16. The
+                        distribution's 3.8.7 candidate sits below that floor and was rejected.
+                        No enforcer plugin polices the floor, deliberately: enforcer is outside
+                        the closed plugin set, and adding it would be scope creep (practice B4).
+    * spring-boot-starter-parent 3.5.16 -> the highest published 3.x release. The 4.x parent
+                        line, and the Spring Batch 6.x line that belongs to it, were both
+                        evaluated and DELIBERATELY REJECTED: the build prompt pins Spring Boot
+                        3.x, and constraint fidelity outranks recency (practice B2). 3.5.16 is
+                        a deliberate pin, not staleness - please do not "helpfully" upgrade it.
+    * Spring Batch 5.2.6, JUnit 5, Mockito, AssertJ, HikariCP, Jackson, Jakarta Validation, the
+                        embedded servlet container and H2 all take their versions from the
+                        parent BOM, so none of them names a <version> here. Only the three build
+                        plugins named in AAP 0.5.4 carry an explicit <version>. Every version in
+                        this file is a fixed, published release: there is no placeholder and no
+                        moving version marker anywhere in it (gate G2, practice B1).
+
+  CLOSED DEPENDENCY SET (AAP 0.5.6)
+    Exactly six dependencies are declared below and nothing may be added to them. Every
+    technology enumerated in AAP 0.5.6 is intentionally absent: no object-relational mapper, no
+    schema-migration tool, no relational database driver, no authentication or credential-hashing
+    library, no cloud service SDK, no metrics or tracing exporter, no container-based test
+    harness, no reactive web stack, no API-documentation generator, no compile-time accessor or
+    mapper generator, and no third-party COBOL copybook parser. The fixed-width record codecs are
+    hand-written precisely so that every byte offset stays reviewable against its copybook
+    (practice B11), and the sign-on credential comparison is preserved exactly as the COBOL
+    performs it, which is why no authentication library appears here (practice B6).
+
+  PERSISTENCE AND THE INTENTIONALLY ABSENT DRIVER (AAP 0.5.5; residual risk R-E)
+    Data access is plain JDBC over the existing VSAM and sequential datasets: no DDL, no schema
+    change, no new database, no generated table definitions. There is zero EXEC SQL in all 28
+    programs, README.md lists relational and hierarchical database support as Roadmap items
+    rather than current behaviour, and indexed VSAM has no standard published JDBC driver -
+    so no driver coordinate is compiled into this build. The DataSource is bound entirely from
+    src/main/resources/application.yml, keyed by the dataset names defined in
+    app/csd/CARDDEMO.CSD and the batch-only DD names in app/jcl, and the site-specific mainframe
+    driver is a DEPLOYMENT-TIME input. Residual risk R-E is accepted and recorded here:
+    production connectivity cannot be exercised in this environment, so the repositories are
+    validated against the fixture-backed parity harness instead, with H2 confined to TEST scope.
+
+  THE GATE
+    One command performs the whole cycle, non-interactively and with no watch mode:
+        mvn -f app/java/pom.xml clean verify
+    It compiles under Java 21, runs every unit test and all 560 parity cases with results
+    streamed to stdout, and then enforces at least 90% BRANCH coverage - at bundle level AND
+    independently per package, so that no package can hide behind another package's coverage
+    (gate G49). BRANCH rather than LINE is the counter that matters here: the migration is judged
+    on 508 COBOL 88-level condition names, 111 EVALUATE statements and the guard chains that
+    surround them.
+
+  This build reads and writes only inside app/java. The reference trees app/cbl, app/cpy,
+  app/cpy-bms, app/bms, app/jcl, app/proc, app/csd, app/ctl, app/catlg and app/data are the sole
+  oracle for behavioural equivalence, and no plugin declared here reads from, generates into or
+  rewrites any of them (practice B3, gate G5).
+  ==============================================================================================
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!-- The empty <relativePath/> is MANDATORY and must not be removed. This repository contains
+         no aggregator pom at any level (app/pom.xml does not exist and neither does one at the
+         root), so app/java is a standalone module. Without the empty element Maven first looks
+         for ../pom.xml, fails to find it, and the parent-resolution failure then surfaces
+         confusingly as a cascade of "managed version is missing" errors. The empty element tells
+         Maven to skip the filesystem search and resolve the parent from the repository. -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
@@ -32,63 +94,108 @@
         <relativePath/>
     </parent>
 
+    <!-- groupId and artifactId derive from the mandated root package com.vsergeychik.carddemo.
+         Version 1.0.0 aligns with the source version footer "Ver: CardDemo_v1.0-15-g27d6c6f-68"
+         carried by app/cbl/CSUTLDTC.cbl, app/jcl/INTCALC.jcl and app/jcl/POSTTRAN.jcl. It is a
+         fixed release identifier by design (practice B1). -->
     <groupId>com.vsergeychik</groupId>
     <artifactId>carddemo</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
 
     <name>carddemo</name>
-    <description>AWS CardDemo - COBOL to Java 21 / Spring Boot 3.x like-for-like migration</description>
+    <description>
+        AWS CardDemo - like-for-like migration of 28 COBOL programs to Java 21 and Spring Boot
+        3.x: 17 CICS online transactions as stateless REST controllers, 10 JCL jobs as Spring
+        Batch jobs, and 12 dataset repositories over plain JDBC with no schema change.
+    </description>
 
     <properties>
+        <!-- Java 21 (LTS). The parent defaults java.version to 17 and derives
+             maven.compiler.release from it; both are overridden explicitly so the target release
+             is unambiguous however the build is invoked (practice B8). -->
         <java.version>21</java.version>
         <maven.compiler.release>21</maven.compiler.release>
+
+        <!-- Source-file encoding, stated explicitly so the build never depends on the platform
+             default. This is the encoding of the *Java sources* only. It is emphatically NOT the
+             mainframe *data* charset: the EBCDIC and ASCII dataset charsets are named explicitly
+             at runtime by the configuration and the codec classes under src, and must never be
+             conflated with, or configured through, this property (practice B8). -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-        <!-- Plugin versions pinned explicitly per AAP 0.5.4 -->
+        <!-- The three explicitly-versioned build plugins (AAP 0.5.4). Each version appears
+             exactly once, here, so it can be audited in one place. Note that the parent BOM
+             manages maven-compiler-plugin but NOT maven-surefire-plugin, and defines no jacoco
+             property at all, so all three pins are load-bearing. -->
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
-        <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
+        <jacoco.version>0.8.15</jacoco.version>
 
-        <!-- Parity gate: >= 90% BRANCH coverage, scoped to this module (AAP G49). Do not lower. -->
+        <!-- The parity project's primary quality bar: at least 90% BRANCH coverage. Declared once
+             so it is auditable, and applied below at BOTH bundle and package granularity.
+             DO NOT LOWER THIS VALUE - it is the mandated acceptance gate (G49). -->
         <jacoco.branch.minimum>0.90</jacoco.branch.minimum>
     </properties>
 
+    <!--
+      Exactly six dependencies, no more. Not one of them names a <version>: every version is
+      managed by the spring-boot-starter-parent 3.5.16 BOM (practice B1).
+    -->
     <dependencies>
-        <!-- Online layer: 17 CICS programs become stateless REST controllers -->
+        <!-- Online layer. The 17 CICS pseudo-conversational programs become stateless REST
+             controllers whose request and response fields are a 1:1 projection of the 441 BMS
+             field definitions. Conversation state travels in the payload, never in a server-side
+             session, so a servlet web stack is all that is required. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- Batch layer: the 8 JCL-invoked programs plus the orphan CBTRN01C -->
+        <!-- Batch layer. The 8 programs invoked by EXEC PGM= in app/jcl, plus the untriggered
+             CBTRN01C and the standalone customer file reader, become Spring Batch jobs whose step
+             boundaries, DD-to-resource bindings, PARM parsing and COND gating mirror the JCL.
+             This starter supplies Spring Batch 5.2.6 transitively; spring-batch-core is
+             deliberately NOT declared here and must never be pinned to the 6.x line, which
+             belongs to the Spring Boot 4 BOM (practice B2). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-batch</artifactId>
         </dependency>
 
-        <!-- Data access: JdbcTemplate + HikariCP for the 12 repositories. No ORM. -->
+        <!-- Data access. JdbcTemplate and a pooled DataSource for the 12 dataset repositories.
+             Plain JDBC by mandate: the record layouts stay exactly as the 28 copybooks define
+             them, so no mapping framework is introduced and no schema is ever created. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
 
-        <!-- Bean Validation on the 17 request DTOs; field lengths come from the symbolic maps -->
+        <!-- Bean Validation for the 17 request payloads. Field lengths come from the symbolic-map
+             "xxxI PIC X(n)" items, so validation is the enforcement point for screen field
+             widths that CICS used to enforce for free. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- Test aggregate: JUnit 5, Mockito, AssertJ, Spring Test -->
+        <!-- Test aggregate: JUnit 5 Jupiter, Mockito, AssertJ and the Spring test support. Tests
+             are a first-class deliverable authored alongside the code, not bolted on afterwards
+             (practice B10): this drives the 28 parameterised parity test classes, their 560
+             declarative cases and every per-package unit test. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- TEST SCOPE ONLY: backs the Spring Batch JobRepository and the seeded parity fixtures.
-             Never promoted to runtime scope - production uses the deployment-supplied driver. -->
+        <!-- TEST SCOPE ONLY, and it must stay that way. Two jobs, both confined to the test
+             lifecycle: it backs the Spring Batch JobRepository (Batch 5 requires a
+             DataSource-backed repository, so a batch test context will not start without one),
+             and it hosts the parity harness's seeded fixture rows. It is never promoted to
+             runtime or compile scope, because production reaches the existing datasets through
+             the deployment-supplied driver described in the header (AAP 0.5.5, risk R-E). -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
@@ -97,16 +204,33 @@
     </dependencies>
 
     <build>
+        <!-- Stable artifact name, so the documented run command does not have to be rewritten
+             whenever the module version changes. -->
         <finalName>carddemo</finalName>
+
+        <!-- Plugin ORDER is significant: surefire is declared before jacoco so that, within the
+             shared test phase, the tests run first and the coverage report is generated from the
+             execution data they produced. -->
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
+                    <!-- <release> rather than the <source>/<target> pair: release additionally
+                         validates that only Java 21 platform APIs are referenced, which is what
+                         "targets Java 21 (LTS)" actually has to mean. No preview features are
+                         enabled and no annotation processor is configured, because there is no
+                         compile-time code generator in the closed dependency set. -->
                     <release>21</release>
+                    <!-- Retain parameter names in the bytecode so payload binding and diagnostics
+                         report the real field names rather than arg0, arg1 (practice B8). -->
                     <parameters>true</parameters>
                     <compilerArgs>
+                        <!-- Advisory only. Warnings are surfaced, never promoted to errors: a
+                             like-for-like translation legitimately produces constructs the
+                             compiler would rather see written differently, and failing the build
+                             on them would pressure implementers into changing behaviour. -->
                         <arg>-Xlint:all</arg>
                     </compilerArgs>
                 </configuration>
@@ -117,24 +241,38 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
-                    <!-- Non-interactive, no watch mode, deterministic ordering for parity runs -->
+                    <!-- Results stream to stdout instead of report files, so a single
+                         non-interactive command shows every failure inline (practice B7, gate
+                         G54). There is no watch mode and nothing here waits on terminal input. -->
                     <useFile>false</useFile>
+                    <!-- Full stack traces: when a parity case fails, the diff has to be traceable
+                         to the exact translation decision that caused it. -->
                     <trimStackTrace>false</trimStackTrace>
+                    <!-- Deterministic, filesystem-independent execution order, so a parity run is
+                         reproducible across machines. -->
                     <runOrder>alphabetical</runOrder>
+                    <!-- The default includes already match both the per-package *Test classes and
+                         the 28 *ParityTest classes, so <includes> is intentionally left alone.
+                         Narrowing it would silently drop parity coverage. -->
                 </configuration>
             </plugin>
 
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>${jacoco-maven-plugin.version}</version>
+                <version>${jacoco.version}</version>
                 <executions>
+                    <!-- Instrument before the tests run. prepare-agent binds to initialize by
+                         default and sets the argLine that surefire then picks up. -->
                     <execution>
                         <id>jacoco-prepare-agent</id>
                         <goals>
                             <goal>prepare-agent</goal>
                         </goals>
                     </execution>
+
+                    <!-- Human-readable and machine-readable reports, produced in the test phase
+                         immediately after surefire. -->
                     <execution>
                         <id>jacoco-report</id>
                         <phase>test</phase>
@@ -142,6 +280,26 @@
                             <goal>report</goal>
                         </goals>
                     </execution>
+
+                    <!--
+                      THE COVERAGE GATE. Bound to verify because "mvn clean verify" is the single
+                      documented gating command (practice B7) - not to test, and not to install.
+
+                      Two rules, deliberately, and both are required:
+                        * BUNDLE  - the module as a whole must clear the bar.
+                        * PACKAGE - EVERY package must clear it independently. In a single-module
+                                    build a BUNDLE-only rule would let a well-covered package mask
+                                    an untested one, which is exactly the outcome gate G49
+                                    forbids when it says no module may hide behind another's
+                                    coverage. The package rule is what actually delivers that
+                                    guarantee here, across config, common, account, customer,
+                                    transaction, billing, card, user, admin, statement and util.
+
+                      The counter is BRANCH, not LINE and not INSTRUCTION: the parity surface is
+                      508 88-level condition names, 111 EVALUATE statements and the guard chains
+                      around them, and only branch coverage evidences that both sides of each of
+                      those decisions were actually exercised.
+                    -->
                     <execution>
                         <id>jacoco-check-branch-coverage</id>
                         <phase>verify</phase>
@@ -149,9 +307,22 @@
                             <goal>check</goal>
                         </goals>
                         <configuration>
+                            <!-- Stated explicitly: a gate that cannot fail the build is not a
+                                 gate (practice B8). -->
+                            <haltOnFailure>true</haltOnFailure>
                             <rules>
                                 <rule>
                                     <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.branch.minimum}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <rule>
+                                    <element>PACKAGE</element>
                                     <limits>
                                         <limit>
                                             <counter>BRANCH</counter>
@@ -166,6 +337,11 @@
                 </executions>
             </plugin>
 
+            <!-- Declared WITHOUT a <version>: both the version and the repackage execution come
+                 from the parent's pluginManagement, so this adds no new coordinate and no fourth
+                 explicit plugin version. It produces the runnable Boot artifact and backs
+                 spring-boot:run. mainClass is pinned explicitly rather than left to main-class
+                 scanning, which removes any ambiguity about the entry point (practice B8). -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
