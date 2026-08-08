@@ -105,6 +105,9 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -346,15 +349,15 @@ class BatchConfigTest {
         @DisplayName("the only Job and Step beans declared here are the five F-020 verification factories, "
                 + "and no Flow or decider is declared here at all")
         void theOnlyJobAndStepBeansHereAreTheVerificationTopology() {
-            // This assertion used to read "no Job, Step or Flow bean is declared here", and that premise no
-            // longer holds: app/jcl/READACCT.jcl, READCARD.jcl, READXREF.jcl and READCUST.jcl each EXEC one
+            // This assertion may not read "no Job, Step or Flow bean is declared here", because that premise
+            // does not hold: app/jcl/READACCT.jcl, READCARD.jcl, READXREF.jcl and READCUST.jcl each EXEC one
             // read-only program, the specification maps those four members onto verification *steps* rather
             // than onto four more jobs, and InventoryCountGateTest pins com.cardemo.batch.jobs at exactly six
             // classes. So the four steps - and the one job that gives them something launchable, because a
             // Step cannot be launched on its own - are declared here by design.
             //
-            // The replacement is stricter than the assertion it supersedes rather than looser. The old one
-            // forbade four return types; this one pins the exact set of Job and Step bean methods by name, so
+            // The assertion below is stricter than a return-type prohibition rather than looser: instead of
+            // forbidding four return types it pins the exact set of Job and Step bean methods by name, so
             // a sixth one appearing here still fails, and it keeps the outright prohibition on Flow and
             // JobExecutionDecider, which remain the exclusive property of com.cardemo.batch.jobs.
             final List<Method> beanMethods = Arrays.stream(BatchConfig.class.getDeclaredMethods())
@@ -646,22 +649,49 @@ class BatchConfigTest {
         @Configuration(proxyBeanMethods = false)
         static class LaunchCollaborators {
 
-            /** @return a mocked launcher; what the listener does with it is tested elsewhere */
+            /**
+             * The launcher the queue listener submits the report job through.
+             *
+             * @return a mocked launcher; what the listener does with it is tested elsewhere
+             */
             @Bean
             JobLauncher jobLauncher() {
                 return mock(JobLauncher.class);
             }
 
-            /** @return the report job under the bean name the listener qualifies on */
+            /**
+             * The job identity the queue listener resolves before it submits.
+             *
+             * @return the report job under the bean name the listener qualifies on
+             */
             @Bean("transactionReportJob")
             Job transactionReportJob() {
                 return mock(Job.class);
             }
 
-            /** @return a real mapper, because the listener binds an untrusted body with it */
+            /**
+             * The message-body binder the listener uses on the way to a job launch.
+             *
+             * @return a real mapper, because the listener binds an untrusted body with it
+             */
             @Bean
             ObjectMapper objectMapper() {
                 return new ObjectMapper();
+            }
+
+            /**
+             * The clock the listener measures a submission's validity window against.
+             *
+             * <p>Finding SEC-002 gave the envelope code a window, so the listener has a time source; in the
+             * running application it is the single {@code Clock} bean
+             * {@code com.cardemo.config.ObservabilityConfig} publishes, and this slice supplies a fixed one
+             * because a slice loads only the class under test.
+             *
+             * @return a fixed clock, never {@code null}
+             */
+            @Bean
+            Clock clock() {
+                return Clock.fixed(Instant.parse("2022-08-05T09:15:30Z"), ZoneOffset.UTC);
             }
         }
 
@@ -879,25 +909,41 @@ class BatchConfigTest {
                 when(connection.prepareStatement(anyString())).thenReturn(privilegeQuery);
             }
 
-            /** @return a mocked object store */
+            /**
+             * The object-store collaborator the slice supplies so the configuration can be instantiated.
+             *
+             * @return a mocked object store
+             */
             @Bean
             S3Operations objectStorage() {
                 return mock(S3Operations.class);
             }
 
-            /** @return a mocked account cluster */
+            /**
+             * The {@code ACCTDAT} repository collaborator the slice supplies.
+             *
+             * @return a mocked account cluster
+             */
             @Bean
             AccountRepository accountRepository() {
                 return mock(AccountRepository.class);
             }
 
-            /** @return a mocked customer cluster */
+            /**
+             * The {@code CUSTDAT} repository collaborator the slice supplies.
+             *
+             * @return a mocked customer cluster
+             */
             @Bean
             CustomerRepository customerRepository() {
                 return mock(CustomerRepository.class);
             }
 
-            /** @return a mocked cross-reference cluster */
+            /**
+             * The {@code CCXREF} repository collaborator the slice supplies.
+             *
+             * @return a mocked cross-reference cluster
+             */
             @Bean
             CardCrossReferenceRepository cardCrossReferenceRepository() {
                 return mock(CardCrossReferenceRepository.class);
@@ -943,19 +989,31 @@ class BatchConfigTest {
                 return mock(AccountReader.class);
             }
 
-            /** @return a mocked {@code CARDFILE} reader, from {@code app/cbl/CBACT02C.cbl} */
+            /**
+             * The {@code CARDFILE} reader stand-in, supplied for the reason {@link #accountReader()} records.
+             *
+             * @return a mocked {@code CARDFILE} reader, from {@code app/cbl/CBACT02C.cbl}
+             */
             @Bean
             CardReader cardReader() {
                 return mock(CardReader.class);
             }
 
-            /** @return a mocked {@code XREFFILE} reader, from {@code app/cbl/CBACT03C.cbl} */
+            /**
+             * The {@code XREFFILE} reader stand-in, supplied for the reason {@link #accountReader()} records.
+             *
+             * @return a mocked {@code XREFFILE} reader, from {@code app/cbl/CBACT03C.cbl}
+             */
             @Bean
             CardCrossReferenceReader cardCrossReferenceReader() {
                 return mock(CardCrossReferenceReader.class);
             }
 
-            /** @return a mocked {@code CUSTFILE} reader, from {@code app/cbl/CBCUS01C.cbl} */
+            /**
+             * The {@code CUSTFILE} reader stand-in, supplied for the reason {@link #accountReader()} records.
+             *
+             * @return a mocked {@code CUSTFILE} reader, from {@code app/cbl/CBCUS01C.cbl}
+             */
             @Bean
             CustomerReader customerReader() {
                 return mock(CustomerReader.class);
@@ -1312,28 +1370,66 @@ class BatchConfigTest {
         private static final String SIGNATURE_HEADER =
                 ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER;
 
+        /** The instant the listener's clock reports, and the instant every fixture code is issued at. */
+        private static final Instant NOW = Instant.parse("2022-08-05T09:15:30Z");
+
         /**
-         * Builds the headers a genuine delivery carries: the deduplication identifier and a valid code.
+         * The authenticator this fixture signs with, built from {@link #SIGNING_KEY}.
+         *
+         * <p>Finding SEC-001. Two instances derived from the same configured key agree by construction, so the
+         * fixture can sign what the listener will verify without either of them holding the key as a string.
+         */
+        private static final ReportSubmissionService.JobSubmissionEnvelope ENVELOPE =
+                new ReportSubmissionService.JobSubmissionEnvelope(SIGNING_KEY);
+
+        /**
+         * Builds the headers a genuine delivery carries: the deduplication identifier and a code issued for
+         * exactly that identifier.
+         *
+         * <p>Finding SEC-002. The identifier is an argument to the signature rather than an unrelated header,
+         * which is what makes a code bound to one submission useless for another.
          *
          * @param deduplicationId the producer's idempotency key
          * @return the header map, never {@code null}
          */
         private static Map<String, Object> signedHeaders(final String deduplicationId) {
-            return Map.of(DEDUPLICATION_HEADER, deduplicationId, SIGNATURE_HEADER,
-                    ReportSubmissionService.JobSubmissionEnvelope.sign(MESSAGE, SIGNING_KEY));
+            return Map.of(DEDUPLICATION_HEADER, deduplicationId,
+                    SIGNATURE_HEADER, ENVELOPE.sign(MESSAGE, deduplicationId, NOW));
         }
 
         /**
-         * Builds headers carrying a valid code and whatever else the caller needs.
+         * Builds headers carrying whatever the caller needs plus a code issued for whichever identifier those
+         * headers will resolve to.
+         *
+         * <p>The identifier is resolved the same way the listener resolves it - the deduplication header, then
+         * the framework's message identifier, then the unidentified sentinel - so that a fixture exercising
+         * the fallback still presents an authentic code for the identifier the fallback produces.
          *
          * @param extra the additional headers
          * @return the header map, never {@code null}
          */
         private static Map<String, Object> signedHeaders(final Map<String, Object> extra) {
             final java.util.Map<String, Object> headers = new java.util.LinkedHashMap<>(extra);
-            headers.put(SIGNATURE_HEADER,
-                    ReportSubmissionService.JobSubmissionEnvelope.sign(MESSAGE, SIGNING_KEY));
+            headers.put(SIGNATURE_HEADER, ENVELOPE.sign(MESSAGE, resolvedIdentifier(extra), NOW));
             return headers;
+        }
+
+        /**
+         * Resolves the submission identifier a header map will produce, mirroring the listener's own order.
+         *
+         * @param headers the headers the delivery will carry
+         * @return the identifier, never {@code null}
+         */
+        private static String resolvedIdentifier(final Map<String, Object> headers) {
+            final Object deduplication = headers.get(DEDUPLICATION_HEADER);
+            if (deduplication != null && !deduplication.toString().isBlank()) {
+                return deduplication.toString();
+            }
+            final Object messageId = headers.get(MessageHeaders.ID);
+            if (messageId != null && !messageId.toString().isBlank()) {
+                return messageId.toString();
+            }
+            return "unidentified-submission";
         }
 
         /**
@@ -1373,8 +1469,8 @@ class BatchConfigTest {
         @BeforeEach
         void buildListener() {
             when(reportJob.getName()).thenReturn("TRANREPT");
-            listener = new BatchConfig(100)
-                    .reportJobQueueListener(jobLauncher, reportJob, new ObjectMapper(), SIGNING_KEY);
+            listener = new BatchConfig(100).reportJobQueueListener(jobLauncher, reportJob,
+                    new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), SIGNING_KEY);
         }
 
         @Test
@@ -1430,7 +1526,7 @@ class BatchConfigTest {
         @Test
         @DisplayName("a delivery that overtakes a running execution is returned to the queue, not acknowledged")
         void aRedeliveryWhileRunningIsReturnedToTheQueue() throws Exception {
-            // FINDING C-02, severity Critical. This delivery used to be consumed, which deleted the only
+            // FINDING C-02, severity Blocker. This delivery used to be consumed, which deleted the only
             // record of the submission while its outcome was still unknown: if that running execution then
             // failed, nothing on the queue said a report had ever been asked for. Returning it means the
             // queue redelivers it after the visibility window, by which time the execution has a terminal
@@ -1473,7 +1569,7 @@ class BatchConfigTest {
         @Test
         @DisplayName("a message with no envelope code launches nothing")
         void anUnsignedMessageLaunchesNothing() throws Exception {
-            // FINDING M-11, severity Major. The emulator queue enforces no authorisation of its own, so
+            // FINDING M-11, severity High. The emulator queue enforces no authorisation of its own, so
             // before this check any process able to reach its port could submit a report job and name the
             // job instance. It is consumed rather than returned: an unsigned message will never become
             // signed, and a message group is ordered, so returning it would stall every later submission.
@@ -1485,8 +1581,8 @@ class BatchConfigTest {
         @Test
         @DisplayName("a message whose envelope code was computed for another period launches nothing")
         void aForgedEnvelopeCodeLaunchesNothing() throws Exception {
-            final String codeForAnotherPeriod = ReportSubmissionService.JobSubmissionEnvelope.sign(
-                    new JobSubmissionMessage("Monthly", "2022-08-01", "2022-08-31"), SIGNING_KEY);
+            final String codeForAnotherPeriod = ENVELOPE.sign(
+                    new JobSubmissionMessage("Monthly", "2022-08-01", "2022-08-31"), "submission-7", NOW);
 
             listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-7",
                     SIGNATURE_HEADER, codeForAnotherPeriod), null);
@@ -1497,8 +1593,8 @@ class BatchConfigTest {
         @Test
         @DisplayName("a message whose envelope code was computed under another key launches nothing")
         void aCodeUnderAnotherKeyLaunchesNothing() throws Exception {
-            final String codeUnderAnotherKey = ReportSubmissionService.JobSubmissionEnvelope.sign(
-                    MESSAGE, SIGNING_KEY + "-different");
+            final String codeUnderAnotherKey = new ReportSubmissionService.JobSubmissionEnvelope(
+                    SIGNING_KEY + "-different").sign(MESSAGE, "submission-8", NOW);
 
             listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-8",
                     SIGNATURE_HEADER, codeUnderAnotherKey), null);
@@ -1507,9 +1603,89 @@ class BatchConfigTest {
         }
 
         @Test
+        @DisplayName("a captured message replayed under a fresh identifier launches nothing")
+        void aReplayUnderAFreshIdentifierLaunchesNothing() throws Exception {
+            // FINDING SEC-002, severity HIGH. This is the replay the previous check admitted. The code covered
+            // the payload alone, so an observer who captured one (body, code) pair could re-publish it under
+            // any deduplication identifier they liked; each fresh identifier is a DIFFERENT set of identifying
+            // job parameters, so each one resolved to a new job instance and launched a real report run. The
+            // identifier is now an argument to the signature, so a code issued for one submission does not
+            // authenticate another.
+            final String authenticCode = ENVELOPE.sign(MESSAGE, "submission-original", NOW);
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-replayed",
+                    SIGNATURE_HEADER, authenticCode), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("an exact redelivery inside the window still verifies, because that is the queue working")
+        void anExactRedeliveryStillVerifies() throws Exception {
+            // The complement of the test above, and the reason the identifier check is an equality test rather
+            // than a seen-before test. A FIFO queue redelivers whenever the visibility window lapses before
+            // acknowledgement; that delivery carries the ORIGINAL identifier, so it must verify, reach the
+            // launcher, and be refused there as the same job instance. Treating it as an attack would turn an
+            // ordinary redelivery into an operator incident.
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class)))
+                    .thenThrow(new JobInstanceAlreadyCompleteException("already complete"));
+
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-8b"), null);
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-8b"), null);
+
+            verify(jobLauncher, times(2)).run(eq(reportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a code whose validity window has closed launches nothing")
+        void anExpiredCodeLaunchesNothing() throws Exception {
+            // FINDING SEC-002. The second replay the previous check admitted: an authentic code, for the
+            // authentic identifier, presented indefinitely. Nothing bounded it but whatever the job repository
+            // still remembered, and a repository that had been pruned would launch it again. The code now
+            // carries the window it was issued for.
+            final Instant stale = NOW.minusSeconds(
+                    ReportSubmissionService.JobSubmissionEnvelope.LIFETIME_SECONDS
+                            + ReportSubmissionService.JobSubmissionEnvelope.CLOCK_SKEW_TOLERANCE_SECONDS + 1L);
+            final String expiredCode = ENVELOPE.sign(MESSAGE, "submission-8c", stale);
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-8c",
+                    SIGNATURE_HEADER, expiredCode), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a code issued by a clock far ahead of this one launches nothing")
+        void aCodeFromTheFutureLaunchesNothing() throws Exception {
+            // The other end of the same window. Tolerated up to the declared skew allowance, because two hosts
+            // never agree exactly; refused beyond it, because a code issued far in the future would otherwise
+            // be a code that stays valid far longer than its declared lifetime.
+            final Instant ahead = NOW.plusSeconds(
+                    ReportSubmissionService.JobSubmissionEnvelope.CLOCK_SKEW_TOLERANCE_SECONDS + 60L);
+            final String prematureCode = ENVELOPE.sign(MESSAGE, "submission-8d", ahead);
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-8d",
+                    SIGNATURE_HEADER, prematureCode), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a code rendered under the retired version is refused rather than accepted as legacy")
+        void aRetiredVersionIsRefused() throws Exception {
+            // The version prefix is what lets a signing contract be replaced without a window in which both
+            // are honoured. A v1 code - the shape that covered the payload alone - is not downgraded to, it is
+            // refused, so resolving finding SEC-002 cannot be undone by presenting the older form.
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-8e",
+                    SIGNATURE_HEADER, "v1=0123456789abcdef"), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
         @DisplayName("a report name outside the three source literals launches nothing")
         void aReportNameOutsideTheClosedSetLaunchesNothing() throws Exception {
-            // FINDING M-12, severity Major. An arbitrary, unbounded report name used to reach an IDENTIFYING
+            // FINDING M-12, severity High. An arbitrary, unbounded report name used to reach an IDENTIFYING
             // job parameter, which the batch repository persists and keys a job instance on. The record's own
             // constructor now refuses anything but the three literals of app/cbl/CORPT00C.cbl:L214, :L240 and
             // :L433, and the listener treats that refusal exactly as it treats an unparseable body.
@@ -1525,7 +1701,7 @@ class BatchConfigTest {
         @Test
         @DisplayName("the producer's correlation identifier is restored for the launch and removed after it")
         void theProducersCorrelationIdentifierIsRestoredForTheLaunch() throws Exception {
-            // FINDING M-03, severity Major. The producer publishes a correlation identifier and a W3C trace
+            // FINDING M-03, severity High. The producer publishes a correlation identifier and a W3C trace
             // context; before this they were never consumed, so a report run could not be tied back to the
             // request that submitted it. The value is observed from inside the launch, because that is the
             // only scope in which it is supposed to exist.
@@ -1578,10 +1754,41 @@ class BatchConfigTest {
         @Test
         @DisplayName("the envelope key is required, because there is no unsigned mode")
         void theEnvelopeKeyIsRequired() {
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new BatchConfig(100)
-                            .reportJobQueueListener(jobLauncher, reportJob, new ObjectMapper(), "  "))
-                    .withMessageContaining("carddemo.security.jwt.signing-key");
+            // Raised by the authenticator this factory constructs rather than by a guard of the factory's own:
+            // finding SEC-001 moved the key out of the listener entirely, so the one place that can refuse a
+            // blank key is the one place that derives from it.
+            final Clock fixed = Clock.fixed(NOW, ZoneOffset.UTC);
+            for (final String absent : new String[] {null, "", "  "}) {
+                assertThatIllegalArgumentException()
+                        .isThrownBy(() -> new BatchConfig(100)
+                                .reportJobQueueListener(jobLauncher, reportJob, new ObjectMapper(), fixed,
+                                        absent))
+                        .withMessageContaining("carddemo.security.jwt.signing-key");
+            }
+        }
+
+        @Test
+        @DisplayName("the listener retains no field holding the configured signing key")
+        void theListenerRetainsNoFieldHoldingTheSigningKey() throws Exception {
+            // FINDING SEC-001, severity HIGH, CWE-316. The listener used to keep the application signing key
+            // in a String field for the life of the bean, immutable, uncollectable and recoverable from any
+            // heap dump. Asserted structurally, because the absence of a retained secret is a property of the
+            // FIELD SET and not of any one call.
+            for (final java.lang.reflect.Field field
+                    : BatchConfig.ReportJobQueueListener.class.getDeclaredFields()) {
+                if (field.isSynthetic() || java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                field.setAccessible(true);
+                if (field.get(listener) instanceof String text) {
+                    assertThat(text)
+                            .as("field %s holds a String; none may hold the signing key", field.getName())
+                            .isNotEqualTo(SIGNING_KEY);
+                }
+            }
+            assertThat(BatchConfig.ReportJobQueueListener.class.getDeclaredField("envelope").getType())
+                    .as("what is retained instead is the authenticator, which holds only a derived key")
+                    .isEqualTo(ReportSubmissionService.JobSubmissionEnvelope.class);
         }
 
         @Test
@@ -1644,7 +1851,7 @@ class BatchConfigTest {
         }
 
         // =========================================================================================
-        // FINDING C-02, severity CRITICAL. The listener used to log the publisher-set deduplication
+        // FINDING C-02, severity BLOCKER. The listener used to log the publisher-set deduplication
         // identifier and the three payload fields. All four are chosen by whoever publishes, which is
         // not necessarily this application, so each was untrusted free text reaching a log stream past
         // a masking layer that redacts only LABELLED values - a bare card number or government
@@ -1888,7 +2095,7 @@ class BatchConfigTest {
         @Test
         @DisplayName("the invisibility window covers the whole processing interval, and matches the queue's")
         void theInvisibilityWindowCoversTheProcessingInterval() throws Exception {
-            // FINDING M-02, severity Major. Only the poll wait used to be declared, so the queue's own default
+            // FINDING M-02, severity High. Only the poll wait used to be declared, so the queue's own default
             // of 30 seconds governed how long a received submission stayed hidden - far shorter than a report
             // run, so the message reappeared while its own job was still going. The window is stated on both
             // sides of the boundary, and the two values must agree: the queue attribute governs the delivery

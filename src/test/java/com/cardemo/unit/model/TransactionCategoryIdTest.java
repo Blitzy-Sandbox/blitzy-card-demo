@@ -220,9 +220,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code src/main/resources/db/migration/V1__create_schema.sql} and asserted by that migration's own
  *       test; duplicating those assertions here would create two owners for one fact. No SQL type is invented
  *       anywhere in this file.</li>
- *   <li><strong>Low - a stale claim of unavailability.</strong> An earlier reading of this area recorded the
- *       migration as having no authored content, which would have made the SQL side of the contract
- *       unavailable. That is no longer the position and the claim is not repeated here; the boundary drawn
+ *   <li><strong>Low - the migration is not unavailable.</strong> {@code V1__create_schema.sql} carries
+ *       authored content, so the SQL side of the contract is available; the boundary drawn
  *       above is one of ownership, not of absence.</li>
  *   <li><strong>Not available - a paragraph level locator for the equality contract.</strong> The COBOL
  *       corpus implements no key equality routine: VSAM compares key bytes inside the access method, so there
@@ -376,9 +375,7 @@ class TransactionCategoryIdTest {
         return new TransactionCategoryId(FIXTURE_TYPE_CD, FIXTURE_CAT_CD);
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // 1. The field contract, read out of the frozen corpus
-    // ----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("the copybook declares exactly two subordinate items under TRAN-CAT-KEY, 2 and 4 bytes wide")
@@ -459,9 +456,7 @@ class TransactionCategoryIdTest {
                 .containsExactly("tranTypeCd", "tranCatCd");
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // 2. The collision hazard: two copybooks, one group name, two entirely different keys
-    // ----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("TRAN-CAT-KEY is declared in BOTH copybooks with different compositions: 2 fields vs 3")
@@ -564,9 +559,7 @@ class TransactionCategoryIdTest {
                 .isEqualTo("transaction category");
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // 3. The Jakarta Persistence composite identifier contract
-    // ----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("is @Embeddable and Serializable, as an @EmbeddedId composite key must be")
@@ -807,9 +800,7 @@ class TransactionCategoryIdTest {
                         .isTrue());
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // 4. The equals and hashCode contract, in full
-    // ----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("equals is reflexive: an identifier equals itself")
@@ -950,9 +941,7 @@ class TransactionCategoryIdTest {
                 .isEqualTo("Regular Sales Draft");
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // 5. Hostile and boundary input: every component treated as untrusted
-    // ----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("rejects a null type code, naming the Java property and the COBOL picture clause")
@@ -1020,9 +1009,7 @@ class TransactionCategoryIdTest {
                 .withNoCause();
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // 6. The seed fixture: the domain the data actually occupies
-    // ----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("every key in the frozen fixture round-trips through this identifier, and all 18 are distinct")
@@ -1150,9 +1137,7 @@ class TransactionCategoryIdTest {
                 .isEqualTo(INTEREST_DESCRIPTION);
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // Private helpers: parsing the frozen corpus, and reflecting over the subject
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * Renders a key back to its fixed width VSAM byte image, zero padding the category code to four digits.

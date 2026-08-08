@@ -17,7 +17,7 @@
  *               path that DISPLAYs then abends with code 999.
  * Source      : app/cbl/CBTRN02C.cbl:L176-L182 (REJECT-RECORD layout)
  *               app/cbl/CBTRN02C.cbl:L442-L465 (2500-WRITE-REJECT-REC)
- *               app/cbl/CBTRN02C.cbl:L714-L731 (9910-DISPLAY-IO-STATUS)
+ *               app/cbl/CBTRN02C.cbl:L714-L727 (9910-DISPLAY-IO-STATUS)
  *               app/cbl/CBTRN02C.cbl:L707-L712 (9999-ABEND-PROGRAM)
  *               app/jcl/POSTTRAN.jcl:L34-L38   (DALYREJS DD, LRECL=430)
  *               app/jcl/DALYREJS.jcl:L24-L28   (GDG base)

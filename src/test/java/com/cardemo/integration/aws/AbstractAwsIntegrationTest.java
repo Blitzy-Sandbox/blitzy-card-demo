@@ -352,10 +352,11 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  * invention. Three things are missing, and each is disclosed with what would be needed to close it.
  *
  * <ol>
- *   <li><strong>The boundary-parity expected-output baseline is Not available.</strong> The repository holds
- *       dataset <em>definition</em> job control and zero captured data: a search across expected, baseline,
- *       golden, system-output and per-dataset name patterns returned only definition members, and a
- *       byte-size sweep for 430-byte and 133-byte artefacts returned nothing. <em>What is needed:</em> a
+ *   <li><strong>The boundary-parity expected-output expectation <em>exists</em>; what is Not available is a captured
+ *       z/OS run to corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen
+ *       program's own output, derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and running it
+ *       against the frozen fixtures, with the derivation recorded beside it in {@code PROVENANCE.properties};
+ *       nothing there was produced by running this implementation. <em>What is still needed:</em> a
  *       captured 430-byte {@code DALYREJS} reject dataset together with the resulting {@code TRANSACT},
  *       {@code ACCTDATA} and {@code TCATBALF} images from a real {@code POSTTRAN} execution at a known
  *       input state. Until those exist, <strong>this harness creates no baseline file and no subclass may
@@ -397,9 +398,7 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
 @Import(AbstractAwsIntegrationTest.FixedClockTestConfiguration.class)
 public abstract class AbstractAwsIntegrationTest {
 
-    // =================================================================================================
     // Pinned images. Stated, never defaulted, and never a mutable tag.
-    // =================================================================================================
 
     /**
      * The relational image, referenced by content digest rather than by tag.
@@ -426,9 +425,9 @@ public abstract class AbstractAwsIntegrationTest {
      * {@code postgres:16.14-alpine@sha256:57c72fd2...}, the alpine build of the <em>same</em> patch level.
      * The two are deliberately equal in the property this tier asserts against - the engine version, and
      * therefore the schema, the type affinities and the {@code ORDER BY} semantics the migration is written
-     * for - and deliberately unequal in base image, for the two reasons set out below. What was actually
-     * wrong before, and is fixed here, is the initialisation: {@link #POSTGRES_INITDB_ARGUMENTS} now carries
-     * the arguments that file sets, which this harness previously omitted entirely.
+     * for - and deliberately unequal in base image, for the two reasons set out below. The initialisation must
+     * match as well as the version: {@link #POSTGRES_INITDB_ARGUMENTS} carries the arguments that file sets,
+     * and omitting them is the drift that matters.
      *
      * <p>The collation half of that drift was the consequential half. Compose initialises with
      * {@code --locale=C}, whose ordering is byte ordering - which is what the fixed-width uppercase and
@@ -523,9 +522,7 @@ public abstract class AbstractAwsIntegrationTest {
      */
     private static final String LOCALSTACK_IMAGE_REFERENCE = "localstack/localstack:4.14.0";
 
-    // =================================================================================================
     // Record geometry. Every length is proven by a locator, and none is rounded or inferred.
-    // =================================================================================================
 
     /**
      * Length of a transaction or daily-transaction image, in bytes.
@@ -618,9 +615,7 @@ public abstract class AbstractAwsIntegrationTest {
     /** Identifier component of the statement work key. {@code app/cpy/COSTM01.CPY}, {@code PIC X(16)}. */
     protected static final int STATEMENT_KEY_TRANSACTION_ID_LENGTH = 16;
 
-    // =================================================================================================
     // Decimal precision. Three tiers that must never be conflated, and no binary floating point anywhere.
-    // =================================================================================================
 
     /** Scale of every monetary and rate quantity in the corpus: two decimal places, without exception. */
     protected static final int MONEY_SCALE = 2;
@@ -637,9 +632,7 @@ public abstract class AbstractAwsIntegrationTest {
     /** Precision of the disclosure interest rate: {@code PIC S9(04)V99} becomes {@code NUMERIC(6,2)}. */
     protected static final int INTEREST_RATE_PRECISION = 6;
 
-    // =================================================================================================
     // Pinned time. Never the wall clock.
-    // =================================================================================================
 
     /**
      * The single instant this tier runs at.
@@ -748,9 +741,7 @@ public abstract class AbstractAwsIntegrationTest {
     /** Diagnostics for cleanup, the one place where a failure is reported rather than propagated. */
     private static final Logger LOGGER = LoggerFactory.getLogger(AbstractAwsIntegrationTest.class);
 
-    // =================================================================================================
     // The two containers: the single documented exception to "no global mutable state".
-    // =================================================================================================
 
     /**
      * The relational substrate: one PostgreSQL 16 container, started once per JVM and shared by every
@@ -870,9 +861,7 @@ public abstract class AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Property wiring. Every value is read from a container accessor; not one is a literal address.
-    // =================================================================================================
 
     /**
      * Contributes every property the application needs that injected connection details cannot supply, and
@@ -1063,8 +1052,8 @@ public abstract class AbstractAwsIntegrationTest {
                             QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false"))
                     .build());
         } catch (final QueueNameExistsException alreadyProvisioned) {
-            // An earlier revision stopped here and logged that provisioning had "converged", which was not
-            // true: it had only established that the queue existed. The emulator is a host-global resource and
+            // Stopping here and logging that provisioning has "converged" would establish only that the queue
+            // exists. The emulator is a host-global resource and
             // an existing queue may therefore carry ContentBasedDeduplication ENABLED - createQueue does not
             // reconcile the attributes of a queue it did not create, so the assertion that the attribute is off
             // would fail on infrastructure state rather than on anything this build did. The attribute is
@@ -1080,9 +1069,7 @@ public abstract class AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Injected collaborators. The context's own clients, never rebuilt here.
-    // =================================================================================================
 
     /**
      * The context's object-store client.
@@ -1144,9 +1131,7 @@ public abstract class AbstractAwsIntegrationTest {
     @Value("${carddemo.aws.sns.notification-topic}")
     private String notificationTopic;
 
-    // =================================================================================================
     // Per-test resource ledger. Instance state, deliberately: nothing here is shared between tests.
-    // =================================================================================================
 
     /**
      * Buckets this test created, most recent first, each paired with whether versioning was enabled on it.
@@ -1170,17 +1155,6 @@ public abstract class AbstractAwsIntegrationTest {
      * @param versioned whether versioning was enabled, which decides how the bucket has to be emptied
      */
     private record CreatedBucket(String name, boolean versioned) {
-    }
-
-    /**
-     * Sole constructor, for subclasses.
-     *
-     * <p>Explicit and empty. It is declared rather than defaulted so that no initialisation can ever be
-     * added to it accidentally: this class is extended, and a constructor that called an overridable method
-     * would publish a partially built instance.
-     */
-    protected AbstractAwsIntegrationTest() {
-        // Intentionally empty; all state is injected by the framework or created per test.
     }
 
     /**
@@ -1265,9 +1239,7 @@ public abstract class AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Accessors. The collaborators and configured names a subclass needs, exposed read-only.
-    // =================================================================================================
 
     /**
      * The context's object-store client.
@@ -1391,9 +1363,7 @@ public abstract class AbstractAwsIntegrationTest {
         return this.notificationTopic;
     }
 
-    // =================================================================================================
     // Deterministic naming. Stable across runs, unique per concrete class, never random.
-    // =================================================================================================
 
     /**
      * Builds a resource name that is unique to the running subclass and identical on every run.
@@ -1499,9 +1469,7 @@ public abstract class AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Self-created, self-cleaned resources. Idempotent on the way in, convergent on the way out.
-    // =================================================================================================
 
     /**
      * Creates an unversioned bucket and registers it for cleanup.
@@ -1891,9 +1859,7 @@ public abstract class AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Fixed-width payloads. Record length is preserved byte-exactly at the object-store boundary.
-    // =================================================================================================
 
     /**
      * Renders text as a fixed-width field with COBOL {@code PIC X(n)} semantics: blank-padded on the right.
@@ -2076,9 +2042,7 @@ public abstract class AbstractAwsIntegrationTest {
         return value;
     }
 
-    // =================================================================================================
     // Generation keys. The object-store expression of a relative generation reference.
-    // =================================================================================================
 
     /**
      * Builds the key prefix a next-generation write lands under.
@@ -2186,11 +2150,6 @@ public abstract class AbstractAwsIntegrationTest {
      */
     @TestConfiguration(proxyBeanMethods = false)
     static class FixedClockTestConfiguration {
-
-        /** Sole constructor, used by the framework. */
-        FixedClockTestConfiguration() {
-            // Intentionally empty; this configuration holds no state.
-        }
 
         /**
          * The fixed clock every bean in the context resolves.

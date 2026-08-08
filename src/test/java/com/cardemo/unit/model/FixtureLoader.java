@@ -282,6 +282,14 @@ public final class FixtureLoader {
         private final int expectedRecordCount;
         private final int recordWidth;
 
+        /**
+         * Binds one fixture to the geometry its catalogue entry declares.
+         *
+         * @param resourceName the classpath resource name, which is how the fixture is reached.
+         * @param expectedByteCount the total byte count the file must have.
+         * @param expectedRecordCount the number of fixed-width records it must hold.
+         * @param recordWidth the width of each record in bytes.
+         */
         Fixture(final String resourceName, final int expectedByteCount, final int expectedRecordCount,
                 final int recordWidth) {
             this.resourceName = resourceName;

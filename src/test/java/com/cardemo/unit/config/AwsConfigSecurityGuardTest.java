@@ -84,8 +84,8 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClientBuilder;
  *
  * <p>Two review findings shaped the class under test, and this file is the evidence for both.
  *
- * <p><strong>High - live AWS was reachable.</strong> An earlier revision declared no endpoint override and no
- * credential in the base profile, which reads as caution and is the opposite: an absent override is the SDK's
+ * <p><strong>High - live AWS must be unreachable.</strong> Declaring no endpoint override and no
+ * credential in the base profile reads as caution and is the opposite: an absent override is the SDK's
  * instruction to resolve the real regional service edge, and an absent credential is the library's instruction
  * to fall back to the ambient provider chain. Both are now mandatory, and {@link AwsConfig} refuses to let the
  * context refresh on an endpoint outside a closed allowlist or on any credentials provider that is not a static
@@ -682,7 +682,8 @@ class AwsConfigSecurityGuardTest {
 
             assertThatThrownBy(() -> config.cardDemoS3ClientCustomizer(ambient))
                     .as("the library returns this provider when NOTHING is configured, which is exactly "
-                            + "the state the earlier revision of the base profile left production in. It "
+                            + "the state a base profile carrying neither an override nor a credential "
+                            + "leaves production in. It "
                             + "reads a shared credentials file, a web-identity token, container "
                             + "credentials and the instance metadata service in turn")
                     .isInstanceOf(IllegalStateException.class)
@@ -997,6 +998,157 @@ class AwsConfigSecurityGuardTest {
                             + "be reachable by accident")
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("queue-not-found-strategy");
+        }
+    }
+
+    // ==================================================================
+    // GROUP 7 - WHERE THE DEFAULTS LIVE, WHICH IS NOT THE BASE PROFILE
+    // ==================================================================
+
+    /**
+     * The five AWS values, and the profile each one's developer default belongs to.
+     *
+     * <p><strong>Why this group exists.</strong> Four documents described the base profile as carrying a
+     * literal endpoint default or literal credential values, and one of them said the credentials are there
+     * "as literals rather than as indirections". The base profile does the opposite: all five values are
+     * environment indirections with no default at all, and an unset variable therefore aborts placeholder
+     * resolution instead of resolving to a guess. That absence of a default is the control - a default would
+     * be the hole - so a document that describes it backwards is describing a weaker system than the one
+     * shipped, and a reader could reasonably conclude a variable is optional when it is required.
+     *
+     * <p>The claims have been corrected. This group is what stops them drifting back, and it asserts the
+     * arrangement rather than the wording: no default in the base profile, the endpoint default present in
+     * exactly one profile, and no literal credential anywhere.
+     */
+    @Nested
+    @DisplayName("7. The base profile defaults none of the five AWS values; only `local` defaults the endpoint")
+    class ProfileDefaultContracts {
+
+        /** The base profile, which every runnable profile inherits. */
+        private static final Path BASE_PROFILE = Path.of("src", "main", "resources", "application.yml");
+
+        /** The developer profile, which is the one place the emulator edge is assumed. */
+        private static final Path LOCAL_PROFILE = Path.of("src", "main", "resources", "application-local.yml");
+
+        /** Every profile file, so a default cannot hide in one nobody thought to check. */
+        private static final List<Path> ALL_PROFILES = List.of(
+                BASE_PROFILE,
+                LOCAL_PROFILE,
+                Path.of("src", "main", "resources", "application-test.yml"),
+                Path.of("src", "main", "resources", "application-prod.yml"));
+
+        /**
+         * A property binding whose placeholder carries a literal default, as
+         * {@code key: ${VARIABLE:something}}. A nested indirection such as
+         * {@code ${AWS_REGION:${AWS_DEFAULT_REGION}}} is deliberately not matched: it delegates to another
+         * variable rather than supplying a literal, so it is still fail-fast.
+         */
+        private static final Pattern DEFAULTED_PLACEHOLDER = Pattern.compile(
+                "^\\s*([a-z-]+):\\s*\\$\\{([A-Z_]+):(?!\\$\\{)([^}]+)}");
+
+        /** The three endpoint keys and the two credential keys, by their leaf property name. */
+        private static final Set<String> GUARDED_KEYS =
+                Set.of("endpoint", "access-key", "secret-key");
+
+        @Test
+        @DisplayName("no AWS endpoint or credential binding in the base profile carries a literal default")
+        void theBaseProfileDefaultsNothing() {
+            final List<String> defaulted = defaultedGuardedBindings(BASE_PROFILE);
+
+            assertThat(defaulted)
+                    .as("the base profile must indirect all five values with no literal default, because "
+                            + "fail-fast on an unset variable is the control that keeps a run off live AWS. "
+                            + "Adding a default here would also falsify the withdrawals now written into "
+                            + "Dockerfile, AwsConfig's Javadoc, application-local.yml and application-test.yml")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the endpoint default lives in `local` alone, so exactly one profile assumes the edge")
+        void onlyTheLocalProfileDefaultsTheEndpoint() {
+            final List<String> localDefaults = defaultedGuardedBindings(LOCAL_PROFILE);
+
+            assertThat(localDefaults)
+                    .as("the developer default belongs to this profile and nowhere else, and it is the "
+                            + "endpoint only - the credentials stay fail-fast in every profile")
+                    .isNotEmpty()
+                    .allSatisfy(binding -> assertThat(binding).startsWith("endpoint"));
+
+            for (final Path profile : ALL_PROFILES) {
+                if (profile.equals(LOCAL_PROFILE)) {
+                    continue;
+                }
+                assertThat(defaultedGuardedBindings(profile))
+                        .as("%s must not carry a default for any of the five values; %s is the only profile "
+                                + "licensed to", profile, LOCAL_PROFILE)
+                        .isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("no profile states a credential as a literal, so the pair is always an indirection")
+        void noProfileCarriesALiteralCredential() {
+            final Pattern literalCredential =
+                    Pattern.compile("^\\s*(access-key|secret-key):\\s*(?!\\$\\{)\\S");
+            final List<String> literals = new ArrayList<>();
+            for (final Path profile : ALL_PROFILES) {
+                final List<String> lines = readLines(profile);
+                for (int index = 0; index < lines.size(); index++) {
+                    final String line = lines.get(index);
+                    if (line.strip().startsWith("#")) {
+                        continue;
+                    }
+                    if (literalCredential.matcher(line).find()) {
+                        literals.add(profile + ":" + (index + 1) + " " + line.strip());
+                    }
+                }
+            }
+            assertThat(literals)
+                    .as("a credential written as a literal is a committed credential, however inert the "
+                            + "value; the pair must always resolve from the environment, and the constructor "
+                            + "guard above is what rejects a live-looking key that does resolve")
+                    .isEmpty();
+        }
+
+        /**
+         * Lists the guarded bindings in one profile that carry a literal placeholder default.
+         *
+         * @param profile the profile file, relative to the working directory
+         * @return one {@code key at line N} description per defaulted binding, in file order
+         */
+        private List<String> defaultedGuardedBindings(final Path profile) {
+            final List<String> lines = readLines(profile);
+            final List<String> defaulted = new ArrayList<>();
+            for (int index = 0; index < lines.size(); index++) {
+                final String line = lines.get(index);
+                if (line.strip().startsWith("#")) {
+                    continue;
+                }
+                final Matcher binding = DEFAULTED_PLACEHOLDER.matcher(line);
+                if (binding.find() && GUARDED_KEYS.contains(binding.group(1))) {
+                    defaulted.add(binding.group(1) + " at line " + (index + 1)
+                            + " defaults " + binding.group(2) + " to " + binding.group(3));
+                }
+            }
+            return defaulted;
+        }
+
+        /**
+         * Reads a profile's lines.
+         *
+         * @param profile the profile file
+         * @return its lines, in order
+         */
+        private List<String> readLines(final Path profile) {
+            assertThat(profile)
+                    .as("%s is a configuration surface this contract covers, so its absence would make the "
+                            + "contract vacuous rather than satisfied", profile)
+                    .isRegularFile();
+            try {
+                return Files.readAllLines(profile, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new java.io.UncheckedIOException("Cannot read " + profile, cause);
+            }
         }
     }
 }

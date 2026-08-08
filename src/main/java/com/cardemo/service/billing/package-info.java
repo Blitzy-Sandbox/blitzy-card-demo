@@ -9,7 +9,7 @@
  *               never partial - and it drives the balance to exactly
  *               zero. A balance at or below zero is rejected before
  *               anything is written.
- * Source      : app/cbl/COBIL00C.cbl (572 lines, 16 paragraphs) @ 7756d89
+ * Source      : app/cbl/COBIL00C.cbl (572 lines, 16 own paragraph labels) @ 7756d89
  * Source      : app/cbl/COBIL00C.cbl:L193 (capture the current balance), :L198 (reject at or below zero) @ 7756d89
  * Source      : app/cbl/COBIL00C.cbl:L224 (move the ENTIRE balance into the amount), :L234 (subtract it) @ 7756d89
  * Source      : app/cbl/COBIL00C.cbl:L173 (the two-phase confirmation gate) @ 7756d89
@@ -88,8 +88,8 @@
  *       {@code 1.00} - which matters directly here, since "is the balance zero" is a decision this service
  *       makes.</li>
  *   <li>Timestamps are 26 characters whose generated form ends in four zeros, so a generator formats to
- *       <strong>hundredths-of-a-second</strong> precision followed by those four zeros. An earlier revision
- *       said millisecond precision and is withdrawn: three fraction digits plus four zeros is seven
+ *       <strong>hundredths-of-a-second</strong> precision followed by those four zeros, never millisecond
+ *       precision: three fraction digits plus four zeros is seven
  *       characters, and {@code app/cbl/CBTRN02C.cbl:L159-L174} declares the fraction as two digits plus a
  *       four-character literal.</li>
  *   <li>A {@code java.time.Clock} is injected, published once as {@code Clock.systemDefaultZone()} -

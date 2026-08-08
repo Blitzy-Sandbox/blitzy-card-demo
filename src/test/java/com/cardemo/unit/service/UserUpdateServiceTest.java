@@ -18,7 +18,7 @@
  *               their four distinct literals and three message colours,
  *               and a response record that declares NO credential
  *               component at all
- * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 paragraphs) @ 7756d89
+ * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 own paragraph labels) @ 7756d89
  * Source      : app/cpy-bms/COUSR02.CPY (12 input fields) @ 7756d89
  * Source      : app/cpy/CSUSR01Y.cpy (80 byte record, KEYS(8,0)) @ 7756d89
  * Source      : app/cpy/CSMSG01Y.cpy (CCDA-MSG-INVALID-KEY) @ 7756d89
@@ -329,10 +329,8 @@ import com.cardemo.service.shared.FileStatusMapper;
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
 class UserUpdateServiceTest {
 
-    // ----------------------------------------------------------------------------------------------------
     // Synthetic credential material. Rule 1 Clause D names tests explicitly, so nothing here is or
     // resembles a real credential, and the seed value of app/jcl/DUSRSECJ.jcl is never reproduced.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The presented plaintext, standing in for {@code PASSWDI PIC X(8)}. Obviously fake, eight characters. */
     private static final String PRESENTED_CREDENTIAL = "n0tr3al!";
@@ -358,9 +356,7 @@ class UserUpdateServiceTest {
     /** A second body, so a re-hash is observably different from the value it replaced. */
     private static final String REPLACEMENT_BODY = "NotARealCredentialPlaceholder11";
 
-    // ----------------------------------------------------------------------------------------------------
     // Identity and record contents. Widths from app/cpy/CSUSR01Y.cpy:18-22.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The eight-character key, from {@code SEC-USR-ID PIC X(08)}. */
     private static final String USER_ID = "USER0002";
@@ -383,9 +379,7 @@ class UserUpdateServiceTest {
     /** The other user class. */
     private static final String OTHER_USER_TYPE = "A";
 
-    // ----------------------------------------------------------------------------------------------------
     // Screen identity, app/cbl/COUSR02C.cbl:302-303 and app/cpy/COTTL01Y.cpy:18-22.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code WS-TRANID PIC X(04) VALUE 'CU02'}. */
     private static final String TRANSACTION_ID = "CU02";
@@ -408,13 +402,11 @@ class UserUpdateServiceTest {
     /** The logical file name, {@code WS-USRSEC-FILE}. */
     private static final String USRSEC_FILE = "USRSEC";
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor fields: the symbolic-map length fields that received MOVE -1. Only the two that land on an arm
     // returning a screen are named here. The placements at :196, :202, :208, :344, :351, :381 and :388 all
     // sit on arms that raise a typed failure, and a raised failure carries no screen, so the Java-side
     // marker for those is the field NAME the failure carries - which is what those tests assert. Naming a
     // constant that no assertion can reach would be dead code under Rule 1 Clause B.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code USRIDINL}, from {@code :98}, {@code :153} and {@code :405} - all arms that return a screen. */
     private static final String CURSOR_USER_ID = "USRIDIN";
@@ -422,10 +414,8 @@ class UserUpdateServiceTest {
     /** {@code FNAMEL}, from the {@code WHEN OTHER} arm at {@code :211}, which precedes the no-change screen. */
     private static final String CURSOR_FIRST_NAME = "FNAME";
 
-    // ----------------------------------------------------------------------------------------------------
     // Literals. Byte exact: "can NOT" with capital N O T, every ellipsis exactly three periods, and the
     // no-change and save-hint messages each carrying a space before their ellipsis where the empties do not.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code CCDA-MSG-INVALID-KEY} from {@code app/cpy/CSMSG01Y.cpy}, used at {@code :127-130}. */
     private static final String INVALID_KEY_MESSAGE = "Invalid key pressed. Please see below...";
@@ -479,14 +469,12 @@ class UserUpdateServiceTest {
     private static final String USER_TYPE_DOMAIN_MESSAGE =
             "User Type must be A for an administrator or U for a regular user";
 
-    // ----------------------------------------------------------------------------------------------------
     // Concrete failure types, named rather than imported. Three of the nine members of
     // com.cardemo.exception are reachable from this bean but sit outside this suite's declared dependency
     // set, so each is asserted through the com.cardemo.exception.CardDemoException supertype plus its
     // simple name. That keeps the import set inside the declared boundary and, more usefully, keeps the
     // payload contracts of those types where they belong: their own suites own the field-level
     // assertions, and repeating them here would be duplication that Rule 1 Clause C forbids.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Raised on both concurrency routes; see {@code app/cbl/COUSR02C.cbl}:322-331 for the lock it replaces. */
     private static final String CONCURRENT_UPDATE_TYPE = "ConcurrentUpdateException";
@@ -507,9 +495,7 @@ class UserUpdateServiceTest {
     /** The tail of the abend reason recorded when the encoder yields nothing, from the production bean. */
     private static final String ENCODER_ABEND_REASON_TAIL = "ENCODER RETURNED NO DIGEST";
 
-    // ----------------------------------------------------------------------------------------------------
     // Record and channel geometry, from app/cpy/CSUSR01Y.cpy:17-23 and app/cbl/COUSR02C.cbl:38.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code WS-MESSAGE PIC X(80)} at {@code app/cbl/COUSR02C.cbl}:38 - the work area, not the channel. */
     private static final int WORK_AREA_MESSAGE_WIDTH = 80;
@@ -544,9 +530,7 @@ class UserUpdateServiceTest {
     /** Tokens that would betray query text assembled inside the bean; none appears in any source literal. */
     private static final List<String> QUERY_TOKENS = List.of("select", "from", "where", ";", "--");
 
-    // ----------------------------------------------------------------------------------------------------
     // Time.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The instant every seed fixture carries. */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
@@ -557,9 +541,7 @@ class UserUpdateServiceTest {
     /** {@code HH:MM:SS} as {@code :311-315} assembles it. */
     private static final String EXPECTED_HEADER_TIME = "19:27:53";
 
-    // ----------------------------------------------------------------------------------------------------
     // Collaborators.
-    // ----------------------------------------------------------------------------------------------------
 
     @Mock
     private UserSecurityRepository userSecurityRepository;
@@ -580,9 +562,7 @@ class UserUpdateServiceTest {
                 this.fileStatusMapper, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Fixtures and helpers. Every helper is used; an unused one would be dead code under Rule 1 Clause B.
-    // -----------------------------------------------------------------------------------------------------
 
     /**
      * Assembles a synthetic BCrypt-shaped digest at the contractual cost, so that no digest literal exists in
@@ -807,9 +787,7 @@ class UserUpdateServiceTest {
         return written.getValue();
     }
 
-    // =====================================================================================================
     // 1. Construction
-    // =====================================================================================================
 
     /** Constructor injection only, with all four collaborators refused when absent. */
     @Nested
@@ -866,9 +844,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 2. Paragraph correspondence and transaction boundaries
-    // =====================================================================================================
 
     /**
      * Eleven paragraph labels, eleven private methods. {@code app/cbl/COUSR02C.cbl} declares
@@ -939,9 +915,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 3. The attention-identifier arms - app/cbl/COUSR02C.cbl:108-131, INCLUDING THE PF3 QUIRK
-    // =====================================================================================================
 
     /**
      * Six arms. The one that matters most is {@code PF3}: it performs {@code UPDATE-USER-INFO} at {@code :112}
@@ -1167,9 +1141,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 4. Entry modes - app/cbl/COUSR02C.cbl:90-105
-    // =====================================================================================================
 
     /** The no-communication-area arm and the first-display arm, with and without a preselected identifier. */
     @Nested
@@ -1252,9 +1224,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 5. The five emptiness guards - app/cbl/COUSR02C.cbl:179-213
-    // =====================================================================================================
 
     /** {@code EVALUATE TRUE} with five arms in a fixed order, and a {@code WHEN OTHER} that parks the cursor. */
     @Nested
@@ -1373,9 +1343,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 6. Width enforcement - a Java-only guard, because the 3270 map made over-length input impossible
-    // =====================================================================================================
 
     /**
      * The symbolic map physically could not deliver more characters than the field declared. An HTTP caller
@@ -1439,9 +1407,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 7. The two-layer concurrency guard
-    // =====================================================================================================
 
     /**
      * The source held the record locked from its read to its rewrite with {@code EXEC CICS READ ... UPDATE}
@@ -1605,9 +1571,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 8. Change detection - app/cbl/COUSR02C.cbl:219-234
-    // =====================================================================================================
 
     /**
      * Four independent tests, each setting the modified flag. The credential test is the one that could not
@@ -1804,9 +1768,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 9. The successful rewrite - app/cbl/COUSR02C.cbl:369-376
-    // =====================================================================================================
 
     /** The message is assembled with {@code DELIMITED BY SPACE} around the record's own identifier. */
     @Nested
@@ -1892,9 +1854,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 10. The read and rewrite response arms - app/cbl/COUSR02C.cbl:333-353 and :368-390
-    // =====================================================================================================
 
     /** Three arms each, with four distinct literals between them, and never a swallowed failure. */
     @Nested
@@ -2055,9 +2015,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 11. Credential protection - Rule 1 Clause D, and the deliberate deviation from :169
-    // =====================================================================================================
 
     /**
      * {@code :169} moved the stored credential into the output map - it painted the password onto the screen.
@@ -2169,9 +2127,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 12. Header, clear and statelessness - app/cbl/COUSR02C.cbl:296-315 and :403-411
-    // =====================================================================================================
 
     /** Six header values computed rather than echoed, a clear that touches six fields, and no residue. */
     @Nested
@@ -2285,9 +2241,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 13. The message channel and the record geometry
-    // =====================================================================================================
 
     /**
      * The two widths the source states and one it does not. {@code WS-MESSAGE} is {@code PIC X(80)} at
@@ -2403,9 +2357,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 14. Stateless handling, the vestigial clone, and the branches that are NOT invented
-    // =====================================================================================================
 
     /**
      * Three absences, each asserted rather than assumed. The pseudo-conversational re-entry of
@@ -2579,9 +2531,7 @@ class UserUpdateServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 15. Hostile input, and the normalisations the source does NOT perform
-    // =====================================================================================================
 
     /**
      * Untrusted input taken at its word. The guards at {@code app/cbl/COUSR02C.cbl}:146 and

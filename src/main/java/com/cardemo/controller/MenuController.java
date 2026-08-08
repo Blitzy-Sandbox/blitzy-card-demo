@@ -458,23 +458,20 @@ public class MenuController {
 
     /**
      * The problem-detail property carrying the correlation identifier of the failing request.
-     * <p>
-     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
-     * file-status values that used to be returned to the client are now written only to the log, and this
-     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
-     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
-     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
-     * attacker holding the response body cannot.
+     *
+     * <p>It is the hinge of the posture the package documentation states: the same value
+     * {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the withheld detail from the log
+     * while a caller holding only the response body cannot.
      */
     private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
     /**
      * The value substituted when no correlation identifier is in the diagnostic context.
-     * <p>
-     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
-     * handler here has passed through it, so this is unreachable in the server. It exists because a
-     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
-     * {@code null} member and make the body's shape depend on how it was produced.
+     *
+     * <p>Unreachable in the server, because {@code CorrelationIdFilter} runs at
+     * {@code HIGHEST_PRECEDENCE} ahead of every handler here. It exists so that a handler invoked
+     * directly by a unit test still produces a body of the same shape.
      */
     private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
@@ -558,15 +555,23 @@ public class MenuController {
      * Identity is never taken from a body, a bespoke header or a session.</p>
      *
      * <p><strong>Outputs.</strong> {@code 200 OK} carrying {@code menuType}, {@code options} and
-     * {@code optionCount}. Each option carries its number, its caption at the declared
-     * {@code PIC X(35)} width, its eight-character source program name and its one-character
-     * eligibility code. The option list is bounded by
+     * {@code optionCount}. Each published option carries its number, its caption at the declared
+     * {@code PIC X(35)} width, and its one-character eligibility code. The option list is bounded by
      * {@code CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10} at {@code app/cpy/COMEN02Y.cpy:L21} - so
      * <strong>ten</strong> options - and never by the {@code OCCURS 12 TIMES} capacity declared at
      * {@code :L88}, whose two spare subscripts overlay unrelated working storage and would surface
-     * phantom options. The eight-character program name travels as the copybook's own
-     * {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} field at {@code :L91}, that is, as descriptive
-     * provenance; it is not a routing instruction, and the client navigates by URL.</p>
+     * phantom options.</p>
+     *
+     * <p><strong>The target program name is transcribed but NOT published.</strong> Finding CODE-012,
+     * severity Medium, resolved: this section previously listed "its eight-character source program name"
+     * among the members an option carries, and a client written to that description would have found no such
+     * member. {@code com.cardemo.model.dto.MenuResponse.MainMenuOption} declares {@code programName} because
+     * {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at {@code :L91} genuinely exists in the option table, and
+     * suppresses it from the JSON with {@code @JsonIgnoreProperties("programName")} because of what the field
+     * is <em>for</em>: it is the operand of {@code EXEC CICS XCTL PROGRAM(...)}, the dispatch mechanism
+     * Transformation Rule 7 replaces with URL-addressed navigation. Publishing it would hand a client the one
+     * piece of routing state the migration set out to remove, and couple it to a COBOL identifier that no
+     * longer addresses anything. The client navigates by URL.</p>
      *
      * <p><strong>Side effects.</strong> None. No write of any kind, no session created, no mapped
      * diagnostic context key added or altered, and no state retained between requests.</p>
@@ -646,10 +651,13 @@ public class MenuController {
      * {@code optionCount}. The option list is bounded by
      * {@code CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4} at {@code app/cpy/COADM02Y.cpy:L20} - so
      * <strong>four</strong> options - and never by the {@code OCCURS 9 TIMES} capacity declared at
-     * {@code :L45}. Each entry carries only a number, a caption and a program name, because
-     * {@code CDEMO-ADMIN-OPT} at {@code :L46-L48} declares no eligibility field at all - the
-     * administrator table has no counterpart to the main table's
-     * {@code CDEMO-MENU-OPT-USRTYPE}.</p>
+     * {@code :L45}. Each published entry carries a number and a caption and nothing else. It carries no
+     * eligibility code because {@code CDEMO-ADMIN-OPT} at {@code :L46-L48} declares no eligibility field at
+     * all - the administrator table has no counterpart to the main table's
+     * {@code CDEMO-MENU-OPT-USRTYPE} - and it carries no program name for the reason given on
+     * {@link #getMainMenu}: finding CODE-012, the component is transcribed on
+     * {@code com.cardemo.model.dto.MenuResponse.AdminMenuOption} and suppressed from the JSON, and this
+     * section previously named it as though a client would receive it.</p>
      *
      * <p><strong>Side effects.</strong> None, on the same terms as the main menu.</p>
      *
@@ -960,18 +968,11 @@ public class MenuController {
     /**
      * Stamps the two properties every error body carries, and returns the same instance for chaining.
      *
-     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
-     * handler cannot omit the envelope by accident: the {@code return} statement reads
-     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
-     * into that shape.
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so the
+     * envelope cannot be omitted by accident.
      *
-     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
-     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
-     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
-     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
-     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
-     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
-     * nothing is swallowed.
+     * <p>What the envelope discloses and what it withholds is the {@code CWE-209} posture stated for the
+     * whole package in {@code com.cardemo.controller}'s package documentation.
      *
      * @param problem the body under construction; must not be null.
      * @param errorCode one of the {@code ERROR_CODE_*} constants.

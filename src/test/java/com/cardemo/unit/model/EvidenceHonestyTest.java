@@ -85,14 +85,15 @@ import org.junit.jupiter.api.Test;
  *   <li><strong>A failure naming {@code DECISION_LOG.md} or {@code TRACEABILITY_MATRIX.md}</strong> now means
  *       the opposite of what it once did. Both registers are authored at the repository root, so the failure
  *       says a comment still calls one of them planned, absent or unavailable. Withdraw that claim in writing
- *       and state the obligation without the qualifier - "owed an entry in {@code DECISION_LOG.md}" - which
- *       stays true whether or not the entry has yet been written into it.</li>
+ *       and replace it with the stable identifier of the entry that actually holds the decision - for
+ *       example "held as {@code DL-PP-13} in {@code DECISION_LOG.md}" - so a reader can resolve it instead
+ *       of going looking for something unwritten.</li>
  *   <li><strong>A failure naming a formerly-unauthored class</strong> - {@code BatchConfig},
  *       {@code ObservabilityConfig} or {@code BatchPipelineOrchestrator} - means one of them has been removed
- *       from disk while prose still refers to it as present. All three are authored, so the unauthored-class
- *       pattern that once required them to be qualified as planned is retired.</li>
+ *       from disk while prose still refers to it as present. All three are authored, so this guard does not
+ *       require them to be qualified as planned.</li>
  *   <li><strong>A failure naming a test path</strong> means prose says a test lives somewhere it does not.
- *       Either author the test or state the coverage as owed.</li>
+ *       Either author the test or name the coverage that does exist, at the path that holds it.</li>
  *   <li><strong>A failure from the stale-absence group</strong> is the opposite case: prose says an artefact
  *       is absent, and it is now present. Re-measure and withdraw the claim explicitly rather than deleting
  *       the sentence, so the correction is visible to the next reader.</li>
@@ -125,10 +126,11 @@ class EvidenceHonestyTest {
      *
      * <p><strong>A uniform "planned" spelling was proposed as the alternative and is not adopted.</strong>
  * That proposal would have kept {@code REGISTER_CLAIM} and {@code REGISTER_POSSESSION} active and required
- * every mention to read "owed an entry in the planned {@code DECISION_LOG.md}" for consistency across some
- * eighty sites. It is declined because it trades an honesty property for a uniformity one: the registers
- * exist, so that spelling under-claims about delivered evidence, and a reader who meets it concludes the
- * record was never written. The rule below is also self-checking in a way the alternative is not - see
+ * every mention of a register to carry the qualifier, for consistency across some eighty sites. It is
+ * declined because it trades an honesty property for a uniformity one: the registers exist, so that spelling
+ * under-claims about delivered evidence, and a reader who meets it concludes the record was never written.
+ * The obligation wording it would have standardised is itself retired - every site now cites the identifier
+ * of the entry that holds it - and the rule below is self-checking in a way the alternative is not, see
  * {@link #FORMERLY_ABSENT_REGISTERS}.
  *
  * <p><strong>This rule replaces the two it inverts.</strong> {@code REGISTER_CLAIM} and
@@ -186,9 +188,9 @@ class EvidenceHonestyTest {
             List.of(SELF, "PackageDocumentationInventoryTest.java");
 
     /**
-     * Classes this guard used to cover and no longer does, because they have since been authored.
+     * Classes this guard deliberately does not cover, because they are authored.
      *
-     * <p>{@code BatchConfig} and {@code ObservabilityConfig} were outstanding when the guard was written and
+     * <p>{@code BatchConfig} and {@code ObservabilityConfig} are present, and
      * a bare reference to either implied an artefact that did not exist. Both are now present, so requiring
      * every mention to be qualified as planned would force the documentation to describe delivered classes as
      * pending. The narrowing is self-checking:

@@ -544,7 +544,7 @@ public record UserSecurityDto(
      *
      * <p><strong>The six recurring header fields are transcribed but not published.</strong>
      *
-     * <p>FINDING, severity Minor - remediated here. This record was serialized whole, so the delete
+     * <p>FINDING, severity Medium - remediated here. This record was serialized whole, so the delete
      * response was the only one of the seventeen operations that put {@code transactionName},
      * {@code title01}, {@code title02}, {@code currentDate}, {@code currentTime} and {@code programName} on
      * the wire. Those six are the screen chrome every one of the seventeen symbolic maps repeats, and they

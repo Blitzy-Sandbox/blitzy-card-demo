@@ -27,7 +27,7 @@
  *                 (82 lines) + app/proc/REPROC.prc (32 lines)
  *               + app/ctl/REPROCT.ctl (15 lines; one REPRO control card)
  *               + app/cbl/CBTRN02C.cbl:L227-L231 (RC 4 iff the reject
- *                 count exceeds zero) and :L707-L710 (abend code 999)
+ *                 count exceeds zero) and :L707-L711 (abend code 999)
  *               + app/cbl/CBTRN01C.cbl:L29-L58 (six SELECT statements, no
  *                 WRITE, REWRITE or DELETE anywhere: a step, not a job)
  *               + app/cbl/CBACT04C.cbl:L188-L222 (the control break and
@@ -107,6 +107,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.DatabaseMetaData;
+import java.time.Clock;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -187,10 +188,10 @@ import org.springframework.util.StringUtils;
  *       {@code com.cardemo.batch.jobs.TransactionReportJob}, which constructs one instance inside each
  *       STEP10R tasklet body and passes the two dates it read from the job parameters. That job is the type's
  *       sole owner and the class carries no {@code @Component} and no {@code @StepScope} - finding
- *       <strong>F-008</strong>, where an earlier revision annotated the class as a step-scoped component
- *       whose bean definition no production path ever resolved. A {@code @Bean} factory here would derive the
+ *       <strong>F-008</strong>: annotating the class as a step-scoped component publishes a bean definition
+ *       no production path resolves. A {@code @Bean} factory here would derive the
  *       bean name {@code transactionReportProcessor}, and under
- *       {@code spring.main.allow-bean-definition-overriding: false} that once collided with the component
+ *       {@code spring.main.allow-bean-definition-overriding: false} that collides with any component
  *       definition; the collision is gone with the annotation, but the factory is still not reinstated,
  *       because it would move the constructor's {@code DATEPARM} validation behind a scoped proxy where a
  *       rejected pair surfaces as a {@code BeanCreationException} rather than as the step's own
@@ -315,7 +316,7 @@ import org.springframework.util.StringUtils;
  *       There is no second condition, no threshold, no percentage and no warning band, and none may be
  *       added.</li>
  *   <li><strong>An abend is code 999 with return code 12.</strong> {@code 9999-ABEND-PROGRAM} at
- *       {@code app/cbl/CBTRN02C.cbl:L707-L710} displays an abend message, zeroes a timing field, moves 999
+ *       {@code app/cbl/CBTRN02C.cbl:L707-L711} displays an abend message, zeroes a timing field, moves 999
  *       into the abend code and calls the language environment abend service. It surfaces as
  *       {@code com.cardemo.exception.FatalProcessingException}, whose field set comes from
  *       {@code app/cpy/CSMSG02Y.cpy:L21-L29} - a copybook internally titled
@@ -363,7 +364,7 @@ import org.springframework.util.StringUtils;
  * byte originating timestamp plus only the <em>first twenty-four</em> of the twenty-six processing timestamp
  * bytes, and drops the twenty byte trailing filler entirely. The projected processing timestamp therefore
  * arrives as a twenty-four character value padded to twenty-six. Repairing it would change the emitted bytes
- * and break the parity comparison against the frozen corpus, so it is owed an entry in the
+ * and break the parity comparison against the frozen corpus, so it is held as {@code DL-PP-06} in
  * {@code DECISION_LOG.md} instead.
  *
  * <p>Record geometry is a byte contract and not a preference, because the parity comparison is made on the
@@ -569,26 +570,27 @@ import org.springframework.util.StringUtils;
  *       {@code app/jcl/CREASTMT.JCL:L69} but 100 in the execution step at {@code :L94}; the 100 is
  *       authoritative, independently confirmed by the hundred character field at
  *       {@code app/cbl/CBSTM03A.CBL:L149}.</dd>
- *   <dt>Medium, RESOLVED here</dt>
- *   <dd>{@code carddemo.batch.jobs.<id>.enabled} and {@code carddemo.batch.jobs.creastmt.steps} were
- *       declared in the profile but bound by nothing - no {@code @Value}, no
- *       {@code @ConfigurationProperties}, no {@code Environment} lookup - so an operator reading
- *       {@code enabled: true} would reasonably believe a job could be switched off from a profile, and it
- *       could not. They are <strong>withdrawn</strong> rather than given a consumer, because binding them
+ *   <dt>Medium</dt>
+ *   <dd>{@code carddemo.batch.jobs.<id>.enabled} and {@code carddemo.batch.jobs.creastmt.steps} are
+ *       <strong>not declared in any profile</strong>, and must not be: a key bound by nothing - no
+ *       {@code @Value}, no {@code @ConfigurationProperties}, no {@code Environment} lookup - lets an operator
+ *       reading {@code enabled: true} reasonably believe a job can be switched off from a profile when it
+ *       cannot. Giving them a consumer is not the alternative, because binding them
  *       into a bean nothing consumes would be dead code and Rule 1 Clause B forbids dead configuration as
  *       well. The five-step structure of CREASTMT is likewise not configuration: it is fixed by
  *       {@code app/jcl/CREASTMT.JCL}, which declares exactly five steps, and this class builds those five
- *       from the JCL rather than from a count. Separately, {@code carddemo.batch.jobs.tranrept.name} was
- *       inert because {@link com.cardemo.batch.jobs.TransactionReportJob} bound
- *       {@code carddemo.batch.tranrept.name} instead - a second spelling of one decision, so editing the
- *       declared key changed nothing with no error to say so. That job now binds the declared spelling, and
- *       {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} likewise moved onto
- *       {@code carddemo.batch.jobs.pipeline.name}, so all six job names share one parent and one spelling.
- *       Every key any of these beans reads is now declared in {@code application.yml}.
+ *       from the JCL rather than from a count. Separately, every job name is bound under one parent and one
+ *       spelling: {@link com.cardemo.batch.jobs.TransactionReportJob} reads
+ *       {@code carddemo.batch.jobs.tranrept.name} and
+ *       {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} reads
+ *       {@code carddemo.batch.jobs.pipeline.name}. A second spelling such as
+ *       {@code carddemo.batch.tranrept.name} would leave the declared key inert - editing it would change
+ *       nothing, with no error to say so. Every key any of these beans reads is declared in
+ *       {@code application.yml}.
  *       The only switch that genuinely exists is the framework's own {@code spring.batch.job.name},
  *       matched against {@code Job.getName()}, which is why every job is named after its JCL member; a
- *       second switch in this namespace would have been two switches for one decision. No second binding
- *       was introduced here, which would have created exactly the drift the profile warns against.
+ *       second switch in this namespace would be two switches for one decision, and no second binding is
+ *       declared here, because that is exactly the drift the profile warns against.
  *       A per-job enable flag could not be honoured either: the five stages are constructor
  *       dependencies of {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, so a conditionally
  *       absent job would fail the context rather than skip a stage.</dd>
@@ -600,11 +602,10 @@ import org.springframework.util.StringUtils;
  *       are left exactly as found.</dd>
  *   </dl>
  *
- * <p>Each preserved defect above is owed an entry in {@code DECISION_LOG.md}, and each source
- * paragraph named in this class is owed a row in {@code TRACEABILITY_MATRIX.md}. Both registers are
- * authored at the repository root; an earlier revision said neither existed at this commit and that claim is
- * withdrawn. The obligation is still stated as an obligation, because an existing register is not by itself
- * evidence that a given entry has been written into it.
+ * <p>Each preserved defect above is held in {@code DECISION_LOG.md} under a {@code DL-LD-*}
+ * identifier - {@code DL-LD-01} for the corrupted data-definition line and {@code DL-LD-02} for the
+ * eighty-versus-one-hundred record-length disagreement - and each source paragraph named in this class
+ * has its row in {@code TRACEABILITY_MATRIX.md}. Both registers are authored at the repository root.
  *
  * <h2>Not available</h2>
  *
@@ -635,8 +636,8 @@ import org.springframework.util.StringUtils;
  * indices with no bounds check whatsoever, so a 511th transaction overran storage silently. The Java
  * translation streams instead, which removes the silent corruption but is a behaviour change at scale and is
  * therefore labelled as a deviation rather than presented as equivalence. The replacement bound fails loudly
- * instead of truncating. This is owed an entry in the {@code DECISION_LOG.md}, and the legacy ceiling
- * is owed a row in the {@code TRACEABILITY_MATRIX.md} as the historical capacity limit.
+ * instead of truncating. This is held as {@code DL-DV-03} in {@code DECISION_LOG.md}, and the legacy
+ * ceiling has its row in {@code TRACEABILITY_MATRIX.md} as the historical capacity limit.
  *
  * <h2>Thread safety and state</h2>
  *
@@ -716,17 +717,17 @@ public class BatchConfig {
      * How long one receive waits for a message before returning empty, in seconds, as the annotation
      * attribute requires it.
      *
-     * <p><b>Finding, severity Medium, RESOLVED. It must stay strictly below the queue client's per-attempt
+     * <p><b>It must stay strictly below the queue client's per-attempt
      * deadline, and the library's default does not.</b> {@code AwsConfig} bounds every queue call at a
      * ten-second {@code apiCallAttemptTimeout} inside a thirty-second {@code apiCallTimeout}, deliberately, so
      * that an unreachable emulator surfaces as a bounded failure rather than a blocked thread. Spring Cloud
      * AWS defaults a listener's poll to <em>ten</em> seconds, which is the same value: every long poll over an
-     * idle queue therefore raced that per-attempt deadline, was aborted, retried twice more and finally failed
-     * the whole call, so an idle deployment logged
+     * idle queue then races that per-attempt deadline, is aborted, retried twice more and finally fails
+     * the whole call, so an idle deployment logs
      * {@code ApiCallTimeoutException: Client execution did not complete before the specified timeout
-     * configuration: 30000 millis} at {@code ERROR} once every thirty seconds, forever. It was measured at 371
-     * occurrences in one afternoon of an otherwise healthy container, and an error that an idle system emits on
-     * a timer trains an operator to ignore the log - which is the whole cost of it.
+     * configuration: 30000 millis} at {@code ERROR} once every thirty seconds, forever - measured at 371
+     * occurrences in one afternoon of an otherwise healthy container. An error that an idle system emits on
+     * a timer trains an operator to ignore the log, which is the whole cost of it.
      *
      * <p>Five seconds leaves half the per-attempt budget as margin, so a receive over an idle queue completes
      * and returns empty on its first attempt. The alternative - widening the client's deadlines to fit a longer
@@ -745,13 +746,13 @@ public class BatchConfig {
     /**
      * How long a received submission stays invisible to any other receive, in seconds.
      *
-     * <p><strong>Finding M-02, severity Major, RESOLVED.</strong> Only the poll wait was declared here, so the
-     * queue's own default of thirty seconds governed how long a received message stayed hidden. This listener
+     * <p><strong>Declaring the poll wait alone is not enough.</strong> Without this value the
+     * queue's own default of thirty seconds governs how long a received message stays hidden. This listener
      * does not merely read a message - it launches the report job and waits for it, and that job backs up the
      * transaction cluster, sorts a whole generation and writes the 133-byte report of
-     * {@code app/proc/TRANREPT.prc:L74-L78}. Thirty seconds is far shorter than that, so a submission became
-     * visible again while its own execution was still running and was received a second time: with the
-     * acknowledgement defect of finding C-02 also present, that produced either a competing execution or a
+     * {@code app/proc/TRANREPT.prc:L74-L78}. Thirty seconds is far shorter than that, so a submission becomes
+     * visible again while its own execution is still running and is received a second time: with the
+     * acknowledgement defect of finding C-02 also present, that produces either a competing execution or a
      * silently discarded duplicate.
      *
      * <p>Nine hundred seconds is the processing window, and the same value
@@ -806,6 +807,10 @@ public class BatchConfig {
      * consumer cannot be configured apart. It is the application signing key, from which
      * {@link ReportSubmissionService.JobSubmissionEnvelope} derives a single-purpose key; see that type for
      * why derivation rather than reuse, and for why there is no unsigned mode.
+     *
+     * <p>Finding SEC-001. The configured value is bound into {@link #reportJobQueueListener} as a method
+     * parameter and consumed there; no bean field holds it, so it does not outlive the context refresh in a
+     * form a heap dump could recover.
      */
     private static final String KEY_ENVELOPE_SIGNING_KEY = "carddemo.security.jwt.signing-key";
 
@@ -846,7 +851,7 @@ public class BatchConfig {
     /**
      * The digest that derives the logged delivery identifier from the transport one, {@value}.
      *
-     * <p><strong>Finding C-02, severity Critical.</strong> Required of every conforming Java runtime by the
+     * <p><strong>Finding C-02, severity Blocker.</strong> Required of every conforming Java runtime by the
      * platform specification, so resolving it cannot fail on a supported runtime. See
      * {@code ReportJobQueueListener.mintedDeliveryId(String)} for why a digest rather than the value itself.
      */
@@ -940,11 +945,11 @@ public class BatchConfig {
      * The three framework metadata SEQUENCES, unprefixed, as
      * {@code org/springframework/batch/core/schema-postgresql.sql} creates them.
      *
-     * <p>Finding BAT-001, severity High, RESOLVED by this list. The readiness check used to cover the six
-     * tables and nothing else, which left the way a job actually starts unverified: every identity in this
-     * schema comes from a sequence, not from a serial column, so a deployment whose tables were all present
-     * and readable still failed on the <em>first</em> launch if a sequence was missing or if the runtime role
-     * held no {@code USAGE} on it. That is precisely the class of failure this check exists to convert into a
+     * <p>Finding BAT-001, severity High. A readiness check covering the six
+     * tables and nothing else leaves the way a job actually starts unverified: every identity in this
+     * schema comes from a sequence, not from a serial column, so a deployment whose tables are all present
+     * and readable still fails on the <em>first</em> launch if a sequence is missing or if the runtime role
+     * holds no {@code USAGE} on it. That is precisely the class of failure this check exists to convert into a
      * refusal to start.
      *
      * <p>The framework script creates them unquoted, so PostgreSQL folds each name to lower case; the probes
@@ -1003,10 +1008,9 @@ public class BatchConfig {
         this.windowSize = windowSize;
     }
 
-    // =============================================================================================
     // THE FRAMEWORK METADATA SCHEMA: CREATED BY THE DDL-OWNING ROLE, USED BY THE DML-ONLY ROLE.
     //
-    // Finding, severity Major, RESOLVED here. The deployed topology had NO BATCH_* tables at all and said
+    // Finding, severity High, RESOLVED here. The deployed topology had NO BATCH_* tables at all and said
     // nothing about it. Spring Boot's own BatchDataSourceScriptDatabaseInitializer runs the framework's
     // schema script through the RUNTIME DataSource, which docker-compose.yml binds to the DML-only role
     // carddemo_app; that role has no CREATE on schema public, deliberately - the inline role script REVOKEs
@@ -1029,7 +1033,6 @@ public class BatchConfig {
     // message naming the missing table, the role and the property that governs creation. A batch tier that
     // cannot launch anything is not a healthy application, and it must not be discovered by the first
     // operator who tries.
-    // =============================================================================================
 
     /**
      * The framework metadata initialiser, bound to the DDL-owning role and verified against the runtime one.
@@ -1197,7 +1200,7 @@ public class BatchConfig {
     /**
      * Proves every metadata object a launch touches is present, and that the runtime role may mutate it.
      *
-     * <p>Finding BAT-001, severity High, RESOLVED here. Three probes, in widening order, all through the
+     * <p>Finding BAT-001, severity High. Three probes, in widening order, all through the
      * runtime {@link DataSource} because that is the principal whose access decides whether a job can run: a
      * table the DDL role created but the runtime role cannot write is as unusable as one that was never
      * created, and only a probe under the runtime credentials tells the two apart from a refusal to start.
@@ -1405,10 +1408,9 @@ public class BatchConfig {
         return candidate;
     }
 
-    // =============================================================================================
     // THE QUEUE LISTENER THAT REPLACES THE JES2 INTERNAL READER.
     //
-    // Finding, severity Major, RESOLVED here. Three surfaces in this tree stated that a listener replaced the
+    // Finding, severity High, RESOLVED here. Three surfaces in this tree stated that a listener replaced the
     // JES2 internal reader - this class's own javadoc, application.yml's batch.job.enabled comment, and
     // com.cardemo.config.AwsConfig - and no listener existed anywhere: zero @SqsListener declarations, zero
     // MessageListenerContainer beans. com.cardemo.service.report.ReportSubmissionService published a typed
@@ -1448,7 +1450,6 @@ public class BatchConfig {
     // submitted batch process that also drained the queue would be a SECOND consumer alongside the online
     // tier, so one report submission could be launched twice, by two processes, from one message - exactly
     // the race the single-consumer contract exists to prevent.
-    // =============================================================================================
 
     /**
      * The consumer that replaces the JES2 internal reader, drained from the queue that replaces {@code JOBS}.
@@ -1486,8 +1487,10 @@ public class BatchConfig {
      *     {@code transactionReportJob}, declared by {@code com.cardemo.batch.jobs.TransactionReportJob}
      * @param objectMapper the application object mapper, so the message is bound with the strict settings
      *     the base profile pins rather than with a mapper this class configures
+     * @param clock the application clock, against which a submission's validity window is measured
      * @param envelopeSigningKey the application signing key, from {@value #KEY_ENVELOPE_SIGNING_KEY}, from
-     *     which the single-purpose key that authenticates a submission is derived; there is no unsigned mode
+     *     which the single-purpose key that authenticates a submission is derived; there is no unsigned mode.
+     *     It is consumed here and handed to the envelope, and neither this method nor the listener retains it
      * @return the listener holder, never {@code null}
      */
     @Bean
@@ -1497,10 +1500,13 @@ public class BatchConfig {
             final JobLauncher jobLauncher,
             @Qualifier(TRANSACTION_REPORT_JOB_BEAN_NAME) final Job transactionReportJob,
             final ObjectMapper objectMapper,
+            final Clock clock,
             @Value("${" + KEY_ENVELOPE_SIGNING_KEY + "}") final String envelopeSigningKey) {
 
-        return new ReportJobQueueListener(jobLauncher, transactionReportJob, objectMapper,
-                envelopeSigningKey);
+        // Finding SEC-001. The key is turned into a derived authenticator HERE and the listener never sees the
+        // configured value, so no bean holds the application signing key in an unwipeable String field.
+        return new ReportJobQueueListener(jobLauncher, transactionReportJob, objectMapper, clock,
+                new ReportSubmissionService.JobSubmissionEnvelope(envelopeSigningKey));
     }
 
     /**
@@ -1518,6 +1524,16 @@ public class BatchConfig {
      * caught and logged as what they are: the queue's at-least-once delivery meeting an exactly-once
      * consumer. A FIFO queue redelivers whenever the visibility window expires before acknowledgement, so
      * this is an ordinary event and not an error.
+     *
+     * <p><b>How a submission is authenticated,</b> which is the other half of the same identifier's job.
+     * Every message carries a code in {@value ReportSubmissionService.JobSubmissionEnvelope#SIGNATURE_HEADER}
+     * that binds the payload, the deduplication identifier and a validity window together, and this listener
+     * refuses anything the code does not cover - see
+     * {@link ReportSubmissionService.JobSubmissionEnvelope#verify}. Binding the identifier is what stops the
+     * same captured body being re-published under a fresh identifier to spawn a second job instance, and
+     * binding the window is what stops an indefinite replay of the original; both were open before finding
+     * SEC-002 was resolved. An exact replay inside the window still verifies, because it is the queue
+     * redelivering and the once-only guarantee above already handles it.
      *
      * <p><b>Failure modes and troubleshooting.</b> A payload that cannot be bound, or that carries a date the
      * job's own validator refuses, is logged at {@code ERROR} and <em>consumed</em>. That choice is
@@ -1541,13 +1557,24 @@ public class BatchConfig {
         private final ObjectMapper objectMapper;
 
         /**
-         * The key material the envelope code is verified against, bound from
-         * {@value BatchConfig#KEY_ENVELOPE_SIGNING_KEY}.
+         * The time source a submission's validity window is measured against.
          *
-         * <p>Never logged and never rendered. Every use goes through
-         * {@link ReportSubmissionService.JobSubmissionEnvelope}, which derives a single-purpose key from it.
+         * <p>Injected rather than ambient for the same reason every other clock in this application is: a
+         * freshness check read from the host would be unassertable under test, and finding SEC-002's remedy is
+         * only a remedy if the window it enforces can be shown to close.
          */
-        private final String envelopeSigningKey;
+        private final Clock clock;
+
+        /**
+         * The authenticator a presented code is verified against.
+         *
+         * <p><strong>Finding SEC-001, severity High, RESOLVED here.</strong> This field replaces a
+         * {@code String} that held the application signing key for the life of the listener. The key is read
+         * once, in {@link BatchConfig#reportJobQueueListener}, handed to
+         * {@link ReportSubmissionService.JobSubmissionEnvelope} which derives a single-purpose key and destroys
+         * its temporaries, and never reaches this class in configured form. Never logged and never rendered.
+         */
+        private final ReportSubmissionService.JobSubmissionEnvelope envelope;
 
         /**
          * Creates the listener.
@@ -1555,22 +1582,19 @@ public class BatchConfig {
          * @param jobLauncher the container's launcher; never {@code null}
          * @param transactionReportJob the report job; never {@code null}
          * @param objectMapper the application object mapper; never {@code null}
-         * @param envelopeSigningKey the application signing key the envelope key is derived from; never blank
+         * @param clock the application clock; never {@code null}
+         * @param envelope the authenticator built from the application signing key; never {@code null}
          */
         private ReportJobQueueListener(final JobLauncher jobLauncher, final Job transactionReportJob,
-                final ObjectMapper objectMapper, final String envelopeSigningKey) {
+                final ObjectMapper objectMapper, final Clock clock,
+                final ReportSubmissionService.JobSubmissionEnvelope envelope) {
 
             this.jobLauncher = Objects.requireNonNull(jobLauncher, "jobLauncher must not be null");
             this.transactionReportJob =
                     Objects.requireNonNull(transactionReportJob, "transactionReportJob must not be null");
             this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
-            if (envelopeSigningKey == null || envelopeSigningKey.isBlank()) {
-                throw new IllegalArgumentException("Property " + KEY_ENVELOPE_SIGNING_KEY + " must be "
-                        + "configured: the queue envelope code that proves a submission came from this "
-                        + "application is verified against a key derived from it, and there is no unsigned "
-                        + "mode");
-            }
-            this.envelopeSigningKey = envelopeSigningKey;
+            this.clock = Objects.requireNonNull(clock, "clock must not be null");
+            this.envelope = Objects.requireNonNull(envelope, "envelope must not be null");
         }
 
         /**
@@ -1586,7 +1610,9 @@ public class BatchConfig {
          * <p><b>Finding M-11 - the message is authenticated before it is acted on.</b> The body is bound
          * first, into a record of three strings whose own constructor refuses anything but the three source
          * report names and two dates of {@code yyyy-MM-dd} shape, and then its envelope code is verified
-         * against a key derived from the application signing key. Binding before verifying is safe and is not
+         * against a key derived from the application signing key - together with the deduplication identifier
+         * the transport delivered and the window the code was issued for, which is finding SEC-002's remedy.
+         * Binding before verifying is safe and is not
          * an ordering mistake: the converter contract declared by {@code com.cardemo.config.AwsConfig} means
          * no caller-selected type is ever resolved, so binding cannot instantiate anything but this record,
          * and the record's constructor is itself a validator. Nothing is launched, persisted or logged as a
@@ -1633,7 +1659,7 @@ public class BatchConfig {
                 final Visibility visibility) {
 
             final String submissionId = submissionIdentifier(headers);
-            // FINDING C-02, severity CRITICAL. Every record below names the delivery by this locally minted
+            // FINDING C-02, severity BLOCKER. Every record below names the delivery by this locally minted
             // identifier rather than by the transport's own. See mintedDeliveryId(String) for why.
             final String deliveryId = mintedDeliveryId(submissionId);
             final JobSubmissionMessage submission;
@@ -1667,7 +1693,7 @@ public class BatchConfig {
                 // wrong shape - finding M-12 - and such a message is as permanently unrunnable as an
                 // unparseable one.
                 //
-                // FINDING C-02, severity CRITICAL. The payload length is not logged either, and the binding
+                // FINDING C-02, severity BLOCKER. The payload length is not logged either, and the binding
                 // exception is no longer passed as the record's cause. A Jackson binding failure quotes the
                 // offending token and its surrounding context in its message, so attaching it published the
                 // very bytes this remediation withholds. The exception's TYPE names the failure class, which
@@ -1680,17 +1706,31 @@ public class BatchConfig {
                 return;
             }
 
-            if (!ReportSubmissionService.JobSubmissionEnvelope.verify(submission, this.envelopeSigningKey,
-                    headers == null ? null
-                            : headers.get(ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER))) {
-                // Consumed. An unauthenticated message will never become authenticated, so redelivering it
-                // would stall the group; and no part of it is echoed, because every field of a message that
-                // failed verification is attacker-controlled.
+            // FINDING SEC-002, severity HIGH. The code is verified against the submission identifier the
+            // transport delivered and against its own validity window, not against the payload alone. That
+            // closes two replays the previous check admitted: the same captured body and code re-published
+            // under a FRESH identifier - which would have produced a second job instance, because the
+            // identifier is an identifying job parameter - and an indefinite replay of the original, which was
+            // previously bounded only by whatever the job repository still remembered.
+            final ReportSubmissionService.JobSubmissionEnvelope.Verification verification =
+                    this.envelope.verify(submission, submissionId,
+                            headers == null ? null
+                                    : headers.get(
+                                            ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER),
+                            this.clock.instant());
+            if (!verification.verified()) {
+                // Consumed. A submission that fails this check will never pass it - a wrong code stays wrong
+                // and an expired window does not reopen - so redelivering it would stall the group; and no
+                // part of the message is echoed, because every field of a message that failed verification is
+                // attacker-controlled. The OUTCOME is logged, which is this application's own classification
+                // and not input: an operator needs to tell a stale submission from a forged one, and those are
+                // different incidents.
                 LOG.error("Report job delivery {} carries no valid envelope code and has been discarded"
-                                + " without launching anything. The code proves a submission was published"
-                                + " by this application, which is the only control that distinguishes one"
+                                + " without launching anything, outcome {}. The code proves a submission was"
+                                + " published by this application, for this delivery identifier, within its"
+                                + " validity window - which is the only control that distinguishes one"
                                 + " principal from another on an emulator queue that enforces no"
-                                + " authorisation of its own.", deliveryId);
+                                + " authorisation of its own.", deliveryId, verification);
                 return;
             }
 
@@ -1761,7 +1801,7 @@ public class BatchConfig {
                 // the source-citing form EXEC CICS WRITEQ TD QUEUE('JOBS') would reach the log with its
                 // literal replaced. The locator carries the same information and survives masking intact.
                 //
-                // FINDING C-02, severity CRITICAL. The report name and the two dates used to be interpolated
+                // FINDING C-02, severity BLOCKER. The report name and the two dates used to be interpolated
                 // here. They are bound from a queue body, so before JobSubmissionMessage screened them a
                 // publisher could put a card number in the name or a date of birth in a date and have it
                 // written at INFO. They are screened now AND they are still not logged, because two
@@ -1791,7 +1831,7 @@ public class BatchConfig {
                         + " than acknowledged, so the submission survives until an outcome exists",
                         stillRunning);
             } catch (final JobParametersInvalidException refused) {
-                // FINDING C-02, severity CRITICAL. refused.getMessage() named the offending parameter VALUE,
+                // FINDING C-02, severity BLOCKER. refused.getMessage() named the offending parameter VALUE,
                 // and the exception was attached as the record's cause, so the value reached the log twice.
                 // The reason code below is the exception type; the two validators disagreeing is a code defect
                 // an operator reports rather than a value they inspect.
@@ -1921,11 +1961,11 @@ public class BatchConfig {
         /**
          * Derives the identifier this listener logs a delivery by.
          *
-         * <p><strong>Finding C-02, severity Critical.</strong> Every record this listener writes used to name
+         * <p><strong>Finding C-02, severity Blocker.</strong> No record this listener writes may name
          * the delivery by {@link #submissionIdentifier(Map)}, which is the queue's deduplication identifier -
          * a value the <em>publisher</em> sets. A publisher is not necessarily this application's submission
          * surface, so that value is untrusted free text: a card number, a password, a customer name or a
-         * government identifier placed in it was written straight to the log, past a masking layer that
+         * government identifier placed in it would be written straight to the log, past a masking layer that
          * redacts only labelled values.
          *
          * <p>The remedy is not to validate the transport identifier - it has no grammar this application owns -
@@ -1998,7 +2038,6 @@ public class BatchConfig {
         }
     }
 
-    // =============================================================================================
     // THERE IS DELIBERATELY NO PROCESSOR, READER OR WRITER FACTORY IN THIS CLASS.
     //
     // A @Bean @StepScope transactionReportProcessor factory stood here and has been removed. It could not
@@ -2026,7 +2065,6 @@ public class BatchConfig {
     // classes and on TransactionReportJob rather than left to inference. What this class owns is the
     // FileService.Dataset bindings below, which have no component to annotate because they are one binding
     // per DD name rather than one class per role.
-    // =============================================================================================
 
 
     /**
@@ -2071,17 +2109,16 @@ public class BatchConfig {
         return new CustFileDataset(customerRepository);
     }
 
-    // =============================================================================================
     // F-020: THE FOUR READ-ONLY DATASET VERIFICATION STEPS.
     //
-    // Finding, severity High, RESOLVED here. app/cbl/CBACT01C.cbl (193 lines), CBACT02C.cbl (178),
+    // Finding, severity High. app/cbl/CBACT01C.cbl (193 lines), CBACT02C.cbl (178),
     // CBACT03C.cbl (178) and CBCUS01C.cbl (178) each have a verb inventory of OPEN, READ and CLOSE only -
     // no WRITE, no REWRITE, no DELETE anywhere - and each has its own JCL member: app/jcl/READACCT.jcl,
     // READCARD.jcl, READXREF.jcl and READCUST.jcl. The four readers that translate them
-    // (com.cardemo.batch.readers.AccountReader, CardReader, CardCrossReferenceReader, CustomerReader)
-    // existed and were fully tested, but NO Step consumed any of them, so four production components were
-    // unreachable in a deployed application and the four JCL members had no executable counterpart. That is
-    // both an F-020 gap and, because the readers were reachable from nothing, dead code under Rule 1
+    // (com.cardemo.batch.readers.AccountReader, CardReader, CardCrossReferenceReader, CustomerReader) are
+    // fully tested, but a reader no Step consumes is a production component unreachable in a deployed
+    // application, and the four JCL members would have no executable counterpart. That is
+    // both an F-020 gap and, because such readers are reachable from nothing, dead code under Rule 1
     // clause B.
     //
     // WHY THE STEPS LIVE HERE AND NOT IN batch/jobs. The specification is explicit that these become
@@ -2106,7 +2143,6 @@ public class BatchConfig {
     // number and a national identifier to the log on every row, which Rule 1 clause D forbids outright. The
     // readers already resolve this the same way, by emitting an identifier-only projection, and these steps
     // add nothing to it.
-    // =============================================================================================
 
     /**
      * Bean name of the {@code READACCT} verification step, from {@code app/jcl/READACCT.jcl}.
@@ -2472,7 +2508,6 @@ public class BatchConfig {
         return new AcctFileDataset(accountRepository);
     }
 
-    // =============================================================================================
     // FINDING M-01, severity Medium. A @Bean JobExecutionListener named jobInstanceMdcListener stood here
     // and has been removed, together with the private jobInstanceIdOf helper it was the only caller of.
     //
@@ -2492,13 +2527,10 @@ public class BatchConfig {
     // guard on the value is still applied in exactly one place - which is the whole property this bean was
     // said to provide. See CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID for that contract, and the
     // troubleshooting entry above for what to check when a batch log line carries no jobInstanceId.
-    // =============================================================================================
 
-    // =============================================================================================
     // Record rendering. Field widths come from the copybooks named on each method, never from a
     // measurement of the data, so a short or wide value is a startup or read failure rather than a
     // silently misaligned record.
-    // =============================================================================================
 
     /** {@code XREF-CUST-ID PIC 9(09)}, {@code app/cpy/CVACT03Y.cpy:L6}. */
     private static final int CUSTOMER_ID_DIGITS = 9;

@@ -692,9 +692,8 @@ CREATE TABLE customer (
 -- hold several cards on one account.
 --
 -- card_cvv_cd IS DECLARED, and the read path is withheld instead of the
--- column. FINDING, SEVERITY HIGH - RESOLVED. An earlier revision of this
--- migration omitted the column outright on the reasoning that card
--- verification data must not be retained. That reasoning does not survive
+-- column. Omitting the column outright on the reasoning that card
+-- verification data must not be retained does not survive
 -- the field contract: app/cpy/CVACT02Y.cpy:L7 declares CARD-CVV-CD
 -- PIC 9(03) inside the authoritative 150-byte record, and bytes 28-30 of
 -- all fifty rows of app/data/ASCII/carddata.txt carry three digits, so

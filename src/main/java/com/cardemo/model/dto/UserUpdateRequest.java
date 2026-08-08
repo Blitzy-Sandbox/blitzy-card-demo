@@ -86,9 +86,8 @@ import jakarta.validation.constraints.Size;
  * is a deliberate security correction rather than an oversight, and it is why the response side of the
  * update flow carries no password property of any kind. The consequence for callers is set out next.</p>
  *
- * <p><strong>The password is required on every update, and a blank one is refused.</strong> An earlier
- * revision of this paragraph asserted the opposite - that a blank password means "leave the stored credential
- * unchanged" - and that claim is withdrawn, because it did not describe the behaviour a caller gets.
+ * <p><strong>The password is required on every update, and a blank one is refused.</strong> A blank password
+ * does <em>not</em> mean "leave the stored credential unchanged", whatever a reader might expect.
  * {@code com.cardemo.service.admin.UserUpdateService} tests the field for emptiness at
  * {@code app/cbl/COUSR02C.cbl:198} and answers {@code :200}'s literal, {@code "Password can NOT be
  * empty..."}, as a {@code 400} carrying {@code errorCode} {@code CARDDEMO-VALIDATION-REJECTED}. Absent and
@@ -304,8 +303,7 @@ public record UserUpdateRequest(
 
         // PASSWDI  PIC X(8)  - app/cpy-bms/COUSR02.CPY:78
         //
-        // WRITE-ONLY AND REQUIRED IN PRACTICE. An earlier revision of this comment said "blank means
-        // unchanged", and that is withdrawn: it was wrong about the behaviour a caller actually gets.
+        // WRITE-ONLY AND REQUIRED IN PRACTICE. "Blank means unchanged" is not the behaviour a caller gets.
         // app/cbl/COUSR02C.cbl:198 tests this field for emptiness and :200 answers "Password can NOT be
         // empty...", so UserUpdateService rejects a blank or absent password with a 400 carrying that exact
         // literal and errorCode CARDDEMO-VALIDATION-REJECTED. A blank value is refused, never interpreted as

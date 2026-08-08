@@ -10,9 +10,9 @@
  *               change-detection update of COCRDUPC. Note that the card
  *               record carries both a card number and a verification
  *               value, so nothing here may render a record image.
- * Source      : app/cbl/COCRDLIC.cbl (1,459 lines, 42 paragraphs; 7 rows per page at :L177) @ 7756d89
- * Source      : app/cbl/COCRDSLC.cbl (887 lines, 37 paragraphs; single-record detail) @ 7756d89
- * Source      : app/cbl/COCRDUPC.cbl (1,560 lines, 48 paragraphs; change-detection update) @ 7756d89
+ * Source      : app/cbl/COCRDLIC.cbl (1,459 lines, 39 own / 41 mapped paragraph labels; 7 rows per page at :L177) @ 7756d89
+ * Source      : app/cbl/COCRDSLC.cbl (887 lines, 34 own / 36 mapped paragraph labels; single-record detail) @ 7756d89
+ * Source      : app/cbl/COCRDUPC.cbl (1,560 lines, 45 own / 47 mapped paragraph labels; change-detection update) @ 7756d89
  * Source      : app/cpy/CVACT02Y.cpy (150-byte card layout; card number bytes 1-16, verification value 28-30) @ 7756d89
  * Source      : app/cpy-bms/COCRDLI.CPY (45 input fields), COCRDSL.CPY (15), COCRDUP.CPY (17) @ 7756d89
  * Source      : app/catlg/LISTCAT.txt:L202 (key length 16, record length 150), :L281-L284 (the alternate index:

@@ -62,12 +62,13 @@ import org.springframework.batch.test.MetaDataInstanceFactory;
  * value has to arrive through a listener callback - and the callback only fires if Spring Batch registered
  * this object as a step listener.
  *
- * <p>It previously declared that callback with {@code @BeforeStep} alone. {@code SimpleStepBuilder}
+ * <p>Declaring that callback with {@code @BeforeStep} alone is not enough. {@code SimpleStepBuilder}
  * auto-registers a writer when {@code StepListenerFactoryBean.isListener} recognises it, which succeeds
  * either through a listener interface or through a listener annotation - but a writer that needs the job
  * instance is step-scoped, step scope proxies by subclassing, and a proxy presents its target's interfaces
- * far more reliably than its target's method annotations. With no {@code BatchConfig} in this branch to make
- * the registration explicit, the writer's central dependency rested on the weaker of the two mechanisms.
+ * far more reliably than its target's method annotations. Resting the writer's central dependency on the
+ * weaker of the two mechanisms is what the interface declaration and {@code BatchConfig}'s explicit
+ * registration together prevent.
  *
  * <p>These tests assert the contract directly: that the framework's own recognition predicate accepts this
  * writer, that it accepts it <em>as</em> a {@link StepExecutionListener}, that a write before the callback

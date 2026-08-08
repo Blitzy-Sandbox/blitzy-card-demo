@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionDetailServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11 (Surefire tier)
@@ -13,14 +13,14 @@
  *               ninth integer digit, the two vestigial declarations retained as
  *               documented no-ops, and the rule that a card number never
  *               reaches a log, an exception message or an assertion message.
- * Source      : app/cbl/COTRN01C.cbl      (330 lines, 9 paragraphs)
+ * Source      : app/cbl/COTRN01C.cbl      (330 lines, 9 own paragraph labels)
  *               app/cpy/CVTRA05Y.cpy      (TRAN-RECORD 350 bytes, S9(09)V99)
  *               app/cpy/COCOM01Y.cpy      (CARDDEMO-COMMAREA, no pagination)
  *               app/cpy-bms/COTRN01.CPY   (21 input fields, TDESCI X(60):96)
  *               app/cbl/CBACT04C.cbl      (canonical banner form, L1-L21)
  *               CONTRIBUTING.md, NOTICE   (style and licence conventions)
  *                                                                  @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -35,7 +35,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -465,15 +465,15 @@ final class TransactionDetailServiceTest {
      * {@code :205}, {@code SEND} at {@code :219}, {@code RECEIVE} at {@code :232} and the {@code READ} at
      * {@code :269}. So no write verb may reach the store.
      *
-     * <p><strong>Correction.</strong> An earlier revision of this nested class asserted the opposite of the
-     * production contract: it stated that the retrieval reaches the store as a plain keyed read with "no lock
-     * hint", and it omitted any assertion about the lock. That was wrong on both counts and is corrected
-     * here. {@code TransactionDetailService} escalates the found row to
+     * <p><strong>Both collaborators are asserted, and that is not optional.</strong> Stating that the
+     * retrieval reaches the store as a plain keyed read with "no lock hint", and omitting any assertion about
+     * the lock, would assert the opposite of the production contract.
+     * {@code TransactionDetailService} escalates the found row to
      * {@link LockModeType#PESSIMISTIC_WRITE} through {@link EntityManager#lock(Object, LockModeType)},
      * which is what reproduces the {@code UPDATE} option; Hibernate renders it as
-     * {@code SELECT ... FOR UPDATE}. The earlier assertions passed only because that escalation travels
+     * {@code SELECT ... FOR UPDATE}. Such assertions would pass anyway, because that escalation travels
      * through the {@link EntityManager}, not through {@link TransactionRepository}, so a
-     * {@code verifyNoMoreInteractions} on the repository could never have observed it. Verifying the
+     * {@code verifyNoMoreInteractions} on the repository could never observe it. Verifying the
      * repository alone is therefore not sufficient to describe this path, and both collaborators are
      * asserted below.
      */

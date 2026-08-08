@@ -265,9 +265,9 @@ import static org.mockito.Mockito.when;
  *       from the configuration that binds them rather than guessed, and <strong>no divergence was
  *       found</strong> between them and the migration's stated contract.</li>
  *   <li><strong>Deduplication is per-submission and explicit; content-based deduplication is not the
- *       production choice.</strong> Finding H-08, severity High. This paragraph previously said the reverse -
- *       that startup required content-based deduplication and that the publisher deliberately set no
- *       identifier, because the source has no idempotency key. The conclusion did not follow from the
+ *       production choice.</strong> Finding H-08, severity High. The reverse reading - that startup requires
+ *       content-based deduplication and that the publisher deliberately sets no
+ *       identifier, because the source has no idempotency key - does not follow from its own
  *       premise: a report body is one report name and two dates, so hashing it collapses two legitimate
  *       submissions of the same period, while {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} appended
  *       both. The publishing service therefore mints a fresh {@code MessageDeduplicationId} per submission,
@@ -347,9 +347,12 @@ import static org.mockito.Mockito.when;
  * invention. Three things are missing.
  *
  * <ol>
- *   <li><strong>The boundary-parity expected-output baseline is Not available.</strong> An exhaustive
- *       search across expected, baseline, golden, system-output and per-dataset name patterns returned only
- *       dataset <em>definition</em> job control and zero captured data. <em>What is needed:</em> a captured
+ *   <li><strong>The boundary-parity expected-output expectation exists; what is Not available is a
+ *       captured z/OS run to corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the
+ *       frozen program's own output, derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and
+ *       running it against the frozen fixtures, with the derivation recorded beside it in
+ *       {@code PROVENANCE.properties}; nothing there was produced by running this implementation.
+ *       <em>What is still needed:</em> a captured
  *       430-byte reject dataset together with the resulting transaction, account and category-balance
  *       images from a real posting execution at a known input state. Until those exist,
  *       <strong>this class creates no baseline file and fabricates no expected bytes</strong>. A baseline
@@ -387,27 +390,11 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     private static final String ENVELOPE_SIGNING_KEY =
             "sqs-report-queue-integration-envelope-key-0123456789";
 
-
-    /**
-     * Sole constructor, invoked by the test framework.
-     *
-     * <p>Declared and empty rather than defaulted, for the reason the harness declares its own: this class
-     * has nested children and every collaborator arrives by injection, so a constructor that did work would
-     * run before the context had supplied anything. Making it explicit also keeps the documented-surface
-     * requirement of Rule 1 Clause E satisfied without an undocumented implicit member.
-     */
-    SqsReportQueueIntegrationTest() {
-        // Intentionally empty; every collaborator is injected and every per-test resource is created in a
-        // test method or in the lifecycle hook below.
-    }
-
-    // =================================================================================================
     // Injected collaborators. Every one is a bean the application context builds; none is constructed
     // here, no client is built here, and no endpoint, region or credential is supplied from here.
     // Rule 1 Clause B: avoid global mutable state, prefer dependency injection. There is deliberately
     // NO static field of any kind in this class - the container lifecycles and the pinned clock belong
     // to the harness, which owns the one documented exception to that rule for the whole package.
-    // =================================================================================================
 
     /**
      * The production publisher under test: the bean that replaces the write to the transient data queue.
@@ -439,7 +426,7 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     private ObjectProvider<Tracer> tracerProvider;
 
     /**
-     * The context's JSON mapper, used to read a received body back into the typed message and to render a
+     * The context's JSON mapper, which reads a received body back into the typed message and renders a
      * body for the queue-level tests.
      *
      * <p>Injected rather than constructed so that the body this class reads is interpreted by the same
@@ -459,11 +446,9 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     @Value("${carddemo.aws.sqs.report-message-group-id}")
     private String reportMessageGroupId;
 
-    // =================================================================================================
     // Bounded budgets and legacy literals, as instance fields. They are final and immutable, and they are
     // instance rather than static because this class permits itself no static field. Every wait below is
     // bounded; nothing polls indefinitely and nothing busy-spins.
-    // =================================================================================================
 
     /** Deadline for one service call. Generous enough for a cold container, short enough to fail visibly. */
     private final Duration callDeadline = Duration.ofSeconds(20L);
@@ -518,11 +503,9 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     /** The one-character selector value a set selector carries on the symbolic map. */
     private final String selectorSet = "S";
 
-    // =================================================================================================
     // Per-test hygiene. The shared application queue is drained on the way out so that this class leaves
     // it as it found it; it is NEVER deleted, because the harness provisions it for the whole hierarchy
     // and removing it would break the live context along with every later test.
-    // =================================================================================================
 
     /**
      * Drains the shared application queue after each test, bounded, and fails if anything survives the drain.
@@ -540,7 +523,7 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
      * swallowed; there is no empty catch block anywhere in this class. A drain that <em>exhausts its budget
      * while messages are still arriving</em> now <strong>fails the test</strong>, reporting the queue name,
      * the budget spent, the total removed and the identifier and group of everything the final look found.
-     * Returning quietly was the earlier behaviour and it was wrong in the one case that matters: a drain
+     * Returning quietly is wrong in the one case that matters: a drain
      * whose budget is too small for what the test published is cross-test contamination waiting to happen,
      * it surfaces later as an inexplicable count in a sibling class, and the evidence needed to diagnose it -
      * which queue, which message, which group - exists only here. The budget is deliberately not raised to
@@ -588,10 +571,8 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                 + "Removed on the final look: " + identifiers + '.');
     }
 
-    // =================================================================================================
     // Queue helpers. Every one goes through the injected client; none builds a client, an endpoint or a
     // credential, and every wait is bounded.
-    // =================================================================================================
 
     /**
      * Completes one asynchronous service call on the calling thread within a bounded deadline.
@@ -849,11 +830,9 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                 "publish a body to the queue at " + queueUrl);
     }
 
-    // =================================================================================================
     // Service and form helpers. A second instance of the production service is assembled from the same
     // injected collaborators when a test needs a different clock or its own target queue. That is still
     // dependency injection: no client is built, no endpoint is named and no credential is supplied.
-    // =================================================================================================
 
     /**
      * Assembles the production report service with a pinned clock and an explicit target queue.
@@ -1072,26 +1051,13 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         return (char) 0x202E;
     }
 
-    // =================================================================================================
     // 1. The queue contract. DISPOSITION(MOD) is why the replacement is FIFO rather than standard, and
     //    ordering within one group is the property that has to be demonstrated rather than assumed.
-    // =================================================================================================
 
     /** The first-in-first-out contract that stands in for {@code DEFINE TDQUEUE(JOBS)}. */
     @Nested
     @DisplayName("the FIFO contract replacing DEFINE TDQUEUE(JOBS) at app/csd/CARDDEMO.CSD:499-505")
     class TheFifoQueueContract {
-
-        /**
-         * Sole constructor, invoked by the test framework.
-         *
-         * <p>Declared and empty. This group covers the FIFO attributes of the report queue, message
-         * ordering within one group, and deduplication, and it holds no state of its own: every collaborator it uses
-         * is injected into the enclosing instance, and every helper it calls belongs to that instance too.
-         */
-        TheFifoQueueContract() {
-            // Intentionally empty; this group holds no state.
-        }
 
         /**
          * The configured queue reports both attributes the migration relies on, and they differ.
@@ -1243,26 +1209,13 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // 2. The typed message. Content equivalence with the eighty-byte cards, and proof that the deck did
     //    not survive the translation in any form.
-    // =================================================================================================
 
     /** The typed message that replaces the seventeen fixed-width job cards. */
     @Nested
     @DisplayName("the typed report message replacing the 17-card deck at app/cbl/CORPT00C.cbl:79-127")
     class TheTypedReportMessage {
-
-        /**
-         * Sole constructor, invoked by the test framework.
-         *
-         * <p>Declared and empty. This group covers the content of the typed message that replaces the seventeen fixed-
-         * width job cards, and it holds no state of its own: every collaborator it uses is injected into the enclosing
-         * instance, and every helper it calls belongs to that instance too.
-         */
-        TheTypedReportMessage() {
-            // Intentionally empty; this group holds no state.
-        }
 
         /**
          * Every value the three variable cards carried is reconstructible from the typed message.
@@ -1433,26 +1386,13 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // 3. The reporting period. Three arms, first match wins, and a monthly range that is the FULL
     //    calendar month, taken from :229-230 rather than from any secondary description.
-    // =================================================================================================
 
     /** The three reporting periods the screen offers, and the order in which they are decided. */
     @Nested
     @DisplayName("the reporting period at app/cbl/CORPT00C.cbl:212-436")
     class ThePeriodResolution {
-
-        /**
-         * Sole constructor, invoked by the test framework.
-         *
-         * <p>Declared and empty. This group covers the three reporting periods and the order in which their selectors
-         * are decided, and it holds no state of its own: every collaborator it uses is injected into the enclosing
-         * instance, and every helper it calls belongs to that instance too.
-         */
-        ThePeriodResolution() {
-            // Intentionally empty; this group holds no state.
-        }
 
         /**
          * Monthly is the full current calendar month, measured over the real queue boundary.
@@ -1710,26 +1650,13 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // 4. The message group and the failure path. A deterministic group is what makes ordering
     //    reproducible, and the failure literal is a byte-exact contract.
-    // =================================================================================================
 
     /** The deterministic message group, and the arm at {@code app/cbl/CORPT00C.cbl:525-535}. */
     @Nested
     @DisplayName("the deterministic message group and the failure path at app/cbl/CORPT00C.cbl:515-535")
     class TheDeterministicGroupIdAndTheFailurePath {
-
-        /**
-         * Sole constructor, invoked by the test framework.
-         *
-         * <p>Declared and empty. This group covers the deterministic message group and the byte-exact publish-failure
-         * contract, and it holds no state of its own: every collaborator it uses is injected into the enclosing
-         * instance, and every helper it calls belongs to that instance too.
-         */
-        TheDeterministicGroupIdAndTheFailurePath() {
-            // Intentionally empty; this group holds no state.
-        }
 
         /**
          * Two submissions carry the same message group, and it is the configured literal.
@@ -1928,11 +1855,9 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // 5. Hostile input at the queue boundary. Rule 1 Clause A: treat inputs as untrusted. Every outcome
     //    below is a single deterministic one - a clean typed rejection whose message and cause are
     //    asserted, or a value neutralised by the boundary - and never a silent acceptance.
-    // =================================================================================================
 
     /**
      * The producer and the consumer against ONE real queue, which is the seam finding C-01 broke.
@@ -1947,16 +1872,6 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     @Nested
     @DisplayName("the producer and the production listener over one real queue")
     class ProducerAndListenerContract {
-
-        /**
-         * Sole constructor, invoked by the test framework.
-         *
-         * <p>Declared and empty: every collaborator it uses is injected into the enclosing instance, and the
-         * launcher it needs is a local test double built inside each test.
-         */
-        ProducerAndListenerContract() {
-            // Intentionally empty; this group holds no state.
-        }
 
         @Test
         @DisplayName("a published submission carries no payload type header for a caller to choose")
@@ -1998,7 +1913,8 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
             when(reportJob.getName()).thenReturn("TRANREPT");
             when(launcher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
             final BatchConfig.ReportJobQueueListener listener = new BatchConfig(100)
-                    .reportJobQueueListener(launcher, reportJob, objectMapper, ENVELOPE_SIGNING_KEY);
+                    .reportJobQueueListener(launcher, reportJob, objectMapper, clock(),
+                            ENVELOPE_SIGNING_KEY);
 
             listener.drainReportJobQueue(delivered.get(0).body(),
                     headersOf(delivered.get(0)), null);
@@ -2026,7 +1942,8 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
             final JobLauncher launcher = mock(JobLauncher.class);
             final Job reportJob = mock(Job.class);
             final BatchConfig.ReportJobQueueListener listener = new BatchConfig(100)
-                    .reportJobQueueListener(launcher, reportJob, objectMapper, ENVELOPE_SIGNING_KEY);
+                    .reportJobQueueListener(launcher, reportJob, objectMapper, clock(),
+                            ENVELOPE_SIGNING_KEY);
 
             listener.drainReportJobQueue(delivered.get(0).body(), headersOf(delivered.get(0)), null);
 
@@ -2095,25 +2012,14 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     class HostileInputAtTheQueueBoundary {
 
         /**
-         * Sole constructor, invoked by the test framework.
-         *
-         * <p>Declared and empty. This group covers untrusted input at the publish boundary, and the confirmation gate
-         * that stands in front of it, and it holds no state of its own: every collaborator it uses is injected into
-         * the enclosing instance, and every helper it calls belongs to that instance too.
-         */
-        HostileInputAtTheQueueBoundary() {
-            // Intentionally empty; this group holds no state.
-        }
-
-        /**
          * A hostile report name cannot be assembled into a message at all, so it never reaches the queue.
          *
-         * <p><strong>Finding M-12, severity Major.</strong> This test previously asserted the opposite - that
-         * an unbounded, control-character-bearing report name round-tripped exactly - and reasoned that there
-         * was "no length contract on a JSON string field to violate". There is one, and it is the source's:
+         * <p><strong>Finding M-12, severity High.</strong> Asserting the opposite - that
+         * an unbounded, control-character-bearing report name round-trips exactly - rests on there being
+         * "no length contract on a JSON string field to violate". There is one, and it is the source's:
          * {@code WS-REPORT-NAME} is {@code PIC X(10)} at {@code app/cbl/CORPT00C.cbl:L58}, and the only three
          * values moved into it are the literals at {@code :L214}, {@code :L240} and {@code :L433}. The
-         * consequence of accepting anything else was not cosmetic: the value travelled into an
+         * consequence of accepting anything else is not cosmetic: the value would travel into an
          * <em>identifying</em> job parameter that the batch repository persists and keys a job instance on.
          *
          * <p>The closed set is therefore enforced where the message is built, and the queue never sees the

@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : BillPaymentServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
@@ -14,13 +14,13 @@
  *               timestamp of :249 whose eleventh character is a space that
  *               INITIALIZE left behind, the zero-then-plus-one identifier
  *               default of :487-:488, and the twelve exact outcome literals.
- * Source      : app/cbl/COBIL00C.cbl (572 lines, 16 paragraphs)
+ * Source      : app/cbl/COBIL00C.cbl (572 lines, 16 own paragraph labels)
  *               app/cpy-bms/COBIL00.CPY  (10 input fields, CURBALI X(14):66)
  *               app/cpy/CVACT01Y.cpy     (ACCT-CURR-BAL S9(10)V99)
  *               app/cpy/CVTRA05Y.cpy     (TRAN-AMT S9(09)V99, TS X(26))
  *               app/cpy/CVACT03Y.cpy     (XREF 16 + 9 + 11 = 36 bytes)
  *               app/cbl/CBACT04C.cbl:1-21 (the banner convention) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -35,7 +35,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 

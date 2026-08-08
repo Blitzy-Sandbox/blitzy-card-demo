@@ -482,7 +482,6 @@ class PageResponseTest {
         return nextPageAvailable ? FAMILY_B_LAST_PAGE_NOT_SHOWN : FAMILY_B_LAST_PAGE_SHOWN;
     }
 
-    // ==============================================================================================
     // Top-level tests. These two are declared on the outer class rather than inside a @Nested group
     // for two reasons. First, they are statements about the type as a whole - where its contract comes
     // from, and that one generic type really does serve all three lists - so no single group owns them.
@@ -493,7 +492,6 @@ class PageResponseTest {
     // the real name. Note that the tests attribute of the enclosing <testsuite> element still reads 0
     // regardless, because Surefire does not roll nested counts up into it; see section 2 of the class
     // documentation for how to confirm collection without being misled by that counter.
-    // ==============================================================================================
 
     /**
      * Records the provenance of this type positively, and with it the specification defect described in
@@ -685,6 +683,7 @@ class PageResponseTest {
         /**
          * The page number is an {@code int}, so no screen width is baked in. Both a value that only the wide
          * field can hold and the widest value the wide field can hold are accepted unchanged.
+         * @throws NoSuchMethodException if {@code getPageNumber} is no longer declared.
          */
         @Test
         @DisplayName("carries the page number as an int, so neither screen width is baked in")
@@ -858,6 +857,7 @@ class PageResponseTest {
          * Because this type transports a {@code boolean} rather than a character, the same page can be rendered
          * into either family without either adapter ever seeing the other's sentinel. That is the property that
          * makes one reusable DTO safe across the two conventions.
+         * @throws NoSuchMethodException if {@code isNextPageAvailable} is no longer declared.
          */
         @Test
         @DisplayName("one page renders into either family without leaking the other's sentinel")
@@ -1083,6 +1083,7 @@ class PageResponseTest {
         /**
          * A numeric type would discard the leading zeros of {@code CDEMO-CT00-TRNID-FIRST PIC X(16)}, so the
          * accessors must return {@code String}.
+         * @throws NoSuchMethodException if either boundary-key accessor is no longer declared.
          */
         @Test
         @DisplayName("boundary keys are opaque Strings, never a numeric type")

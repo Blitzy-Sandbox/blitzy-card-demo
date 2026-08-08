@@ -238,9 +238,9 @@ import org.springframework.stereotype.Service;
 @JobScope
 public class FileService implements InitializingBean {
 
-    // SCOPE AND WIRING VALIDATION, and why BOTH are present. Finding, severity High, RESOLVED. The four status
+    // SCOPE AND WIRING VALIDATION, and why BOTH are present. Finding, severity High. The four status
     // registers below are per-instance, but a singleton has exactly one instance, so two overlapping job
-    // executions would still have shared them - and a status register is read immediately after the call that
+    // executions would share them - and a status register is read immediately after the call that
     // set it, which makes a cross-execution overwrite a wrong-status decision rather than a lost log line.
     // @JobScope gives one instance per job execution, which is the isolation CBSTM03B had by construction: the
     // subprogram's WORKING-STORAGE belonged to the invoking job step and to nothing else. InitializingBean is
@@ -435,10 +435,9 @@ public class FileService implements InitializingBean {
      * where an obvious hardening would break parity: defect A is observable only because a call that performs
      * no input or output leaves the previous call's status in place, and a per-invocation reset would silently
      * repair it. The acceptance is therefore an explicit exception to Rule 1 Clause B's preference against
-     * retained mutable state, justified by the parity mandate, and it is <strong>owed an entry in
-     * {@code DECISION_LOG.md}</strong>, which is authored at the repository root. An earlier revision recorded
-     * that file as non-existent and forbade any present-tense mention of it; that premise has reversed and the
-     * prohibition is withdrawn. This Javadoc together with the analysis in
+     * retained mutable state, justified by the parity mandate, and it is <strong>held as
+     * {@code DL-PP-13} in {@code DECISION_LOG.md}</strong>, which is authored at the repository root, so a
+     * present-tense mention of it resolves. This Javadoc together with the analysis in
      * {@code docs/technical-specifications.md} stays the record that cannot drift from the field it explains.
      */
     private final Map<Dd, AtomicReference<String>> statusRegisters;
@@ -916,9 +915,7 @@ public class FileService implements InitializingBean {
         return datasets.containsKey(dd);
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Paragraph 1 of 14 - the dispatch.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Carries {@code 0000-START.} ({@code app/cbl/CBSTM03B.CBL:L116}), the entry paragraph, whose whole body
@@ -948,9 +945,7 @@ public class FileService implements InitializingBean {
         goback();
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Paragraph 2 of 14 - the return.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Carries {@code 9999-GOBACK.} ({@code app/cbl/CBSTM03B.CBL:L130}), whose body is the single statement
@@ -969,9 +964,7 @@ public class FileService implements InitializingBean {
         // GOBACK. (L131) - returning control is implicit in Java. Intentionally empty; see the Javadoc above.
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Paragraphs 3, 4 and 5 of 14 - TRNXFILE, the sequential statement work file.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Carries {@code 1000-TRNXFILE-PROC.} ({@code app/cbl/CBSTM03B.CBL:L133}), the handler for the sequential
@@ -1040,9 +1033,7 @@ public class FileService implements InitializingBean {
         // EXIT. (L155) - COBOL's no-operation. Intentionally empty; see the Javadoc above.
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Paragraphs 6, 7 and 8 of 14 - XREFFILE, the sequential card cross-reference.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Carries {@code 2000-XREFFILE-PROC.} ({@code app/cbl/CBSTM03B.CBL:L157}), the handler for the sequential
@@ -1093,9 +1084,7 @@ public class FileService implements InitializingBean {
         // EXIT. (L179) - COBOL's no-operation. Intentionally empty.
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Paragraphs 9, 10 and 11 of 14 - CUSTFILE, the random-access customer master.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Carries {@code 3000-CUSTFILE-PROC.} ({@code app/cbl/CBSTM03B.CBL:L181}), the handler for the
@@ -1150,9 +1139,7 @@ public class FileService implements InitializingBean {
         // EXIT. (L204) - COBOL's no-operation. Intentionally empty.
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Paragraphs 12, 13 and 14 of 14 - ACCTFILE, the random-access account master.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Carries {@code 4000-ACCTFILE-PROC.} ({@code app/cbl/CBSTM03B.CBL:L206}), the handler for the
@@ -1206,12 +1193,10 @@ public class FileService implements InitializingBean {
         // EXIT. (L229) - COBOL's no-operation. Intentionally empty.
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // The four dataset verbs. These carry FILE-CONTROL. (app/cbl/CBSTM03B.CBL:L30-L53), which is an Area A
     // paragraph of the ENVIRONMENT DIVISION rather than of the PROCEDURE DIVISION, so it maps to the dataset
     // bindings and their verbs rather than to a paragraph method of its own. It is the fifteenth Area A label
     // in the file and the reconciliation of the fifteen-paragraph count.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Performs {@code OPEN INPUT} against a dataset and records the resulting status in that dataset's
@@ -1501,9 +1486,7 @@ public class FileService implements InitializingBean {
         return value + " ".repeat(width - value.length());
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // The shared-area contract, as types.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * The two VSAM access modes {@code FILE-CONTROL.} declares, and the read form each one implements.

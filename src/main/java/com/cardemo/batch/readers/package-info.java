@@ -107,14 +107,10 @@
  *       {@link com.cardemo.batch.readers.TransactionBackupReader} rather than re-implementing it.</li>
  *   </ul>
  *
- * <p>Re-measured 5 August 2026, this package contains the four verification readers, the daily transaction
+ * <p>This package contains the four verification readers, the daily transaction
  * reader, the transaction backup reader and the concatenated combine reader above, and no others - the full
- * set of seven.
- *
- * <p><strong>Earlier revisions of this document recorded two, and then one, absent input readers.</strong>
- * Each count was correct when it was written and is withdrawn here rather than quietly overwritten: the
- * backup-generation reader and then the concatenated-input reader have since been authored and are both listed
- * above, so <strong>no reader in this package is now absent</strong>.
+ * set of seven. <strong>No reader in this package is absent</strong>: both the backup-generation reader and
+ * the concatenated-input reader are listed above.
  *
  * <h3>Two source behaviours that shape every reader here</h3>
  *
@@ -175,11 +171,9 @@
  *       asserts that this package's account reader resolves its parity logger by the shared tree name, and
  *       {@code AccountReaderTest}, {@code CardReaderTest}, {@code CardCrossReferenceReaderTest} and
  *       {@code CustomerReaderTest} cover the four verification readers.
- *       <strong>Measured 4 August 2026:</strong> both input readers now have a test class of their own -
+ *       Both input readers have a test class of their own -
  *       {@code DailyTransactionReaderTest} and {@code TransactionBackupReaderTest} - so every reader in this
- *       package is covered by name. <strong>An earlier revision of this document recorded the daily
- *       transaction reader as having no test class</strong>; that statement was true when written and is
- *       withdrawn here. The assertions it listed as owed are the ones those classes now make: the fixed-width
+ *       package is covered by name, and none is without one. Those classes assert: the fixed-width
  *       rendering matching the copybook offsets; the 49-hyphen rule being neither 48 nor 50; the eleven labels
  *       at exactly 25 characters with the colon in column 25; a status of {@code '10'} ending the scan without
  *       an exception; a {@code '9x'} status abending with code 999 and return code 12; the four-character
@@ -188,7 +182,7 @@
  *   <li><strong>Coverage.</strong> JaCoCo enforces an 80 percent LINE floor on the merged bundle at
  *       {@code verify} with {@code haltOnFailure} and no exclusions for this package. This file is documentation
  *       only and contributes no executable lines.</li>
- *   <li><strong>Toolchain actually present, measured 3 August 2026</strong> at commit {@code 2e087c4}:
+ *   <li><strong>Toolchain actually present, measured 7 August 2026</strong>:
  *       OpenJDK and {@code javac} 25.0.3, Maven 3.9.11, Docker Engine 29.7.0 with {@code docker compose}
  *       v5.3.1. Readings, not requirements.</li>
  *   </ul>
@@ -254,6 +248,13 @@
  * <h2>Package level constraints</h2>
  *
  * <ul>
+ *   <li><strong>No cloud privilege, stated once for all four verification readers.</strong> None of
+ *       {@code AccountReader}, {@code CardReader}, {@code CardCrossReferenceReader} or
+ *       {@code CustomerReader} reads any bucket, queue or topic configuration, and none has an AWS
+ *       client injected, so none requests a cloud privilege of any kind.</li>
+ *   <li><strong>No transaction annotation, stated once for the same four.</strong> A {@code readOnly}
+ *       annotation on a reader would be decorative rather than effective; each reader's own
+ *       {@code read()} documents how read-only is guaranteed instead.</li>
  *   <li><strong>Read-only, provably.</strong> No reader here may write, update or delete anything. The source
  *       programs contain no such verb, so a mutation in this package has no source to justify it.</li>
  *   <li><strong>One private method per COBOL paragraph, never consolidated</strong>, each citing its source

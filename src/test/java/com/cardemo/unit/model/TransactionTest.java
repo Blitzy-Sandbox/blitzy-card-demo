@@ -366,12 +366,20 @@ class TransactionTest {
                                  String columnName,
                                  Class<?> javaType) {
 
-        /** @return the one-based last byte of the field. */
+        /**
+         * Derives the closing byte from the start and the width.
+         *
+         * @return the one-based last byte of the field.
+         */
         int endByte() {
             return startByte + width - 1;
         }
 
-        /** @return {@code true} when the copybook field has an entity property. */
+        /**
+         * Reports whether the entity carries this copybook field at all.
+         *
+         * @return {@code true} when the copybook field has an entity property.
+         */
         boolean isModelled() {
             return javaProperty != null;
         }

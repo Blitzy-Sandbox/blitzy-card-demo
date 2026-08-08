@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!--
   ******************************************************************
-  * Document    : executive-presentation.html
+  * Program     : executive-presentation.html
   * Application : CardDemo
   * Type        : Static stakeholder document (HTML5, self contained)
   * Function    : Executive summary of the migration of the AWS
@@ -25,14 +25,14 @@
   *               The migrated system exposes REST/JSON operations
   *               and Spring Boot Actuator endpoints only.
   *
-  * Provenance   : Every quantitative claim below is cited to a
+  * Source      : Every quantitative claim below is cited to a
   *               repository path, and where useful a line locator,
   *               at anchor commit
   *               7756d895ffeb65f7ea72aaa609e356d9899afcec
   *               (short 7756d89). The legacy corpus under app/ is
-  *               frozen and byte for byte unchanged.
+  *               frozen and byte for byte unchanged @ 7756d89
   *
-  * Self contained: There is NO external dependency of any kind. No
+  * Note        : There is NO external dependency of any kind. No
   *               external script, stylesheet, web font, image,
   *               iframe, tracker, analytics snippet or beacon. All
   *               styling is one inline stylesheet, all diagrams are
@@ -49,8 +49,7 @@
   *               and readable with scripting disabled, so there is
   *               no behaviour to degrade.
   *
-  * Verification recorded at authoring time
-  * ***************************************
+  * Verification recorded at authoring time:
   *   Offline render  : Verified. Grepped for http and https across the
   *                     whole file: exactly two occurrences, both the
   *                     Apache licence address in licence text (this
@@ -320,7 +319,7 @@ footer .lic{font-size:0.83rem}
     <p class="lede">Replacing the execution substrate of a 19,254-line IBM Enterprise COBOL
     credit card application with Java 25 and Spring Boot 3.5.11, while reproducing its
     behaviour exactly. This page is the stakeholder overview. It states what is being
-    changed, what is deliberately not being changed, what evidence exists today and what
+    changed, what is deliberately not being changed, what evidence exists at the anchor commit and what
     does not.</p>
     <dl class="meta">
       <dt>Document type</dt>
@@ -1106,7 +1105,7 @@ footer .lic{font-size:0.83rem}
       be questioned, so the reason is stated in full rather than asserted.</p>
       <p>An account update writes to <strong>two</strong> datasets inside one indivisible step
       [<code class="cite">app/cbl/COACTUPC.cbl:L3888-L4105</code>], and daily posting writes to
-      <strong>three</strong> [<code class="cite">app/cbl/CBTRN02C.cbl:L424-L465</code>]. Either
+      <strong>three</strong> [<code class="cite">app/cbl/CBTRN02C.cbl:L424-L444</code>]. Either
       all of the writes in each group take effect or none of them does. Splitting those writes
       across independently deployed services would forfeit that guarantee and force
       compensating transactions in its place, which do not fail the same way: there is a window
@@ -1131,8 +1130,14 @@ footer .lic{font-size:0.83rem}
     <strong>every one of them carries the same literal plain-text password</strong>
     [<code class="cite">app/jcl/DUSRSECJ.jcl:L35-L44</code>]. That value is deliberately
     <strong>not reproduced anywhere in this document</strong>; it is referred to by locator
-    only, and it is not a usable credential against the migrated system, because the migration
-    stores those users only as one-way hashes.</p>
+    only. The migration stores those users as BCrypt cost-10 hashes rather than as plain text,
+    which protects the <em>stored representation</em> &mdash; it does not change the credential a
+    caller presents, and it does not render that credential unusable. These are therefore
+    <strong>public demo-only credentials</strong>: they are published in the frozen corpus and in
+    <code class="cite">README.md</code>, so they must be assumed known to everyone. What contains
+    them is the deployment profile, not the hashing: the demo users are seeded only under the
+    isolated <code class="cite">local</code> and <code class="cite">test</code> profiles and are
+    <strong>absent from the production profile</strong>, where seeding them is forbidden.</p>
 
     <p>The measures below are properties of the implementation, each backed by a named
     artefact.</p>
@@ -1249,8 +1254,9 @@ footer .lic{font-size:0.83rem}
             <td>Field-level and byte-level equality of posted output against legacy
             behaviour</td>
             <td><span class="na">Not available</span></td>
-            <td>An agreed legacy baseline output artefact to compare against; none exists in
-            the repository</td>
+            <td>Nothing further is needed of this page. The oracle artefacts are committed under
+            <code>src/test/resources/parity/gate1/</code> and the standing is in
+            <a href="validation-gates.md">validation-gates.md</a></td>
           </tr>
           <tr>
             <th scope="row" class="num">2</th>
@@ -1464,7 +1470,7 @@ footer .lic{font-size:0.83rem}
             <th scope="row">One transaction boundary closes an orphaned-write hazard</th>
             <td>Daily posting performs its three writes as three independent commits, so a
             failure part-way through can leave two rows written and the third not
-            [<code class="cite">app/cbl/CBTRN02C.cbl:L424-L465</code>]</td>
+            [<code class="cite">app/cbl/CBTRN02C.cbl:L424-L444</code>]</td>
             <td>The three writes become one indivisible unit, so the hazard cannot occur. This
             is <strong>strictly better than the source</strong>, which is exactly why it is
             labelled a deviation instead of being presented as equivalence</td>
@@ -1632,51 +1638,40 @@ footer .lic{font-size:0.83rem}
       thorough, is never a pass. The standing of each gate is maintained in
       <a href="validation-gates.md">validation-gates.md</a> and should be read there.</dd>
 
-      <dt><strong>No capture from the real legacy runtime exists, and this entry previously
-      overstated that gap.</strong></dt>
-      <dd>An earlier revision of this entry read <em>&ldquo;no expected legacy baseline output
-      artefact exists in the repository&rdquo;</em> and concluded that parity
-      <em>&ldquo;cannot yet be executed as a true diff&rdquo;</em>. <strong>Both halves are
-      withdrawn.</strong> End-to-end parity is now executed as a true byte-level diff against
+      <dt><strong>No capture from the real legacy runtime exists.</strong></dt>
+      <dd>The gap is narrow, and stating it more widely &mdash; that <em>&ldquo;no expected legacy
+      baseline output artefact exists in the repository&rdquo;</em>, so parity <em>&ldquo;cannot yet
+      be executed as a true diff&rdquo;</em> &mdash; would overstate it in both halves. End-to-end
+      parity is executed as a true byte-level diff against
       <strong>two independent expectations</strong> held in the repository: the frozen program's
       own output, produced by compiling <code>app/cbl/CBTRN02C.cbl</code> unmodified and running
       it against the frozen fixtures, and a second expectation re-derived from the same source by
-      a harness that imports no production type. What remains absent is narrower and is stated as
-      such: <strong>a capture from the real runtime &mdash; the frozen COBOL executed on z/OS or
+      a harness that imports no production type. What is absent is narrower:
+      <strong>a capture from the real runtime &mdash; the frozen COBOL executed on z/OS or
       a licensed emulator</strong>, which would corroborate both expectations rather than replace
       either. That capture cannot be produced from inside this repository.</dd>
 
-      <dt><strong>Documentation publication has a genuinely silent failure path.</strong></dt>
-      <dd>A page absent from the site navigation never appears in the published site and
-      <strong>nothing reports a problem</strong> &mdash; no error, no output, and no warning that
-      a strict build could fail on. See finding H-5 in <a href="#findings">section 10</a>. This
-      page depends on its navigation entry being present and on its filename matching that entry
-      exactly, and neither condition is checkable by the build.</dd>
+      <dt><strong>Documentation publication has a failure path that is silent by default.</strong></dt>
+      <dd>A page absent from the site navigation never appears in the published site, and on a
+      default MkDocs configuration <strong>nothing reports a problem</strong> &mdash; the omission
+      is reported at INFO level, so no error and no warning a strict build could fail on. See
+      finding H-5 in <a href="#findings">section 10</a>. <code>mkdocs.yml</code> sets
+      <code>validation.nav.omitted_files: warn</code>, so a strict build does fail on it here; the
+      filename must still match the navigation entry exactly, which the build cannot check.</dd>
     </dl>
 
     <h3>11.2 The environment position</h3>
 
     <p>The state of the authoring host decides which gates can run at all, so it is published
-    rather than assumed. The <strong>first dated reading, Thursday 30 July 2026</strong>, recorded
-    a <strong>container runtime that is available</strong> &mdash; Docker Engine 29.6.2 with
-    Compose v5.3.1 and a reachable daemon &mdash; while the host build and command-line tools
-    (a Java runtime and compiler, Maven, the cloud emulator, the cloud command-line client and the
-    documentation site generator) were <strong>absent</strong>
-    [<a href="validation-gates.md">validation-gates.md</a>, first reading]. The consequences at
-    that point were that host-native build execution was blocked until a Java 25 runtime and
-    Maven 3.9.11 were provisioned, with a pinned-container build path available in the meantime,
-    and that documentation-site verification was an unmet prerequisite.</p>
-
-    <p><strong>That reading has since been superseded, and the ledger publishes the later one
-    beside it rather than replacing it.</strong> The subsequent reading records that the host
-    Java runtime, compiler, Maven, cloud emulator and cloud command-line client
-    <strong>have since been provisioned</strong>, that the container runtime remains available,
-    and that the documentation site generator was provisioned and its strict build then actually
-    run, with the outcome recorded including its failure and the reason for it
-    [<a href="validation-gates.md">validation-gates.md</a>, second reading and documentation
-    build verification]. The figures are not restated here; the ledger is the authoritative
-    record and is the only place they are maintained. <strong>At no point was the container
-    runtime unavailable.</strong></p>
+    rather than assumed, as a dated reading in
+    [<a href="validation-gates.md">validation-gates.md</a>]. That reading records a
+    <strong>container runtime that is available</strong> &mdash; Docker Engine with Compose and a
+    reachable daemon &mdash; together with a host Java runtime and compiler, Maven, the cloud
+    emulator, the cloud command-line client and the documentation site generator, whose strict
+    build was then actually run and its outcome recorded. The figures are not restated here; the
+    ledger is the authoritative record and is the only place they are maintained. <strong>The
+    container runtime is not unavailable, and no gate may be reported blocked on that
+    basis.</strong></p>
 
     <h3>11.3 A Blocker-severity build finding, already remediated in the plan</h3>
 
@@ -1713,28 +1708,27 @@ footer .lic{font-size:0.83rem}
       <a href="#findings">section 10</a>).</p>
       <p>For the same reason, this document states <strong>no</strong> completion percentage, no
       effort figure, no test count, no coverage measurement, no throughput or latency figure and
-      no financial or business-benefit quantification. None of it is supported by evidence that
-      exists today, and publishing an unsupported figure in a stakeholder summary is the most
-      damaging thing this page could do.</p>
+      no financial or business-benefit quantification. Where such a figure has been measured it is
+      maintained in <a href="validation-gates.md">validation-gates.md</a> and read there;
+      restating one here would create a second copy that goes stale silently, and publishing an
+      unsupported figure in a stakeholder summary is the most damaging thing this page could
+      do.</p>
     </div>
 
     <h3>11.6 Next actions, in order</h3>
 
     <ol>
-      <li><strong>Generate and complete the implementation</strong> against the plan in
-      <a href="technical-specifications.md">technical-specifications.md</a>.</li>
-      <li><strong>Execute the gates that need no container first</strong> &mdash; the
-      zero-warning build with its vulnerability scan, the security audit and scope coverage
-      &mdash; because they are runnable with the least set-up and produce the earliest
-      evidence.</li>
-      <li><strong>Capture the parity baseline</strong>, or formally agree how it will be
-      derived. Nothing about gate 1 can move until this exists.</li>
+      <li><strong>Obtain a capture from the real legacy runtime</strong>, or formally agree that
+      the two committed expectations are the accepted oracle. That capture is the one piece of
+      gate 1 evidence this repository cannot produce.</li>
+      <li><strong>Bring up the six-service compose topology and capture the result</strong>, which
+      is the outstanding half of gate 8.</li>
       <li><strong>Keep the host toolchain provisioned</strong> so that build and
       documentation verification remain reproducible rather than dependent on one machine's
       state.</li>
-      <li><strong>Publish the evidence artefacts</strong> and update the ledger, closing each
-      absence by producing the artefact a reviewer would open &mdash; never by rewording the
-      result.</li>
+      <li><strong>Publish each new evidence artefact</strong> and update the ledger, closing every
+      remaining absence by producing the artefact a reviewer would open &mdash; never by rewording
+      the result.</li>
     </ol>
   </section>
 

@@ -16,9 +16,9 @@
  * Source      : app/cbl/CBTRN02C.cbl:L370-L422 (1500-VALIDATE-TRAN and
  *               its two lookup paragraphs; codes 100, 101, 102, 103)
  *               @ 7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L424-L465 (2000-POST-TRANSACTION -
+ * Source      : app/cbl/CBTRN02C.cbl:L424-L444 (2000-POST-TRANSACTION -
  *               three independent commits in the source) @ 7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L467-L500 (2700-UPDATE-TCATBAL -
+ * Source      : app/cbl/CBTRN02C.cbl:L467-L501 (2700-UPDATE-TCATBAL -
  *               '00' OR '23' both accepted) @ 7756d89
  * Source      : app/cbl/CBTRN02C.cbl:L545-L560 (2800-UPDATE-ACCOUNT-REC
  *               - code 109, and the sign branch that must not be
@@ -104,7 +104,8 @@
  * <p><strong>The empty fee paragraph is retained.</strong> {@code app/cbl/CBACT04C.cbl:L518-L520} is a comment
  * and an exit, and it is <strong>genuinely reachable</strong> - performed at {@code :L216}. It is kept as an
  * empty private method with an explicit intentional-no-op marker, its locator, its reachability proof and an
- * acknowledgement that it is owed an entry in the {@code DECISION_LOG.md}. This is the single place in
+ * reference to {@code DL-PP-05} in {@code DECISION_LOG.md}, whose governing conflict resolution is
+ * {@code DL-CR-01}. This is the single place in
  * the tree where Rule 1 Clause B's prohibition on dead code yields to the parity mandate, on the reading that
  * the clause forbids <em>untracked</em> dead code; deleting the call site would break the paragraph map the
  * scope-coverage gate verifies.
@@ -118,7 +119,7 @@
  * <h3>Labelled deviations - these are not parity</h3>
  *
  * <p><strong>Three commits become one transaction.</strong>
- * {@code app/cbl/CBTRN02C.cbl:L424-L465} commits the category-balance upsert, the account update and the
+ * {@code app/cbl/CBTRN02C.cbl:L424-L444} commits the category-balance upsert, the account update and the
  * transaction insert independently, so the code-109 rewrite-failure path leaves an orphaned category-balance
  * row and an orphaned transaction row behind. One atomic Java unit closes that hazard as a side effect. That
  * is a genuine behavioural improvement and is therefore <strong>labelled</strong>, not presented as
@@ -155,7 +156,7 @@
  * both {@code &#123;} and {@code &#125;} overpunch signs.
  *
  * <p>A record-not-found status is an <strong>accepted control path</strong>, not an error, at exactly two sites
- * in this package's logic: the category-balance upsert at {@code app/cbl/CBTRN02C.cbl:L467-L500}, which accepts
+ * in this package's logic: the category-balance upsert at {@code app/cbl/CBTRN02C.cbl:L467-L501}, which accepts
  * {@code '00'} or {@code '23'} before dispatching to create or rewrite, and the disclosure-group rate lookup,
  * which accepts either before substituting the literal default group and retrying - where the retry accepts
  * only success, so a missing default row abends. Everywhere else a not-found status is an error, so a blanket
@@ -182,13 +183,11 @@
  *       asserts that neither it nor {@code TransactionBackupReader} holds static mutable state, which is what
  *       makes construction per execution a complete guarantee; {@code ParityLoggerRoutingTest}
  *       proves that no monetary value from this package reaches the application log stream.
- *       <strong>Measured 4 August 2026:</strong> every processor in this package now has a unit test class of
+ *       Every processor in this package has a unit test class of
  *       its own - {@code TransactionPostingProcessorTest}, {@code InterestCalculationProcessorTest},
  *       {@code StatementProcessorTest} and {@code StatementProcessorStreamingTest} alongside the combine and
- *       report suites already named. <strong>An earlier revision of this document recorded the posting,
- *       interest and statement processors as having no unit test class</strong>; that statement was true when
- *       written and is withdrawn here rather than quietly overwritten. The assertions it listed as owed are
- *       the ones those classes now make: the 102/103 fall-through emitting a single record bearing 103; the
+ *       report suites already named, so none of the posting, interest or statement processors is without one.
+ *       Between them they assert: the 102/103 fall-through emitting a single record bearing 103; the
  *       exact over-limit expression; a negative amount reaching the debit accumulator unnormalised; interest
  *       computed by the literal-1200 form; the default-group fallback succeeding and a missing default row
  *       abending; twenty lines to a page; the control break firing on the card number; the end-of-data double
@@ -286,7 +285,7 @@
  *       109 - each carrying its exact literal description. They are never thrown.</li>
  *   <li><strong>Every legacy quirk is reproduced or labelled, never silently corrected</strong>, and every
  *       retained no-op is marked at its own declaration with its locator, a reachability proof, an explicit
- *       intentional-no-op marker and an acknowledgement that it is owed an entry in the
+ *       intentional-no-op marker and a reference to {@code DL-CR-01} in the
  *       {@code DECISION_LOG.md}. No file in this tree keeps a global tally of them.</li>
  *   <li><strong>The frozen corpus stays frozen.</strong> Nothing here reads {@code app/} at build or run
  *       time; those files are cited as evidence and must survive byte for byte.</li>

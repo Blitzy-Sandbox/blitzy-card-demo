@@ -920,7 +920,6 @@ public class FileStatusMapper {
         return value == null || value.isBlank() ? placeholder : value;
     }
 
-    // ================================================================================================
     // Store condition discrimination.
     //
     // Not a paragraph of any program. This is the mechanism that stands in for the RESP value CICS
@@ -937,7 +936,6 @@ public class FileStatusMapper {
     // a replacement for it. Each caller keeps its own source literal, its own cursor field and its own
     // screen assembly exactly as the source writes them; what this method decides is only WHICH typed
     // exception - and therefore which HTTP status - carries that unchanged outcome outwards.
-    // ================================================================================================
 
     /**
      * The conditions a keyed write or a keyed read can raise in the relational store, in the vocabulary
@@ -1021,7 +1019,7 @@ public class FileStatusMapper {
      * Decides which store condition a data-access failure represents, by reading the SQLSTATE the driver
      * reported rather than by inspecting the exception type the translator chose.
      *
-     * <p><strong>Findings F-2 and F-8, severity Major, and finding 4, severity Major - this method is the
+     * <p><strong>Findings F-2 and F-8, severity High, and finding 4, severity High - this method is the
      * remediation of all three.</strong> Four write sites caught
      * {@code org.springframework.dao.DataIntegrityViolationException} and mapped it <em>unconditionally</em>
      * to {@code DFHRESP(DUPREC)}. So a value the column could not hold was reported as

@@ -59,7 +59,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
 import org.springframework.core.env.Environment;
@@ -312,6 +311,63 @@ class SecurityConfigTest {
             assertThat(ctx.getBeanNamesForType(Clock.class)).hasSize(2);
             assertThat(ctx.getBean(Clock.class).instant()).isEqualTo(FIXED_INSTANT);
         }
+    }
+
+    /**
+     * FINDING LOW-004, severity Low. The chain order is asserted, not described.
+     *
+     * <p>Four comments in {@link SecurityConfig} claimed the two request-boundary filters execute before the
+     * bearer filter. They do not, and nothing in the suite would have caught the claim going stale, because
+     * every other assertion about those filters drives them directly rather than through an assembled chain.
+     * This test pins the assembled order so that the prose has something mechanical standing behind it.
+     *
+     * <p>Two properties of the order carry the guarantees the filters exist for, and both are asserted rather
+     * than left to the reader:
+     *
+     * <ul>
+     *   <li>{@code HeaderWriterFilter} precedes both, so a refusal still carries the default security
+     *       headers.</li>
+     *   <li>{@code AuthorizationFilter} follows both - it is last - so a refusal for want of authorization
+     *       cannot pre-empt either bound, and an anonymous caller is screened. The bearer filter's position
+     *       ahead of them is irrelevant to that: it refuses nothing, it only populates the security context
+     *       when a token is present.</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("the request-boundary filters sit after the header writer and before authorization")
+    void theRequestBoundaryFiltersSitBetweenTheHeaderWriterAndAuthorization() {
+        withContext(ctx -> {
+            final List<String> business = ctx.getBeansOfType(SecurityFilterChain.class).values().stream()
+                    .map(chain -> chain.getFilters().stream()
+                            .map(filter -> filter.getClass().getSimpleName())
+                            .toList())
+                    .filter(names -> names.contains("RequestBodyLimitFilter"))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "no chain carries the request-boundary filters; the scrape chain does not, and "
+                                    + "the business chain must"));
+
+            assertThat(business)
+                    .as("both bounds are installed, in size-then-shape order")
+                    .containsSubsequence("RequestBodyLimitFilter", "RequestMediaTypeFilter");
+            assertThat(business)
+                    .as("the header writer precedes them, so a 413 or a 415 still carries "
+                            + "X-Content-Type-Options and X-Frame-Options")
+                    .containsSubsequence("HeaderWriterFilter", "RequestBodyLimitFilter");
+            assertThat(business)
+                    .as("and authorization follows them, which is what makes both bounds apply to an "
+                            + "anonymous caller - the sign-on route being the one that most needs it")
+                    .containsSubsequence("RequestMediaTypeFilter", "AuthorizationFilter");
+            assertThat(business.indexOf("AuthorizationFilter"))
+                    .as("authorization is the last filter in the chain")
+                    .isEqualTo(business.size() - 1);
+            assertThat(business)
+                    .as("FINDING LOW-004: the bearer filter runs BEFORE both bounds, which is the opposite of "
+                            + "what four comments in SecurityConfig used to say. Asserted in the direction the "
+                            + "chain actually runs, so the corrected comments cannot drift back")
+                    .containsSubsequence("SecurityContextHolderFilter", "JwtAuthenticationFilter",
+                            "HeaderWriterFilter", "RequestBodyLimitFilter");
+        });
     }
 
     /** The override shape this class documents, exercised by {@link #primaryFixedClockOverridesProductionClock()}. */
@@ -790,7 +846,7 @@ class SecurityConfigTest {
     /**
      * The scrape refusal has to be readable, because an unreadable one was mistaken for a missing route.
      *
-     * <p><strong>Finding, severity Minor - remediated.</strong> A review concluded that
+     * <p><strong>Finding, severity Medium - remediated.</strong> A review concluded that
      * {@code /actuator/prometheus} was "denied to every caller" with no matcher declared. The matcher was
      * there and the credentialled scrape worked; what was missing was any way to tell that from the response.
      * The refusal carried Spring's default body - {@code timestamp status error path} under

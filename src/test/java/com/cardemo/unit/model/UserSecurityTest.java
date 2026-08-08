@@ -2549,7 +2549,6 @@ final class UserSecurityTest {
                 .isEqualTo(SEEDED_USER_IDS.size());
     }
 
-    // ==================================================================
     // Movement 8 - the ten seeded users, and the fixture that does not
     // exist. Identifiers and names are seeded identities and are NOT
     // reproduced: the fixtures below are synthetic stand-ins carrying the
@@ -2558,7 +2557,6 @@ final class UserSecurityTest {
     // here in any form.
     // Source: app/jcl/DUSRSECJ.jcl:L32-L48 (IEBGENER inline SYSUT1),
     //         app/catlg/LISTCAT.txt:L3888 @ 7756d89
-    // ==================================================================
 
     @ParameterizedTest(name = "seeded row {0} is carried faithfully")
     @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9})
@@ -2752,11 +2750,9 @@ final class UserSecurityTest {
                                 + "every real hash to exactly this kind of garbage"));
     }
 
-    // ==================================================================
     // Helpers. Reflection and class-file inspection, kept in one place
     // so that every structural assertion above reads as a statement
     // about the entity rather than as plumbing.
-    // ==================================================================
 
     /**
      * The entity's persistent members: every declared field that is neither static nor synthetic.

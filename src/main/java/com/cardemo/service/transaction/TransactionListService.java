@@ -1,13 +1,13 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionListService.java
  * Application : CardDemo
  * Type        : Spring Service Bean
  * Function    : Paginated transaction list. Reproduces the CICS pseudo-
  *               conversational browse of COTRN00C (transaction CT00) as a
  *               stateless keyset-paged REST service, page size 10.
- * Source      : app/cbl/COTRN00C.cbl (699 lines, 16 paragraphs) @ 7756d89
- * ****************************************************************************
+ * Source      : app/cbl/COTRN00C.cbl (699 lines, 16 own paragraph labels) @ 7756d89
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -22,7 +22,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.service.transaction;
 

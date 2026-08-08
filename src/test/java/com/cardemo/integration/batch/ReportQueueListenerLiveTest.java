@@ -47,6 +47,7 @@ import io.awspring.cloud.sqs.listener.AbstractMessageListenerContainer;
 import io.awspring.cloud.sqs.listener.MessageListenerContainer;
 import io.awspring.cloud.sqs.listener.MessageListenerContainerRegistry;
 import java.net.URI;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -285,6 +286,17 @@ class ReportQueueListenerLiveTest extends AbstractBatchIntegrationTest {
     @Value("${carddemo.security.jwt.signing-key}")
     private String envelopeSigningKey;
 
+    /**
+     * The clock the consumer measures a submission's validity window against.
+     *
+     * <p>Injected from the context rather than read from the host, so that the code this class issues is dated
+     * by the same instant the consumer will judge it by. Finding SEC-002 gave the code a window; a publisher
+     * dating that window from a different clock than the verifier reads would be testing the skew allowance
+     * rather than the contract.
+     */
+    @Autowired
+    private Clock clock;
+
     @Test
     @DisplayName("the consumer is bound and running against the isolated queue, not the shared one")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -507,7 +519,7 @@ class ReportQueueListenerLiveTest extends AbstractBatchIntegrationTest {
         // because there is nothing to compute a canonical form over. It is also the right wire behaviour for
         // that test, whose subject is a body discarded at the binding step - one step BEFORE verification -
         // so signing it would move the failure it asserts.
-        envelopeCodeFor(body).ifPresent(code -> request.messageAttributes(Map.of(
+        envelopeCodeFor(body, deduplicationId).ifPresent(code -> request.messageAttributes(Map.of(
                 ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER,
                 MessageAttributeValue.builder().dataType("String").stringValue(code).build())));
 
@@ -518,15 +530,20 @@ class ReportQueueListenerLiveTest extends AbstractBatchIntegrationTest {
     /**
      * Renders the envelope code for a body, when the body is a submission at all.
      *
+     * <p>Finding SEC-002. The code binds the deduplication identifier the publish will carry, so it must be
+     * rendered for that identifier and not for the body alone - which is why the identifier is a parameter
+     * here rather than something this method could be written without.
+     *
      * @param body the message body about to be published; never {@code null}
+     * @param deduplicationId the deduplication identifier the same publish will set; never {@code null}
      * @return the code the consumer will recompute, or empty when the body does not bind to a submission
      */
-    private Optional<String> envelopeCodeFor(final String body) {
+    private Optional<String> envelopeCodeFor(final String body, final String deduplicationId) {
         try {
-            return Optional.of(ReportSubmissionService.JobSubmissionEnvelope.sign(
-                    this.objectMapper.readValue(body,
+            return Optional.of(new ReportSubmissionService.JobSubmissionEnvelope(this.envelopeSigningKey)
+                    .sign(this.objectMapper.readValue(body,
                             ReportSubmissionService.JobSubmissionMessage.class),
-                    this.envelopeSigningKey));
+                            deduplicationId, this.clock.instant()));
         } catch (final JsonProcessingException | IllegalArgumentException notASubmission) {
             // Deliberately swallowed and deliberately not logged as a failure: reaching here is the
             // malformed-body scenario doing what it exists to do. The exception is named so that a reader can

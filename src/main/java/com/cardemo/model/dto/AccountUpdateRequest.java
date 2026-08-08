@@ -30,6 +30,7 @@ import java.math.BigDecimal;
 
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
@@ -43,6 +44,20 @@ import jakarta.validation.constraints.Size;
  * by field. A version counter cannot express the same guarantee — it reports that some row changed, not which
  * business values differ from the user's view — and a stateless server cannot hold the snapshot between
  * requests, so it travels in the request body.
+ *
+ * <p><strong>The snapshot travels sealed, as the single opaque {@link #getSnapshot() snapshot} member.</strong>
+ * It is the string the preceding {@code GET /api/accounts/{accountId}} returned, echoed back unchanged. It is
+ * not a readable group and there is no {@code oldDetails} member on this wire contract, for two reasons that
+ * are properties of the data rather than preferences. A group the caller can rewrite is not evidence of what
+ * was displayed: rewriting it to the live row makes {@code 9700-CHECK-CHANGE-IN-REC} unconditionally true, so
+ * the lost-update guard the source provides would be no guard at all. And the group carries the customer's
+ * names, both telephone numbers, the social security number, the date of birth, the government-issued
+ * identifier and the electronic funds account identifier, so emitting it in the clear on the preceding read
+ * would publish protected personal data to any proxy, cache or browser tool on the path.
+ * {@code com.cardemo.security.SnapshotTokenService} seals the group with AES-256-GCM, bound to the operation,
+ * the account identifier, the authenticated principal and an expiry, and the update service opens it
+ * server-side. What is compared is therefore byte for byte the group the read projected — which is also what
+ * keeps the two properties below intact, since a caller never has to rebuild anything.
  *
  * <p>Two properties of the comparison are load-bearing and must not be tidied. The snapshot dates are compact
  * {@code PIC X(08)} values with no separators, while the live record holds them dash-separated, so the source
@@ -125,9 +140,9 @@ import jakarta.validation.constraints.Size;
  *       {@code (NNN)NNN-NNNN} followed by two spaces &mdash; whereas on the NEW
  *       side {@code INITIALIZE ACUP-NEW-DETAILS} at {@code :1047} leaves them as
  *       spaces and nothing assigns them afterwards. Carrying both readings as
- *       independently writable properties, which an earlier revision of this class
- *       did, describes a byte state that cannot exist: a REDEFINES is one storage
- *       cell, so the whole and its parts can never disagree;</li>
+ *       independently writable properties would describe a byte state that
+ *       cannot exist: a REDEFINES is one storage cell, so the whole and its
+ *       parts can never disagree;</li>
  *   <li>(iv) each money field is carried once, as the {@code X(12)} display text
  *       the source stores, with the {@code S9(10)V99} numeric REDEFINES exposed as
  *       a derived view. The text is what round-trips, so the snapshot preserves the
@@ -165,14 +180,19 @@ import jakarta.validation.constraints.Size;
  * three-character value cannot be placed in
  * {@code ACUP-OLD-CUST-ADDR-STATE-CD PIC X(02)} at {@code :719}, so enforcing that
  * width can only reject a snapshot the source was physically unable to produce.</p>
- * <p>The trust relationship also inverts under statelessness, which is the decisive
- * reason. In the source the OLD group is filled by the program itself &mdash;
- * {@code 9000-READ-DATA} does {@code INITIALIZE ACUP-OLD-DETAILS} at {@code :3610}
- * and then populates it from the record it has just read &mdash; so it is trusted by
- * construction. Here the identical group arrives from the client, and it is the
- * operand that {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares the
- * live record against. An unconstrained snapshot is therefore an unconstrained
- * concurrency guard, which is exactly the reverse of the source's position.</p>
+ * <p>The trust relationship is what makes the cascade worth keeping, and it is worth
+ * stating precisely because an earlier revision of this class inverted it. In the source
+ * the OLD group is filled by the program itself &mdash; {@code 9000-READ-DATA} does
+ * {@code INITIALIZE ACUP-OLD-DETAILS} at {@code :3610} and then populates it from the
+ * record it has just read &mdash; so it is trusted by construction. Here it is filled
+ * from the sealed {@code snapshot} string this server itself minted on the preceding read
+ * and re-attached through {@link #withOldDetails(OldDetails)}, so the same relationship
+ * holds: the operand {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares the
+ * live record against is a value this server produced, never a value a client chose. The
+ * widths therefore describe what this server may seal rather than what a client may send,
+ * and they are retained as a second line of defence: a member wider than its {@code PIC}
+ * clause is one the source could not physically have produced, so rejecting it can only
+ * reject a snapshot the source never held.</p>
  * <p>The cascade deliberately does <strong>not</strong> import the NEW group's
  * domain rule. {@code 88 FICO-RANGE-IS-VALID} is declared on the NEW side only, so
  * {@link OldDetails} has no {@code ficoScoreIsInValidRange()} twin.</p>
@@ -331,7 +351,10 @@ import jakarta.validation.constraints.Size;
  * <p><strong>Validation.</strong> Constraints cascade into <em>both</em> nested groups: each of
  * {@code oldDetails} and {@code newDetails} is marked {@code @Valid} and each member carries the width
  * contract of its declared PIC clause. Only the range rule is asymmetric, because only the NEW group
- * declares one. Validation is triggered by the consuming controller parameter.</p>
+ * declares one. Validation is triggered by the consuming controller parameter, so on ingest it sees the
+ * NEW group and the {@code snapshot} string only: {@code oldDetails} is absent from the bound instance
+ * and is re-attached after the snapshot is opened, which is why its cascade governs what this server
+ * may seal rather than what a client may send.</p>
  * <p><strong>Comparison.</strong> Both regimes described above belong to the consuming service, not to
  * this class; the payload's only job is to make both expressible. Any case function the service
  * applies must pass {@code Locale.ROOT}, because a Turkish-locale upper-case maps {@code i} to a
@@ -349,9 +372,9 @@ import jakarta.validation.constraints.Size;
  * compilation - and then fails {@code verify}, because {@code pom.xml} binds
  * {@code maven-javadoc-plugin} there as the execution {@code doclint-gate}, running
  * {@code javadoc-no-fork} with {@code doclint} set to {@code all} and {@code failOnWarnings} true over the
- * whole {@code src/main/java} tree. An earlier revision of this paragraph said {@code pom.xml} declared no
- * {@code maven-javadoc-plugin} and no {@code -Xdoclint} and that an unbalanced tag failed no Maven phase;
- * that is no longer accurate and is withdrawn. The explicit repository-owned doclint command published in
+ * whole {@code src/main/java} tree. Reading {@code pom.xml} as declaring no {@code maven-javadoc-plugin}
+ * and no {@code -Xdoclint}, so that an unbalanced tag fails no Maven phase, is therefore wrong: the gate is
+ * bound and it fails the build. The explicit repository-owned doclint command published in
  * {@code docs/technical-specifications.md} remains useful because it also covers
  * {@code src/test/java}, which the bound execution does not. <strong>An unused-import check is
  * {@code Not available}:</strong> {@code javac} 25.0.3 publishes no {@code unused} lint key at all - as
@@ -366,9 +389,7 @@ import jakarta.validation.constraints.Size;
  * {@code storesSnapshotDatesCompact} requires every snapshot date to be stored compact, and
  * {@code refusesDashSeparatedSnapshotDate} requires a dash-separated snapshot date to be refused because
  * the compact offsets cannot slice it, both citing
- * {@code app/cbl/COACTUPC.cbl:4174-4179}. An earlier revision of this paragraph said no such test class
- * existed and that this type was unreferenced from the test tree; both halves are false and the claim is
- * withdrawn.</p>
+ * {@code app/cbl/COACTUPC.cbl:4174-4179}.</p>
  *
  * <h2>Error modes</h2>
  * <ul>
@@ -404,46 +425,54 @@ import jakarta.validation.constraints.Size;
  *       value longer than eight characters is rejected outright rather than
  *       sliced into a separator fragment.</li>
  *   <li><strong>High &mdash; a REDEFINES overlay was exposed as two independently
- *       writable properties.</strong> An earlier revision of this class carried
- *       both readings of every overlay as stored members: the {@code X(12)} text
- *       and the {@code S9(10)V99} number for each of the five money fields, the
+ *       writable properties.</strong> Carrying both readings of every overlay
+ *       as stored members - the {@code X(12)} text and the
+ *       {@code S9(10)V99} number for each of the five money fields, the
  *       {@code X(15)} whole and the three components for each telephone number,
  *       and the {@code X(03)} text plus the {@code 9(03)} number for the credit
- *       score. A caller could then submit a text and a number that disagreed,
- *       which is a byte state that cannot exist in the source, because a
- *       REDEFINES names one storage cell and not two members. Remediation: each
- *       overlay now carries exactly one stored member &mdash; the side the source
- *       actually assigns &mdash; and the other reading is a derived accessor
+ *       score - lets a caller submit a text and a number that disagree, which
+ *       is a byte state that cannot exist in the source, because a REDEFINES
+ *       names one storage cell and not two members. Each overlay therefore
+ *       carries exactly one stored member &mdash; the side the source actually
+ *       assigns &mdash; and the other reading is a derived accessor
  *       deliberately not named as a bean property, so the serializer neither
- *       emits it nor binds it. Round-tripping is preserved, which was the
- *       objection an earlier revision raised against this shape: the payload this
- *       class produces contains exactly the stored members, so it can be sent
- *       back unchanged. The stored side differs by group where the source
- *       differs &mdash; see consequence (iii) above &mdash; and an unrecognised
- *       property, including a derived view submitted as though it were a member,
- *       is rejected rather than silently discarded, because relying on a
- *       framework default that discards unknown properties was rejected as an
+ *       emits it nor binds it. Round-tripping is preserved, which is the
+ *       objection this shape has to answer: the payload this class produces
+ *       contains exactly the stored members, so it can be sent back unchanged.
+ *       The stored side differs by group where the source differs &mdash; see
+ *       consequence (iii) above &mdash; and an unrecognised property,
+ *       including a derived view submitted as though it were a member, is
+ *       rejected rather than silently discarded, because relying on a
+ *       framework default that discards unknown properties is an
  *       environment-specific assumption. The credit-score range is exposed as a
  *       predicate rather than a constraint because
  *       {@code app/cbl/COACTUPC.cbl:848-849} declares the {@code 88} level on the
  *       {@code PIC 9(03)} REDEFINES at {@code :846-847} rather than on the
  *       {@code PIC X(03)} text member at {@code :845}, which is the member the
  *       screen is moved into unvalidated at {@code :1283}.</li>
- *   <li><strong>High &mdash; the payload was mutable after validation.</strong> An
- *       earlier revision of this class exposed 139 setters across the outer type
- *       and the two nested groups. A snapshot guard that can be rewritten between
- *       validation and comparison is not a guard, and on this payload the window
- *       spans the concurrency check that {@code 9700-CHECK-CHANGE-IN-REC}
- *       performs. Remediation: every field is {@code final}, no setter remains,
- *       and each type is constructed once by an all-arguments
- *       {@code @JsonCreator}.</li>
+ *   <li><strong>High &mdash; a payload mutable after validation.</strong>
+ *       Exposing setters across the outer type and the two nested groups - 139
+ *       of them, one per field - leaves a snapshot guard that can be rewritten
+ *       between validation and comparison, which is not a guard, and on this
+ *       payload the window spans the concurrency check that
+ *       {@code 9700-CHECK-CHANGE-IN-REC} performs. Every field is therefore
+ *       {@code final}, no setter is declared, and each type is constructed once
+ *       by an all-arguments {@code @JsonCreator}.</li>
  *   <li><strong>High &mdash; the snapshot group was unvalidated.</strong> An
  *       earlier revision left {@code oldDetails} without a cascade and without a
  *       single width contract, on the argument that the OLD group declares no
  *       {@code 88} level. The argument does not hold: a {@code PIC} clause is
- *       itself a contract, and under statelessness the group arrives from the
- *       client rather than from {@code 9000-READ-DATA}. Remediation: the cascade
- *       and the per-member widths described under Validation above.</li>
+ *       itself a contract. Remediation: the cascade and the per-member widths
+ *       described under Validation above.</li>
+ *   <li><strong>Critical, closed &mdash; the snapshot group was caller-supplied.</strong>
+ *       An earlier revision carried {@code oldDetails} as a readable wire member, so
+ *       the operand of the concurrency comparison was chosen by the request the
+ *       comparison exists to police, and the group's protected components reached the
+ *       wire on the read that produced it. Remediation: the group left the wire
+ *       contract entirely. The read seals it into the opaque {@code snapshot} string,
+ *       the write echoes that string back, and the server opens it and re-attaches the
+ *       group through {@link #withOldDetails(OldDetails)} before comparing. The widths
+ *       above are retained and now bound what this server may seal.</li>
  *   <li><strong>Medium, closed &mdash; a second comparison paragraph, absent
  *       from prior-generation plan prose.</strong> That prose described one
  *       comparison paragraph; there are two, and they normalise the same fields
@@ -462,9 +491,9 @@ import jakarta.validation.constraints.Size;
  *       Deriving rather than duplicating is what keeps the two readings from
  *       disagreeing; see the High-severity overlay finding above. The root
  *       {@code DECISION_LOG.md} the plan nominates for such findings is <strong>authored
- *       at the repository root</strong>; an earlier revision recorded it as not available and that
- *       record is withdrawn. This docstring and the specification's section 0.2.2.1 corrections
- *       table carry the finding at Medium, and no document is created in this package.</li>
+ *       at the repository root</strong>. This docstring and the specification's section 0.2.2.1
+ *       corrections table carry the finding at Medium, and no document is created in this
+ *       package.</li>
  *   <li><strong>Medium, closed &mdash; the input-field census was
  *       overstated.</strong> Prior-generation plan prose reported 460 input fields
  *       across the seventeen symbolic maps and 36 for the account-view map; the
@@ -538,6 +567,18 @@ public class AccountUpdateRequest {
      * {@code app/cbl/COACTUPC.cbl:684}, {@code :690}, {@code :696} and {@code :746}.
      */
     private static final int COMPACT_DATE_LENGTH = 8;
+
+    /**
+     * Upper bound on the sealed snapshot member, in characters.
+     *
+     * <p>Not a domain rule and not tuned to a measurement: the sealed form is
+     * {@code base64url(12-byte nonce || AES-256-GCM ciphertext and tag)} over a JSON envelope holding
+     * twenty-nine fixed-width members whose declared widths total under four hundred characters, so a value
+     * this server issued cannot come near this bound. It exists so that an arbitrarily long string is refused
+     * by bean validation before it reaches the base64 decoder and the cipher, which is the boundary check
+     * Rule 1 Clause B requires of an untrusted body member.</p>
+     */
+    public static final int MAX_SNAPSHOT_LENGTH = 4096;
 
     /**
      * Zero-based start of the year component, COBOL reference-modifier offset 1, per the snapshot comparison at
@@ -882,13 +923,11 @@ public class AccountUpdateRequest {
         return Integer.valueOf(image);
     }
 
-    // ----------------------------------------------------------------
     // Screen fields, in the declaration order of app/cpy-bms/COACTUP.CPY.
     // All 54 of them, including the three ordering quirks the map declares:
     // the state code between the two address lines, the city after the
     // postal code, and the government-issued identifier interleaved between
     // the two telephone numbers.
-    // ----------------------------------------------------------------
 
     /**
      * {@code TRNNAMEI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:24}. Transaction identifier echoed into
@@ -1370,42 +1409,53 @@ public class AccountUpdateRequest {
     private final String functionKey12;
 
     /**
-     * Snapshot of the record as the screen was first populated:
-     * {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669-756}.
+     * The sealed as-displayed snapshot, exactly as the preceding read returned it.
      *
-     * <p>Marked {@code @Valid} so the declared width contracts of every member
-     * are enforced. An earlier revision of this class deliberately omitted the
-     * cascade, reasoning that the OLD group declares zero {@code 88}-level
-     * condition names and is therefore a purely passive snapshot. That
-     * reasoning does not survive inspection, on two counts.</p>
-     * <ul>
-     *   <li><strong>A {@code PIC} clause is itself a constraint.</strong> The
-     *       absence of an {@code 88}-level says only that no <em>domain</em>
-     *       rule is declared; every member still carries a fixed width that the
-     *       COBOL runtime enforces absolutely.
-     *       {@code ACUP-OLD-CUST-ADDR-STATE-CD PIC X(02)} at
-     *       {@code app/cbl/COACTUPC.cbl:719} cannot hold three characters, let
-     *       alone seven. Enforcing the width therefore cannot reject anything
-     *       the source accepted; it can only reject what the source could not
-     *       physically have produced.</li>
-     *   <li><strong>The trust relationship is inverted by statelessness.</strong>
-     *       In the source this group is never input: {@code 9000-READ-DATA}
-     *       issues {@code INITIALIZE ACUP-OLD-DETAILS} at
-     *       {@code app/cbl/COACTUPC.cbl:3610} and then fills it member by member
-     *       from the record the program itself just read, so it is trusted by
-     *       construction. Here the same group arrives in the request body from
-     *       the client, and it is the operand the concurrency guard of
-     *       {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares
-     *       against the live record. An unconstrained, client-supplied
-     *       comparison operand is precisely the input that must be validated
-     *       before it is trusted.</li>
-     * </ul>
-     * <p>The cascade does not, however, import the NEW group's domain rule. The
-     * single range in the source, {@code 88 FICO-RANGE-IS-VALID VALUES 300
-     * THROUGH 850} at {@code app/cbl/COACTUPC.cbl:848-849}, is declared on the
-     * NEW group's credit score and on nothing else, so this group carries no
-     * counterpart to it and {@link NewDetails#ficoScoreIsInValidRange()} has no
-     * {@link OldDetails} twin. Widths are enforced; domains are not invented.</p>
+     * <p>This is the wire carrier for {@code ACUP-OLD-DETAILS} at
+     * {@code app/cbl/COACTUPC.cbl:669-756}: one opaque base64url string produced by
+     * {@code com.cardemo.security.SnapshotTokenService}, which the update service opens to recover the group
+     * the read projected. A caller can neither read nor alter it, cannot present one issued for another
+     * account, cannot present one issued to another principal, and cannot present one indefinitely.</p>
+     *
+     * <p>The declared bound is a shape check rather than a domain rule. The sealed form is
+     * {@code base64url(nonce || AES-256-GCM(JSON envelope))} over a group of twenty-nine fixed-width members,
+     * which cannot approach {@value #MAX_SNAPSHOT_LENGTH} characters; a longer value therefore did not come
+     * from this server, and refusing it here keeps an unbounded string out of the cipher and the parser
+     * (Rule 1 Clause B). Nothing is trimmed, folded or defaulted - a blank value stays blank and is reported
+     * by the service as an absent snapshot, which is a different outcome from one that fails to open.</p>
+     */
+    @Size(max = MAX_SNAPSHOT_LENGTH,
+            message = "snapshot must not exceed " + MAX_SNAPSHOT_LENGTH + " characters; a longer value was"
+                    + " not issued by this server")
+    private final String snapshot;
+
+    /**
+     * The opened as-displayed snapshot, present only on a screen this service projected internally.
+     *
+     * <p><strong>This member is not part of the wire contract in either direction.</strong> It carries no
+     * {@code @JsonProperty}, the wire constructor always leaves it {@code null}, and
+     * {@link #getOldDetails()} is annotated {@code @JsonIgnore}; the only way to populate it is
+     * {@link #withOldDetails(OldDetails)}, which the account-update service calls when it projects a screen
+     * for its own use. Its purpose is that this type doubles as the projected screen inside
+     * {@code com.cardemo.service.account.AccountUpdateService} - {@code 9500-STORE-FETCHED-DATA} at
+     * {@code app/cbl/COACTUPC.cbl:3805-3813} stores the group the read found, and the projection has to carry
+     * it so the read entry point can seal it.</p>
+     *
+     * <p>In the source this group is never input: {@code 9000-READ-DATA} issues
+     * {@code INITIALIZE ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:3610} and then fills it member by
+     * member from the record the program itself has just read, so it is trusted by construction. Holding it
+     * off the wire restores exactly that relationship: the operand
+     * {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares against the live record is a value this
+     * server produced, sealed and recovered, and never a value a client chose.</p>
+     *
+     * <p>The width contracts declared on {@link OldDetails} are retained, and so is the {@code @Valid}
+     * cascade, so that they still apply on any validated instance that does carry the group. What they now
+     * describe is what this server may seal rather than what a client may send: a member wider than its
+     * {@code PIC} clause is one the source could not physically have produced. They deliberately do not
+     * import the NEW group's domain rule - the single range in the source,
+     * {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at {@code app/cbl/COACTUPC.cbl:848-849}, is
+     * declared on the NEW group's credit score and on nothing else, so {@link OldDetails} has no
+     * {@link NewDetails#ficoScoreIsInValidRange()} twin. Widths are enforced; domains are not invented.</p>
      */
     @Valid
     private final OldDetails oldDetails;
@@ -1417,8 +1467,10 @@ public class AccountUpdateRequest {
     private final NewDetails newDetails;
 
     /**
-     * Creates an empty request. JSON binding populates the members through the accessors below; nothing is
-     * defaulted, so an absent member stays absent.
+     * Binds one request. This is the single all-arguments {@code @JsonCreator} constructor, so every
+     * member is assigned once and no setter exists; nothing is defaulted, so an absent member stays
+     * absent. The {@code oldDetails} group is not a parameter here &mdash; it is re-attached by
+     * {@link #withOldDetails(OldDetails)} once the sealed {@code snapshot} has been opened.
      *
      *  @param transactionName            {@code TRNNAMEI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:24}
      *  @param title01                    {@code TITLE01I} PIC X(40) &mdash; {@code app/cpy-bms/COACTUP.CPY:30}
@@ -1486,8 +1538,10 @@ public class AccountUpdateRequest {
      *  @param functionKeys               {@code FKEYSI} PIC X(21) &mdash; {@code app/cpy-bms/COACTUP.CPY:330}
      *  @param functionKey05              {@code FKEY05I} PIC X(7) &mdash; {@code app/cpy-bms/COACTUP.CPY:336}
      *  @param functionKey12              {@code FKEY12I} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:342}
-     *  @param oldDetails                 Snapshot of the record as the screen was first populated: {@code
-     *      ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669-756}
+     *  @param snapshot                   The sealed as-displayed snapshot, echoed back from the preceding
+     *      read: the wire carrier for {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669-756}. The
+     *      opened group is attached separately by {@link #withOldDetails(OldDetails)} and is never bound from
+     *      a request
      *  @param newDetails                 The edited values: {@code ACUP-NEW-DETAILS} at {@code
      *      app/cbl/COACTUPC.cbl:757-849}
      */
@@ -1547,7 +1601,7 @@ public class AccountUpdateRequest {
             @JsonProperty("functionKeys") final String functionKeys,
             @JsonProperty("functionKey05") final String functionKey05,
             @JsonProperty("functionKey12") final String functionKey12,
-            @JsonProperty("oldDetails") final OldDetails oldDetails,
+            @JsonProperty("snapshot") final String snapshot,
             @JsonProperty("newDetails") final NewDetails newDetails) {
         this.transactionName = transactionName;
         this.title01 = title01;
@@ -1603,8 +1657,104 @@ public class AccountUpdateRequest {
         this.functionKeys = functionKeys;
         this.functionKey05 = functionKey05;
         this.functionKey12 = functionKey12;
-        this.oldDetails = oldDetails;
+        this.snapshot = snapshot;
+        // Never bound from a request. The opened group is attached by withOldDetails, which only the
+        // account-update service calls, and only for the screen it projects for its own use.
+        this.oldDetails = null;
         this.newDetails = newDetails;
+    }
+
+    /**
+     * Copy constructor that attaches an opened as-displayed snapshot to an otherwise identical request.
+     *
+     * <p>Private, and reachable only through {@link #withOldDetails(OldDetails)}. Every other member is
+     * relayed by reference, which is what keeps the projected screen byte-identical to the one built from the
+     * wire constructor.</p>
+     *
+     * @param source the request to copy; must not be {@code null}
+     * @param openedOldDetails the opened snapshot group to attach; may be {@code null}
+     */
+    private AccountUpdateRequest(final AccountUpdateRequest source, final OldDetails openedOldDetails) {
+        this.transactionName = source.transactionName;
+        this.title01 = source.title01;
+        this.currentDate = source.currentDate;
+        this.programName = source.programName;
+        this.title02 = source.title02;
+        this.currentTime = source.currentTime;
+        this.accountId = source.accountId;
+        this.accountStatus = source.accountStatus;
+        this.openDateYear = source.openDateYear;
+        this.openDateMonth = source.openDateMonth;
+        this.openDateDay = source.openDateDay;
+        this.creditLimit = source.creditLimit;
+        this.expiryDateYear = source.expiryDateYear;
+        this.expiryDateMonth = source.expiryDateMonth;
+        this.expiryDateDay = source.expiryDateDay;
+        this.cashCreditLimit = source.cashCreditLimit;
+        this.reissueDateYear = source.reissueDateYear;
+        this.reissueDateMonth = source.reissueDateMonth;
+        this.reissueDateDay = source.reissueDateDay;
+        this.currentBalance = source.currentBalance;
+        this.currentCycleCredit = source.currentCycleCredit;
+        this.accountGroupId = source.accountGroupId;
+        this.currentCycleDebit = source.currentCycleDebit;
+        this.customerId = source.customerId;
+        this.customerSsnPart1 = source.customerSsnPart1;
+        this.customerSsnPart2 = source.customerSsnPart2;
+        this.customerSsnPart3 = source.customerSsnPart3;
+        this.dateOfBirthYear = source.dateOfBirthYear;
+        this.dateOfBirthMonth = source.dateOfBirthMonth;
+        this.dateOfBirthDay = source.dateOfBirthDay;
+        this.customerFicoScore = source.customerFicoScore;
+        this.customerFirstName = source.customerFirstName;
+        this.customerMiddleName = source.customerMiddleName;
+        this.customerLastName = source.customerLastName;
+        this.addressLine1 = source.addressLine1;
+        this.addressStateCode = source.addressStateCode;
+        this.addressLine2 = source.addressLine2;
+        this.addressZip = source.addressZip;
+        this.addressCity = source.addressCity;
+        this.addressCountryCode = source.addressCountryCode;
+        this.phone1AreaCode = source.phone1AreaCode;
+        this.phone1Prefix = source.phone1Prefix;
+        this.phone1LineNumber = source.phone1LineNumber;
+        this.governmentIssuedId = source.governmentIssuedId;
+        this.phone2AreaCode = source.phone2AreaCode;
+        this.phone2Prefix = source.phone2Prefix;
+        this.phone2LineNumber = source.phone2LineNumber;
+        this.eftAccountId = source.eftAccountId;
+        this.primaryCardHolderIndicator = source.primaryCardHolderIndicator;
+        this.informationMessage = source.informationMessage;
+        this.errorMessage = source.errorMessage;
+        this.functionKeys = source.functionKeys;
+        this.functionKey05 = source.functionKey05;
+        this.functionKey12 = source.functionKey12;
+        this.snapshot = source.snapshot;
+        this.oldDetails = openedOldDetails;
+        this.newDetails = source.newDetails;
+    }
+
+    /**
+     * Returns a copy of this request carrying an opened as-displayed snapshot group.
+     *
+     * <p><b>Server-side only.</b> The group is the one {@code 9500-STORE-FETCHED-DATA} stored at
+     * {@code app/cbl/COACTUPC.cbl:3805-3813}, or the one
+     * {@code com.cardemo.security.SnapshotTokenService#open} recovered from a sealed value; it is never a
+     * value a client sent, because no request member binds to it. This exists so the projected screen can
+     * carry the group the read found, which is what the read entry point seals.</p>
+     *
+     * <p><b>Side effects.</b> None; this type is immutable and a new instance is returned.</p>
+     *
+     * <p><strong>Privacy:</strong> the returned object carries the date of birth, the social security number,
+     * both telephone numbers, the government-issued identifier and the electronic funds account identifier.
+     * It must never be logged, rendered or serialised.</p>
+     *
+     * @param openedOldDetails the opened snapshot group; may be {@code null}, which yields a copy carrying no
+     *     group
+     * @return a copy of this request with the group attached; never {@code null}
+     */
+    public AccountUpdateRequest withOldDetails(final OldDetails openedOldDetails) {
+        return new AccountUpdateRequest(this, openedOldDetails);
     }
 
     /**
@@ -2094,11 +2244,29 @@ public class AccountUpdateRequest {
     }
 
     /**
-     * Returns the snapshot of the record as the screen was first populated.
+     * Returns the sealed as-displayed snapshot exactly as received.
      *
-     * @return the {@code ACUP-OLD-DETAILS} group of {@code app/cbl/COACTUPC.cbl:669}, or {@code null} when the
-     * caller supplied none
+     * @return the opaque value the preceding read issued, or {@code null} when the caller sent none. No
+     * trimming, folding or defaulting is applied, so a blank value is returned blank and the consuming
+     * service reports it as absent
      */
+    public String getSnapshot() {
+        return snapshot;
+    }
+
+    /**
+     * Returns the opened as-displayed snapshot group, which is present only on a screen this application
+     * projected for its own use.
+     *
+     * <p>Annotated {@code @JsonIgnore} so that this group can never reach or leave a wire through this type.
+     * On any request bound from JSON it is {@code null}: the opened group is attached exclusively by
+     * {@link #withOldDetails(OldDetails)}, and the wire contract carries the sealed
+     * {@link #getSnapshot() snapshot} member instead.</p>
+     *
+     * @return the {@code ACUP-OLD-DETAILS} group of {@code app/cbl/COACTUPC.cbl:669} when this instance is a
+     * server-side projection, and {@code null} on any request bound from a client
+     */
+    @JsonIgnore
     public OldDetails getOldDetails() {
         return oldDetails;
     }
@@ -2129,12 +2297,13 @@ public class AccountUpdateRequest {
      * clause, and a {@code PIC} clause is a width contract in its own right. A
      * value wider than the clause is one the source could not physically have
      * produced, so rejecting it cannot reject a snapshot the source accepted.
-     * The trust relationship is also inverted here relative to the source: there
+     * The trust relationship matches the source rather than inverting it: there
      * {@code 9000-READ-DATA} fills this group itself, from the record it has just
-     * read ({@code INITIALIZE} at {@code :3610}); here the identical group arrives
-     * from the client and is the operand
-     * {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares the live
-     * record against.</p>
+     * read ({@code INITIALIZE} at {@code :3610}); here it is filled by opening the
+     * sealed {@code snapshot} string this server minted on the preceding read, so
+     * the operand {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares
+     * the live record against is again a value the server produced. This group is
+     * not a wire member and a client cannot author it.</p>
      *
      * <p>Three shapes distinguish this group from its NEW counterpart. The social
      * security number is one flat nine-character field here
@@ -4667,10 +4836,12 @@ public class AccountUpdateRequest {
     void rejectUnrecognisedProperty(String name, Object value) {
         throw new IllegalArgumentException(
                 "AccountUpdateRequest accepts only the 56 properties declared by "
-                        + "app/cpy-bms/COACTUP.CPY for the 54 screen fields and "
-                        + "app/cbl/COACTUPC.cbl:669,757 for the two snapshot groups, and the payload "
+                        + "app/cpy-bms/COACTUP.CPY for the 54 screen fields, plus the sealed snapshot "
+                        + "and app/cbl/COACTUPC.cbl:757 for the edited group, and the payload "
                         + "contained a property that is not "
-                        + "one of them. Numeric and component readings of a snapshot member are "
+                        + "one of them. The as-displayed group of app/cbl/COACTUPC.cbl:669 is NOT among "
+                        + "them: it arrives only inside the sealed snapshot, so a property named for it is "
+                        + "refused here. Numeric and component readings of a snapshot member are "
                         + "derived views rather than properties, because the source redefines one "
                         + "storage cell instead of declaring two. The offending name and value are "
                         + "withheld because they are untrusted input.");

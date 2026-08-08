@@ -36,23 +36,33 @@
 #
 #   * 3 S3 buckets .......... input, output, statements
 #                             VERSIONING ON THE OUTPUT BUCKET ONLY
-#   * 1 SQS FIFO queue ...... FifoQueue=true, ContentBasedDeduplication=false
+#   * 2 SQS queues .......... carddemo-report-jobs.fifo, the report-job queue,
+#                             FifoQueue=true ContentBasedDeduplication=false;
+#                             and carddemo-notifications-inbox, a STANDARD queue
+#                             that exists solely to receive the topic's notices
 #   * 1 SNS topic ........... notifications
-#   * 0 SNS subscriptions ... deliberately none; see the SNS section below
+#   * 1 SNS subscription .... the inbox queue, protocol sqs, raw delivery on;
+#                             exactly one, and see the SNS section below for why
+#                             zero is now the fatal state rather than the goal
 #   * 0 S3 lifecycle rules .. deliberately none; GDG retention is documented,
 #                             not enforced - see the S3 section below
 #
-# EXACTLY ONE SNS TOPIC. An earlier revision of this file also provisioned an
-# `alerts` topic. Nothing in the contract declares it and nothing in the
-# application consumes it, so it was removed: least privilege forbids
-# provisioning a delivery surface with no consumer, and an unconsumed topic is a
-# publish target that no code path audits.
+# EXACTLY ONE SNS TOPIC, AND NO SECOND ONE MAY BE ADDED. An `alerts` topic, for
+# instance, is declared by nothing in the contract and consumed by nothing in the
+# application: least privilege forbids provisioning a delivery surface with no
+# consumer, and an unconsumed topic is a publish target that no code path audits.
 #
-#   3 S3 buckets ......... input, output, statements
-#                          VERSIONING ON THE OUTPUT BUCKET ONLY
-#   1 SQS FIFO queue ..... FifoQueue=true, ContentBasedDeduplication=false
-#   1 SNS topic .......... notifications
-#   0 SNS subscriptions .. deliberately none; see the SNS section below
+# EXACTLY ONE SUBSCRIBER, WHICH IS A REVERSAL. Through finding M-04 this file
+# provisioned the topic with no subscriber at all and asserted that emptiness as
+# the contract. Least privilege was the stated reason, and it was the wrong
+# reason: a topic with no subscriber accepts every publish and discards it, so
+# the notification capability was inert while every publish reported success.
+# The inbox queue is the consumer that makes least privilege and a working
+# capability the same thing, and it is the faithful analogue of the mainframe
+# NOTIFY it replaces - a notice delivered to a queue and read later. The count
+# the script enforces therefore moved from "exactly zero" to "at least one", and
+# the second queue in the inventory above is that inbox rather than a second
+# report queue.
 #
 # Nothing else is provisioned - no IAM role, policy, KMS key, DynamoDB table,
 # Lambda or EventBridge rule: only s3, sqs and sns are enabled on the container
@@ -98,19 +108,26 @@
 #     --bucket carddemo-batch-output
 #
 # Expected on a clean volume: 3 CardDemo buckets; Status=Enabled on the output
-# bucket and no versioning configuration on the other two; one queue whose name
-# ends in `.fifo` and no unsuffixed twin; FifoQueue=true with
-# ContentBasedDeduplication=false; 1 topic,
-# carddemo-notifications; an empty subscription list; and
-# `NoSuchLifecycleConfiguration` from every lifecycle read.
+# bucket and no versioning configuration on the other two; TWO queues - the
+# report queue, whose name ends in `.fifo` and which has no unsuffixed twin, with
+# FifoQueue=true and ContentBasedDeduplication=false, plus the standard
+# carddemo-notifications-inbox; 1 topic, carddemo-notifications; EXACTLY ONE
+# subscription on it, whose Protocol is `sqs` and whose Endpoint is the inbox
+# queue's ARN; and `NoSuchLifecycleConfiguration` from every lifecycle read.
+#
+# `sns list-subscriptions` showing zero is a FAILURE, not a clean stack, and the
+# script exits nonzero rather than reporting it. Showing more than one for the
+# same inbox endpoint is duplicate delivery, and it means the read-before-write
+# in ensure_notification_subscription was bypassed; the .github/workflows/build.yml
+# inventory step asserts the exact count for that reason.
 #
 # On a LONG-LIVED volume the listings can legitimately show more than the script
 # provisions, and that is not a failure of either the script or the check:
 #   - `s3api list-buckets` may include buckets other tooling created.
-#   - `sns list-topics` may still show a `carddemo-alerts` topic left by the
-#     earlier revision described above. This script neither creates nor deletes
-#     it; SNS offers no way to un-create it other than deleting it, which is not
-#     this script's to do. Only `carddemo-notifications` is provisioned.
+#   - `sns list-topics` may show a `carddemo-alerts` topic that other tooling
+#     created. This script neither creates nor deletes it; SNS offers no way to
+#     un-create a topic other than deleting it, which is not this script's to do.
+#     Only `carddemo-notifications` is provisioned.
 #   - the input or statements bucket may already carry versioning, which S3
 #     cannot un-configure - reported as DRIFT and survived, see EVIDENCE AND
 #     DRIFT below.
@@ -122,19 +139,26 @@
 # script's own evidence rather than supplying it.
 #
 # Static checks on the host are `bash -n` and `shellcheck` against this path.
-# There is no unit-test tier for this file and none is claimed: the AWS
-# integration tests provision their own Testcontainers resources and do not
-# depend on this script. Verification is discharged by the in-script
-# self-checks - bucket existence, versioning read-back, FIFO attribute
-# read-back, topic presence - plus the Compose execution evidence.
 #
-# There is no unit-test tier for this file and none is claimed. The AWS
-# integration tests under src/test/java/com/cardemo/integration/aws/ provision
-# their own Testcontainers resources and do not depend on this script. The
-# verification obligation is discharged by the in-script self-verification
-# (bucket existence, versioning read-back on all three buckets, lifecycle-rule
-# read-back on all three buckets, FIFO attribute read-back, topic presence and
-# subscription-count read-back) plus the Docker Compose execution evidence
+# THIS FILE HAS A UNIT-TEST TIER, at
+# src/test/java/com/cardemo/unit/infrastructure/InitAwsScriptGuardTest.java. It
+# runs this script as a subprocess against hostile AWS_ENDPOINT_URL and retry
+# values to prove the guards fail closed before any API call, and it asserts the
+# structural properties that no subprocess run can reach - among them that the
+# emptiness assertion of finding M-04 is gone rather than bypassed, that the
+# subscription set is read before it is written, and that the captured inbox ARN
+# is validated as an ARN. Editing the SNS section without running that suite is
+# how the M-04 fix reintroduced M-04 once already.
+#
+# What that tier does NOT cover is provisioning against a live edge, because it
+# never reaches one. The AWS integration tests under
+# src/test/java/com/cardemo/integration/aws/ provision their own Testcontainers
+# resources and do not execute this script either. Provisioning is therefore
+# verified by the in-script self-verification (bucket existence, versioning
+# read-back on all three buckets, lifecycle-rule read-back on all three buckets,
+# FIFO attribute read-back, topic presence, and subscription count plus protocol
+# read-back), by the inventory and idempotence steps in
+# .github/workflows/build.yml, and by the Docker Compose execution evidence
 # recorded for Gate 8.
 #
 # ==============================================================================
@@ -153,8 +177,20 @@
 #   names the exact command:
 #     * output-bucket versioning not reading back Enabled ......... exit 5
 #     * FIFO attribute drift on an existing queue ................. exit 6
-#     * any SNS subscription on the topic (contract says zero) .... exit 7
+#     * NO subscription on the topic (contract says at least one).. exit 7
 #     * any S3 lifecycle rule on any bucket (contract says zero) .. exit 4
+#
+#   The subscription row above reads the opposite way round from the other three,
+#   and that is deliberate rather than a transcription slip. For versioning, FIFO
+#   attributes and lifecycle rules the drift is a resource that should not be
+#   there. For the subscription it is a resource that should: zero subscribers is
+#   the state finding M-04 reported, in which every publish is accepted and
+#   discarded. Excess subscriptions on the same endpoint are a real defect too -
+#   they are duplicate delivery - but they are not fatal HERE, because a
+#   subscription this script did not create may belong to a sibling clone sharing
+#   the edge, and destroying another clone's resource is outside this script's
+#   authority. The CI inventory step asserts the exact count instead, where the
+#   edge is known to be sole-tenant.
 #
 #   REPORTED, NON-FATAL drift - the operator CANNOT undo it without destroying a
 #   shared resource, which this script is forbidden to do:
@@ -182,12 +218,11 @@
 # bucket/queue variables; the topic variable is not injected, so for it the
 # documented default is the normal path.
 #
-# EVERY NAME BELOW IS THE NAME THIS SCRIPT ACTUALLY READS. An earlier revision
-# of this table listed CARDDEMO_BATCH_INPUT_BUCKET, CARDDEMO_BATCH_OUTPUT_BUCKET,
-# CARDDEMO_STATEMENTS_BUCKET, CARDDEMO_REPORT_QUEUE and
-# CARDDEMO_NOTIFICATION_TOPIC - none of which this script reads - plus
-# CARDDEMO_ALERT_TOPIC, for a topic this script does not create. Every one of
-# those six is withdrawn. The live spellings carry the service they address, so
+# EVERY NAME BELOW IS THE NAME THIS SCRIPT ACTUALLY READS. The service-free
+# spellings CARDDEMO_BATCH_INPUT_BUCKET, CARDDEMO_BATCH_OUTPUT_BUCKET,
+# CARDDEMO_STATEMENTS_BUCKET, CARDDEMO_REPORT_QUEUE, CARDDEMO_NOTIFICATION_TOPIC
+# and CARDDEMO_ALERT_TOPIC are read by nothing here and must not be documented as
+# though they were. The live spellings carry the service they address, so
 # one spelling serves this file, .env.example and docker-compose.yml alike, and
 # the read sites are at the `readonly` block further down this file.
 #
@@ -255,9 +290,11 @@
 #   5  versioning verification failure - the output bucket did not read back
 #      Status=Enabled
 #   6  queue provisioning or verification failure - includes FIFO attribute
-#      drift on an existing queue and the post-deletion name-reuse window
-#   7  topic provisioning or verification failure - includes any subscription on
-#      the topic, which the zero-subscription contract forbids
+#      drift on an existing queue, the post-deletion name-reuse window, and a
+#      notification inbox whose ARN does not read back as a bare sqs ARN
+#   7  topic provisioning or verification failure - includes a topic carrying NO
+#      subscription, which leaves every publish accepted and discarded, and a
+#      failure to create or read back the inbox subscription
 #
 # ==============================================================================
 # ENDPOINT VALIDATION
@@ -452,12 +489,11 @@ set -Eeuo pipefail
 # turns an accepted publish into a delivered notice, and it is the faithful
 # analogue: NOTIFY delivered to a user's message queue, to be read later.
 #
-# A second `alerts` topic existed in an earlier revision of this file and has
-# been removed. It appeared in no requirement and was published to by no code
-# path, so it was pure surface: an unconsumed topic still accepts publishes, and
-# a resource nothing audits is a resource nothing notices. Least privilege means
-# the provisioned set matches the consumed set exactly - which is why there is one
-# topic, one subscriber, and nothing else.
+# A second `alerts` topic would be pure surface: it appears in no requirement and
+# is published to by no code path, yet an unconsumed topic still accepts
+# publishes, and a resource nothing audits is a resource nothing notices. Least
+# privilege means the provisioned set matches the consumed set exactly - which is
+# why there is one topic, one subscriber, and nothing else.
 #
 # One further legacy defect is logged and repaired nowhere:
 # app/jcl/CREASTMT.JCL:L90 is a corrupted DD continuation,
@@ -690,8 +726,8 @@ require_bounded_integer 'INIT_HEALTH_TIMEOUT_SECONDS' "${HEALTH_TIMEOUT_SECONDS}
 # structural rather than aspirational, so it is an ALLOWLIST of the endpoints the
 # emulator is actually reachable at, not a denylist of endpoints to avoid.
 #
-# A denylist was tried first and was wrong in four independent ways, every one of
-# which was reproduced before this replacement was written:
+# A denylist is wrong here in four independent ways, every one of them
+# reproducible:
 #
 #   * Its glob over the live AWS service domain was case sensitive, so the same
 #     domain spelled in capitals passed straight through it.
@@ -856,7 +892,7 @@ require_local_endpoint() {
   # structural test: the byte rule and the length bound. Order is the property
   # that matters here - a check that runs after a diagnostic has already been
   # produced protects nothing, and the structural checks are the ones whose
-  # messages used to name a component of the value.
+  # messages must not name a component of the value.
   if ((${#url} > MAX_ENDPOINT_LENGTH)); then
     fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
       "the value is ${#url} characters, past the ${MAX_ENDPOINT_LENGTH}-character bound this guard accepts" \
@@ -1005,9 +1041,9 @@ require_local_endpoint "${ENDPOINT_URL}"
 # setup sequence drives it - so it is a portability branch, not dead code.
 #
 # WHY THE FALLBACK IS SAFE TO KEEP, AND WHAT MAKES IT SO.
-# The review that prompted this hardening preferred deleting the branch outright,
-# on the grounds that it was the thing that carried a hostile endpoint to a real
-# API call. That was true of the denylist, and it is no longer true: this block
+# Deleting the branch outright, on the grounds that it is the thing that carries a
+# hostile endpoint to a real API call, would be right under a denylist guard and is
+# not right under this one: this block
 # is reached ONLY after `require_local_endpoint` above has run, and that guard is
 # fail-closed - every path through it either returns 0 for an allowlisted host or
 # calls `fail`, which exits. `${ENDPOINT_URL}` is `readonly`, so nothing between
@@ -1658,15 +1694,52 @@ ensure_queue() {
   verify_queue "${physical}"
 }
 
-# SNS. Exactly the topics the committed contract declares, and ZERO
-# subscriptions.
+# SNS. Exactly the one topic the committed contract declares, and exactly ONE
+# subscription on it: the standard inbox queue, protocol sqs, raw delivery on.
 #
-# NO SUBSCRIPTION OF ANY KIND IS CREATED - not email, SQS, HTTP or Lambda. None
-# is consumed by the application, and creating one would both violate least
-# privilege and give the notification path a delivery target nobody asked for.
-# This also means the "repeated runs must not duplicate subscriptions"
-# requirement is satisfied BY CONSTRUCTION rather than by de-duplication logic:
-# there is nothing to duplicate. The omission is deliberate, not an oversight.
+# EXACTLY ONE SUBSCRIPTION IS CREATED, AND ITS PROTOCOL IS SQS. No email, HTTP,
+# HTTPS or Lambda subscription is created, because each of those would introduce
+# a delivery target outside this topology - an SMTP path, an external URL, or a
+# function this repository does not contain. A durable in-topology queue is the
+# only subscriber that both consumes what is published and adds no external
+# dependency, which is why it is the one that exists.
+#
+# This inverts what this section said through finding M-04, so the reasoning is
+# worth stating rather than merely the conclusion. The earlier position was that
+# creating no subscription satisfied least privilege and satisfied the "repeated
+# runs must not duplicate subscriptions" requirement BY CONSTRUCTION, there being
+# nothing to duplicate. Both halves were wrong. Least privilege constrains what a
+# provisioned resource may reach; it does not license provisioning a topic whose
+# every publish is accepted and thrown away, which is what a subscriberless topic
+# does - and the publisher cannot detect it, because acceptance is not delivery.
+# And satisfying the no-duplicates requirement by having nothing to duplicate
+# satisfied the letter of it while leaving the capability inert.
+#
+# The requirement is now met the harder way, in ensure_notification_subscription:
+# the existing subscription set is READ before the subscribe call is made, and
+# the call is made only when this endpoint is absent from it.
+#
+# On WHY that ordering is kept, the honest answer is narrower than an earlier
+# revision of this comment claimed, and the difference is worth recording because
+# the claim is checkable. That revision stated that the LocalStack edge creates a
+# SECOND subscription for a repeated topic/protocol/endpoint triple, so that
+# trusting the documented idempotency accumulated one copy per compose cycle. On
+# the pinned localstack/localstack:4.14.0 image that does NOT reproduce: a
+# repeated triple returns the EXISTING subscription ARN and the count stays at
+# one, both with and without --attributes, which is what the AWS API documents.
+# The claim is therefore not restated here. It may have held on another image or
+# another version; what can be verified on the version this repository pins is
+# the opposite.
+#
+# The read-before-write stays regardless, for two reasons that do not depend on
+# which behaviour the edge has. It makes this hook idempotent under BOTH
+# behaviours rather than under only the documented one, and an emulator's
+# conformance on this point is a property of the image tag, not of the API - so
+# an image bump could change it without changing anything here. It also costs one
+# list call on a path that runs once per compose cycle. The upper bound is
+# asserted from outside, in the inventory step of .github/workflows/build.yml,
+# where the edge is freshly created and sole-tenant; see the note on
+# verify_notification_subscription for why this script does not enforce it.
 
 # Prints 'present' or 'absent'. A list-topics failure is a real error and exits
 # through `fail`; it is never reported as absence, because that would silently
@@ -1787,12 +1860,12 @@ readonly NOTIFICATION_INBOX_QUEUE="${NOTIFICATION_TOPIC}-inbox"
 # The split between this function and notification_inbox_arn below is deliberate and
 # load-bearing. log() writes to STDOUT, so any function whose value is captured with
 # `$(...)` must not log - its log lines would be captured as part of the value. That
-# is not a hypothetical: an earlier revision of this hook created the queue and
-# resolved its ARN in one logging function, and the captured "ARN" was the progress
-# line followed by the ARN. SNS accepted that as the endpoint, so the topic ended up
-# with a subscription pointing at a value that was not a queue - the hook reported
-# success and notifications went nowhere, which is the exact failure finding M-04 is
-# about, reintroduced by the fix for it. The pre-existing topic_arn helper is
+# is not a hypothetical. Creating the queue and resolving its ARN in one logging
+# function makes the captured "ARN" the progress line followed by the ARN, and SNS
+# accepts that as the endpoint - so the topic ends up
+# with a subscription pointing at a value that is not a queue, the hook reports
+# success and notifications go nowhere, which is the exact failure finding M-04 is
+# about, reintroduced by a careless fix for it. The topic_arn helper is
 # log-free for the same reason; this pair follows it.
 ensure_notification_inbox() {
   local queue="$1"
@@ -1847,16 +1920,23 @@ notification_inbox_arn() {
 # Subscribes the inbox to the topic, but only when it is not subscribed already.
 #
 # The existing subscription set is READ FIRST and the subscribe call is made only when
-# this inbox is absent from it. That ordering is the whole substance of the function,
-# and it is not a defensive flourish: AWS documents Subscribe as returning the
-# EXISTING subscription ARN when the same topic, protocol and endpoint are presented
-# again, but the LocalStack edge this script provisions against does NOT reproduce
-# that behaviour - a repeat call there creates a second subscription with the same
-# endpoint. Trusting the documented idempotency turned a second run of this hook into
-# two subscriptions and a third into three, and because every subscription receives a
-# copy, that is duplicate delivery of every operator notification, growing by one copy
-# per compose cycle. Reading before writing makes the hook idempotent against both
-# behaviours instead of against only one of them.
+# this inbox is absent from it. That ordering is the whole substance of the function.
+#
+# It does NOT rest on the edge misbehaving, and an earlier revision of this comment
+# said that it did: it stated that the LocalStack edge creates a second subscription
+# for a repeated topic/protocol/endpoint triple, so that a second run of this hook
+# produced two subscriptions and a third produced three. That does not reproduce on
+# the pinned localstack/localstack:4.14.0 image, where a repeated triple returns the
+# existing subscription ARN and leaves the count at one - the behaviour AWS documents
+# for Subscribe. The claim has been withdrawn rather than restated; the SNS section
+# header above records what was checked and on which image.
+#
+# What the ordering does buy is independence from that question. Whether a repeated
+# subscribe is idempotent is a property of the emulator image, so it can change under
+# an image bump with nothing here changing; reading first makes this hook converge
+# under either behaviour, at the cost of one list call per compose cycle. The
+# .github/workflows/build.yml inventory step asserts the resulting count from outside,
+# which is where a regression on this point would surface.
 #
 # Duplicates that already exist are deliberately left alone; see the note on
 # verify_notification_subscription for why this script does not unsubscribe.

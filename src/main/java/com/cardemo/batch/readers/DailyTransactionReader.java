@@ -7,7 +7,7 @@
  *               position-aware zoned-decimal overpunch decoding, replacing
  *               the DALYTRAN input path of CBTRN02C.
  * Source      : app/cbl/CBTRN02C.cbl:L236-L252, L345-L369, L582-L598
- *                   (731 lines, 27 paragraphs; 4 belong to this reader)
+ *                   (731 lines, 26 own paragraph labels; 4 belong to this reader)
  *               app/cbl/CBTRN02C.cbl:L29-L32 (keyless SEQUENTIAL SELECT,
  *                   no RECORD KEY) and :L66-L69 (FD, X(16) + X(334) = 350)
  *               app/cpy/CVTRA06Y.cpy (350-byte DALYTRAN-RECORD, RECLN = 350)
@@ -203,12 +203,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * application start: every profile sets {@code spring.batch.job.enabled: false}. The {@code Job} and
  * {@code Step} that drive it are declared by {@code com.cardemo.config.BatchConfig}, which is
  * authored, and launched by {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which
- * <strong>is also authored</strong>. An earlier revision of this paragraph described that job as planned
- * and said neither job class existed at this commit; that is withdrawn - the owning job is delivered, so
- * this reader is reachable end to end from its own step. The name-driven entry point above it,
- * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, is authored too; an earlier revision called it
- * still planned, and that is withdrawn. Either way the point was one about sequencing rather than about
- * this reader or its job.
+ * <strong>is also authored</strong>: the owning job is delivered, so this reader is reachable end to end
+ * from its own step. The name-driven entry point above it,
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, is authored too. Neither is planned, and the
+ * point either would make is one about sequencing rather than about this reader or its job.
  *
  * <p>Build and static gates, from the repository root:
  * {@code ./mvnw -B -ntp clean verify}. The compiler runs at
@@ -339,7 +337,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>Authenticity of the input object, and the producer contract</h2>
  *
- * <p><b>Finding M-11, severity Major, RESOLVED.</b> On the {@code fixed-width} path this class reads an
+ * <p>On the {@code fixed-width} path this class reads an
  * object that something outside this application wrote. Parsing it correctly proves it is well formed, not
  * that it is ours: the bucket lives in an emulator whose community edition was <em>measured</em> to enforce no
  * authorisation at all - the evidence is recorded on the {@code localstack} service in
@@ -399,8 +397,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       above, rather than invented.</li>
  *   <li>The fixture is {@code dailytran.txt}, not {@code dalytran.txt}; every test-resource path uses the
  *       fixture's actual name even though the mainframe DD and dataset spell it {@code DALYTRAN}.</li>
- *   <li>Three {@code INFO} emissions on this path once named the concrete input object key and the
- *       checkpointed transaction identifier, publishing a date-partitioned key and a business record
+ *   <li>An {@code INFO} emission on this path must name neither the concrete input object key nor the
+ *       checkpointed transaction identifier: that would publish a date-partitioned key and a business record
  *       identifier into a log stream enabled in every deployment. Both are excluded at source, for the
  *       reasons given in the log-hygiene section above, and
  *       {@code src/test/java/com/cardemo/unit/batch/BatchLogHygieneTest.java} holds that exclusion.</li>
@@ -553,12 +551,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     /** {@code DISPLAY 'ABENDING PROGRAM'} at {@code app/cbl/CBTRN02C.cbl:L708}. */
     private static final String ABENDING_PROGRAM_MESSAGE = "ABENDING PROGRAM";
 
-    // ----------------------------------------------------------------------------------------------------
     // Record geometry, app/cpy/CVTRA06Y.cpy:L2 and :L5-L18. Compile-time constants, deliberately not
     // configuration: src/main/resources/application.yml:1284-1300 records why a byte contract must not
     // be settable. Offsets are ONE-BASED and INCLUSIVE, matching the copybook and the citations, and
     // are converted to Java's zero-based half-open form in exactly one place, in fixedWidthField.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The record length, 350 characters.
@@ -697,14 +693,12 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      */
     private static final int STREAM_BUFFER_CHARS = 32 * (RECORD_LENGTH + 1);
 
-    // ----------------------------------------------------------------------------------------------------
     // Trailing-sign overpunch table. The sign of a zoned-decimal field is carried by its LAST character,
     // which encodes both the sign and the final digit. The same table appears on the encode side in
     // com.cardemo.batch.writers.RejectWriter and, for a different record layout, in
     // com.cardemo.model.dto.AccountUpdateRequest: one codec per record layout, colocated with the class
     // that owns that layout, is the repository convention (Rule 1 clause C3). This class owns
     // app/cpy/CVTRA06Y.cpy; com.cardemo.batch.readers.TransactionBackupReader owns app/cpy/CVTRA05Y.cpy.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The overpunch code for positive zero, <code>&#123;</code>. */
     private static final char OVERPUNCH_POSITIVE_ZERO = '{';
@@ -733,7 +727,6 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     /** The digit the two zero overpunch codes stand for. */
     private static final char DIGIT_ONE = '1';
 
-    // ----------------------------------------------------------------------------------------------------
     // Record separators. Named here in order to be REFUSED, not consumed. app/cbl/CBTRN02C.cbl:L66-L69
     // declares FD DALYTRAN-FILE as a single fixed 350-character group, X(16) plus X(334), over the
     // ORGANIZATION IS SEQUENTIAL file of :L29-L32, so the record boundary IS the record length and the
@@ -741,7 +734,6 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     // defect rather than a row boundary. The line-terminated 351-byte stride of
     // app/data/ASCII/dailytran.txt belongs to the seed migration and to the test fixture loader, which read
     // that file as text by name; it is deliberately not a mode of this reader. See rejectRecordSeparator.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Line feed, refused after a complete record image on the {@code fixed-width} path. */
     private static final char LINE_FEED = '\n';
@@ -752,9 +744,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     /** The value {@link java.io.Reader#read()} returns at end of stream. */
     private static final int END_OF_STREAM = -1;
 
-    // ----------------------------------------------------------------------------------------------------
     // WORKING-STORAGE counterparts, app/cbl/CBTRN02C.cbl:L131-L148.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01) VALUE 'N'} in its initial state ({@code app/cbl/CBTRN02C.cbl:L146}). */
     private static final String END_OF_FILE_NO = "N";
@@ -860,10 +850,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         FIXED_WIDTH
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // Collaborators and configuration, injected through the constructor and never reassigned. No field
     // is annotated @Autowired and there is no setter injection.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The staging-table access point. Read-only: the only method reached is the ordered slice finder,
@@ -914,11 +902,9 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      */
     private final String signingKey;
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor state. Every field below is the Java counterpart of a WORKING-STORAGE item at
     // app/cbl/CBTRN02C.cbl:L131-L148 and is therefore an INSTANCE field: never static, never shared. The
     // step scope gives each step execution its own instance.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01)} ({@code :L146}). Held as its literal {@code 'N'} or {@code 'Y'} value. */
     private String endOfFile = END_OF_FILE_NO;
@@ -1036,11 +1022,9 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         this.signingKey = requireSigningKey(signingKey, this.inputSource);
     }
 
-    // ====================================================================================================
     // Mainline PROCEDURE DIVISION, app/cbl/CBTRN02C.cbl:L193-L234, realised as the ItemStream lifecycle.
     // Only the DALYTRAN part of it: the five other opens and closes, the validation cascade, the posting
     // routine and the reject write belong to the sibling classes named in the class documentation.
-    // ====================================================================================================
 
     /**
      * Opens the input, performing {@code 0000-DALYTRAN-OPEN} and reproducing
@@ -1248,9 +1232,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         return recordsRead;
     }
 
-    // ====================================================================================================
     // 1000-DALYTRAN-GET-NEXT, app/cbl/CBTRN02C.cbl:L345-L369.
-    // ====================================================================================================
 
     /**
      * Reads the next record and applies the three-way sequential-read guard of
@@ -1457,11 +1439,9 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         return STATUS_SUCCESS;
     }
 
-    // ====================================================================================================
     // Fixed-width stream primitives. RECFM=FB semantics and nothing else: exactly RECORD_LENGTH characters
     // per record, undelimited, so the object length is a whole multiple of RECORD_LENGTH. A separator byte
     // is refused rather than consumed - see rejectRecordSeparator for why the earlier tolerance was wrong.
-    // ====================================================================================================
 
     /**
      * Reads exactly {@value #RECORD_LENGTH} characters and refuses any separator that follows them.
@@ -1476,8 +1456,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * <b>The stream is undelimited and a separator byte is a hard failure.</b>
      * {@code app/cbl/CBTRN02C.cbl:L66-L69} declares the whole {@code DALYTRAN} record as one fixed
      * {@value #RECORD_LENGTH}-character group, so the object is a whole number of
-     * {@value #RECORD_LENGTH}-byte records and nothing else. See {@link #rejectRecordSeparator()} for why
-     * the optional-terminator tolerance this method used to carry has been withdrawn.
+     * {@value #RECORD_LENGTH}-byte records and nothing else. See {@link #rejectRecordSeparator()} for why no
+     * optional-terminator tolerance is permitted on this path.
      * <p>
      * <b>The exact-multiple rule is enforced by construction rather than by a separate length probe.</b> A
      * short final read is a geometry failure naming the observed length, and a full read followed by a
@@ -1529,10 +1509,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * Refuses a record separator following a complete record image, leaving the stream positioned at the
      * first character of the next record.
      * <p>
-     * <b>The tolerance this method replaces was a defect, not a convenience.</b> An earlier revision
-     * consumed a lone {@code \n}, a {@code \r\n} pair or a lone {@code \r} after every record, on the
+     * <b>Tolerating a separator here would be a defect, not a convenience.</b> Consuming a lone
+     * {@code \n}, a {@code \r\n} pair or a lone {@code \r} after every record - on the
      * grounds that {@code app/data/ASCII/dailytran.txt} carries one and that a terminator shape should
-     * not be assumed. The effect was that corrupt object geometry became indistinguishable from valid
+     * not be assumed - makes corrupt object geometry indistinguishable from valid
      * input: an object written by something other than this application, or truncated mid-transfer, would
      * be consumed as though every record after the first stray byte were correctly aligned, and the run
      * would report success over shifted fields.
@@ -1631,10 +1611,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         }
     }
 
-    // ====================================================================================================
     // Position-aware decode of app/cpy/CVTRA06Y.cpy. Every extraction goes through fixedWidthField, so
     // every one of them is bounds checked against the actual image length before any substring is taken.
-    // ====================================================================================================
 
     /**
      * Decodes one {@value #RECORD_LENGTH}-character {@code DALYTRAN-RECORD} image into a staging row.
@@ -1965,9 +1943,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         return value;
     }
 
-    // ====================================================================================================
     // 0000-DALYTRAN-OPEN, app/cbl/CBTRN02C.cbl:L236-L252.
-    // ====================================================================================================
 
     /**
      * Opens the input, reproducing {@code 0000-DALYTRAN-OPEN}
@@ -2010,7 +1986,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
             // OPEN INPUT DALYTRAN-FILE  (:L238)
             ioStatus = openInputSource();
         } catch (final CardDemoException alreadyTyped) {
-            // Finding M-11, severity Major. An authenticity refusal is NOT an input-output error and must not
+            // Finding M-11, severity High. An authenticity refusal is NOT an input-output error and must not
             // be re-reported as one: it is already the typed, fully described abend this class would raise,
             // and re-wrapping it as status '9x' would replace "this object is not ours" with "the device
             // failed" - the one substitution that would make an attack look like a hardware fault. Placed
@@ -2102,7 +2078,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         }
 
         final S3Resource resource = objectStorage.download(inputBucket, objectKey);
-        // Finding M-11, severity Major: BEFORE any byte is decoded. See verifyInputObjectAuthenticity for
+        // Finding M-11, severity High: BEFORE any byte is decoded. See verifyInputObjectAuthenticity for
         // why both the manifest code and the content digest are checked, and why neither alone is enough.
         verifyInputObjectAuthenticity(resource);
         final InputStream bytes = resource.getInputStream();
@@ -2152,9 +2128,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
                 LOGICAL_FILE, Long.valueOf(recordsRead));
     }
 
-    // ====================================================================================================
     // 9000-DALYTRAN-CLOSE, app/cbl/CBTRN02C.cbl:L582-L598.
-    // ====================================================================================================
 
     /**
      * Closes the input, reproducing {@code 9000-DALYTRAN-CLOSE}
@@ -2221,9 +2195,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         // EXIT.  (:L598)
     }
 
-    // ====================================================================================================
     // 9999-ABEND-PROGRAM, app/cbl/CBTRN02C.cbl:L707-L711.
-    // ====================================================================================================
 
     /**
      * Abends the step, reproducing {@code 9999-ABEND-PROGRAM} ({@code app/cbl/CBTRN02C.cbl:L707-L711}).
@@ -2231,7 +2203,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * The source emits {@code 'ABENDING PROGRAM'} ({@code :L708}), zeroes {@code TIMING}
      * ({@code :L709}), moves {@code 999} into {@code ABCODE} ({@code :L710}) and calls the Language
      * Environment abend service ({@code :L711}). <i>Evidence note:</i> other project documents cite this
-     * paragraph as {@code :L707-L710}; the {@code CALL 'CEE3ABD'.} that terminates it is at
+     * paragraph as {@code :L707-L711}; the {@code CALL 'CEE3ABD'.} that terminates it is at
      * {@code :L711}, and the source governs.
      * <p>
      * The Java counterpart throws {@link FatalProcessingException} carrying the full
@@ -2273,9 +2245,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
                 cause);
     }
 
-    // ====================================================================================================
     // 9910-DISPLAY-IO-STATUS, app/cbl/CBTRN02C.cbl:L714-L727.
-    // ====================================================================================================
 
     /**
      * Renders a file status as the legacy diagnostic line, reproducing {@code 9910-DISPLAY-IO-STATUS}
@@ -2314,12 +2284,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         return fileStatusMapper.displayIoStatus(fileStatus);
     }
 
-    // ====================================================================================================
     // Restart support and construction-time validation. Every validator is private static, so the
     // constructor can call it without invoking an overridable method: that would publish a partially
     // constructed reference, which -Xlint:all -Werror reports as this-escape, and the class cannot be
     // final because the step scope proxies by subclassing.
-    // ====================================================================================================
 
     /**
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes
@@ -2525,14 +2493,12 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         return normalised;
     }
 
-    // ====================================================================================================
-    // Finding M-11, severity Major: the authenticity of the external input object.
-    // ====================================================================================================
+    // Finding M-11, severity High: the authenticity of the external input object.
 
     /**
      * Refuses the input object unless it carries a valid authenticity envelope, before a record is parsed.
      *
-     * <p><b>Finding M-11, severity Major, RESOLVED.</b> Correct length-and-charset parsing establishes that
+     * <p><b>Well formed is not the same as ours.</b> Correct length-and-charset parsing establishes that
      * an object is <em>well formed</em>, not that it is <em>ours</em>. The input bucket lives in an emulator
      * whose community edition was measured to enforce no authorisation at all - see the evidence recorded in
      * {@code docker-compose.yml} on the {@code localstack} service - so any principal able to reach the
@@ -2682,7 +2648,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     /**
      * The authenticity envelope that makes the external input object provably vouched for.
      *
-     * <p><b>Finding M-11, severity Major.</b> This is the object-side counterpart of the queue-side envelope
+     * <p><b>Finding M-11, severity High.</b> This is the object-side counterpart of the queue-side envelope
      * in {@code com.cardemo.service.report.ReportSubmissionService.JobSubmissionEnvelope}, and the two are
      * deliberately <em>separate contracts rather than one shared implementation</em>: they authenticate
      * different things - a message body against an object manifest - and they derive different keys from the

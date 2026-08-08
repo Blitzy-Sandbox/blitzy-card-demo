@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : AccountRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -11,7 +11,7 @@
  *               (app/catlg/LISTCAT.txt:L59 DATA-component attribute line;
  *               app/jcl/ACCTFILE.jcl:L36, L40-L41 KEYS(11 0) RECORDSIZE(300 300));
  *               record layout app/cpy/CVACT01Y.cpy:L4-L17 @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -25,7 +25,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 
@@ -384,10 +384,8 @@ import jakarta.persistence.LockModeType;
  *       ordered-scan finder, a group or status finder and any projection were all considered and rejected for
  *       want of a consumer. <strong>Re-measured at this commit</strong>, eight files outside
  *       {@code com.cardemo.repository} reference this interface, across the service and batch packages, and
- *       six test files exercise it. An earlier revision said "no file outside {@code com.cardemo.repository}
- *       references this interface" and that the calling packages were <strong>not available</strong>, so the
- *       method was justified by a named future consumer rather than an existing call site; that is withdrawn -
- *       the call sites exist. Re-derive with
+ *       six test files exercise it, so the one method is justified by existing call sites rather than by a
+ *       named future consumer. Re-derive with
  *       {@code grep -rl AccountRepository src/main/java | grep -v /repository/}.</li>
  *   <li><b>Parameter binding only.</b> The one query is a constant string with a named parameter. No JPQL or SQL
  *       is assembled by concatenation anywhere in this file, and no native-SQL query is used at all, so
@@ -427,8 +425,7 @@ import jakarta.persistence.LockModeType;
  *       application-context refresh, so it participates in a run only as part of the Spring Boot application,
  *       started with {@code ./mvnw -B spring-boot:run} or from the packaged JAR. Both are now possible:
  *       {@code CardDemoApplication} carries {@code @SpringBootApplication} and all four
- *       {@code application*.yml} profiles are present, so the context refreshes. An earlier revision recorded
- *       both as absent; that ceased to be true when those files were authored. Two preconditions fail fast at
+ *       {@code application*.yml} profiles are present, so the context refreshes. Two preconditions fail fast at
  *       boot: a reachable PostgreSQL 16 instance carrying the {@code account} table exactly as
  *       contracted below, and the environment-indirected JWT signing key, which has no committed default.</li>
  *   <li><b>Test:</b> {@code ./mvnw -B clean test} for the unit tier. The tests that matter for this type are
@@ -484,9 +481,8 @@ import jakarta.persistence.LockModeType;
  *
  * <h2>Missing information disclosure</h2>
  * <p>
- * <b>All three Flyway migrations are present.</b> An earlier revision of this disclosure recorded
- * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as not available; that is no longer true and
- * the claim is withdrawn. {@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * <b>All three Flyway migrations are present.</b> {@code src/main/resources/db/migration/V1__create_schema.sql}
+ * declares
  * {@code CREATE TABLE account} with {@code version BIGINT} and {@code ck_account_active_status};
  * {@code V2} deliberately creates no index for this table, because {@code ACCTDATA} has no alternate index
  * in {@code app/catlg/LISTCAT.txt} and the primary key is the only access path this interface needs; and

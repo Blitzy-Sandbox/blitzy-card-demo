@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : CardCrossReferenceRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -14,7 +14,7 @@
  *               (app/catlg/LISTCAT.txt:L480, L482, L485, L486, L488;
  *               app/jcl/XREFFILE.jcl:L72-L74 KEYS(11,25), PATH :L90-L92);
  *               record layout app/cpy/CVACT03Y.cpy:L4-L8 @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -28,7 +28,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 

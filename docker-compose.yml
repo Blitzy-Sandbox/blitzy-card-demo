@@ -1,25 +1,32 @@
 # ******************************************************************
-# * File         : docker-compose.yml
-# * Application  : CardDemo
-# * Type         : Local runtime topology (Compose Specification)
-# * Function     : Stands up the complete substrate that replaces the z/OS
-# *                runtime of the frozen COBOL corpus in app/, plus the Java 25
-# *                application itself, as six containers on one isolated
-# *                network. Derived from app/jcl/OPENFIL.jcl and
-# *                app/jcl/CLOSEFIL.jcl, whose SDSF `CEMT SET FIL(...) OPE`
-# *                and `CLO` decks made the CICS datasets available to the
-# *                region: that operator step becomes declarative
-# *                health-conditioned service dependency here. S3 replaces the
-# *                generation data groups of app/jcl/DEFGDGB.jcl,
-# *                app/jcl/DALYREJS.jcl and app/jcl/REPTFILE.jcl; one SQS FIFO
-# *                queue replaces DEFINE TDQUEUE(JOBS) in
-# *                app/csd/CARDDEMO.CSD; PostgreSQL replaces the ten VSAM KSDS
-# *                clusters of app/catlg/LISTCAT.txt together with the USRSEC
-# *                cluster that app/jcl/DUSRSECJ.jcl defines in JCL; and
-# *                Jaeger, Prometheus and Grafana supply the observability
-# *                layer the corpus lacks, whose whole instrumentation is
-# *                DISPLAY plus the 9910-DISPLAY-IO-STATUS renderer of
-# *                app/cbl/CBTRN02C.cbl.
+# * Program     : docker-compose.yml
+# * Application : CardDemo
+# * Type        : Local runtime topology (Compose Specification)
+# * Function    : Stands up the complete substrate that replaces the z/OS
+# *               runtime of the frozen COBOL corpus in app/, plus the Java 25
+# *               application itself, as six containers on one isolated
+# *               network. Derived from app/jcl/OPENFIL.jcl and
+# *               app/jcl/CLOSEFIL.jcl, whose SDSF `CEMT SET FIL(...) OPE`
+# *               and `CLO` decks made the CICS datasets available to the
+# *               region: that operator step becomes declarative
+# *               health-conditioned service dependency here. S3 replaces the
+# *               generation data groups of app/jcl/DEFGDGB.jcl,
+# *               app/jcl/DALYREJS.jcl and app/jcl/REPTFILE.jcl; one SQS FIFO
+# *               queue replaces DEFINE TDQUEUE(JOBS) in
+# *               app/csd/CARDDEMO.CSD; PostgreSQL replaces the ten VSAM KSDS
+# *               clusters of app/catlg/LISTCAT.txt together with the USRSEC
+# *               cluster that app/jcl/DUSRSECJ.jcl defines in JCL; and
+# *               Jaeger, Prometheus and Grafana supply the observability
+# *               layer the corpus lacks, whose whole instrumentation is
+# *               DISPLAY plus the 9910-DISPLAY-IO-STATUS renderer of
+# *               app/cbl/CBTRN02C.cbl.
+# * Source      : app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl (the operator
+# *               dataset-availability decks), app/jcl/DEFGDGB.jcl,
+# *               app/jcl/DALYREJS.jcl and app/jcl/REPTFILE.jcl (the GDG
+# *               bases), app/csd/CARDDEMO.CSD DEFINE TDQUEUE(JOBS) (the queue
+# *               contract), app/catlg/LISTCAT.txt with app/jcl/DUSRSECJ.jcl
+# *               (the eleven clusters) and app/cbl/CBTRN02C.cbl:L714-L727
+# *               (9910-DISPLAY-IO-STATUS) @ 7756d89
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -331,7 +338,9 @@ x-carddemo-logging: &carddemo-logging
 # The AWS resource names and the region, shared verbatim by the application
 # and by the provisioning hook. localstack-init/init-aws.sh reads exactly
 # these variable names from its container environment and creates precisely
-# these containers - three buckets, one FIFO queue, one topic - while
+# these containers - three buckets, the FIFO submission queue and one topic,
+# plus the standard notification inbox it derives from the topic name and
+# subscribes to it (DECISION_LOG.md DL-RM-12) - while
 # src/main/resources/application.yml binds the same names onto
 # carddemo.aws.s3.*, carddemo.aws.sqs.report-queue and
 # carddemo.aws.sns.notification-topic. Sharing one fragment is what makes it
@@ -492,8 +501,8 @@ services:
       # OPENFIL.jcl's `CEMT SET FIL(...) OPE` made the datasets available
       # before the region served traffic. These two conditions are that step:
       # PostgreSQL healthy means the relational substrate accepts connections,
-      # and LocalStack healthy means the buckets, the FIFO queue and the topic
-      # exist - see that service's probe.
+      # and LocalStack healthy means the buckets, both queues, the topic and its
+      # one subscription exist - see that service's probe.
       postgres:
         condition: service_healthy
       localstack:
@@ -515,8 +524,8 @@ services:
     # then dropped, on the exporter's own thread, and no request or batch step
     # observes it. The saving it bought was at most one connection attempt on
     # the first span. The two conditions that remain are the two that carry
-    # data - the relational substrate and the emulator holding the buckets,
-    # the FIFO queue and the topic - and both are service_healthy rather than
+    # data - the relational substrate and the emulator holding the buckets, both
+    # queues, the topic and its subscription - and both are service_healthy rather than
     # service_started because for those, existing is not the same as ready.
     healthcheck:
       # No `test` key: the probe is declared once, in the Dockerfile, and
@@ -706,9 +715,12 @@ services:
       AWS_ENDPOINT_URL: http://localhost:4566
       # State is not persisted. Persistence is not a community-tier feature,
       # and it is not wanted: localstack-init/init-aws.sh is idempotent and
-      # re-provisions the same three buckets, one queue and one topic on every
-      # start, which is exactly the clean-slate behaviour the fixture-driven
-      # gates need. No named volume is attached for the same reason.
+      # re-provisions the same three buckets, two queues, one topic and one
+      # subscription on every start, which is exactly the clean-slate behaviour
+      # the fixture-driven gates need. No named volume is attached for the same
+      # reason. The second queue is carddemo-notifications-inbox, the topic's
+      # sole subscriber; see the SNS section of the provisioning script for why
+      # a topic with no subscriber accepts every publish and discards it.
       PERSISTENCE: "0"
       # 1 turns on the emulator's verbose request log; see TROUBLESHOOTING.
       DEBUG: ${LOCALSTACK_DEBUG:-0}
@@ -734,7 +746,7 @@ services:
       # someone remembers to add it. It is NOT relied upon.
       ENFORCE_IAM: "1"
       # ----------------------------------------------------------------------
-      # FINDING M-11, severity Major, RESOLVED - AND WHERE IT IS RESOLVED
+      # FINDING M-11, severity High, RESOLVED - AND WHERE IT IS RESOLVED
       # ----------------------------------------------------------------------
       # Network containment answers "who can reach the port". It cannot answer
       # "is this queue message, or this input object, ours" - and because the
@@ -798,8 +810,8 @@ services:
       # available or running - grepped one at a time so the check does not
       # depend on the order of keys in the response. Second, the READY-stage
       # hook must have reached SUCCESSFUL, which is what makes
-      # `condition: service_healthy` on `app` mean "the three buckets, the
-      # FIFO queue and the topic exist". curl is the emulator image's own
+      # `condition: service_healthy` on `app` mean "the three buckets, both
+      # queues, the topic and its one subscription exist". curl is the emulator image's own
       # tool; the image ships no wget.
       test:
         - CMD-SHELL
@@ -836,11 +848,11 @@ services:
     image: jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
     container_name: carddemo-jaeger${CLONE_INDEX:+-}${CLONE_INDEX:-}
     # v2 is configured by FILE, not by environment variable. The three v1
-    # variables this service used to set - COLLECTOR_OTLP_ENABLED,
-    # SPAN_STORAGE_TYPE and MEMORY_MAX_TRACES - have no v2 equivalents, so
+    # variables COLLECTOR_OTLP_ENABLED, SPAN_STORAGE_TYPE and
+    # MEMORY_MAX_TRACES have no v2 equivalents, so
     # observability/jaeger-config.yml carries all three structurally. That file
     # is not optional decoration: v2's built-in max_traces default is 100000,
-    # so migrating without it would have silently DOUBLED the span buffer this
+    # so omitting it would silently DOUBLE the span buffer this
     # service is supposed to bound.
     command: ["--config=file:/etc/jaeger/jaeger-config.yml"]
     environment:

@@ -75,15 +75,16 @@ import org.hibernate.type.SqlTypes;
  *     matchesVerificationValue(String). See the field documentation.
  * </pre>
  *
- * <p><b>Finding, severity High - RESOLVED here.</b> An earlier revision of this class did not model
- * {@code CARD-CVV-CD} at all, {@code V1__create_schema.sql} declared no column for it, and the unit and
- * repository tests asserted its <em>absence</em>. That was wrong on the field contract: the AAP declares field
+ * <p><b>Finding, severity High.</b> Not modelling
+ * {@code CARD-CVV-CD} at all - with {@code V1__create_schema.sql} declaring no column for it and the unit and
+ * repository tests asserting its <em>absence</em> - is wrong on the field contract: the AAP declares field
  * contracts bidirectional - every field length, type and precision derives from a copybook and every derived
  * Java type must round-trip to the same bytes - and {@code app/cpy/CVACT02Y.cpy:L7} declares the field inside
  * the authoritative 150-byte record, corroborated by bytes 28 through 30 of all fifty rows of
  * {@code app/data/ASCII/carddata.txt}. Dropping three authoritative bytes is a parity break, not a hardening
- * measure. Remediation: the column is restored, the seed migration loads it, and the confidentiality concern
- * that motivated the omission is met where it belongs - by withholding the read path rather than the storage.
+ * measure. The column is therefore declared, the seed migration loads it, and the confidentiality concern
+ * that would motivate omitting it is met where it belongs - by withholding the read path rather than the
+ * storage.
  * The value is therefore persisted, never returned, never serialised, never logged and absent from every DTO;
  * a caller may only ask whether a candidate matches it.</p>
  *
@@ -175,8 +176,8 @@ import org.hibernate.type.SqlTypes;
  * {@code application-prod.yml} are present and the containerised integration tier boots with Flyway
  * applying {@code V1} through {@code V3} first. Both later migrations exist:
  * {@code V2__create_indexes.sql} creates {@code idx_card_acct_id} for this table and
- * {@code V3__seed_data.sql} seeds it from {@code app/data/ASCII/carddata.txt}. An earlier revision of this
- * paragraph called all six artefacts unavailable; that is no longer true and the claim is withdrawn.</p>
+ * {@code V3__seed_data.sql} seeds it from {@code app/data/ASCII/carddata.txt}. None of these six artefacts is
+ * unavailable.</p>
  *
  * <p>What {@code V1__create_schema.sql} declares for this table, and what this mapping asserts, is
  * exactly:</p>

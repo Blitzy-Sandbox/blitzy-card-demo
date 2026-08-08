@@ -16,6 +16,7 @@
 #               app/jcl/CREASTMT.JCL:79 STEP040 EXEC PGM=CBSTM03A,COND=(0,NE))
 #               + docs/validation-gates.md, anchors #gate-1 through #gate-8
 #               (the eight gates this workflow produces evidence for)
+#               @ 7756d89
 # ******************************************************************
 # Copyright Amazon.com, Inc. or its affiliates.
 # All Rights Reserved.
@@ -195,10 +196,10 @@
 #     ephemeral one per run.
 #
 # 10. A missing unzip on the runner. Read mvnw before diagnosing this: an
-#     earlier revision of this note described the UPSTREAM launcher's
-#     behaviour, not the committed one, and sent a reader looking for a
+#     behaviour differs from the UPSTREAM launcher's, and describing the
+#     upstream behaviour here would send a reader looking for a
 #     checksum failure that this launcher cannot produce that way.
-#     What upstream does, and what the note wrongly described: rewrite the
+#     What upstream does: rewrite the
 #     distribution URL to the .tar.gz variant when unzip is absent, while
 #     distributionSha256Sum still pins the .zip - so the hashes cannot match
 #     and it reports a possibly compromised distribution for what is only a
@@ -250,16 +251,50 @@ concurrency:
   cancel-in-progress: true
 
 # Non-secret, non-sensitive expectations only. Every one of these is ASSERTED
-# against its authoritative source rather than trusted: JAVA_FEATURE_VERSION and
+# against its authoritative source rather than trusted: JAVA_PATCH_VERSION and
 # MAVEN_VERSION against the running toolchain, and the wrapper values against
 # .mvn/wrapper/maven-wrapper.properties itself.
 env:
-  # The FEATURE version, not a patch level. Available sources disagree about the
-  # patch - docs/project-guide.md:510 records 25.0.2 while AAP section 0.6.1.3
-  # records 25.0.3 - so asserting a patch would be brittle for no gain. The
-  # setup action supplies whatever patch the pinned distribution ships, and the
-  # enforcer floor in pom.xml is expressed as a feature-version floor too.
-  JAVA_FEATURE_VERSION: "25"
+  # ----------------------------------------------------------------
+  # PINNED TO THE PATCH, ASSERTED TO THE BUILD NUMBER.
+  #
+  # This was the feature version "25", and the comment here argued that
+  # asserting a patch "would be brittle for no gain" because the available
+  # sources disagreed - docs/project-guide.md:510 records 25.0.2 while AAP
+  # section 0.6.1.3 records 25.0.3. That argument does not survive what the
+  # setup action actually DOES with a feature version. Its own documentation
+  # states that for a broad range such as `25` it downloads the latest
+  # available release satisfying the range, behaving like check-latest: true.
+  # So "25" was never a pin; it was a moving reference.
+  #
+  # Measured, not assumed: the Adoptium release listing for the 25 line is
+  # jdk-25.0.4+7, jdk-25.0.3+9, jdk-25.0.2+10, jdk-25.0.1+8, jdk-25+36, so "25"
+  # resolves to 25.0.4+7 - a THIRD JDK, differing from both Dockerfile stages,
+  # which are now both 25.0.3+9. Compiling release-25 bytecode on an unknown
+  # patch is the same defect class the Dockerfile stages just closed, so it is
+  # closed the same way and against the same value.
+  #
+  # The source disagreement is SETTLED rather than dodged: the delivered runtime
+  # is eclipse-temurin:25.0.3_9-jre-noble and the build stage is asserted equal
+  # to it, so 25.0.3+9 is what the shipped artefact is compiled and run on, and
+  # project-guide.md's 25.0.2 is stale prose about an earlier run.
+  #
+  # Two values, because they answer two different questions:
+  #   JAVA_PATCH_VERSION   is what is REQUESTED. A plain semver patch, so
+  #                        resolution does not depend on whether build metadata
+  #                        after `+` participates in the action's range matching.
+  #   JAVA_RUNTIME_VERSION is what is ASSERTED, against java.runtime.version -
+  #                        the full build number. A Temurin REBUILD of the same
+  #                        patch (a hypothetical 25.0.3+10) therefore fails here
+  #                        loudly rather than silently diverging from the image.
+  #
+  # Moving all four surfaces - builder, runtime, CI and setup - to 25.0.4 is the
+  # documented next step and is deliberately NOT taken here: it is a toolchain
+  # pin move, which requires approval rather than an agent's judgement. It is
+  # registered as a disclosed residual risk instead.
+  # ----------------------------------------------------------------
+  JAVA_PATCH_VERSION: "25.0.3"
+  JAVA_RUNTIME_VERSION: "25.0.3+9-LTS"
   # Asserted exactly. docs/project-guide.md:521 records 3.9.9, a Medium drift;
   # the pinned value governs and 3.9.9 must NOT be accepted.
   MAVEN_VERSION: "3.9.11"
@@ -316,6 +351,52 @@ env:
 # a reviewer noticing.
 # ==================================================================
 
+# ==================================================================
+# THE RUNNER IMAGE: A DATED FAMILY, AND THE LIMIT THAT REMAINS
+#
+# Every job below names `ubuntu-24.04`, never `ubuntu-latest`. The reasoning is
+# the reasoning of the block above, applied to the last unpinned input in this
+# file. `ubuntu-latest` is an alias the platform re-points at a new OS release
+# once that release reaches general availability; when it moves, the operating
+# system this harness runs on changes with NO DIFF IN THIS REPOSITORY. A file
+# whose stated purpose is a deterministic build cannot leave its own base image
+# addressed by a moving alias while pinning every action to a commit, every
+# Maven coordinate to a version and every container image to a digest.
+# `ubuntu-24.04` is the current general-availability LTS family and is what the
+# alias resolves to today, so this pin removes the silent-migration risk without
+# changing what runs. `ubuntu-26.04` exists but is a preview image, and a
+# preview base is the wrong foundation for the harness that decides whether a
+# change is releasable.
+#
+# WHAT THIS PIN DOES NOT BUY, STATED PLAINLY. A dated label selects an OS
+# family, not an image build. The platform rebuilds these images on a weekly
+# cadence, so `ubuntu-24.04` on two different dates can ship different
+# preinstalled tool versions. This pin therefore bounds the drift to a patch
+# stream within one OS release; it does not eliminate it. Exact reproducibility
+# needs one of two things this file deliberately does not do: run every step
+# inside a digest-pinned job container, or run on an immutable self-hosted
+# runner image. Neither is adopted here, and the reason is measured rather than
+# aesthetic - the `integration` job drives `docker compose` and Testcontainers
+# against the host daemon, so a job container would need the daemon socket
+# mounted into it and would relocate the very network topology those steps
+# assert. Trading a real topology assertion for a narrower reproducibility claim
+# would weaken the evidence, so the gap is DISCLOSED as residual risk instead.
+# See docs/validation-gates.md and the residual-risk register in
+# DECISION_LOG.md.
+#
+# WHY THE RESIDUAL GAP IS NARROW IN PRACTICE. Nothing that determines this
+# build's output is taken from the runner image. The JDK arrives from the pinned
+# setup action as an explicit distribution and feature version; Maven arrives
+# through ./mvnw, which verifies the wrapper's declared distributionSha256Sum
+# before executing it; every dependency and plugin is an exact coordinate; every
+# service and scanner image is a digest. The runner image supplies the kernel,
+# the shell and the container daemon - not the toolchain under test.
+#
+# BuildProvenanceTest holds this mechanically too: a reintroduced
+# `ubuntu-latest`, or any other undated runner label, fails the build.
+# ==================================================================
+
+
 jobs:
 
   # ------------------------------------------------------------------
@@ -327,7 +408,7 @@ jobs:
   # ------------------------------------------------------------------
   repository-integrity:
     name: Frozen corpus, legacy inventory and migration integrity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -398,11 +479,11 @@ jobs:
 
           # WHICH COMMIT TO COMPARE AGAINST, and why the order is this order.
           #
-          # An earlier revision compared against HEAD~1 whenever no pull-request
-          # base was available, which is wrong for the ordinary case: a push of
-          # several commits is diffed against its own second-to-last commit, so an
-          # edit under app/ made in any EARLIER commit of that same push is inside
-          # the range and invisible. The check then reported the frozen corpus
+          # Comparing against HEAD~1 whenever no pull-request
+          # base is available is wrong for the ordinary case: a push of
+          # several commits would be diffed against its own second-to-last commit, so an
+          # edit under app/ made in any EARLIER commit of that same push would be inside
+          # the range and invisible. The check would then report the frozen corpus
           # intact while a modification had just landed on the branch.
           #
           # 1. THE TRACEABILITY ANCHOR, preferred whenever it resolves. The AAP
@@ -618,14 +699,14 @@ jobs:
           # ------------------------------------------------------------------
           # THE SCOPED DOCUMENTS, and why they are asserted HERE by exact name.
           #
-          # An earlier revision of this step asserted the build, container,
-          # provisioning, observability and migration artefacts and stopped
-          # there. The documentation set the AAP mandates was checked nowhere in
-          # this workflow, so a run in which two of these files were simply
-          # absent passed this step and every step after it. That is precisely
-          # the omission a completeness check exists to catch, and it is why the
-          # names are literal rather than a glob: a glob over docs/ passes on
-          # whatever happens to be there.
+          # Asserting the build, container,
+          # provisioning, observability and migration artefacts and stopping
+          # there would leave the documentation set the AAP mandates checked
+          # nowhere in this workflow, so a run in which two of these files were
+          # simply absent would pass this step and every step after it. That is
+          # precisely the omission a completeness check exists to catch, and it is
+          # why the names are literal rather than a glob: a glob over docs/ passes
+          # on whatever happens to be there.
           #
           # api-contracts.md stands in for generated OpenAPI, which is out of
           # scope, so its absence removes the only endpoint contract there is.
@@ -1072,7 +1153,7 @@ jobs:
   # ------------------------------------------------------------------
   verify:
     name: Zero-warning build, tests, coverage and vulnerability scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Bounded so a runaway test tier fails rather than consuming the whole job
       # allowance. Not a performance target - see Gate 3, which is a measurement.
@@ -1083,11 +1164,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up JDK ${{ env.JAVA_FEATURE_VERSION }}
+      - name: Set up JDK ${{ env.JAVA_PATCH_VERSION }}
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_FEATURE_VERSION }}
+          # The exact patch, not the feature version. A feature version here is
+          # resolved by this action as "the latest release satisfying the range",
+          # which today means 25.0.4+7 - neither Dockerfile stage's JDK. The
+          # requested value is the patch alone because it is plain semver and so
+          # cannot depend on whether build metadata after `+` takes part in range
+          # matching; the full build number is asserted separately below, which
+          # is the check that actually holds this to the delivered image.
+          java-version: ${{ env.JAVA_PATCH_VERSION }}
           # Caches ~/.m2/repository. This cannot change a verdict: the cached
           # content is resolved dependency jars whose coordinates pom.xml pins
           # exactly, and the vulnerability scan re-validates its own data
@@ -1217,12 +1305,12 @@ jobs:
 
           # Failure mode 10, reported rather than enforced, and stated against
           # what the committed launcher does rather than what the upstream one
-          # does. An earlier revision of this comment said that without unzip the
-          # launcher retargets the URL at a .tar.gz and then fails the zip
-          # checksum claiming a possibly compromised distribution. That is
-          # upstream's behaviour; mvnw:99-105 records the divergence, :374-395
-          # expands the pinned zip with the JDK jar tool when unzip is missing,
-          # and :696-703 refuses any URL that is not apache-maven-<version>-bin.zip.
+          # does. Without unzip the upstream launcher retargets the URL at a
+          # .tar.gz and then fails the zip checksum claiming a possibly
+          # compromised distribution. That is upstream only: mvnw:99-105 records
+          # the divergence, :374-395 expands the pinned zip with the JDK jar tool
+          # when unzip is missing, and :696-703 refuses any URL that is not
+          # apache-maven-<version>-bin.zip.
           # So an absent unzip does not produce a checksum failure here, and a
           # checksum failure must not be diagnosed as an absent unzip.
           #
@@ -1263,23 +1351,39 @@ jobs:
 
           conclude 'Maven wrapper'
 
-      - name: Assert the toolchain is JDK 25 and Maven ${{ env.MAVEN_VERSION }}
+      - name: Assert the toolchain is JDK ${{ env.JAVA_RUNTIME_VERSION }} and Maven ${{ env.MAVEN_VERSION }}
         run: |
           set -euo pipefail
           . "${RUNNER_TEMP}/finding.sh"
 
+          # The COMPLETE patch and build number, not the feature digit. A feature
+          # assertion passes on any 25.x, which is how CI came to compile the
+          # delivered bytecode on a JDK that matched neither Dockerfile stage.
+          #
+          # java.runtime.version is read rather than java.version because only the
+          # former carries the build number: java.version is "25.0.3" for both
+          # 25.0.3+9 and a hypothetical 25.0.3+10 rebuild, whereas
+          # java.runtime.version is "25.0.3+9-LTS". The comparison is against the
+          # same value the Dockerfile build stage asserts for itself, so CI and
+          # both image stages are held to ONE number by construction.
           java -version
-          java_feature="$(java -version 2>&1 \
-            | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n 1)"
-          if [ "${java_feature}" != "${JAVA_FEATURE_VERSION}" ]; then
-            remedy='provision JDK 25 through the pinned setup action. Never fall back to Java 21 or 17,'
-            remedy="${remedy}"' and never hardcode a host JDK path - the action supplies JAVA_HOME.'
-            finding Blocker pom.xml 'maven.compiler.release / enforcer requireJavaVersion' \
-              "Java feature version ${JAVA_FEATURE_VERSION}" "${java_feature:-unreadable}" \
+          java_runtime="$(java -XshowSettings:properties -version 2>&1 \
+            | sed -n 's/^ *java\.runtime\.version = //p' | head -n 1)"
+          if [ "${java_runtime}" != "${JAVA_RUNTIME_VERSION}" ]; then
+            remedy='align this workflow, the Dockerfile build stage and the Dockerfile runtime stage on ONE'
+            remedy="${remedy}"' Temurin build. Correct JAVA_PATCH_VERSION and JAVA_RUNTIME_VERSION here, or the'
+            remedy="${remedy}"' digest-pinned base images there, so all three carry the same value. Do NOT relax'
+            remedy="${remedy}"' this back to a feature version to make it pass: a feature version is resolved by'
+            remedy="${remedy}"' the setup action as the latest release in the line, which is what made the three'
+            remedy="${remedy}"' surfaces diverge. Never fall back to Java 21 or 17, and never hardcode a host JDK'
+            remedy="${remedy}"' path - the action supplies JAVA_HOME. Moving the line to a newer patch such as'
+            remedy="${remedy}"' 25.0.4 is a toolchain pin move and needs approval, not a quiet edit.'
+            finding Blocker Dockerfile 'JDK build number, shared by CI and both image stages' \
+              "${JAVA_RUNTIME_VERSION}" "${java_runtime:-unreadable}" \
               "${remedy}"
           else
-            printf 'Java feature version %s (patch level as shipped by the pinned distribution).\n' \
-              "${java_feature}"
+            printf 'JDK %s - the exact build the Dockerfile build and runtime stages both carry.\n' \
+              "${java_runtime}"
           fi
 
           # The wrapper, never a host or marketplace Maven. This is also the
@@ -1932,7 +2036,7 @@ jobs:
   integration:
     name: Container topology, migrations, object store, queue and scrape target
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # The bounded readiness the provisioning script honours. Named here so the
       # values are reviewable rather than implicit.
@@ -2617,9 +2721,8 @@ jobs:
       # exercised by any of them. A runtime assessment once reported 500 for every
       # chunked request body against the packaged archive while the identical
       # request answered 200 from an exploded class path. Whatever the cause in
-      # any one environment, the structural gap is real, and an earlier revision
-      # of this workflow closed it and then a later rewrite deleted the closure,
-      # leaving a replacement that starts the image and probes only Actuator.
+      # any one environment, the structural gap is real, and a replacement that
+      # starts the image and probes only Actuator does not close it.
       # Health says the context started. It says nothing about request framing,
       # content negotiation or the authored error envelope.
       #
@@ -2663,10 +2766,46 @@ jobs:
             python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' < "$1"
           }
 
+          # --------------------------------------------------------------
+          # NO AUTHENTICATION BODY IS EVER PRINTED RAW.
+          #
+          # Each probe below writes its sign-on response to a file, and the
+          # failure branches used to `cat` that file so a broken run explained
+          # itself. Three of the four bodies can legitimately carry a JWT and
+          # only the bootstrap token was masked, so the one regression the
+          # wildcard-media-type probe exists to catch - a negotiation failure
+          # answered with 200 and a normal token instead of 415 - would have
+          # printed a live credential into a job log that persists for the
+          # retention period.
+          #
+          # mask_body runs IMMEDIATELY after every request, before any branch can
+          # print anything, because masking after a print does not unprint it. It
+          # ignores the status code deliberately: a token is masked because it is
+          # PRESENT, never because the response was one expected to carry one.
+          #
+          # describe_body is what replaced `cat`. It prints length, the key set
+          # and an allowlist of non-sensitive fields, so the authored problem
+          # envelope stays legible while credential values are withheld by
+          # construction rather than by a denylist someone has to maintain.
+          #
+          # Both delegate to .github/smoke/redact_auth_body.py, which lives
+          # outside this file so that it can be TESTED - the guard test plants a
+          # sentinel JWT and proves it cannot reach the output. A shell function
+          # embedded in a job step could not be tested that way.
+          # --------------------------------------------------------------
+          mask_body() {
+            python3 .github/smoke/redact_auth_body.py --mask "$1" || true
+          }
+
+          describe_body() {
+            python3 .github/smoke/redact_auth_body.py --describe "$1" || true
+          }
+
           admin_token="$(curl --silent --show-error --max-time 20 \
             -o "${RUNNER_TEMP}/smoke-bootstrap.json" -w '%{http_code}' \
             -X POST "${base}/api/auth/signon" -H "${json}" \
             --data-binary "{\"userId\":\"${bootstrap_id}\",\"password\":\"${bootstrap_pw}\"}")"
+          mask_body "${RUNNER_TEMP}/smoke-bootstrap.json"
           if [ "${admin_token}" != '200' ]; then
             finding Blocker "${base}/api/auth/signon" 'bootstrap sign-on' '200' "${admin_token}" \
               'the demo users are seeded only when the seeddemousers placeholder is true, which the local profile sets. Confirm the image is running that profile and that the seed migration applied.'
@@ -2687,10 +2826,17 @@ jobs:
             -X POST "${base}/api/admin/users" -H "${json}" \
             -H "Authorization: Bearer ${admin_token}" \
             --data-binary "{\"firstName\":\"CI\",\"lastName\":\"SMOKE\",\"userId\":\"${smoke_id}\",\"password\":\"${smoke_pw}\",\"userType\":\"U\"}")"
+          # Same treatment as the sign-on bodies, and for a reason beyond
+          # symmetry: the REQUEST that produced this response carried a password,
+          # so an application defect that echoed the submitted representation
+          # back would put that password in this body. The administration API is
+          # specified never to return a password, and this is what makes printing
+          # the body safe even if that specification is ever violated.
+          mask_body "${RUNNER_TEMP}/smoke-create.json"
           if [ "${created}" != '201' ]; then
             finding Blocker "${base}/api/admin/users" 'per-run identity creation' '201' "${created}" \
-              'the smoke cannot run against a generated identity without this. Inspect the response body below.'
-            cat "${RUNNER_TEMP}/smoke-create.json" || true
+              'the smoke cannot run against a generated identity without this. The response is described below with credential values withheld.'
+            describe_body "${RUNNER_TEMP}/smoke-create.json"
             conclude 'Packaged-image API smoke'
             exit 1
           fi
@@ -2704,12 +2850,13 @@ jobs:
             -o "${RUNNER_TEMP}/smoke-chunked.json" -w '%{http_code}' \
             -X POST "${base}/api/auth/signon" -H "${json}" \
             -H 'Transfer-Encoding: chunked' --data-binary @-)"
+          mask_body "${RUNNER_TEMP}/smoke-chunked.json"
           printf 'chunked sign-on      -> %s\n' "${chunked}"
           if [ "${chunked}" != '200' ]; then
             smoke_failures=$((smoke_failures + 1))
             finding Blocker "${base}/api/auth/signon" 'chunked request body' '200' "${chunked}" \
               'a chunked body is a valid HTTP/1.1 request. A 5xx here is the packaged-layout defect this probe exists to catch; a 4xx means the body was not read at all.'
-            cat "${RUNNER_TEMP}/smoke-chunked.json" || true
+            describe_body "${RUNNER_TEMP}/smoke-chunked.json"
           elif [ -z "$(token_of "${RUNNER_TEMP}/smoke-chunked.json")" ]; then
             smoke_failures=$((smoke_failures + 1))
             finding Blocker "${base}/api/auth/signon" 'chunked response body' 'a token' 'none' \
@@ -2720,18 +2867,19 @@ jobs:
           media="$(printf '%s' "${credentials}" | curl --silent --show-error --max-time 20 \
             -o "${RUNNER_TEMP}/smoke-media.json" -w '%{http_code}' \
             -X POST "${base}/api/auth/signon" -H 'Content-Type: */*' --data-binary @-)"
+          mask_body "${RUNNER_TEMP}/smoke-media.json"
           printf 'wildcard media type  -> %s\n' "${media}"
           if [ "${media}" != '415' ]; then
             smoke_failures=$((smoke_failures + 1))
             finding Blocker "${base}/api/auth/signon" 'wildcard Content-Type' '415' "${media}" \
               'a wildcard media type is not a supported request representation; answering anything else - a 500 in particular - means the negotiation failure escaped as an error.'
-            cat "${RUNNER_TEMP}/smoke-media.json" || true
+            describe_body "${RUNNER_TEMP}/smoke-media.json"
           elif ! grep -q 'CARDDEMO-UNSUPPORTED-MEDIA-TYPE' "${RUNNER_TEMP}/smoke-media.json"; then
             smoke_failures=$((smoke_failures + 1))
             finding Blocker "${base}/api/auth/signon" '415 response body' \
               'the authored problem envelope' "the framework default" \
               'the status is right and the body is not the authored one, so the error contract is not being applied to negotiation failures.'
-            cat "${RUNNER_TEMP}/smoke-media.json" || true
+            describe_body "${RUNNER_TEMP}/smoke-media.json"
           fi
 
           # 3. The happy path, so a green result cannot come from an application
@@ -2739,12 +2887,13 @@ jobs:
           happy="$(printf '%s' "${credentials}" | curl --silent --show-error --max-time 20 \
             -o "${RUNNER_TEMP}/smoke-happy.json" -w '%{http_code}' \
             -X POST "${base}/api/auth/signon" -H "${json}" --data-binary @-)"
+          mask_body "${RUNNER_TEMP}/smoke-happy.json"
           printf 'well-framed sign-on  -> %s\n' "${happy}"
           if [ "${happy}" != '200' ]; then
             smoke_failures=$((smoke_failures + 1))
             finding Blocker "${base}/api/auth/signon" 'well-framed sign-on' '200' "${happy}" \
               'the generated identity cannot authenticate, so the two probes above prove nothing about a working application.'
-            cat "${RUNNER_TEMP}/smoke-happy.json" || true
+            describe_body "${RUNNER_TEMP}/smoke-happy.json"
           elif [ -z "$(token_of "${RUNNER_TEMP}/smoke-happy.json")" ]; then
             smoke_failures=$((smoke_failures + 1))
             finding Blocker "${base}/api/auth/signon" 'sign-on response body' 'a token' 'none' \
@@ -2828,24 +2977,29 @@ jobs:
             fi
           done
 
+          # TWO queues, asserted BY NAME rather than by count. The report queue
+          # replaces the JOBS transient data queue of app/csd/CARDDEMO.CSD; the
+          # notification inbox is the SNS subscriber that turns an accepted
+          # publish into a delivered notice, and without it the topic discards
+          # everything sent to it. Comparing the sorted name set catches a
+          # missing queue, an extra queue and a misspelled queue in one
+          # comparison, which a count cannot: a count of two is also what one
+          # correct queue beside one stray queue produces.
           queues="$(inventory 'awslocal sqs list-queues --query "QueueUrls[]" --output text' \
-            | tr -s '[:space:]' '\n' | awk 'NF' | sort)"
-          queue_count="$(printf '%s\n' "${queues}" | sed '/^$/d' | wc -l | tr -d ' ')"
-          if [ "${queue_count}" != "1" ]; then
-            finding Blocker localstack-init/init-aws.sh 'SQS queue count' '1' \
-              "${queue_count}" \
-              'exactly one queue replaces the single JOBS transient data queue defined in app/csd/CARDDEMO.CSD.'
+            | tr -s '[:space:]' '\n' | awk 'NF' | sed 's#.*/##' | sort | tr '\n' ' ')"
+          expected_queues='carddemo-notifications-inbox carddemo-report-jobs.fifo '
+          if [ "${queues}" != "${expected_queues}" ]; then
+            remedy='two queues are provisioned and both are consumed. carddemo-report-jobs.fifo must keep its'
+            remedy="${remedy}"' .fifo suffix, because ordering is required: it carries report job submissions in'
+            remedy="${remedy}"' the order the operator made them. carddemo-notifications-inbox is a standard'
+            remedy="${remedy}"' queue and is the topic subscriber. Re-run the ready hook with "docker compose'
+            remedy="${remedy}"' exec localstack bash /etc/localstack/init/ready.d/init-aws.sh"; it is idempotent.'
+            finding Blocker localstack-init/init-aws.sh 'SQS queue inventory' \
+              "${expected_queues}" "${queues:-none}" \
+              "${remedy}"
+          else
+            printf 'Queues: %s\n' "${queues}"
           fi
-          case "${queues}" in
-            *carddemo-report-jobs.fifo) printf 'Queue: %s\n' "${queues}" ;;
-            *)
-              remedy='a FIFO queue name must end in .fifo. Ordering is required because the queue carries'
-              remedy="${remedy}"' report job submissions in the order the operator made them.'
-              finding Blocker localstack-init/init-aws.sh 'SQS queue name' \
-                'carddemo-report-jobs.fifo (logical carddemo-report-jobs)' "${queues:-none}" \
-                "${remedy}"
-              ;;
-          esac
 
           fifo="$(inventory 'awslocal sqs get-queue-attributes \
             --queue-url "$(awslocal sqs get-queue-url --queue-name carddemo-report-jobs.fifo \
@@ -2869,17 +3023,89 @@ jobs:
             printf 'Topic: %s\n' "${topics}"
           fi
 
-          subscriptions="$(inventory 'awslocal sns list-subscriptions \
+          # EXACTLY ONE SUBSCRIPTION, and this step used to assert exactly zero.
+          # The reversal is finding M-04 and it is the whole point of the check:
+          # a topic with no subscriber ACCEPTS every publish and discards it, so
+          # the notification capability reported success while delivering nothing,
+          # and the publisher could not tell the difference because acceptance is
+          # not delivery. Asserting emptiness therefore certified the broken
+          # state. The provisioning script now creates the inbox subscription
+          # itself and treats zero as fatal, so this step asserts that same
+          # contract from the outside instead of the opposite one.
+          #
+          # Both bounds are asserted, and they fail for different reasons. Zero
+          # is the inert topic above. More than one is duplicate delivery, since
+          # every subscription receives its own copy of every notice.
+          #
+          # The upper bound is asserted HERE rather than in the script because
+          # the two run against different edges. A subscription the script did
+          # not create may belong to a sibling clone sharing a long-lived edge,
+          # and the script is forbidden to unsubscribe it, so it reports the
+          # observed count and continues. The CI edge is freshly created and
+          # sole-tenant, so here an exact count is both meaningful and safe.
+          subscription_count="$(inventory 'awslocal sns list-subscriptions \
             --query "Subscriptions[].SubscriptionArn" --output text' \
-            | tr -s '[:space:]' '\n' | sed '/^$/d' | wc -l | tr -d ' ')"
-          if [ "${subscriptions}" != "0" ]; then
-            remedy='the topic is provisioned without subscribers. A subscription nothing in this'
-            remedy="${remedy}"' repository creates is configuration no code reads.'
-            finding Medium localstack-init/init-aws.sh 'SNS subscription count' '0' \
-              "${subscriptions}" \
+            | tr -s '[:space:]' '\n' | awk 'NF' | wc -l | tr -d ' ')"
+          if [ "${subscription_count}" != "1" ]; then
+            remedy='the topic must carry exactly one subscriber. Zero means every operator notification is'
+            remedy="${remedy}"' accepted and silently discarded, which is the defect finding M-04 reported. More'
+            remedy="${remedy}"' than one means duplicate delivery: each subscription receives its own copy.'
+            finding High localstack-init/init-aws.sh 'SNS subscription count' '1' \
+              "${subscription_count:-0}" \
               "${remedy}"
           else
-            printf 'Subscriptions: 0\n'
+            printf 'Subscriptions: 1\n'
+          fi
+
+          # The count alone would pass on a subscription pointing anywhere at
+          # all, so the inbox subscription is located BY ITS ENDPOINT and counted
+          # on its own. Selecting by endpoint rather than by list position is
+          # deliberate: SNS does not order the listing, so a positional read
+          # would check whichever subscription happened to come back first and
+          # would report a confusing second failure whenever the count above had
+          # already failed.
+          #
+          # An endpoint that is not the inbox queue's ARN is the defect the M-04
+          # fix introduced once already. A value captured from a function that
+          # also wrote progress lines to stdout was accepted as an endpoint, and
+          # the hook then reported a verified subscription delivering to
+          # something that was not a queue at all.
+          inbox_subscriptions="$(inventory 'awslocal sns list-subscriptions \
+            --query "length(Subscriptions[?Protocol==\`sqs\` \
+            && ends_with(Endpoint, \`:carddemo-notifications-inbox\`)])" \
+            --output text' | tr -d '[:space:]')"
+          if [ "${inbox_subscriptions}" != "1" ]; then
+            remedy='the sole subscriber must be the carddemo-notifications-inbox queue over the sqs protocol.'
+            remedy="${remedy}"' An email, http, https or lambda subscriber would put a delivery target outside this'
+            remedy="${remedy}"' topology, and an endpoint that is not a bare sqs ARN means the ARN capture in'
+            remedy="${remedy}"' ensure_notification_subscription picked up log output alongside the value.'
+            finding High localstack-init/init-aws.sh 'sqs subscriptions on the notification inbox' '1' \
+              "${inbox_subscriptions:-0}" \
+              "${remedy}"
+          else
+            printf 'Subscriber: sqs -> carddemo-notifications-inbox (selected by endpoint)\n'
+          fi
+
+          # Raw delivery is read back because it decides the SHAPE of the body a
+          # consumer sees. With it off, SNS wraps the publisher's JSON in its own
+          # envelope, so the message a reader parses is not the message the
+          # publisher sent and a consumer written against the published contract
+          # fails on a field it cannot find. The subscription ARN is resolved by
+          # endpoint here too, for the reason given above.
+          raw_delivery="$(inventory 'awslocal sns get-subscription-attributes \
+            --subscription-arn "$(awslocal sns list-subscriptions \
+            --query "Subscriptions[?Protocol==\`sqs\` \
+            && ends_with(Endpoint, \`:carddemo-notifications-inbox\`)] \
+            | [0].SubscriptionArn" --output text)" \
+            --query "Attributes.RawMessageDelivery" --output text' | tr -d '[:space:]')"
+          if [ "${raw_delivery}" != 'true' ]; then
+            remedy='subscribe with RawMessageDelivery=true so the body a subscriber reads is exactly the JSON'
+            remedy="${remedy}"' the publisher sent, rather than that JSON wrapped in an SNS envelope.'
+            finding Medium localstack-init/init-aws.sh 'SNS RawMessageDelivery attribute' 'true' \
+              "${raw_delivery:-absent}" \
+              "${remedy}"
+          else
+            printf 'RawMessageDelivery=true confirmed by read-back.\n'
           fi
 
           conclude 'Provisioned inventory'
@@ -2896,11 +3122,36 @@ jobs:
           set -euo pipefail
           . "${RUNNER_TEMP}/finding.sh"
 
+          # The SUBSCRIPTION SET is in the snapshot, because it was the one
+          # provisioned resource this comparison did not cover. Buckets, queues
+          # and the topic are all created through an exists-first check, so a
+          # second run cannot add one; the subscription is the only member of the
+          # inventory whose duplication is even expressible, since a topic can
+          # legitimately carry many subscribers.
+          #
+          # Whether a repeat subscribe actually duplicates depends on the
+          # emulator, which is exactly why this is asserted rather than reasoned
+          # about. On the pinned localstack/localstack:4.14.0 image a repeated
+          # topic/protocol/endpoint triple was observed to return the EXISTING
+          # subscription ARN and leave the count at one, matching the documented
+          # AWS behaviour. That makes this comparison a regression guard rather
+          # than a reproduction of a known break: it holds the observed behaviour
+          # in place across an image bump, and it also covers the case the
+          # read-before-write in ensure_notification_subscription exists for, on
+          # any edge where the documented behaviour is not reproduced.
+          #
+          # Protocol and endpoint are snapshotted rather than the subscription
+          # ARN, so the comparison is deterministic: the ARN carries a random
+          # suffix that would differ between two runs even with nothing wrong,
+          # whereas an added subscriber appears as an extra protocol/endpoint
+          # pair and changes the sorted token multiset.
           snapshot() {
             docker compose exec -T localstack sh -c '
               awslocal s3api list-buckets --query "Buckets[].Name" --output text
               awslocal sqs list-queues --query "QueueUrls[]" --output text
-              awslocal sns list-topics --query "Topics[].TopicArn" --output text' \
+              awslocal sns list-topics --query "Topics[].TopicArn" --output text
+              awslocal sns list-subscriptions \
+                --query "Subscriptions[].[Protocol,Endpoint]" --output text' \
               | tr -s '[:space:]' '\n' | awk 'NF' | sort
           }
 
@@ -2926,9 +3177,14 @@ jobs:
 
           after="$(snapshot)"
           if [ "${before}" != "${after}" ]; then
+            remedy='a second run must neither create nor remove anything. Compare the two snapshots printed'
+            remedy="${remedy}"' below; a repeated sqs endpoint pair is a duplicated SNS subscription, which means'
+            remedy="${remedy}"' the read-before-write in ensure_notification_subscription did not take effect and'
+            remedy="${remedy}"' every operator notice is now delivered twice.'
             finding Blocker localstack-init/init-aws.sh 'inventory after a second run' \
               'identical to the first' 'changed' \
-              'a second run must neither create nor remove anything. Compare the two snapshots in this step log.'
+              "${remedy}"
+            printf 'before:\n%s\nafter:\n%s\n' "${before}" "${after}"
           else
             printf 'The inventory is identical after the second run.\n'
           fi
@@ -3187,7 +3443,7 @@ jobs:
   image-scan:
     name: Delivered image and bill of materials (fail on HIGH or CRITICAL)
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       TRIVY_IMAGE: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
       TRIVY_DB: mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
@@ -3198,6 +3454,14 @@ jobs:
       # under RUNNER_TEMP rather than the workspace so it is never a candidate
       # for the uploaded evidence artefact: it is a full copy of the image.
       IMAGE_ARCHIVE: ${{ runner.temp }}/image-archive/carddemo-image.tar
+      # The BUILD stage, scanned as well as the delivered image. The delivered
+      # image is what runs in production, but the build stage is what COMPILES
+      # it, and a compiler host is part of the supply chain of everything it
+      # emits. Scanning only the delivered image left that surface unmeasured -
+      # which is how the build stage came to run on a JDK three patches behind
+      # the runtime's without any gate noticing.
+      BUILDER_TAG: carddemo-build:scan-${{ github.sha }}
+      BUILDER_ARCHIVE: ${{ runner.temp }}/image-archive/carddemo-build.tar
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -3212,6 +3476,32 @@ jobs:
           docker build --file Dockerfile --tag "${IMAGE_TAG}" .
           docker image inspect "${IMAGE_TAG}" \
             --format 'scanned image id: {{.Id}}{{"\n"}}created: {{.Created}}{{"\n"}}user: {{.Config.User}}'
+
+      # ----------------------------------------------------------------------
+      # THE BUILD STAGE IS TAGGED SO IT CAN BE SCANNED TOO.
+      #
+      # This costs almost nothing: the step above already built every build-stage
+      # layer, because the runtime stage copies the application archive out of it.
+      # This re-runs the same graph with an explicit --target, so every layer is a
+      # cache hit and the only new artefact is the tag.
+      #
+      # It is also where the JDK alignment becomes BLOCKING rather than merely
+      # asserted in CI: the build stage contains a RUN step that reads
+      # java.runtime.version and exits non-zero unless it is the runtime stage's
+      # exact build. So a divergence between the two image stages fails THIS step,
+      # in addition to the workflow-level assertion that holds CI to the same
+      # number. Three surfaces, one value, two independent enforcement points.
+      # ----------------------------------------------------------------------
+      - name: Build the build stage so the compiler host is scanned, not only the delivered image
+        run: |
+          set -euo pipefail
+          docker build --file Dockerfile --target build --tag "${BUILDER_TAG}" .
+          docker image inspect "${BUILDER_TAG}" \
+            --format 'build stage image id: {{.Id}}{{"\n"}}created: {{.Created}}'
+          printf 'Build stage JDK: %s\n' \
+            "$(docker run --rm --entrypoint java "${BUILDER_TAG}" \
+                 -XshowSettings:properties -version 2>&1 \
+               | sed -n 's/^ *java\.runtime\.version = //p' | head -n 1)"
 
       # ----------------------------------------------------------------------
       # THE IMAGE IS HANDED TO THE SCANNER AS A FILE, NOT AS DAEMON ACCESS.
@@ -3243,6 +3533,14 @@ jobs:
             "${IMAGE_TAG}" "${IMAGE_ARCHIVE}" \
             "$(wc -c < "${IMAGE_ARCHIVE}" | tr -d ' ')" \
             "$(stat --format '%a' "${IMAGE_ARCHIVE}")"
+          # The build stage, handed over as a file on exactly the same terms and
+          # for exactly the same reason: no step here is given daemon access.
+          docker save --output "${BUILDER_ARCHIVE}" "${BUILDER_TAG}"
+          chmod 600 "${BUILDER_ARCHIVE}"
+          printf 'Saved %s -> %s (%s bytes, mode %s)\n' \
+            "${BUILDER_TAG}" "${BUILDER_ARCHIVE}" \
+            "$(wc -c < "${BUILDER_ARCHIVE}" | tr -d ' ')" \
+            "$(stat --format '%a' "${BUILDER_ARCHIVE}")"
 
       # Written as the invoking user so no elevation is needed to read the
       # reports back, which is why there is no ownership fix-up anywhere here.
@@ -3264,8 +3562,100 @@ jobs:
           printf 'Bill of materials written: %s bytes\n' \
             "$(wc -c < "${SCAN_OUT}/carddemo-image-sbom.cdx.json" | tr -d ' ')"
 
-      # HIGH and CRITICAL fail the job, matching the boundary the Maven scan
-      # enforces so the two gates cannot disagree about what "serious" means.
+      # ----------------------------------------------------------------------
+      # THE BUILD STAGE: SCANNED AND REPORTED, NOT ENFORCED - and why.
+      #
+      # Placed BEFORE the blocking gate below on purpose, so this evidence is
+      # produced even on the runs where the delivered image fails: a step after a
+      # failing step does not run, and the record of what the compiler host
+      # carried is most wanted precisely when something broke.
+      #
+      # WHY REPORTED RATHER THAN BLOCKING. The split is the same one this job
+      # already draws for the development topology images further down, and it is
+      # grounded in a measurement rather than a preference. Measured against this
+      # scanner and database: the delivered runtime's Ubuntu layer reports ZERO
+      # findings, while the build stage's Ubuntu layer reports three HIGH - gpgv
+      # CVE-2025-68973 and OpenSSL CVE-2026-45447 through libssl3t64 and openssl.
+      # Every one is `fixed` upstream. They are not the JDK, which is now the
+      # runtime's exact build; they are the Ubuntu 24.04.3 layer of the pinned
+      # maven base, and the runtime base is 24.04.4, which is why one is clean and
+      # the other is not.
+      #
+      # That leaves exactly two remedies, and neither belongs behind an automatic
+      # gate. Upgrading the packages in place means apt with exact version pins
+      # against an archive that removes superseded versions, so the build would
+      # start failing on a date nobody chose - non-determinism introduced to fix a
+      # determinism defect. Rebasing the build stage onto the digest-pinned
+      # Temurin JDK image would clear all three, since that image is 24.04.4, but
+      # it ships no curl, wget or unzip, so the checksum-verifying wrapper cannot
+      # fetch its pinned distribution there; and it is a toolchain pin move, which
+      # is the class of change that requires approval rather than an agent's
+      # judgement. A gate whose only available remedy is suppression is the exact
+      # failure mode this file argues against in writing elsewhere.
+      #
+      # So the finding is DISCLOSED - printed here, uploaded as evidence, and
+      # registered as a residual risk with its remedy named - rather than hidden
+      # behind a threshold or silently suppressed. What IS blocking is the part
+      # that can be fixed and was: the JDK equality, enforced inside the image
+      # build and again in the workflow assertion.
+      #
+      # --ignore-unfixed stays false for the same reason it is false below: an
+      # advisory with no upstream fix is still a disclosed exposure, and hiding it
+      # would let this base drift out of support unobserved.
+      # ----------------------------------------------------------------------
+      - name: Scan the build stage and report its findings (evidence, not a gate)
+        run: |
+          set -euo pipefail
+          mkdir -p "${SCAN_OUT}"
+          if docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              --volume "${BUILDER_ARCHIVE}:/scan/build.tar:ro" \
+              --volume "${SCAN_OUT}:/out" \
+              "${TRIVY_IMAGE}" \
+                image \
+                --input /scan/build.tar \
+                --db-repository "${TRIVY_DB}" \
+                --java-db-repository "${TRIVY_JAVA_DB}" \
+                --scanners vuln \
+                --severity HIGH,CRITICAL \
+                --ignore-unfixed=false \
+                --exit-code 0 \
+                --format table \
+                --output /out/build-stage-vulnerabilities.txt; then
+            printf 'Build stage scanned.\n'
+          else
+            printf '::warning title=Medium::the build stage scan did not complete; its evidence is absent\n'
+          fi
+
+          if [ -s "${SCAN_OUT}/build-stage-vulnerabilities.txt" ]; then
+            cat "${SCAN_OUT}/build-stage-vulnerabilities.txt"
+          fi
+
+          # Reported, so the drift stays visible in the log and in the uploaded
+          # evidence rather than only in a file nobody opens.
+          if grep -qE '(HIGH|CRITICAL)' "${SCAN_OUT}/build-stage-vulnerabilities.txt" 2>/dev/null; then
+            note="::warning title=High::${BUILDER_TAG} [build-stage HIGH or CRITICAL findings]"
+            note="${note}"' expected: none | actual: the findings listed above |'
+            note="${note}"' remediation: rebase the build stage onto the digest-pinned'
+            note="${note}"' eclipse-temurin JDK image, whose Ubuntu layer is current, and'
+            note="${note}"' supply Maven without relying on curl or wget in that image.'
+            note="${note}"' This is a TOOLCHAIN PIN MOVE and needs approval - it is'
+            note="${note}"' disclosed as a residual risk in DECISION_LOG.md and'
+            note="${note}"' docs/validation-gates.md rather than actioned unilaterally,'
+            note="${note}"' and it is reported rather than enforced because the only'
+            note="${note}"' other remedy, pinned apt upgrades, expires when the Ubuntu'
+            note="${note}"' archive drops the superseded versions.'
+            printf '%s\n' "${note}"
+          else
+            printf 'The build stage carries no HIGH or CRITICAL finding.\n'
+          fi
+
+      # The scanner's OWN severity bands HIGH and CRITICAL fail the job, matching
+      # the boundary the Maven scan enforces so the two gates cannot disagree about
+      # what "serious" means. These are EXTERNAL vendor ratings - Trivy's labels for
+      # a CVSS range - not this project's finding severities, which are Blocker, High,
+      # Medium and Low. The `title=Blocker` on the annotation below is the project
+      # severity; the bracketed HIGH/CRITICAL is the scanner's.
       # --ignore-unfixed is explicitly false: an advisory with no upstream fix is
       # still a disclosed exposure in the delivered image, and hiding it would let
       # the base image drift out of support while this job stayed green. The
@@ -3386,6 +3776,97 @@ jobs:
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
   # ------------------------------------------------------------------
+  # THE BUILD PLUGIN GRAPH: THE GATE THAT SCANS THE SCANNER.
+  #
+  # dependency-check-maven reads the PROJECT's dependency graph. It is never
+  # presented with the plugins that compile, test, measure and package that
+  # project, so a vulnerable plugin dependency passed the vulnerability gate in
+  # complete silence. pom.xml has recorded this gap in writing for some time,
+  # together with the remedy it prescribes - enumerate with
+  # dependency:resolve-plugins, then scan those coordinates OUTSIDE the build
+  # rather than by adding a scanning plugin, which would introduce a plugin
+  # coordinate the AAP does not sanction and enlarge the surface being measured.
+  # This job is that remedy, implemented.
+  #
+  # It is not a hypothetical gap. The component whose verdict every other
+  # dependency claim in this build rests on was itself resolving
+  # httpclient5 5.4.2, carrying CVE-2025-27820 at CVSS 8.1 in hostname and domain
+  # verification, on the very code path that fetches the advisory feed. A scanner
+  # that can be fed attacker-chosen advisory data does not fail loudly - it
+  # returns a clean report. pom.xml now overrides that transport at plugin scope,
+  # and this job is what keeps the override honest: the scanner VERIFIES the
+  # override against the plugin's real class realm and fails if it is ever
+  # removed, because dependency:resolve-plugins alone cannot see it.
+  #
+  # WHY A REPOSITORY-OWNED SCRIPT AND NOT AN ACTION: the same reason the image
+  # scan uses a digest-pinned image rather than a marketplace action. Closing a
+  # supply-chain gap by adding a mutable third-party dependency to the critical
+  # path trades one exposure for another. The script is in this repository, is
+  # reviewable, and its only external dependency is the advisory service it
+  # queries.
+  #
+  # WHY THE ADVISORY DATA IS NOT PINNED, while the toolchain is: exactly the
+  # reasoning the image scan states for its own database. A frozen advisory set
+  # cannot report an advisory published after it was frozen, so the data is
+  # deliberately live and its ORIGIN is what is fixed.
+  # ------------------------------------------------------------------
+  plugin-graph-scan:
+    name: Build plugin graph advisories (fail on undispositioned HIGH or CRITICAL)
+    needs: verify
+    runs-on: ubuntu-24.04
+    env:
+      PLUGIN_SCAN_OUT: ${{ github.workspace }}/target/plugin-graph
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK ${{ env.JAVA_PATCH_VERSION }}
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_PATCH_VERSION }}
+          cache: maven
+
+      # Two listings, because they answer different questions and neither alone
+      # is sufficient. resolve-plugins gives the DECLARED inventory - every
+      # plugin and plugin-transitive coordinate, which is the conservative
+      # superset. The -X run gives the plugin's REAL class realm, which is the
+      # only place a project-level plugin <dependencies> override is observable.
+      # The scanner reconciles them, so what is measured is what executes.
+      - name: Enumerate the declared plugin graph and the real plugin realm
+        run: |
+          set -euo pipefail
+          mkdir -p "${PLUGIN_SCAN_OUT}"
+          ./mvnw -B -ntp dependency:resolve-plugins \
+            | tee "${PLUGIN_SCAN_OUT}/resolve-plugins.txt"
+          ./mvnw -B -X dependency-check:help -Ddetail=false \
+            > "${PLUGIN_SCAN_OUT}/plugin-realm.log" 2>&1
+          printf 'declared coordinates: %s | realm lines: %s\n' \
+            "$(grep -cE '^\[INFO]\s+[^ ]+:[^ ]+:(jar|maven-plugin):' \
+                 "${PLUGIN_SCAN_OUT}/resolve-plugins.txt" || true)" \
+            "$(grep -c 'Included:' "${PLUGIN_SCAN_OUT}/plugin-realm.log" || true)"
+
+      - name: Scan the plugin graph and fail on undispositioned HIGH or CRITICAL
+        run: |
+          set -euo pipefail
+          python3 .github/plugin-graph/scan_plugin_graph.py \
+            --inventory "${PLUGIN_SCAN_OUT}/resolve-plugins.txt" \
+            --realm "${PLUGIN_SCAN_OUT}/plugin-realm.log" \
+            --dispositions .github/plugin-graph/dispositions.json \
+            --out "${PLUGIN_SCAN_OUT}"
+
+      - name: Upload the plugin graph advisory evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: plugin-graph-evidence
+          path: target/plugin-graph/**
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # ------------------------------------------------------------------
   # The eight gates, collated. Every result is DERIVED from the job that
   # produced it - nothing here is hardcoded, and the word "pass" is deliberately
   # never asserted about a gate this run did not execute. Where a result cannot
@@ -3403,7 +3884,7 @@ jobs:
       - integration
       - image-scan
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Routed through env: rather than interpolated into the script body.
       INTEGRITY_RESULT: ${{ needs.repository-integrity.result }}
@@ -3448,13 +3929,14 @@ jobs:
       # ----------------------------------------------------------------------
       # The document is GENERATED FROM THE RETAINED EVIDENCE, gate by gate.
       #
-      # An earlier revision built it from a heredoc over four job-conclusion
-      # variables. Everything a job conclusion cannot express was therefore
-      # written by hand, and hand-written lifecycle prose does not age: this file
-      # went on publishing "the end-to-end tier is pending implementation and
-      # execution" and "no legacy baseline exists, so a field-level comparison
-      # cannot be produced" for gates that had since been implemented, measured
-      # and asserted - in the same document that claims no figure is carried over
+      # Building it from a heredoc over four job-conclusion
+      # variables is what this generation step exists to avoid. Everything a job
+      # conclusion cannot express would then be written by hand, and hand-written
+      # lifecycle prose does not age: the document would go on publishing "the
+      # end-to-end tier is pending implementation and execution" and "no legacy
+      # baseline exists, so a field-level comparison cannot be produced" for gates
+      # that have since been implemented, measured and asserted - in the same
+      # document that claims no figure is carried over
       # from an earlier run. A statement about the lifecycle IS a figure.
       #
       # So every Result below is derived: from the suite XML the verify job
@@ -3736,10 +4218,10 @@ jobs:
           # identifier in TRACEABILITY_MATRIX.md, and for the same reason.
           add("Anything none of the three sources supplies is reported as \"" + NA + "\"")
           add("with what would produce it. No claim about a gate's lifecycle is written")
-          add("by hand here. An earlier revision of this step did exactly that, and went")
-          add("on describing gates as awaiting implementation and execution long after")
-          add("they had been implemented, measured and asserted - in the same document")
-          add("that claimed to carry no figure from an earlier run.")
+          add("by hand here. Hand-written lifecycle prose goes on describing gates as")
+          add("awaiting implementation and execution long after they have been")
+          add("implemented, measured and asserted - in the same document that claims to")
+          add("carry no figure from an earlier run.")
           add("")
 
           add("## Gate 1 - end-to-end boundary parity")

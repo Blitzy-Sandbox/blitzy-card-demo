@@ -226,6 +226,11 @@ final class CardUpdateRequestTest {
             "fromtranid", "totranid", "fromprogram", "toprogram",
             "pgmcontext", "lastmap", "lastmapset");
 
+    /**
+     * Supplies the screen-field-to-component pairs as arguments, one case per pair.
+     *
+     * @return one pair per declared field, in copybook order.
+     */
     private static List<String> fieldComponentPairs() {
         return RecordFieldContract.pairsOf(FIELD_TO_COMPONENT);
     }
@@ -283,6 +288,11 @@ final class CardUpdateRequestTest {
                 "F12=Cancel", null, null);
     }
 
+    /**
+     * Builds a payload whose every component is absent, for the not-supplied cases.
+     *
+     * @return that payload.
+     */
     private static CardUpdateRequest empty() {
         return new CardUpdateRequest(null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null);
@@ -308,6 +318,13 @@ final class CardUpdateRequestTest {
     }
 
     /**
+     * A stand-in sealed snapshot. These tests are about the wire shape, so an opaque literal is exactly as
+     * representative as a genuinely sealed value and needs no key; the sealing itself is
+     * {@code SnapshotTokenServiceTest}'s subject.
+     */
+    private static final String SEALED_SNAPSHOT = "c2VhbGVkLXNuYXBzaG90LXN0YW5kLWlu";
+
+    /**
      * Builds a snapshot group from the leaf widths the driving program declares.
      *
      * @param name   the embossed name leaf
@@ -323,6 +340,12 @@ final class CardUpdateRequestTest {
                 new CardData(name, new ExpiraionDate(year, month, day), status));
     }
 
+    /**
+     * Validates one payload under the property path the controller would bind it at.
+     *
+     * @param request the payload to validate.
+     * @return its violations, empty when the payload is valid.
+     */
     private Set<ConstraintViolation<CardUpdateRequest>> violationsOf(final CardUpdateRequest request) {
         return ValidationSupport.violationsOf(request, "request");
     }
@@ -345,7 +368,7 @@ final class CardUpdateRequestTest {
                     .as("the screen fields come first, in copybook order")
                     .hasSize(17);
             assertThat(components.subList(COCRDUP.inputFieldCount(), components.size()))
-                    .containsExactly("oldDetails", "newDetails");
+                    .containsExactly("snapshot", "newDetails");
         }
 
         @Test
@@ -664,15 +687,21 @@ final class CardUpdateRequestTest {
             assertThat(program).contains("05 CCUP-OLD-DETAILS.", "05 CCUP-NEW-DETAILS.");
 
             assertThat(RecordFieldContract.componentNames(CardUpdateRequest.class))
-                    .endsWith("oldDetails", "newDetails");
+                    .endsWith("snapshot", "newDetails");
         }
 
         @Test
-        @DisplayName("one Java type serves both groups, because the two COBOL declarations are identical")
+        @DisplayName("one Java type serves both groups, and the as-displayed one travels sealed")
         void oneTypeServesBothGroups() throws NoSuchFieldException {
-            assertThat(CardUpdateRequest.class.getDeclaredField("oldDetails").getType())
-                    .isEqualTo(CardDetails.class)
-                    .isEqualTo(CardUpdateRequest.class.getDeclaredField("newDetails").getType());
+            // The two COBOL declarations are identical, so one type serves both roles. Only the edited group
+            // is carried as a group on the wire: the as-displayed group is sealed by
+            // com.cardemo.security.SnapshotTokenService and travels as one opaque string, because a group the
+            // caller can rewrite makes 9300-CHECK-CHANGE-IN-REC unconditionally true. The type is still the
+            // one the service seals and opens, which is why it keeps serving both roles server-side.
+            assertThat(CardUpdateRequest.class.getDeclaredField("newDetails").getType())
+                    .isEqualTo(CardDetails.class);
+            assertThat(CardUpdateRequest.class.getDeclaredField("snapshot").getType())
+                    .isEqualTo(String.class);
         }
 
         @Test
@@ -733,13 +762,13 @@ final class CardUpdateRequestTest {
         void theValidCascadeReachesTheDeepestLeaf() {
             final CardUpdateRequest overWide = new CardUpdateRequest(null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null,
-                    snapshot("N".repeat(51), "YYYYY", "MM", "DD", "Y"), null);
+                    null, snapshot("N".repeat(51), "YYYYY", "MM", "DD", "Y"));
 
             assertThat(violationsOf(overWide))
                     .extracting(violation -> violation.getPropertyPath().toString())
                     .as("a cascade omitted is a cascade that never fires")
-                    .contains("oldDetails.cardData.cardholderName",
-                            "oldDetails.cardData.expiraionDate.expiryYear");
+                    .contains("newDetails.cardData.cardholderName",
+                            "newDetails.cardData.expiraionDate.expiryYear");
         }
 
         @Test
@@ -748,7 +777,8 @@ final class CardUpdateRequestTest {
             final CardDetails valid = snapshot("ANIYA VON", "2023", "03", "09", "Y");
 
             assertThat(violationsOf(new CardUpdateRequest(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, valid, valid))).isEmpty();
+                    null, null, null, null, null, null, null, null, null, SEALED_SNAPSHOT, valid)))
+                    .isEmpty();
         }
 
         @Test
@@ -756,7 +786,7 @@ final class CardUpdateRequestTest {
         void neitherSnapshotIsMandatory() {
             // app/cbl/COCRDUPC.cbl:1345 and :586 both begin by executing INITIALIZE on the group, so a
             // wholly unpopulated group is a state the source produces rather than a request it refuses.
-            assertThat(RecordFieldContract.declares(CardUpdateRequest.class, "oldDetails", NotNull.class))
+            assertThat(RecordFieldContract.declares(CardUpdateRequest.class, "snapshot", NotNull.class))
                     .isFalse();
             assertThat(RecordFieldContract.declares(CardUpdateRequest.class, "newDetails", NotNull.class))
                     .isFalse();
@@ -793,7 +823,7 @@ final class CardUpdateRequestTest {
             // test and fails a version test. The two guarantees are different and neither replaces the
             // other; this payload's job is to carry the values the first one needs.
             assertThat(RecordFieldContract.componentNames(CardUpdateRequest.class))
-                    .contains("oldDetails", "newDetails");
+                    .contains("snapshot", "newDetails");
             assertThat(RecordFieldContract.componentNames(CardUpdateRequest.class))
                     .as("no version counter is carried on the wire: the store owns that layer")
                     .noneSatisfy(component -> assertThat(component.toLowerCase(Locale.ROOT))
@@ -1238,7 +1268,7 @@ final class CardUpdateRequestTest {
         @Test
         @DisplayName("every probe used by this group is a value the instance really carries")
         void everyProbeIsNonVacuous() {
-            // The guard against the failure mode this group previously had: a probe that is absent from the
+            // The guard against this group's own failure mode: a probe that is absent from the
             // instance makes doesNotContain succeed for the wrong reason. Asserting the probes are present
             // in the instance's own state makes each omission assertion meaningful.
             final CardUpdateRequest request = populated();
@@ -1301,12 +1331,14 @@ final class CardUpdateRequestTest {
         void aPopulatedSnapshotNeverLeaksThroughTheRequest() {
             final CardDetails details = snapshot("ANIYA VON", "2023", "03", "09", "Y");
             final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, details, details);
+                    null, null, null, null, null, null, null, null, null, null, null, SEALED_SNAPSHOT,
+                    details);
 
             assertThat(request.toString())
                     .doesNotContain(details.cardNumber())
                     .doesNotContain(details.cardData().cardholderName())
-                    .doesNotContain("oldDetails")
+                    .doesNotContain(SEALED_SNAPSHOT)
+                    .doesNotContain("snapshot")
                     .doesNotContain("newDetails");
         }
 
@@ -1378,6 +1410,11 @@ final class CardUpdateRequestTest {
     @DisplayName("10. The frozen fixture the payload has to survive")
     final class FixtureBackedContract {
 
+        /**
+         * Loads the frozen card fixture by classpath resource name.
+         *
+         * @return the fixture data; the file is never copied, edited or written.
+         */
         private FixtureLoader.FixtureData cardFixture() {
             // Loaded by classpath resource name only: never copied, never edited, never written.
             return FixtureLoader.load(FixtureLoader.Fixture.CARD);
@@ -1529,7 +1566,7 @@ final class CardUpdateRequestTest {
                             card.field(0, 91, CVACT02Y.widthOf("CARD-ACTIVE-STATUS"))));
 
             assertThat(violationsOf(new CardUpdateRequest(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, details, null))).isEmpty();
+                    null, null, null, null, null, null, null, null, null, null, details))).isEmpty();
             assertThat(details.cardData().cardholderName())
                     .as("the fifty-character embossed name keeps its space padding")
                     .hasSize(50)
@@ -1702,16 +1739,12 @@ final class CardUpdateRequestTest {
     /**
      * The diagnostic rendering may not be turned into a forged log record.
      *
-     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
-     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
-     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
-     * caller liked, in the exact shape a reader trusts.
-     *
-     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
-     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
-     * which something renders the offending instance - so the rendering has to be safe on an instance that
-     * never passed validation. These tests therefore build hostile values directly, without validating them,
-     * which is the state the defect actually occurred in.
+     * <p>Every component {@code toString()} emits is declared {@code String} and arrives from a JSON request
+     * body, so a caller controls its bytes: concatenated straight in, a CR or LF forges as many further log
+     * lines as the caller likes, in the exact shape a reader trusts. {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is precisely the occasion
+     * on which something renders the offending instance, so these tests build hostile values directly and
+     * never validate them first.
      */
     @Nested
     @DisplayName("the diagnostic rendering cannot forge a log record")

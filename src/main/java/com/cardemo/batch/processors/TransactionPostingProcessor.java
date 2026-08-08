@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Batch ItemProcessor (Java 25 / Spring Boot 3.5.11)
  * Function    : Daily transaction validation cascade and posting.
- * Source      : app/cbl/CBTRN02C.cbl (731 lines, 27 paragraphs) @ 7756d89
+ * Source      : app/cbl/CBTRN02C.cbl (731 lines, 26 own paragraph labels) @ 7756d89
  *               app/jcl/POSTTRAN.jcl - DALYREJS LRECL=430
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -62,7 +62,7 @@ import com.cardemo.service.shared.FileStatusMapper;
 
 /**
  * The per-record validation cascade and posting logic of the daily transaction posting job, translated
- * paragraph by paragraph from {@code app/cbl/CBTRN02C.cbl} - 731 lines, 27 paragraphs, read at commit
+ * paragraph by paragraph from {@code app/cbl/CBTRN02C.cbl} - 731 lines, 26 own paragraph labels, read at commit
  * {@code 7756d89}.
  *
  * <h2>What it does</h2>
@@ -709,11 +709,11 @@ public class TransactionPostingProcessor
      * Constructs the processor over its four datasets, the shared status mapper and the injected clock.
      *
      * <p><strong>This is the only constructor, so the container performs implicit constructor injection and
-     * no {@code @Autowired} marker is needed.</strong> It previously had a five-argument sibling that
-     * defaulted the clock to {@link Clock#systemDefaultZone()}, which meant the one value in this class that
-     * reaches the parity baseline - the generated {@code TRAN-PROC-TS} - was taken from ambient state rather
+     * no {@code @Autowired} marker is needed.</strong> A five-argument sibling that
+     * defaulted the clock to {@link Clock#systemDefaultZone()} would take the one value in this class that
+     * reaches the parity baseline - the generated {@code TRAN-PROC-TS} - from ambient state rather
      * than from a configured dependency. Rule 1 Clause A requires determinism and Clause B prefers injection
-     * over ambient state, so the clock now arrives the same way every other collaborator does.
+     * over ambient state, so the clock arrives the same way every other collaborator does.
      *
      * <p><strong>The injected clock belongs to one owner, and its zone is decided there.</strong>
      * {@code com.cardemo.config.ObservabilityConfig#clock(String)} publishes the application's single
@@ -1249,12 +1249,12 @@ public class TransactionPostingProcessor
      * it makes the compared value <em>smaller in magnitude</em>, so a transaction that unbounded arithmetic
      * would reject with code 102 can be accepted by the source, and an account whose accumulators straddle
      * the boundary is classified differently by the two implementations. An unbounded {@link BigDecimal}
-     * therefore does not merely differ in an unreachable corner - it changes which records post. This code
-     * previously omitted the narrowing and documented the omission as "strictly safer than the source"
-     * because no record in {@code app/data/ASCII/dailytran.txt} reaches the boundary. That reasoning is not
-     * available here: behavioural parity is the contract, the fixture is a sample rather than the domain, and
-     * "safer" is a behaviour change by another name. The narrowing is applied, and the boundary is asserted
-     * by {@code TransactionPostingProcessorTest} rather than left to the fixture to exercise.
+     * therefore does not merely differ in an unreachable corner - it changes which records post. Omitting
+     * the narrowing and documenting the omission as "strictly safer than the source"
+     * because no record in {@code app/data/ASCII/dailytran.txt} reaches the boundary is not
+     * available as a reading here: behavioural parity is the contract, the fixture is a sample rather than the
+     * domain, and "safer" is a behaviour change by another name. The narrowing is applied, and the boundary is
+     * asserted by {@code TransactionPostingProcessorTest} rather than left to the fixture to exercise.
      *
      * <p><b>The arithmetic.</b> The value is first taken to the destination's scale of two, truncating toward
      * zero, which is what a {@code COMPUTE} without {@code ROUNDED} does. Its magnitude is then reduced

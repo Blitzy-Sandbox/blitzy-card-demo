@@ -86,12 +86,12 @@ final class BmsSymbolicMap {
     /**
      * Matches a generated input-field declaration and captures its picture body.
      *
-     * <p>Three spellings occur, and an earlier revision of this class matched only the first of them. A
+     * <p>Three spellings occur, and all three must be matched. A
      * census of every {@code PIC} clause in all seventeen members establishes the complete set: 910
      * {@code X(n)} data fields, 441 {@code S9(4)} length fields, 5 edited output masks, and exactly one
      * numeric input field. That one field is {@code app/cpy-bms/COACTVW.CPY:60},
      * {@code 02  ACCTSIDI  PIC 99999999999.}, the eleven-digit account identifier written in expanded
-     * form. Matching only {@code X(n)} silently dropped it, so {@code COACTVW} reported 36 fields where it
+     * form. Matching only {@code X(n)} silently drops it, so {@code COACTVW} reports 36 fields where it
      * declares 37 - which is precisely the figure the AAP's own field-count table gets wrong. The
      * parenthesised {@code 9(n)} form is accepted too, defensively; no input group currently uses it.
      *

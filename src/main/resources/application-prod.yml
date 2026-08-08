@@ -1,50 +1,50 @@
 # ******************************************************************
-# * File         : application-prod.yml
-# * Application  : CardDemo
-# * Type         : Spring Boot production profile (YAML), least privilege
-# * Function     : The production-only DELTA over application.yml for the
-# *                CardDemo modular monolith that replaces the z/OS
-# *                runtime of the frozen COBOL corpus in app/. It exists
-# *                to satisfy Rule 1 Clause D - "principle of least
-# *                privilege for tokens/credentials/config" - and to close
-# *                the High-severity gap left by the previous migration
-# *                attempt, which shipped no production profile at all.
-# *                It carries NO secret, NO credential, NO endpoint, NO
-# *                hostname and NO default on any environment-specific
-# *                value, so an absent variable fails startup by design.
-# *                It restates nothing from the base profile that would
-# *                merely repeat a base value.
-# * Source       : app/csd/CARDDEMO.CSD - the 8 DEFINE FILE entries of the
-# *                online file control table at L1 ACCTDAT, L13 CARDAIX,
-# *                L25 CARDDAT, L37 CCXREF, L50 CUSTDAT, L63 CXACAIX,
-# *                L76 TRANSACT and L88 USRSEC; 18 DEFINE TRANSACTION of
-# *                which CDV1 at L388-390 fronts PROGRAM(COCRDSEC), a
-# *                program with no source anywhere in the repository,
-# *                leaving 17 sourced operations; and DEFINE TDQUEUE(JOBS)
-# *                TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT)
-# *                RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD) at
-# *                L499-505;
-# *                app/jcl/DEFGDGB.jcl - six generation data group bases
-# *                at L25 TRANSACT.BKUP, L31 TRANSACT.DALY, L37 TRANREPT,
-# *                L43 TCATBALF.BKUP, L49 SYSTRAN and L55
-# *                TRANSACT.COMBINED, every one LIMIT(5);
-# *                app/jcl/REPTFILE.jcl - L26-27 declares LIMIT(10) for
-# *                the SAME TRANREPT base, the retention conflict this
-# *                migration resolves to 10;
-# *                app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl - EXEC
-# *                PGM=SDSF issuing CEMT SET FIL(TRANSACT), (CCXREF),
-# *                (ACCTDAT), (CXACAIX) and (USRSEC) OPE and CLO at
-# *                L26-L30, the five datasets whose availability becomes
-# *                the readiness probe group;
-# *                app/cpy/CSUSR01Y.cpy - 05 SEC-USR-PWD PIC X(08) at L21,
-# *                the plaintext password field now stored only as a
-# *                BCrypt hash;
-# *                app/cpy/CVCUS01Y.cpy - 05 CUST-SSN PIC 9(09) at L17,
-# *                with CUST-GOVT-ISSUED-ID at L18 and
-# *                CUST-DOB-YYYY-MM-DD at L19, the personally identifiable
-# *                fields that must never reach a log line or a
-# *                configuration value
-# *                - all @ 7756d89
+# * Program     : application-prod.yml
+# * Application : CardDemo
+# * Type        : Spring Boot production profile (YAML), least privilege
+# * Function    : The production-only DELTA over application.yml for the
+# *               CardDemo modular monolith that replaces the z/OS
+# *               runtime of the frozen COBOL corpus in app/. It exists
+# *               to satisfy Rule 1 Clause D - "principle of least
+# *               privilege for tokens/credentials/config" - and to close
+# *               the High-severity gap left by the previous migration
+# *               attempt, which shipped no production profile at all.
+# *               It carries NO secret, NO credential, NO endpoint, NO
+# *               hostname and NO default on any environment-specific
+# *               value, so an absent variable fails startup by design.
+# *               It restates nothing from the base profile that would
+# *               merely repeat a base value.
+# * Source      : app/csd/CARDDEMO.CSD - the 8 DEFINE FILE entries of the
+# *               online file control table at L1 ACCTDAT, L13 CARDAIX,
+# *               L25 CARDDAT, L37 CCXREF, L50 CUSTDAT, L63 CXACAIX,
+# *               L76 TRANSACT and L88 USRSEC; 18 DEFINE TRANSACTION of
+# *               which CDV1 at L388-390 fronts PROGRAM(COCRDSEC), a
+# *               program with no source anywhere in the repository,
+# *               leaving 17 sourced operations; and DEFINE TDQUEUE(JOBS)
+# *               TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT)
+# *               RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD) at
+# *               L499-505;
+# *               app/jcl/DEFGDGB.jcl - six generation data group bases
+# *               at L25 TRANSACT.BKUP, L31 TRANSACT.DALY, L37 TRANREPT,
+# *               L43 TCATBALF.BKUP, L49 SYSTRAN and L55
+# *               TRANSACT.COMBINED, every one LIMIT(5);
+# *               app/jcl/REPTFILE.jcl - L26-27 declares LIMIT(10) for
+# *               the SAME TRANREPT base, the retention conflict this
+# *               migration resolves to 10;
+# *               app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl - EXEC
+# *               PGM=SDSF issuing CEMT SET FIL(TRANSACT), (CCXREF),
+# *               (ACCTDAT), (CXACAIX) and (USRSEC) OPE and CLO at
+# *               L26-L30, the five datasets whose availability becomes
+# *               the readiness probe group;
+# *               app/cpy/CSUSR01Y.cpy - 05 SEC-USR-PWD PIC X(08) at L21,
+# *               the plaintext password field now stored only as a
+# *               BCrypt hash;
+# *               app/cpy/CVCUS01Y.cpy - 05 CUST-SSN PIC 9(09) at L17,
+# *               with CUST-GOVT-ISSUED-ID at L18 and
+# *               CUST-DOB-YYYY-MM-DD at L19, the personally identifiable
+# *               fields that must never reach a log line or a
+# *               configuration value
+# *               - all @ 7756d89
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -648,8 +648,8 @@ logging:
     # audit trail is lost by raising this: the authentication signal is the
     # carddemo.auth.attempts counter, declared as
     # MetricsConfig.METRIC_AUTHENTICATION_ATTEMPTS and by no property - the
-    # carddemo.metrics.* mirror that once named it was deleted because nothing
-    # bound it - and the application's own events stay at INFO under
+    # no carddemo.metrics.* mirror names it, because nothing would
+    # bind such a property - and the application's own events stay at INFO under
     # com.cardemo.
     org.springframework.security: WARN
     # PIN of the base value, and a protective FLOOR rather than a repeat. A
@@ -665,7 +665,7 @@ logging:
     # SEC-USR-PWD PIC X(08) from app/cpy/CSUSR01Y.cpy:21.
     org.hibernate.orm.jdbc.bind: WARN
     # PIN of the base value, and the one place a floor is not enough. Finding
-    # F-6, severity Major (PCI): SqlExceptionHelper writes the driver's own
+    # F-6, severity High (PCI): SqlExceptionHelper writes the driver's own
     # message at ERROR on every rejected statement, and for a batched insert
     # that message carries every bound value - including CARD-NUM PIC X(16)
     # from app/cpy/CVACT02Y.cpy:5 in cleartext. A level floor cannot exclude

@@ -794,7 +794,7 @@ public class WebConfig implements WebMvcConfigurer {
      * hands over, so the constraints reach the very mapper that binds {@code @RequestBody} rather than one
      * configured on the side, which would have left the one actually in use untouched.
      *
-     * <p><strong>Finding F-1, severity Major - the body half of the control-character screen is registered
+     * <p><strong>Finding F-1, severity High - the body half of the control-character screen is registered
      * here.</strong> Its request-line half is {@link #addInterceptors(InterceptorRegistry)}; both refuse the
      * same character set for the reason recorded on {@link #CONTROL_CHARACTER_REJECTION_MESSAGE}. A
      * {@code U+0000} inside a JSON string used to travel unexamined from the body into a character column,
@@ -1514,7 +1514,6 @@ public class WebConfig implements WebMvcConfigurer {
         }
     }
 
-    // ------------------------------------------------------------------------------------------------
     // The framework boundary: refusals raised before, or instead of, a controller method
     //
     // Seventeen operations answer every refusal they own with an RFC 7807 ProblemDetail carrying an
@@ -1553,7 +1552,6 @@ public class WebConfig implements WebMvcConfigurer {
     // DefaultHandlerExceptionResolver and therefore AFTER ExceptionHandlerExceptionResolver, so every one
     // of the controller-local handlers still wins. Inserting it at the head of the list would silently
     // disable them.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * The single media type this application reads and writes, used both to advertise what a rejected
@@ -1804,7 +1802,7 @@ public class WebConfig implements WebMvcConfigurer {
     /**
      * Makes Spring Security's HTTP-firewall rejection carry the refusal envelope.
      *
-     * <p><strong>Finding, severity Minor - remediated here.</strong> {@code TRACE}, and any method outside
+     * <p><strong>Finding, severity Medium - remediated here.</strong> {@code TRACE}, and any method outside
      * the firewall's allowed set, answered {@code 400 Bad Request} with no body and no
      * {@code Content-Type} at all. The mechanism is a double refusal, and it is worth writing down because
      * the obvious remedies all address the wrong layer:
@@ -1984,7 +1982,7 @@ public class WebConfig implements WebMvcConfigurer {
     /**
      * Refuses a request whose declared {@code Content-Type} is not a concrete type and subtype.
      *
-     * <p><strong>Finding, severity Major - remediated here.</strong> {@code POST /api/auth/signon} with
+     * <p><strong>Finding, severity High - remediated here.</strong> {@code POST /api/auth/signon} with
      * {@code Content-Type: application/*+json} answered {@code 500 Internal Server Error} with Spring's
      * default error body, and so did the other six body-binding operations. A caller needed no credential to
      * provoke it. The mechanism is specific and worth stating, because it is not the mechanism a reader
@@ -2156,7 +2154,7 @@ public class WebConfig implements WebMvcConfigurer {
             }
 
             final String correlationId = currentCorrelationId();
-            // FINDING C-01, severity CRITICAL. The request method and URI used to be logged here. Both are
+            // FINDING C-01, severity BLOCKER. The request method and URI used to be logged here. Both are
             // caller-chosen text on a boundary an unauthenticated caller reaches, so either can carry a card
             // number, a password, a customer name or a government identifier - and the masking in
             // src/main/resources/logback-spring.xml redacts LABELLED values, so a bare protected value in a
@@ -2212,7 +2210,7 @@ public class WebConfig implements WebMvcConfigurer {
     /**
      * Renders the container's own error reports as the application's refusal envelope instead of HTML.
      *
-     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * <p><strong>Finding, severity Medium - remediated here.</strong>
      * {@code GET /api/accounts/000000000%00} answered {@code 400 Bad Request} with
      * {@code Content-Type: text/html} and a page naming the servlet container and its version. The request
      * is rejected by the connector while the request target is still being parsed, so no filter, no servlet
@@ -2231,6 +2229,18 @@ public class WebConfig implements WebMvcConfigurer {
      * <p>Correlation. A pre-servlet refusal has no correlation identifier, because the filter that mints one
      * never ran. Rather than publish nothing, one is minted here and written to the log alongside the status
      * and the request target, so the identifier in the client's hands does resolve to a log entry.
+     *
+     * <p><strong>Finding LOW-002, severity Low, resolved: this boundary is now proven rather than described.</strong>
+     * It previously had no test reference anywhere in the suite, which is the worst place in the application
+     * for that to be true - a regression here is silent, and what it silently restores is the container's own
+     * report. {@code com.cardemo.unit.config.ProblemJsonErrorBoundaryTest} starts an embedded container
+     * through the production customiser, speaks HTTP over a raw socket so no client library can normalise the
+     * bytes, and drives the two refusals a caller can actually provoke - {@code TRACE}, and a malformed
+     * request target. It asserts the media type and all six envelope members, screens the response for the
+     * four disclosure classes the container's report carries, asserts the installation itself so a passing
+     * body assertion cannot be a valve nothing installed, exercises the tolerated non-{@code StandardHost}
+     * branch, and includes a control case against an uncustomised factory that demonstrates the disclosure
+     * being removed. Removing the {@code setErrorReportValveClass} call fails six of its nine cases.
      *
      * <p>Thread safety: stateless beyond what {@link ErrorReportValve} itself holds, and reached on the
      * request thread only.
@@ -2353,7 +2363,7 @@ public class WebConfig implements WebMvcConfigurer {
                 final RequestRejectedException rejection) throws IOException {
 
             final String correlationId = currentCorrelationId();
-            // FINDING C-01, severity CRITICAL. The method, the URI and the firewall's own message used to be
+            // FINDING C-01, severity BLOCKER. The method, the URI and the firewall's own message used to be
             // logged here, and this site was the worst of the three: the firewall rejects a request BECAUSE
             // its URI is malformed, and its message quotes the offending value back. A caller who puts a card
             // number or a government identifier into a path segment therefore had it written to the log twice,

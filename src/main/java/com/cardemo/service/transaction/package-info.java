@@ -10,9 +10,9 @@
  *               path of COTRN02C with its descending-browse identifier
  *               generation and its TWO deliberately different numeric
  *               parsers.
- * Source      : app/cbl/COTRN00C.cbl (699 lines, 16 paragraphs; 10 rows per page at :L65-L68) @ 7756d89
- * Source      : app/cbl/COTRN01C.cbl (330 lines, 9 paragraphs; single-record detail) @ 7756d89
- * Source      : app/cbl/COTRN02C.cbl (783 lines, 18 paragraphs; transaction add) @ 7756d89
+ * Source      : app/cbl/COTRN00C.cbl (699 lines, 16 own paragraph labels; 10 rows per page at :L65-L68) @ 7756d89
+ * Source      : app/cbl/COTRN01C.cbl (330 lines, 9 own paragraph labels; single-record detail) @ 7756d89
+ * Source      : app/cbl/COTRN02C.cbl (783 lines, 18 own paragraph labels; transaction add) @ 7756d89
  * Source      : app/cbl/COTRN02C.cbl:L444-L451 (descending browse of the maximum key plus one) @ 7756d89
  * Source      : app/cbl/COTRN02C.cbl:L204, :L218 (plain numeric conversion for the identifiers) @ 7756d89
  * Source      : app/cbl/COTRN02C.cbl:L383, :L456 (CURRENCY-aware conversion for the amount) @ 7756d89
@@ -106,7 +106,7 @@
  *       {@code compareTo}, never {@code equals}.</li>
  *   <li>Timestamps are 26 characters and the generated form's <strong>final four digits are always zeros</strong>,
  *       so any generator here formats to <strong>hundredths-of-a-second</strong> precision followed by four
- *       zeros. An earlier revision said millisecond precision; that is withdrawn, because three fraction
+ *       zeros, never millisecond precision, because three fraction
  *       digits plus four zeros is seven characters and the field holds six -
  *       {@code app/cbl/CBTRN02C.cbl:L159-L174} splits the fraction into {@code DB2-MIL PIC 9(002)} and
  *       {@code DB2-REST PIC X(04)}, and {@code :L700-L701} moves the two-digit hundredths in and the literal

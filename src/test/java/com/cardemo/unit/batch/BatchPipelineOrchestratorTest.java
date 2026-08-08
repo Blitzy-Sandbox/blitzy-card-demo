@@ -736,7 +736,7 @@ final class BatchPipelineOrchestratorTest {
         @Test
         @DisplayName("a pipeline configured for the relation refuses stage 3 rather than loading from it")
         void theRelationalSubstrateIsRefused() {
-            // FINDING M-01, severity Major. carddemo.batch.combined-transaction-reader.source defaults to
+            // FINDING M-01, severity High. carddemo.batch.combined-transaction-reader.source defaults to
             // `repository`, in which case stage 3's first leg IS the transaction relation that
             // app/jcl/COMBTRAN.jcl:L41-L48 then loads into - so the stage reads the rows it is about to
             // re-insert. This was previously documented as an operator prerequisite and left unchecked,
@@ -1027,7 +1027,7 @@ final class BatchPipelineOrchestratorTest {
         @Test
         @DisplayName("stage 3 is HANDED the pinned generation, as an identifying parameter")
         void theCombineStageIsHandedThePinnedGeneration() {
-            // FINDING C-04, severity Critical. Pinning the key in the pipeline's own context and comparing
+            // FINDING C-04, severity Blocker. Pinning the key in the pipeline's own context and comparing
             // afterwards leaves stage 3 free to resolve "newest generation" for itself in between, which a
             // concurrent interest run redirects. The key is therefore given to stage 3 before it opens its
             // input - the object-store equivalent of the catalogue resolving SYSTRAN(0) atomically at open.
@@ -1432,15 +1432,17 @@ final class BatchPipelineOrchestratorTest {
     /**
      * How a job is started, now that this class declares no runner of its own.
      *
-     * <p>Finding CFG-001, severity High. An earlier revision declared a property-gated
-     * {@code ApplicationRunner}, {@code carddemo.batch.launch}, and a dozen assertions here exercised it: that
-     * each of the six jobs could be submitted, that an unknown name was refused, that a web context was warned
-     * about. All of it launched a job from inside {@code SpringApplication.run}, which is a boot-time launch
-     * however narrowly the bean was gated, and the contract for this class is that nothing here runs on
+     * <p>Finding CFG-001, severity High. No property-gated
+     * {@code ApplicationRunner} named {@code carddemo.batch.launch} may be declared here, and no assertion
+     * here may exercise one - that each of the six jobs can be submitted, that an unknown name is refused,
+     * that a web context is warned about. All of that launches a job from inside
+     * {@code SpringApplication.run}, which is a boot-time launch
+     * however narrowly the bean is gated, and the contract for this class is that nothing here runs on
      * startup.
      *
-     * <p>What the runner was written to solve was real - {@code launchPipeline} had no {@code src/main} caller,
-     * so a deployed application could start none of its six jobs - and it is still solved, by the framework's
+     * <p>The problem such a runner would address is real - {@code launchPipeline} on its own has no
+     * {@code src/main} caller,
+     * so a deployed application could start none of its six jobs - and it is solved by the framework's
      * own {@code JobLauncherApplicationRunner} rather than by an authored one. These assertions pin the three
      * properties that makes true: no runner is declared here, the six job names an operator submits are the
      * ones this application answers to, and nothing on the launch path terminates the process.

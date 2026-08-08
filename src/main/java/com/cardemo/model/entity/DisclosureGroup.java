@@ -222,8 +222,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * generated from these annotations: a mismatch in column name, SQL type, precision, scale or nullability fails
  * application-context startup instead of surfacing later as corrupt data. There is no default value for the
  * rate; the column is non-nullable and the value always comes from source data or from a caller.</p>
- * <p><strong>{@code V1__create_schema.sql} now exists and has been reconciled against.</strong> An earlier
- * revision of this paragraph recorded the migration directory as absent; that claim is withdrawn. {@code V1}
+ * <p><strong>{@code V1__create_schema.sql} exists and has been reconciled against.</strong> {@code V1}
  * declares the {@code disclosure_group} table, and its agreement with the field contract
  * documented above — including the uncommon {@code NUMERIC(6,2)} rate precision that follows from
  * {@code DIS-INT-RATE PIC S9(04)V99} — is asserted mechanically by {@code SchemaStructureTest} against
@@ -231,8 +230,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * contract, so any future divergence is resolved by changing {@code V1}. The shape it declares is exactly
  * this. {@code V2__create_indexes.sql} exists and deliberately creates nothing for this table beyond its
  * composite primary key, because {@code DISCGRP} has no alternate index in
- * {@code app/catlg/LISTCAT.txt}; an earlier revision of this sentence called that migration planned and
- * absent, which is no longer true and is withdrawn:</p>
+ * {@code app/catlg/LISTCAT.txt}. That migration is present rather than planned:</p>
  * <pre>
  * table disclosure_group
  *   acct_group_id  CHAR(10)      NOT NULL   -- part of PK; mapping owned by DisclosureGroupId

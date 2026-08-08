@@ -142,7 +142,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>The claim <em>name</em> is never spelled here. It is
  * {@link JwtTokenProvider#ROLE_CLAIM_NAME}, and it is reached only through that constant, shared in intent
  * with {@link JwtTokenProvider} and {@code com.cardemo.config.SecurityConfig}. A drift between the name
- * used to issue and the name used to read is <strong>High</strong> severity: the token still verifies, the
+ * for issuing and the name for reading is <strong>High</strong> severity: the token still verifies, the
  * authority set comes out empty, and the symptom is a silent authorisation denial rather than an error.
  * Referencing the issuer's own constant is what makes the drift impossible rather than merely unlikely.
  *
@@ -408,10 +408,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Order(JwtAuthenticationFilter.ORDER)
 public final class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    // =============================================================================================
     // Published contract. These three values exist so that com.cardemo.config.SecurityConfig and the
     // unit suite can align to them by reference rather than by repeating a literal.
-    // =============================================================================================
 
     /**
      * Servlet-level precedence of this filter, published so that configuration need not guess it.
@@ -447,9 +445,7 @@ public final class JwtAuthenticationFilter extends OncePerRequestFilter {
      */
     public static final int MAX_AUTHORIZATION_HEADER_LENGTH = 4096;
 
-    // =============================================================================================
     // Internals. Every static below is final and immutable; this class holds no mutable global state.
-    // =============================================================================================
 
     /** Logger for outcome records. Every message it receives is a constant with no credential in it. */
     private static final Logger LOG = LoggerFactory.getLogger(JwtAuthenticationFilter.class);

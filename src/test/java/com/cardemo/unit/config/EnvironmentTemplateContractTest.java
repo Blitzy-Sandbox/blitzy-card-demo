@@ -65,15 +65,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Reconciles {@code .env.example} against the exact property graph the four Spring profile files
  * read.
  *
- * <p>The defect this test closes was not cosmetic. An earlier revision of the template shipped
- * {@code SPRING_DATASOURCE_URL} and {@code MANAGEMENT_OTLP_TRACING_ENDPOINT} and shipped neither
- * {@code POSTGRES_HOST} nor {@code OTEL_EXPORTER_OTLP_ENDPOINT}. Those two composed names bind
+ * <p>The defect this test closes is not cosmetic. A template shipping
+ * {@code SPRING_DATASOURCE_URL} and {@code MANAGEMENT_OTLP_TRACING_ENDPOINT} and shipping neither
+ * {@code POSTGRES_HOST} nor {@code OTEL_EXPORTER_OTLP_ENDPOINT} is worse than one that fails. Those two
+ * composed names bind
  * {@code spring.datasource.url} and {@code management.otlp.tracing.endpoint} <em>directly</em>, by
- * relaxed binding at a higher precedence than any profile file, so while either was exported the
- * decomposed placeholders in {@code application.yml} were never evaluated. A developer who copied
- * the template verbatim therefore booted successfully while the contract the base profile actually
- * declares went entirely unexercised - the template appeared to work and documented the wrong
- * thing, which is worse than a template that fails, because nothing reports it.
+ * relaxed binding at a higher precedence than any profile file, so while either is exported the
+ * decomposed placeholders in {@code application.yml} are never evaluated. A developer who copied
+ * such a template verbatim would boot successfully while the contract the base profile actually
+ * declares went entirely unexercised - the template would appear to work and would document the wrong
+ * thing, and nothing would report it.
  *
  * <p>Three assertions hold the two files together:
  *
@@ -314,12 +315,13 @@ final class EnvironmentTemplateContractTest {
     /**
      * Collects every assignment the template makes, keeping <em>every</em> occurrence of a repeated name.
      *
-     * <p><strong>Why a list and not a map value.</strong> An earlier revision of this method kept one line
-     * per name with {@code Map.put}, so a second assignment of the same name silently replaced the first and
-     * the duplicate became invisible to every assertion below. That is not a hypothetical: the template
-     * shipped the whole least-privilege section twice, and the second copy assigned
-     * {@code CARDDEMO_DB_APP_PASSWORD=carddemo_app} where the first left it empty. Shell and Compose
-     * {@code env_file} semantics are last-assignment-wins, so the predictable value was the effective one
+     * <p><strong>Why a list and not a map value.</strong> Keeping one line
+     * per name with {@code Map.put} lets a second assignment of the same name silently replace the first, so
+     * the duplicate becomes invisible to every assertion below. That is not a hypothetical: a template
+     * shipping the whole least-privilege section twice, with the second copy assigning
+     * {@code CARDDEMO_DB_APP_PASSWORD=carddemo_app} where the first left it empty, is exactly the shape it
+     * hides. Shell and Compose
+     * {@code env_file} semantics are last-assignment-wins, so the predictable value would be the effective one
      * while the reviewed, empty declaration sat above it looking authoritative. Collecting occurrences is
      * what lets {@link Assignments} refuse that shape outright.
      *
@@ -536,8 +538,8 @@ final class EnvironmentTemplateContractTest {
         @Test
         @DisplayName("every credential-bearing name ships EMPTY, so no predictable secret is committed")
         void noCredentialShipsWithAValue() {
-            // Rule 1 Clause D forbids a secret in configuration. The template previously shipped
-            // CARDDEMO_DB_APP_PASSWORD=carddemo_app and CARDDEMO_DB_MIGRATION_PASSWORD=carddemo_migrator -
+            // Rule 1 Clause D forbids a secret in configuration. A template shipping
+            // CARDDEMO_DB_APP_PASSWORD=carddemo_app or CARDDEMO_DB_MIGRATION_PASSWORD=carddemo_migrator ships
             // predictable credentials for the two least-privilege roles, which defeats the point of
             // splitting them off the superuser in the first place. An empty assignment documents the name
             // and commits nothing, which is the shape every one of these must keep.

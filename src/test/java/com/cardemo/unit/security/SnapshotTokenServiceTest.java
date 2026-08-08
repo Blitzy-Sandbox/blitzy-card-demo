@@ -181,8 +181,12 @@ class SnapshotTokenServiceTest {
         void tamperedTokenIsRefused() {
             final SnapshotTokenService service = service();
             final String token = service.seal(KIND, RECORD, new Snapshot(RECORD, "123456789"));
+            // The FIRST character, deliberately. In an unpadded base64url string the final character can
+            // carry slack bits the decoder discards, so editing it need not change a single byte of the
+            // decoded value - which would make this test pass or fail on the payload's length rather than on
+            // the property it is asserting.
             final char[] characters = token.toCharArray();
-            characters[characters.length - 1] = characters[characters.length - 1] == 'A' ? 'B' : 'A';
+            characters[0] = characters[0] == 'A' ? 'B' : 'A';
             final String edited = new String(characters);
 
             assertThatThrownBy(() -> service.open(edited, KIND, RECORD, Snapshot.class))

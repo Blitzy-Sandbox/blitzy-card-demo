@@ -639,9 +639,9 @@ class CombineTransactionsJobTest {
     void noInventedRecordCapAndTheSortStreamsEveryRecord() throws Exception {
         // app/jcl/COMBTRAN.jcl declares no ceiling on the records SORTOUT may hold: :L33-L37 allocates it on
         // UNIT=SYSDA with SPACE=(CYL,(1,1),RLSE) and RLSE releases what is unused, which is a space
-        // allocation and not a record limit. An earlier revision accumulated the whole generation in storage
-        // and needed carddemo.batch.combtran.max-records-per-run to keep that from exhausting the heap, and
-        // both the property and the constructor parameter behind it are gone: the sort now writes each
+        // allocation and not a record limit. Accumulating the whole generation in storage would need
+        // carddemo.batch.combtran.max-records-per-run to keep that from exhausting the heap, and
+        // neither that property nor a constructor parameter behind it exists: the sort writes each
         // 350-byte image straight through to a staging file, so the resident set does not grow with the
         // record count.
         assertThat(java.util.Arrays.stream(CombineTransactionsJob.class.getDeclaredFields())

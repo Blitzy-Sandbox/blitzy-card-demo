@@ -901,16 +901,25 @@ class StatementAndRemainingDtoTest {
                     .hasSize(21);
             assertThat(CardUpdateRequest.class.getRecordComponents())
                     .as("app/cpy-bms/COCRDUP.CPY generates 17 input fields, and the payload carries two "
-                            + "further components - the old and new snapshot groups that COCRDUPC.cbl:291 "
-                            + "and :303 declare - because a stateless request cannot otherwise reproduce "
-                            + "the change-detection comparison the program performs against them")
+                            + "further components - the SEALED as-displayed snapshot that COCRDUPC.cbl:291 "
+                            + "declares, and the submitted group of :303 - because a stateless request "
+                            + "cannot otherwise reproduce the change-detection comparison the program "
+                            + "performs against them")
                     .hasSize(19);
             assertThat(Arrays.stream(CardUpdateRequest.class.getRecordComponents())
                             .map(java.lang.reflect.RecordComponent::getName)
                             .toList())
-                    .as("and the two additions are exactly those groups, at the tail, so the first "
-                            + "seventeen still correspond to the map in copybook order")
-                    .endsWith("oldDetails", "newDetails");
+                    .as("and the two additions are exactly those, at the tail, so the first seventeen "
+                            + "still correspond to the map in copybook order. The as-displayed one is an "
+                            + "opaque token rather than a group: a group the caller could rewrite would "
+                            + "make the comparison at :1503-1508 unconditionally true")
+                    .endsWith("snapshot", "newDetails");
+            assertThat(Arrays.stream(CardUpdateRequest.class.getRecordComponents())
+                            .filter(component -> "snapshot".equals(component.getName()))
+                            .findFirst()
+                            .orElseThrow()
+                            .getType())
+                    .isEqualTo(String.class);
         }
 
         @Test

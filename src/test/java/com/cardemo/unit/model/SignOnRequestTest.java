@@ -1117,10 +1117,10 @@ final class SignOnRequestTest {
     @Test
     @DisplayName("4.13 discloses no credential through the rendering that can actually carry one")
     void disclosesNoCredentialThroughItsRendering() {
-        // The previous form of this test rendered hashCode() to a string and asserted the credential was
-        // absent from it. That could never fail: hashCode() returns an int, whose decimal rendering is
+        // Rendering hashCode() to a string and asserting the credential is
+        // absent from it could never fail: hashCode() returns an int, whose decimal rendering is
         // digits and a possible sign, so it cannot contain an alphanumeric credential no matter what the
-        // production code does. It therefore asserted a property of int, not a property of SignOnRequest.
+        // production code does. It would assert a property of int, not a property of SignOnRequest.
         // The surface that genuinely can leak a credential is toString(), so that is what is asserted.
         final SignOnRequest request = baseline();
 
@@ -1209,11 +1209,9 @@ final class SignOnRequestTest {
                 .isEqualTo(baselineWith("password", null));
     }
 
-    // =========================================================================================
     // 5. THE TRI-STATE INPUT MODEL AND BOUNDARY CONDITIONS
     //    app/cpy/CSSETATY.cpy:L18-L27 models OK / NOT-OK / BLANK; app/cbl/COSGN00C.cbl:L118,:L123
     //    tests SPACES OR LOW-VALUES as two separate sentinels.
-    // =========================================================================================
 
     @Test
     @DisplayName("5.1 keeps absent, blank, low-values and present as four distinguishable states")
@@ -1500,16 +1498,12 @@ final class SignOnRequestTest {
     /**
      * The diagnostic rendering may not be turned into a forged log record.
      *
-     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
-     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
-     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
-     * caller liked, in the exact shape a reader trusts.
-     *
-     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
-     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
-     * which something renders the offending instance - so the rendering has to be safe on an instance that
-     * never passed validation. These tests therefore build hostile values directly, without validating them,
-     * which is the state the defect actually occurred in.
+     * <p>Every component {@code toString()} emits is declared {@code String} and arrives from a JSON request
+     * body, so a caller controls its bytes: concatenated straight in, a CR or LF forges as many further log
+     * lines as the caller likes, in the exact shape a reader trusts. {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is precisely the occasion
+     * on which something renders the offending instance, so these tests build hostile values directly and
+     * never validate them first.
      */
     @Nested
     @DisplayName("the diagnostic rendering cannot forge a log record")

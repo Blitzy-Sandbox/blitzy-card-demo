@@ -350,11 +350,12 @@ import com.cardemo.observability.CorrelationIdFilter;
  *       condition before each iteration and the loop leaves as soon as end of file is detected. The
  *       pipeline-level consequence is real and belongs here: stage 2 leaves one account's cycle counters
  *       unreset, which changes stage 1's over-limit arithmetic on the following run. Nothing is repaired -
- *       {@link InterestCalculationJob} reproduces the source - and the finding is owed an entry in the
- *       {@code DECISION_LOG.md} and a row in the {@code TRACEABILITY_MATRIX.md}.</li>
+ *       {@link InterestCalculationJob} reproduces the source - and the finding is recorded as
+ *       {@code DL-LD-09} in {@code DECISION_LOG.md}, with its rows in
+ *       {@code TRACEABILITY_MATRIX.md}.</li>
  *   <li><b>Blocker</b> - a transaction's originating and processing timestamps are 26-character images, not
  *       temporal objects, and the batch producer formats them to <b>hundredths-of-a-second</b> precision
- *       followed by four literal zeros - an earlier revision said millisecond precision, which is withdrawn
+ *       followed by four literal zeros, never millisecond precision,
  *       because {@code app/cbl/CBTRN02C.cbl:L159-L174} declares the fraction as {@code DB2-MIL PIC 9(002)}
  *       plus {@code DB2-REST PIC X(04)}, six characters and not seven. This class passes them through
  *       untouched and parses none.</li>
@@ -375,7 +376,8 @@ import com.cardemo.observability.CorrelationIdFilter;
  *       {@code CARDDEMO_S3_BATCH_INPUT_BUCKET}, {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} and
  *       {@code CARDDEMO_S3_STATEMENTS_BUCKET}. A brief citing {@code carddemo.s3.*}, or the shorter
  *       environment variable names, is wrong on both counts. This class binds none of them, so the
- *       divergence is a note for whoever does; it is owed an entry in the {@code DECISION_LOG.md}.</li>
+ *       divergence is a note for whoever does; it is registered as {@code CIT-PROPERTY-NAMES} under
+ *       {@code DL-CR-09} in {@code DECISION_LOG.md}.</li>
  *   <li><b>Low</b> - the guard in {@code src/test/java/com/cardemo/unit/model/EvidenceHonestyTest.java} that
  *       requires every reference to this class to be qualified as planned becomes conservative once the class
  *       exists. The remedy is the one that guard already documents for two configuration classes: move the
@@ -477,11 +479,9 @@ public class BatchPipelineOrchestrator {
     /** Flow name of the report branch inside the split. Not a bean: the split flow owns it. */
     private static final String TRANREPT_BRANCH_FLOW_NAME = "batchPipelineTranReptBranchFlow";
 
-    // =================================================================================================
     // The five sibling job bean names. Each is taken from the file that publishes it, never guessed.
     // Two siblings declare their own constant privately, so the literal is repeated here with the
     // declaring line cited; the other three expose a constant and it is referenced instead.
-    // =================================================================================================
 
     /** Stage 1's job bean, published by {@link DailyTransactionPostingJob} as a public constant. */
     private static final String POSTTRAN_JOB_BEAN_NAME = DailyTransactionPostingJob.JOB_BEAN_NAME;
@@ -508,10 +508,8 @@ public class BatchPipelineOrchestrator {
      */
     private static final String TRANREPT_JOB_BEAN_NAME = "transactionReportJob";
 
-    // =================================================================================================
     // Job parameters. Three, and every stage receives all three unchanged. Two of the names are owned
     // elsewhere and are mirrored here because this package may not import the processor package.
-    // =================================================================================================
 
     /**
      * The interest date parameter, {@value}.
@@ -574,10 +572,8 @@ public class BatchPipelineOrchestrator {
     /** Days in February in a leap year. */
     private static final int FEBRUARY_LEAP_LENGTH = 29;
 
-    // =================================================================================================
     // Flow vocabulary. The four gate outcomes first, then the exit codes the pipeline publishes, then
     // the four return codes those outcomes descend from.
-    // =================================================================================================
 
     /** Gate outcome for return code 0: the stage completed and the pipeline proceeds. */
     private static final String GATE_PROCEED = "PROCEED";
@@ -691,7 +687,6 @@ public class BatchPipelineOrchestrator {
      */
     private static final String ABEND_CULPRIT = "PIPELINE";
 
-    // =================================================================================================
     // Diagnostic context. FINDING M-02, severity Medium: four private literals stood here, re-spelling the
     // key names that com.cardemo.observability.CorrelationIdFilter already publishes as public constants,
     // under a comment asserting that "this package may not import" that class. The assertion was false -
@@ -699,7 +694,6 @@ public class BatchPipelineOrchestrator {
     // duplication costs: the two classes carrying their own literals also carried their own lifecycle, and
     // both lifecycles diverged from the other four (findings H-02 and H-03). The constants and the
     // park-and-restore contract now have exactly one definition, in the class that owns the key names.
-    // =================================================================================================
 
     /**
      * Prefix of the pipeline correlation identifier, {@value}.
@@ -715,10 +709,8 @@ public class BatchPipelineOrchestrator {
     /** Branch count of the stage-4 split, and therefore the split executor's concurrency limit. */
     private static final int SPLIT_BRANCH_COUNT = 2;
 
-    // =================================================================================================
     // Pipeline execution-context keys. Every one is prefixed so it cannot collide with a stage's own
     // entries, and every one is read by either a decider or the integration tier.
-    // =================================================================================================
 
     /** Common prefix of every entry this class publishes. */
     private static final String CONTEXT_PREFIX = "carddemo.pipeline.";
@@ -819,10 +811,8 @@ public class BatchPipelineOrchestrator {
     /** The only substrate value stage 3 may run on inside this pipeline, {@value}. */
     private static final String READER_SOURCE_OBJECT_STORAGE = "object-storage";
 
-    // =================================================================================================
     // Stage identity. One constant per JCL artefact of the stream, each citing the line it replaces, so
     // the mapping stays provable for the stream as a whole rather than only for the five COBOL programs.
-    // =================================================================================================
 
     /** Stage 1's display name, {@value}, and the {@code app/jcl/POSTTRAN.jcl} member it replaces. */
     private static final String STAGE_POSTTRAN = "POSTTRAN";
@@ -905,11 +895,9 @@ public class BatchPipelineOrchestrator {
     private static final String DEFAULT_JOB_NAME = "CARDDEMO-PIPELINE";
 
 
-    // =================================================================================================
     // Injected collaborators. Constructor injection only, every field final, and not one of them a bean
     // this class declares: the five stages come from their own files and the four infrastructure beans
     // from the container.
-    // =================================================================================================
 
     /** Stage 1's job, {@code app/jcl/POSTTRAN.jcl}. Injected by bean name, never declared here. */
     private final Job dailyTransactionPostingJob;
@@ -1005,10 +993,8 @@ public class BatchPipelineOrchestrator {
         this.readerSource = readerSource == null ? "" : readerSource.strip();
     }
 
-    // =================================================================================================
     // The five launcher steps. One per JCL member of the stream, each citing the step it replaces. None
     // declares reader, processor or writer logic: the stage it launches owns all of that.
-    // =================================================================================================
 
     /**
      * Stage 1: {@code app/jcl/POSTTRAN.jcl:L23} {@code //STEP15 EXEC PGM=CBTRN02C}.
@@ -1277,11 +1263,9 @@ public class BatchPipelineOrchestrator {
                 .build();
     }
 
-    // =================================================================================================
     // The launch surface. Two public methods: one that turns three untrusted strings into the exact
     // parameter set the stream requires, and one that launches with them. Neither runs on startup, and
     // no listener, schedule or trigger is declared anywhere in this class.
-    // =================================================================================================
 
     /**
      * Builds and validates the parameter set every stage of the pipeline receives.
@@ -1384,14 +1368,13 @@ public class BatchPipelineOrchestrator {
         }
     }
 
-    // =================================================================================================
     // HOW A JOB IS STARTED, AND WHY NO RUNNER IS DECLARED HERE.
     //
-    // Finding CFG-001, severity High, RESOLVED here. This class used to declare a property-gated
-    // ApplicationRunner, carddemo.batch.launch, which launched a named job from inside application startup.
-    // That is a boot-time launch however narrowly it is gated: the runner executes during
+    // Finding CFG-001, severity High. No property-gated ApplicationRunner may be declared here - a
+    // carddemo.batch.launch runner launching a named job from inside application startup, say. That is a
+    // boot-time launch however narrowly it is gated: the runner executes during
     // SpringApplication.run, before the application is serving anything, and the AAP's contract for this
-    // class is that nothing here runs on startup. The gate made the bean conditional, not the launch
+    // class is that nothing here runs on startup. A gate makes the bean conditional, not the launch
     // deliberate.
     //
     // The two sanctioned paths both remain, and neither is declared by this class:
@@ -1432,7 +1415,6 @@ public class BatchPipelineOrchestrator {
     // launchPipeline above is the explicit entry point for a caller that already holds the pipeline bean -
     // the integration tier launches every scenario through it - and it stays public for that reason. It is
     // called, never scheduled.
-    // =================================================================================================
 
     /**
      * The job's own parameter validator, so the same rules apply however the pipeline is launched.
@@ -1609,9 +1591,7 @@ public class BatchPipelineOrchestrator {
     }
 
 
-    // =================================================================================================
     // Step construction and the parallel branch executor.
-    // =================================================================================================
 
     /**
      * Builds one launcher step.
@@ -1690,11 +1670,9 @@ public class BatchPipelineOrchestrator {
         };
     }
 
-    // =================================================================================================
     // The five stage runners. One per JCL member, each a thin body that names what it replaces and then
     // defers to the shared launch-and-record sequence. Stage 2 publishes the generation it created and
     // stage 3 verifies it; the other three have nothing to hand on.
-    // =================================================================================================
 
     /**
      * Stage 1, replacing {@code app/jcl/POSTTRAN.jcl:L23} {@code //STEP15 EXEC PGM=CBTRN02C}.
@@ -1759,7 +1737,7 @@ public class BatchPipelineOrchestrator {
     /**
      * Refuses to run stage 3 on the relational substrate.
      *
-     * <p><b>Finding M-01, severity Major, RESOLVED.</b> Stage 3's reader takes its first leg either from a
+     * <p><b>Finding M-01, severity High.</b> Stage 3's reader takes its first leg either from a
      * {@code TRANSACT.BKUP} generation or from the live transaction relation, selected by
      * {@value #READER_SOURCE_PROPERTY}, whose default is {@code repository}. Only
      * {@value #READER_SOURCE_OBJECT_STORAGE} is correct here, and the reason is arithmetic rather than
@@ -2387,12 +2365,10 @@ public class BatchPipelineOrchestrator {
     }
 
 
-    // =================================================================================================
     // The generation handoff between stages 2 and 3. app/jcl/INTCALC.jcl:L37-L41 writes SYSTRAN(+1) and
     // app/jcl/COMBTRAN.jcl:L25-L26 reads SYSTRAN(0); because those are two separate jobs here, the
     // generation is pinned explicitly, handed over as a job parameter before stage 3 launches, and only
     // then checked - never re-resolved by stage 3 as "whatever is newest".
-    // =================================================================================================
 
     /**
      * Copies the {@code SYSTRAN} generation keys stage 2 created into the pipeline execution context and pins
@@ -2555,9 +2531,7 @@ public class BatchPipelineOrchestrator {
         return null;
     }
 
-    // =================================================================================================
     // Constructor guards.
-    // =================================================================================================
 
     /**
      * Rejects a null collaborator at construction time, so a mis-wired context fails at startup rather than
@@ -2591,10 +2565,8 @@ public class BatchPipelineOrchestrator {
         return value;
     }
 
-    // =================================================================================================
     // The gate. One class, four instances, four outcomes each - which is what makes the return-code
     // contract of app/cbl/CBTRN02C.cbl:L229-L231 a property of the topology.
-    // =================================================================================================
 
     /**
      * The replacement for the {@code COND=} gating a JCL job stream would use between steps.
@@ -2707,11 +2679,9 @@ public class BatchPipelineOrchestrator {
         }
     }
 
-    // =================================================================================================
     // The diagnostic context. The HTTP correlation filter is request scoped and never sees a batch run,
     // and the observability package is not permitted a job listener, so the identifiers are established
     // here and released here.
-    // =================================================================================================
 
     /**
      * Establishes the pipeline's diagnostic context, seeds the aggregate, and publishes the abend exit code.

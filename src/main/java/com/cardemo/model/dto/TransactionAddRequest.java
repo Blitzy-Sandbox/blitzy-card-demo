@@ -378,16 +378,14 @@ import jakarta.validation.constraints.Size;
  * financial field. The findings that do apply are recorded in full rather than summarised:
  *
  * <ul>
- * <li><strong>Medium, resolved - unrecognised JSON properties were silently discarded.</strong> This
- *     type previously relied on {@code spring.jackson.deserialization.fail-on-unknown-properties} to
- *     reject a JSON member outside the 21-field contract. Two successive readings of that reliance were
- *     wrong and both are withdrawn: it is not true that no {@code application*.yml} exists in which the
- *     setting could be enabled, and it is not true that the setting is unset. {@code application.yml} sets
+ * <li><strong>Medium - an unrecognised JSON property must not be silently discarded.</strong> Relying on
+ *     {@code spring.jackson.deserialization.fail-on-unknown-properties} alone to
+ *     reject a JSON member outside the 21-field contract is not enough. {@code application.yml} sets
  *     {@code spring.jackson.deserialization.fail-on-unknown-properties} to {@code true} and no profile
- *     overlay disables it. What remains true is that the guarantee would be one configuration edit deep,
- *     and that the framework default is permissive, so a misspelled {@code confirmation} would bind as
+ *     overlay disables it, so the setting is neither absent nor unset - but the guarantee is one configuration
+ *     edit deep, and the framework default is permissive, so a misspelled {@code confirmation} would bind as
  *     absent - which the program reads as "not yet confirmed" - the moment the property changed.
- *     Remediation retained: {@link #rejectUnrecognisedProperty} refuses any undeclared property on the type
+ *     {@link #rejectUnrecognisedProperty} therefore refuses any undeclared property on the type
  *     itself, so the guard holds under a lenient mapper as well as a strict one.</li>
  * <li><strong>Medium, closed - corpus census correction.</strong> The prior-generation plan prose
  *     aggregate of 460 BMS input fields was overstated. Counting the {@code 02 xxxI PIC} entries in the

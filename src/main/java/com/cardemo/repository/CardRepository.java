@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : CardRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -15,7 +15,7 @@
  *               (app/catlg/LISTCAT.txt:L279, L281, L282, L283, L285;
  *               app/jcl/CARDFILE.jcl:L83-L85 KEYS(11 16), PATH :L100-L102);
  *               record layout app/cpy/CVACT02Y.cpy:L4-L11 @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -29,7 +29,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 

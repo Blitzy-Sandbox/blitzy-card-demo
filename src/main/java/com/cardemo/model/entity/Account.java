@@ -1,12 +1,12 @@
 /*
- * ****************************************************************
+ * ******************************************************************
  * Program     : Account.java
  * Application : CardDemo
  * Type        : Java JPA Entity
  * Function    : Account master record - replaces VSAM KSDS cluster
  *               AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS.
  * Source      : app/cpy/CVACT01Y.cpy (300 B, key 11) @ 7756d89
- * ****************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -21,7 +21,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************
+ * ******************************************************************
  */
 package com.cardemo.model.entity;
 
@@ -186,8 +186,7 @@ import jakarta.persistence.Version;
  *       started with {@code ./mvnw -B spring-boot:run} or from the packaged executable JAR with
  *       {@code java -jar target/carddemo-1.0.0.jar}. Both are now possible: {@code CardDemoApplication}
  *       carries {@code @SpringBootApplication} and all four {@code application*.yml} profiles are present, so
- *       the context refreshes. An earlier revision recorded both as absent; that ceased to be true when those
- *       files were authored. Two preconditions apply at boot, and both fail fast: a
+ *       the context refreshes. Two preconditions apply at boot, and both fail fast: a
  *       reachable PostgreSQL instance carrying the table enumerated below, and the environment-indirected
  *       JWT signing key, which has no committed default. Because {@code ddl-auto} is {@code validate}, any
  *       disagreement between this mapping and the deployed schema aborts context startup outright rather
@@ -273,9 +272,8 @@ import jakarta.persistence.Version;
  * {@code V1} through {@code V3} first. {@code V2__create_indexes.sql} deliberately creates nothing for this
  * table beyond its primary key, because {@code ACCTDATA} has no alternate index in
  * {@code app/catlg/LISTCAT.txt}; {@code V3__seed_data.sql} seeds it from
- * {@code app/data/ASCII/acctdata.txt} with position-aware overpunch decoding. An earlier revision of this
- * paragraph called those two migrations and the four profiles unavailable; that is no longer true and the
- * claim is withdrawn.</p>
+ * {@code app/data/ASCII/acctdata.txt} with position-aware overpunch decoding. Neither those two migrations
+ * nor the four profiles are unavailable.</p>
  * <p>
  * {@code V1__create_schema.sql} declares table {@code account} with these columns and no others:
  * <pre>

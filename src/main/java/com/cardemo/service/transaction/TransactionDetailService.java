@@ -1,13 +1,13 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionDetailService.java
  * Application : CardDemo
  * Type        : Spring Service Bean
  * Function    : Single-transaction detail view. Reproduces COTRN01C
  *               (transaction CT01), including the legacy READ ... UPDATE
  *               exclusive lock taken on this read-only path.
- * Source      : app/cbl/COTRN01C.cbl (330 lines, 9 paragraphs) @ 7756d89
- * ****************************************************************************
+ * Source      : app/cbl/COTRN01C.cbl (330 lines, 9 own paragraph labels) @ 7756d89
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -22,7 +22,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.service.transaction;
 
@@ -453,8 +453,8 @@ public class TransactionDetailService {
     /**
      * A fixed, digit-free stand-in logged wherever a value from the record would otherwise appear.
      *
-     * <p>It replaces the pair of card-specific constants this class used to carry. Masking the card number
-     * alone was never enough: the transaction identifier, the amount, the two dates and the merchant
+     * <p>It stands in for any card-specific constant. Masking the card number
+     * alone is not enough: the transaction identifier, the amount, the two dates and the merchant
      * identifier together identify a transaction and its value as precisely as the card number does, and this
      * service runs once per view request, so enumerating them at DEBUG amounted to a transaction ledger in a
      * stream that is aggregated, retained and replicated outside the boundary that protects the row.
@@ -1367,7 +1367,6 @@ public class TransactionDetailService {
         work.amountValue = null;
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Field-contract helpers.
     //
     // These are not paragraph translations - they carry no source label and appear in no row of the paragraph
@@ -1376,7 +1375,6 @@ public class TransactionDetailService {
     // alphanumeric MOVE, and the edited mask of :49. They are private and static because they are pure
     // functions of their arguments, which makes them exhaustively testable and keeps them off the bean's
     // state (Rule 1 clause B: "prefer dependency injection and pure functions where possible").
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Tests a screen field for content, reproducing the COBOL predicate {@code NOT = SPACES AND LOW-VALUES}
@@ -1548,9 +1546,7 @@ public class TransactionDetailService {
         return isPresent(cardNumber) ? CARD_NUMBER_REDACTED : CARD_NUMBER_ABSENT;
     }
 
-    // ------------------------------------------------------------------------------------------------------
     // Nested types.
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * The attention identifier the caller reports, standing in for {@code EIBAID} as tested by the

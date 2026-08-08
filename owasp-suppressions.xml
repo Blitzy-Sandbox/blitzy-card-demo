@@ -66,6 +66,31 @@
             again, which is the intended behaviour. Each one names the CVE, the
             coordinate, the version that fixes it and the remediation.
 
+  WHAT "APPLICABLE" MEANS HERE, AND WHAT IT DOES NOT
+
+  APPLICABLE is a statement about VERSION MATCH and nothing else: the resolved
+  coordinate falls inside the advisory's affected range, so the scanner is right
+  to report it and no identifier or artifact argument withdraws it. It is
+  deliberately NOT a claim that the advisory is exploitable as this application
+  is configured and deployed.
+
+  Deployed exposure is a SECOND, SEPARATE axis, and every Tier 4 entry states it
+  explicitly as DEPLOYED EXPOSURE: PRESENT or NOT PRESENT, naming the specific
+  prerequisite from the official advisory that decides it. An entry whose
+  prerequisite is absent still carries its suppression and its expiry, because a
+  configuration-level absence is reversible by one property in one file, which is
+  a far weaker guarantee than Tier 2's "the class is not in the jar" or Tier 3's
+  "the integration does not exist". Conservative handling is therefore retained
+  where the classification says the exposure is not present.
+
+  The two axes were previously conflated, and the conflation ran in the damaging
+  direction for a reader: a bare APPLICABLE reads as "this application is
+  exposed", which overstated what the evidence supported. Every entry that names
+  a prerequisite now also names the INVALIDATION TRIGGERS - the specific changes
+  that would make the exposure present - so a future change that re-opens the
+  risk is something a reviewer can recognise rather than deduce, and, where one
+  exists, a test holds the prerequisite true.
+
   RULES FOR CHANGING THIS FILE
     - Never add a wildcard, a bare cpe without a packageUrl, or a vendor wide
       entry. Every suppression is scoped to one coordinate.
@@ -142,17 +167,16 @@
   (spring-security 6.5.11, spring-framework 6.2.19, tomcat 10.1.57, postgresql
   42.7.13) replaced the parent managed versions. Verified 4 August 2026: none of
   the identifiers named below is declared in any <cve> element of this file, so
-  the deletions are real and not merely intended. Counted 6 August 2026 by
+  the deletions are real and not merely intended. Counted 7 August 2026 by
   parsing this file: it declares 18 <cve> identifiers, all distinct, and 9 <cpe>
-  identifiers across 17 <suppress> entries. An earlier revision of this sentence
-  said 19 entries while the paragraph below it said sixteen; both numerals are
-  now measured rather than remembered, and BuildProvenanceTest.SuppressionPremises
-  fails if either drifts from the file again.
+  identifiers across 17 <suppress> entries. Both numerals are measured rather than
+  remembered, and BuildProvenanceTest.SuppressionPremises fails if either drifts
+  from the file.
 
     SIX Tier 4 acceptances became remediations - CVE-2026-22732, CVE-2026-41842,
-    CVE-2026-41293, CVE-2026-24880, CVE-2026-41284, CVE-2026-42198. An earlier
-    revision of this sentence counted them as four while listing six; the list was
-    right and the numeral was wrong.
+    CVE-2026-41293, CVE-2026-24880, CVE-2026-41284, CVE-2026-42198. The numeral and
+    the list are both six, and each must be recounted from the list rather than
+    carried over.
 
     Seven further entries - two Tier 2 and five Tier 3 - became INERT because the
     pinned versions fall outside every affected range those records describe. Not
@@ -222,9 +246,15 @@
       TIER 1. io.micrometer:micrometer-registry-prometheus is a Java library that
       EXPOSES metrics in the Prometheus exposition format. It is not the
       Prometheus server, which is a separate product written in Go and, in this
-      project, the pinned prom/prometheus:v3.5.5 container in
-      docker-compose.yml. Dependency-Check matched the Micrometer version 1.15.9
-      against cpe:/a:prometheus:prometheus.
+      project, the prom/prometheus container pinned by digest in
+      docker-compose.yml - v3.13.2 at the time of writing, and the digest rather
+      than the tag is what fixes it. Dependency-Check matched the Micrometer
+      version this build resolves, 1.15.12 from the micrometer.version property
+      in pom.xml, against cpe:/a:prometheus:prometheus. Neither figure is the
+      subject of the suppression and neither is load-bearing for it: the argument
+      below turns on the library not being the server, which holds at every
+      version of both. An earlier revision of this note named v3.5.5 and 1.15.9,
+      which were the pinned versions when it was written and had since moved.
       The single record this produced, CVE-2026-42154, is a heap exhaustion in the
       Prometheus server's remote read endpoint /api/v1/read. No such endpoint,
       and no snappy request decoder, exists in this library; the only surface it
@@ -752,16 +782,50 @@
 
   <suppress until="2026-11-01Z">
     <notes><![CDATA[
-      TIER 4 - APPLICABLE. CVE-2026-22731, CVSS 8.1: a Spring Boot Actuator
-      authentication bypass when an authenticated application endpoint is declared
-      under a path already configured as a Health Group additional path. This
-      application does expose Actuator with liveness and readiness health groups,
-      so the feature family is present and no inapplicability is claimed. It is
-      recorded here rather than under the aggregator entry above precisely because
-      it is the one of the eight Spring Boot advisories that can neither be
+      TIER 4 - APPLICABLE (VERSION MATCH). DEPLOYED EXPOSURE: NOT PRESENT.
+      CVE-2026-22731, CVSS 8.1: a Spring Boot Actuator authentication bypass when
+      an authenticated application endpoint is declared under a path already
+      configured as a Health Group ADDITIONAL PATH. The version match is real -
+      the resolved spring-boot 3.5.11 is inside the advisory's machine readable
+      affected range - which is what APPLICABLE asserts here and all it asserts.
+      THE ADVISORY'S DECIDING PREREQUISITE IS ABSENT. The bypass requires a health
+      group configured with an additional-path that collides with a secured
+      application endpoint. This application configures NO additional-path for any
+      group: management.endpoint.health.group.liveness and .readiness declare
+      include only, both groups are served under the standard
+      /actuator/health/{group} paths, and application endpoints live under /api/**,
+      disjoint from /actuator/**. So the feature FAMILY is present - there are
+      health groups - but the specific configuration the advisory turns on is not.
+      An earlier revision of this note said only that the feature family is
+      present and "no inapplicability is claimed", then recorded the absent
+      additional-path further down as a compensating control. That reading
+      overstated the deployed exposure: the absent prerequisite is not a
+      mitigation layered over a live vulnerability, it is the condition the
+      advisory itself requires, and it is not met.
+      WHY THE SUPPRESSION AND THE EXPIRY ARE KEPT ANYWAY, rather than the entry
+      being demoted to Tier 3. Tier 3's argument is that a configuration,
+      protocol or integration does not exist at all; this argument is weaker,
+      because ONE property in ONE file restores the prerequisite, and the property
+      is settable from a profile, the compose file, an environment variable or the
+      image. Reclassifying downward would drop the until date and the mandatory
+      re-examination, so the conservative handling stays exactly as it was and only
+      the classification is corrected. Nothing about the gate, the scope or the
+      threshold changes.
+      INVALIDATION TRIGGERS - any one of these makes the exposure PRESENT and this
+      entry must be re-examined before the change lands: configuring
+      management.endpoint.health.group.*.additional-path on any surface; moving an
+      authenticated application endpoint under /actuator/**; or mapping an
+      Actuator path into the /api/** space. The first is held false by
+      src/test/java/com/cardemo/unit/infrastructure/BuildProvenanceTest.java,
+      which scans all four profiles plus docker-compose.yml, .env.example, the
+      Dockerfile and the CI workflow for the property and fails while this entry
+      exists.
+      It is recorded here rather than under the aggregator entry above precisely
+      because it is the one of the eight Spring Boot advisories that can neither be
       dismissed on its own terms nor left to the gate to absorb. Of the other
       seven, six are inapplicable to this application and the last,
-      CVE-2026-40977, is applicable but scores CVSS 6.7, under the threshold, so
+      CVE-2026-40977, is a version match scoring CVSS 6.7, under the threshold,
+      and its own deciding prerequisite is absent too - see pom.xml record 3 - so
       it needs no entry and has none.
       WHY IT IS NOT REMEDIATED HERE. Fixed in Spring Boot 3.5.12. The advisory's
       own prose reads "from 3.5 before 3.5.11" while its machine readable affected
@@ -769,11 +833,13 @@
       readable range, which is why the resolved 3.5.11 jar is reported and why
       3.5.12 is the release named here. The parent is pinned at 3.5.11 by
       requirement and may not be advanced unilaterally.
-      COMPENSATING CONTROLS. No additional-path is configured for any health
-      group: the groups are served under the standard /actuator/health/{group}
-      paths, and the bypass requires an additional-path that collides with a
-      secured application endpoint. Application endpoints live under /api/**,
-      disjoint from /actuator/**.
+      COMPENSATING CONTROLS, over and above the absent prerequisite stated at the
+      top of this note. Actuator is exposed with show-details and show-components
+      both never, so a health response carries no component detail to an
+      unauthenticated caller even if one reached it; validate-group-membership is
+      left at its secure default, so a group naming an unknown component fails
+      startup rather than silently degrading; and the two groups include named
+      indicators explicitly rather than by wildcard.
       REMEDIATION. Upgrade spring-boot-starter-parent to 3.5.12 or later, then
       DELETE this entry. 3.5.12 clears THIS record; it does not clear the five
       advisories fixed in 3.5.14 that the Tier 3 aggregator entry above covers, so

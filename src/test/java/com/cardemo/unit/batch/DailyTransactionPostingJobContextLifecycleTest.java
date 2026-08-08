@@ -365,7 +365,7 @@ class DailyTransactionPostingJobContextLifecycleTest {
     }
 
     // ==================================================================
-    // 3 - FINDING, severity Minor, RESOLVED. The I/O guard is handed an
+    // 3 - FINDING, severity Medium, RESOLVED. The I/O guard is handed an
     //     abend REASON because that is what its failure branch needs -
     //     "OPEN FAILED", "CLOSE FAILED" - and its success branch used to
     //     log that same constant, so a healthy open emitted

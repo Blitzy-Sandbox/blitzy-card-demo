@@ -381,7 +381,7 @@ class InterestCalculationJobIntegrationTest extends AbstractBatchIntegrationTest
     }
 
     /**
-     * Findings C-03 and C-05, both Critical, asserted against real LocalStack rather than a mock.
+     * Findings C-03 and C-05, both Blocker, asserted against real LocalStack rather than a mock.
      *
      * <p>These are the assertions whose absence let the defects ship. Every existing launch in this suite
      * reads the 50 rows {@code tcatbal.txt} seeds in a single chunk of the default commit interval, so it

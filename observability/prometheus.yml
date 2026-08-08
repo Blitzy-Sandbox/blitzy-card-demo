@@ -1,38 +1,42 @@
 # ******************************************************************
-# * File         : prometheus.yml
-# * Application  : CardDemo
-# * Type         : Prometheus server scrape configuration
-# * Function     : Scrapes the CardDemo Spring Boot application's Micrometer
-# *                exposition at /actuator/prometheus every 15 seconds, so the
-# *                measurements that replaced the legacy end-of-run reporting
-# *                are sampled continuously instead of once per job. Mounted
-# *                read-only into the `prometheus` service of the
-# *                repository-root docker-compose.yml and read by its
-# *                --config.file argument. This is the only scrape
-# *                configuration in the project.
-# * Replaces     : The DISPLAY-only instrumentation of the frozen COBOL corpus.
-# *                app/cbl/CBTRN02C.cbl:L227 emits
-# *                DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and
-# *                app/cbl/CBTRN02C.cbl:L228 emits
-# *                DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT - note
-# *                the two spaces before the colon on the rejected line, which
-# *                is part of the emitted text. Both counters are declared at
-# *                app/cbl/CBTRN02C.cbl:L184-L186, incremented at :L206 and
-# *                :L214, and written to SYSOUT exactly once, after every file
-# *                has closed. There is no history and no way to observe a run
-# *                in flight. The same corpus offers nothing else: even the
-# *                interest calculator app/cbl/CBACT04C.cbl reports only
-# *                through DISPLAY.
-# * Scrapes      : /actuator/prometheus only. That endpoint publishes the
-# *                Micrometer exposition - the four instruments declared by
-# *                src/main/java/com/cardemo/observability/MetricsConfig.java,
-# *                four counters, the amount one partitioned by sign - plus the
-# *                JVM, HTTP, Hibernate
-# *                and Spring Batch meters the framework contributes. It does
-# *                NOT publish health: the composite readiness surface owned by
-# *                src/main/java/com/cardemo/observability/HealthIndicators.java
-# *                is served at /actuator/health and is not scraped here. This
-# *                file performs no probing of its own.
+# * Program     : prometheus.yml
+# * Application : CardDemo
+# * Type        : Prometheus server scrape configuration
+# * Function    : Scrapes the CardDemo Spring Boot application's Micrometer
+# *               exposition at /actuator/prometheus every 15 seconds, so the
+# *               measurements that replaced the legacy end-of-run reporting
+# *               are sampled continuously instead of once per job. Mounted
+# *               read-only into the `prometheus` service of the
+# *               repository-root docker-compose.yml and read by its
+# *               --config.file argument. This is the only scrape
+# *               configuration in the project.
+# * Replaces    : The DISPLAY-only instrumentation of the frozen COBOL corpus.
+# *               app/cbl/CBTRN02C.cbl:L227 emits
+# *               DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and
+# *               app/cbl/CBTRN02C.cbl:L228 emits
+# *               DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT - note
+# *               the two spaces before the colon on the rejected line, which
+# *               is part of the emitted text. Both counters are declared at
+# *               app/cbl/CBTRN02C.cbl:L184-L186, incremented at :L206 and
+# *               :L214, and written to SYSOUT exactly once, after every file
+# *               has closed. There is no history and no way to observe a run
+# *               in flight. The same corpus offers nothing else: even the
+# *               interest calculator app/cbl/CBACT04C.cbl reports only
+# *               through DISPLAY.
+# * Scrapes     : /actuator/prometheus only. That endpoint publishes the
+# *               Micrometer exposition - the four instruments declared by
+# *               src/main/java/com/cardemo/observability/MetricsConfig.java,
+# *               four counters, the amount one partitioned by sign - plus the
+# *               JVM, HTTP, Hibernate
+# *               and Spring Batch meters the framework contributes. It does
+# *               NOT publish health: the composite readiness surface owned by
+# *               src/main/java/com/cardemo/observability/HealthIndicators.java
+# *               is served at /actuator/health and is not scraped here. This
+# *               file performs no probing of its own.
+# * Source      : app/cbl/CBTRN02C.cbl:L184-L186 (the two counter declarations),
+# *               :L206 and :L214 (their increments) and :L227-L228 (the single
+# *               end-of-run DISPLAY pair) @ 7756d89 - the whole of the
+# *               instrumentation this scrape configuration replaces
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -187,8 +191,8 @@
 #     never-incremented meter is absent from the exposition rather than
 #     present at zero - is real but applies only to LAZILY registered meters,
 #     which is what a framework or third-party instrument resolved on first
-#     use will be; an earlier revision of this bullet applied it to the
-#     CardDemo series and was wrong. `up{job="carddemo-app"}` remains the
+#     use will be. It does not apply to the CardDemo series, which are
+#     registered eagerly. `up{job="carddemo-app"}` remains the
 #     control: if that returns 1, scraping is fine and the gap is upstream.
 #   * Prometheus refuses to start, complaining that a scrape timeout exceeds
 #     the scrape interval. Any scrape_timeout at or above scrape_interval is

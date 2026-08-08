@@ -21,7 +21,7 @@
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
  * ******************************************************************
- * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 paragraphs) @ 7756d89
+ * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 own paragraph labels) @ 7756d89
  * ******************************************************************
  */
 package com.cardemo.service.report;
@@ -31,9 +31,11 @@ import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -208,14 +210,13 @@ import io.micrometer.tracing.Tracer;
  *   <tr><td>17</td><td>124-125</td><td>the terminator card</td></tr>
  * </table>
  *
- * <p>An earlier revision of this paragraph said that section 0.7.5.1 of
- * {@code docs/technical-specifications.md} states eighteen and that a residual instance survived as a YAML
- * comment beside the queue properties in {@code src/main/resources/application.yml}. Neither is true any
- * longer and both claims are withdrawn: that section no longer asserts a card count, and the YAML comment
- * now reads seventeen with the same 14 + 3 arithmetic as the table above.
- * {@code com.cardemo.model.dto.ReportRequest} and {@code src/main/resources/application-prod.yml} carry the
- * same figure, so every surface agrees. The finding carried no code impact either way, because the deck
- * collapses to one typed message whatever its card count.
+ * <p>The count is <strong>seventeen</strong>, on the 14 + 3 arithmetic of the table above, and every surface
+ * that publishes it agrees: the YAML comment beside the queue properties in
+ * {@code src/main/resources/application.yml}, {@code com.cardemo.model.dto.ReportRequest} and
+ * {@code src/main/resources/application-prod.yml}. Section 0.7.5.1 of
+ * {@code docs/technical-specifications.md} deliberately asserts no card count, so nothing there can drift
+ * against this table. The figure carries no code impact either way, because the deck collapses to one typed
+ * message whatever its card count.
  *
  * <p>Cards 11, 12 and 15 are why the source moves each date to a <strong>pair</strong> of targets at
  * {@code :L220-L221}, {@code :L235-L236}, {@code :L247-L248}, {@code :L252-L253}, {@code :L429-L430} and
@@ -1039,14 +1040,14 @@ public class ReportSubmissionService {
     /**
      * Message header carrying interoperable W3C trace context, so a consumer parents onto this publish hop.
      *
-     * <p><strong>Finding M-07, severity Medium, RESOLVED.</strong> This message used to carry a bespoke
-     * {@code X-Trace-Id} and {@code X-Span-Id} pair. Those named the identifiers without establishing parentage:
-     * a consumer has to be told that those two headers exist and how to assemble a parent context from them, and
-     * nothing outside this repository is. So the one hop distributed tracing is here to show - the online
-     * submission joined to the batch run it triggers - was the one hop that could not be reconstructed from the
-     * message. {@link CorrelationIdFilter#TRACE_PARENT_HEADER} is the standard form, extracted by every
-     * OpenTelemetry and Micrometer Tracing consumer with no configuration, and the name and the composition rule
-     * are owned by that class rather than re-declared here.
+     * <p><strong>A bespoke {@code X-Trace-Id} and {@code X-Span-Id} pair is not a substitute.</strong> Such a
+     * pair names the identifiers without establishing parentage: a consumer has to be told that those two
+     * headers exist and how to assemble a parent context from them, and nothing outside this repository is. The
+     * one hop distributed tracing is here to show - the online submission joined to the batch run it triggers -
+     * would then be the one hop that could not be reconstructed from the message.
+     * {@link CorrelationIdFilter#TRACE_PARENT_HEADER} is the standard form, extracted by every OpenTelemetry
+     * and Micrometer Tracing consumer with no configuration, and the name and the composition rule are owned by
+     * that class rather than re-declared here.
      */
     private static final String HEADER_TRACE_PARENT = CorrelationIdFilter.TRACE_PARENT_HEADER;
 
@@ -1237,15 +1238,14 @@ public class ReportSubmissionService {
          * the submission paragraph is performed. Requiring all three here reproduces that, and does so at
          * the one point where the omission would otherwise reach the queue.
          *
-         * <p><strong>Finding M-12, severity Major, RESOLVED here.</strong> Null-checking was the only
-         * validation this type performed, so an arbitrary and unbounded report name travelled to the queue
-         * and then into an <em>identifying</em> job parameter, which the batch repository stores and keys a
-         * job instance on. Two things follow from the source that make a closed set the correct rule rather
-         * than a length cap. {@code WS-REPORT-NAME} is {@code PIC X(10)} at
-         * {@code app/cbl/CORPT00C.cbl:L58}, so no longer value could exist on the mainframe at all; and the
-         * only three values ever moved into it are the literals at {@code :L214}, {@code :L240} and
-         * {@code :L433}. Anything else is not a report this application knows how to run, so it is refused
-         * here rather than carried to a step that would refuse it later with less context.
+         * <p><strong>Null-checking alone is not validation here.</strong> With only a null check, an
+         * arbitrary and unbounded report name travels to the queue and then into an <em>identifying</em> job
+         * parameter, which the batch repository stores and keys a job instance on. Two things follow from the
+         * source that make a closed set the correct rule rather than a length cap. {@code WS-REPORT-NAME} is
+         * {@code PIC X(10)} at {@code app/cbl/CORPT00C.cbl:L58}, so no longer value could exist on the
+         * mainframe at all; and the only three values ever moved into it are the literals at {@code :L214},
+         * {@code :L240} and {@code :L433}. Anything else is not a report this application knows how to run, so
+         * it is refused here rather than carried to a step that would refuse it later with less context.
          *
          * <p>The dates are checked for shape only - ten characters, {@code yyyy-MM-dd}, digits and dashes -
          * because whether a shaped value is a real calendar date is
@@ -1310,14 +1310,14 @@ public class ReportSubmissionService {
     /**
      * The authenticity envelope that makes a queue message provably this application's own.
      *
-     * <p><strong>Finding M-11, severity Major, RESOLVED here and in {@code com.cardemo.config.BatchConfig}.</strong>
-     * The listener that replaces the JES2 internal reader used to launch a job from any structurally valid
-     * message on the queue. In this topology the queue is an emulator queue with static local credentials and
-     * the emulator's community edition enforces no authorisation at all, so "structurally valid" was the only
-     * barrier: any process able to reach the emulator port could submit a report job, choose its period and
-     * name the job instance. Network placement narrows who can reach the port - that is what
-     * {@code docker-compose.yml} contributes - but it cannot distinguish one reachable principal from another,
-     * so the distinction is made here instead.
+     * <p><strong>Structural validity is not authenticity, and the queue supplies nothing else.</strong> A
+     * listener that replaces the JES2 internal reader and launches a job from any structurally valid message on
+     * the queue has no barrier at all in this topology: the queue is an emulator queue with static local
+     * credentials and the emulator's community edition enforces no authorisation, so any process able to reach
+     * the emulator port could submit a report job, choose its period and name the job instance. Network
+     * placement narrows who can reach the port - that is what {@code docker-compose.yml} contributes - but it
+     * cannot distinguish one reachable principal from another, so the distinction is made here and in
+     * {@code com.cardemo.config.BatchConfig} instead.
      *
      * <p>The mechanism is a keyed message authentication code over the message's canonical form, carried as an
      * ordinary message header. A publisher without the key cannot produce a valid code, and the consumer
@@ -1346,8 +1346,35 @@ public class ReportSubmissionService {
          * The version prefix of a rendered code. Present so that a future algorithm change is a new prefix
          * rather than an ambiguous byte string, and so that a consumer can refuse a version it does not
          * implement instead of comparing bytes produced by different rules.
+         *
+         * <p>{@code v2} rather than {@code v1}: {@code v1} authenticated the three payload fields alone, so a
+         * captured pair could be replayed under a fresh submission identifier for as long as the key lived.
+         * Every {@code v1} code is refused here, which is the point of versioning the prefix.
          */
-        public static final String SIGNATURE_VERSION = "v1";
+        public static final String SIGNATURE_VERSION = "v2";
+
+        /**
+         * How long a signed submission stays acceptable, in seconds.
+         *
+         * <p>A compile-time constant rather than a property, deliberately. A lifetime an operator can set is a
+         * lifetime an operator can set to something useless, and the interval a legitimate submission needs is
+         * a property of this topology rather than of a deployment: the publish is bounded at
+         * {@value #SEND_DEADLINE_SECONDS} seconds, the queue's deduplication window is five minutes, and the
+         * listener drains continuously. Fifteen minutes therefore covers every ordinary delivery, including a
+         * redelivery after a visibility timeout, with a wide margin - and it is the same figure the sealed
+         * snapshot uses, so an operator has one number to remember rather than two.
+         */
+        public static final long LIFETIME_SECONDS = 900L;
+
+        /**
+         * Tolerance, in seconds, for the two clocks disagreeing.
+         *
+         * <p>Producer and consumer are the same process in this topology, so the tolerance is nominal. It
+         * exists because they need not be: a submission published a moment before the consumer's clock catches
+         * up must not be refused as issued in the future, and a one-minute allowance is small enough that it
+         * widens the replay window by a negligible amount.
+         */
+        public static final long CLOCK_SKEW_TOLERANCE_SECONDS = 60L;
 
         /** The keyed hash. Available on every supported runtime, so no configuration selects it. */
         private static final String MAC_ALGORITHM = "HmacSHA256";
@@ -1356,85 +1383,295 @@ public class ReportSubmissionService {
          * The domain-separation label. Any change to it invalidates every previously issued code, which is
          * why it carries the version that {@link #SIGNATURE_VERSION} renders.
          */
-        private static final String KEY_DERIVATION_LABEL = "carddemo/sqs/jobs-envelope/v1";
+        private static final String KEY_DERIVATION_LABEL = "carddemo/sqs/jobs-envelope/v2";
 
-        /** Not instantiable: this type is a contract, and its two operations are pure functions. */
-        private JobSubmissionEnvelope() {
-            throw new AssertionError("JobSubmissionEnvelope is a contract holder and is never instantiated");
-        }
+        /** The separator between the rendered code's four parts. */
+        private static final char PART_SEPARATOR = ':';
+
+        /** How many parts a rendered code carries after its version prefix. */
+        private static final int RENDERED_PART_COUNT = 4;
 
         /**
-         * Renders the code for one message.
+         * The shape a submission identifier must have to be bound into a code.
          *
-         * @param message the message about to be published; never {@code null}
-         * @param signingKey the application signing key the purpose key is derived from; never blank
-         * @return the rendered code, {@value #SIGNATURE_VERSION} followed by {@code =} and lowercase
-         *     hexadecimal, never {@code null}
-         * @throws IllegalArgumentException if the signing key is absent or blank
+         * <p>Neither the part separator nor the canonical form's line feed may appear in it, or two distinct
+         * submissions could render identically. {@link #newDeduplicationId()} produces a
+         * {@link java.util.UUID}, which satisfies this comfortably; the pattern is the check rather than the
+         * assumption, because the identifier reaching {@code verify} came off the wire.
          */
-        public static String sign(final JobSubmissionMessage message, final String signingKey) {
-            Objects.requireNonNull(message, "message must not be null");
-            return SIGNATURE_VERSION + '=' + hexadecimal(code(message.canonicalForm(), signingKey));
+        private static final Pattern SUBMISSION_ID_SHAPE = Pattern.compile("[0-9A-Za-z._-]{1,128}");
+
+        /**
+         * The single-purpose key, derived once at construction.
+         *
+         * <p><strong>Finding SEC-001, severity High, RESOLVED here.</strong> The application signing key is
+         * <em>not</em> retained - not by this type and not by either of the two beans that build one. It is
+         * read as a constructor argument, used to derive this key, and the byte arrays holding both it and the
+         * derived material are overwritten with zeroes in a {@code finally} block before the constructor
+         * returns. A {@code String} field holding the signing key could not be overwritten at all: strings are
+         * immutable and live until collection, so the key would sit in the heap - and in any heap dump - for
+         * the life of the process, which is {@code CWE-316}. What remains is this derived key, which is useless
+         * for anything but authenticating a submission on this queue.
+         *
+         * <p>Deriving once rather than per call also removes the per-message derivation the previous
+         * arrangement performed, whose intermediate arrays were left to the collector on every sign and every
+         * verify.
+         */
+        private final SecretKeySpec purposeKey;
+
+        /**
+         * Derives the single-purpose key from the application signing key and retains nothing else.
+         *
+         * <p><b>Side effects.</b> None beyond zeroing its own temporaries. <b>Inputs.</b> The application
+         * signing key, which is mandatory in all four profiles, environment-indirected with no committed
+         * default, and already refused at startup when too short.
+         *
+         * @param signingKey the application signing key; must not be {@code null} or blank
+         * @throws IllegalArgumentException if the signing key is absent or blank. The value is never echoed,
+         *     not even by length
+         */
+        public JobSubmissionEnvelope(final String signingKey) {
+            if (signingKey == null || signingKey.isBlank()) {
+                throw new IllegalArgumentException("the message envelope key is derived from "
+                        + "carddemo.security.jwt.signing-key, which must be configured; it has no default "
+                        + "anywhere in this repository and an unsigned queue message is never accepted");
+            }
+            final byte[] configured = signingKey.getBytes(StandardCharsets.UTF_8);
+            byte[] derived = null;
+            try {
+                derived = mac(configured, KEY_DERIVATION_LABEL.getBytes(StandardCharsets.UTF_8));
+                // SecretKeySpec copies the array it is given, so the copy below is the retained material and
+                // the array itself can be - and is - destroyed.
+                this.purposeKey = new SecretKeySpec(derived, MAC_ALGORITHM);
+            } finally {
+                Arrays.fill(configured, (byte) 0);
+                if (derived != null) {
+                    Arrays.fill(derived, (byte) 0);
+                }
+            }
         }
 
         /**
-         * Decides whether a presented code was produced for this message by a holder of the key.
+         * Renders the code for one submission.
          *
-         * <p>Every rejection returns {@code false} rather than throwing, so the caller decides what a failed
-         * verification means for the message; and no rejection reports which of the reasons applied, because
-         * the distinctions are exactly the information a forger would use.
+         * <p><b>Side effects.</b> None. <b>Inputs.</b> All three are this application's own values, produced
+         * immediately before the publish.
          *
-         * @param message the message as parsed from the body; never {@code null}
-         * @param signingKey the application signing key; never blank
+         * @param message the message about to be published; must not be {@code null}
+         * @param submissionId the transport deduplication identifier this message will carry, generated before
+         *     signing so that the code and the identifier cannot disagree; must match
+         *     {@link #SUBMISSION_ID_SHAPE}
+         * @param issuedAt the instant the submission is published, from the injected clock; must not be
+         *     {@code null}
+         * @return the rendered code: {@value #SIGNATURE_VERSION}, {@code =}, the submission identifier, the
+         *     issue and expiry instants as epoch seconds and the lowercase hexadecimal code, separated by
+         *     {@code :}; never {@code null}
+         * @throws NullPointerException if {@code message} or {@code issuedAt} is {@code null}
+         * @throws IllegalArgumentException if {@code submissionId} is not of the required shape
+         */
+        public String sign(final JobSubmissionMessage message, final String submissionId,
+                final Instant issuedAt) {
+
+            Objects.requireNonNull(message, "message must not be null");
+            Objects.requireNonNull(issuedAt, "issuedAt must not be null");
+            requireSubmissionIdShape(submissionId);
+            final long issued = issuedAt.getEpochSecond();
+            final long expires = issued + LIFETIME_SECONDS;
+            return SIGNATURE_VERSION + '=' + submissionId + PART_SEPARATOR + issued + PART_SEPARATOR
+                    + expires + PART_SEPARATOR
+                    + hexadecimal(code(canonicalForm(message, submissionId, issued, expires)));
+        }
+
+        /**
+         * Decides whether a presented code was produced by a holder of the key, for this message, for this
+         * submission identifier, and recently.
+         *
+         * <p><strong>Finding SEC-002, severity High, RESOLVED here.</strong> The code now covers the
+         * submission identifier and the validity window as well as the three payload fields, so a captured
+         * pair can no longer be replayed. The two properties that closes are worth stating separately.
+         * Binding the identifier means a replay under a <em>fresh</em> identifier - which is what would
+         * otherwise produce a second Spring Batch job instance from one captured message, because the
+         * identifier is an identifying job parameter - fails the code check. Binding the window means an
+         * exact replay of the original identifier stops being accepted at all once the window closes, where
+         * before it was refused only by the launcher's own once-only guarantee, and only for as long as the
+         * job repository retained the instance.
+         *
+         * <p>An exact replay <em>inside</em> the window is deliberately still verified rather than refused
+         * here: it carries the original identifier, so it resolves to the same job instance and the launcher
+         * refuses it as the at-least-once delivery it is. That is the queue redelivering, not an attack, and
+         * treating it as an attack would turn an ordinary visibility-timeout redelivery into an error.
+         *
+         * <p><b>Side effects.</b> None. <b>Inputs.</b> {@code message} and {@code presented} are untrusted;
+         * {@code submissionId} is the transport's own deduplication identifier, and the code must have been
+         * issued for exactly it.
+         *
+         * @param message the message as parsed from the body; must not be {@code null}
+         * @param submissionId the submission identifier the transport delivered, or the caller's sentinel when
+         *     the transport carried none; may be {@code null}
          * @param presented the header value exactly as delivered, possibly {@code null} or of another type
-         * @return {@code true} only when the presented value is a well-formed code of a version this
-         *     implementation produces and equals the code for this message
-         * @throws IllegalArgumentException if the signing key is absent or blank
+         * @param now the instant to measure the validity window against, from the injected clock; must not be
+         *     {@code null}
+         * @return the outcome, never {@code null}; {@link Verification#VERIFIED} only when every check passed
+         * @throws NullPointerException if {@code message} or {@code now} is {@code null}
          */
-        public static boolean verify(final JobSubmissionMessage message, final String signingKey,
-                final Object presented) {
+        public Verification verify(final JobSubmissionMessage message, final String submissionId,
+                final Object presented, final Instant now) {
 
             Objects.requireNonNull(message, "message must not be null");
-            final byte[] expected = code(message.canonicalForm(), signingKey);
+            Objects.requireNonNull(now, "now must not be null");
             if (presented == null) {
-                return false;
+                return Verification.ABSENT;
             }
             final String rendered = presented.toString();
             final String prefix = SIGNATURE_VERSION + '=';
             if (!rendered.startsWith(prefix)) {
-                return false;
+                return Verification.UNSUPPORTED_VERSION;
             }
-            final byte[] offered = fromHexadecimal(rendered.substring(prefix.length()));
-            return offered != null && MessageDigest.isEqual(expected, offered);
+            final String[] parts = rendered.substring(prefix.length()).split(String.valueOf(PART_SEPARATOR));
+            if (parts.length != RENDERED_PART_COUNT) {
+                return Verification.MALFORMED;
+            }
+            if (!SUBMISSION_ID_SHAPE.matcher(parts[0]).matches()) {
+                return Verification.MALFORMED;
+            }
+            final long issued;
+            final long expires;
+            try {
+                issued = Long.parseLong(parts[1]);
+                expires = Long.parseLong(parts[2]);
+            } catch (final NumberFormatException notATimestamp) {
+                return Verification.MALFORMED;
+            }
+            final byte[] offered = fromHexadecimal(parts[3]);
+            if (offered == null) {
+                return Verification.MALFORMED;
+            }
+            // The identifier the code was issued for must be the identifier the transport delivered. Checked
+            // explicitly as well as cryptographically: the code check below would fail anyway, but a caller
+            // that must tell an operator WHY a submission was refused cannot distinguish a mismatched
+            // identifier from a forged code once both have collapsed into one boolean.
+            if (!Objects.equals(parts[0], submissionId)) {
+                return Verification.SUBMISSION_ID_MISMATCH;
+            }
+            // Compared before the code, because a window check is a comparison of two longs this application
+            // produced and reveals nothing a forger could use.
+            final long seconds = now.getEpochSecond();
+            if (seconds + CLOCK_SKEW_TOLERANCE_SECONDS < issued) {
+                return Verification.NOT_YET_VALID;
+            }
+            if (seconds - CLOCK_SKEW_TOLERANCE_SECONDS > expires) {
+                return Verification.EXPIRED;
+            }
+            final byte[] expected = code(canonicalForm(message, parts[0], issued, expires));
+            // MessageDigest.isEqual does not short-circuit, so a caller cannot recover the expected value one
+            // byte at a time by measuring how long a rejection takes.
+            return MessageDigest.isEqual(expected, offered)
+                    ? Verification.VERIFIED
+                    : Verification.CODE_MISMATCH;
+        }
+
+        /**
+         * Why a presented code was accepted or refused.
+         *
+         * <p>The distinctions exist for the operator, never for the publisher: the consumer logs the constant
+         * name and answers a refused submission by discarding it silently, so nothing here reaches whoever
+         * published the message. Collapsing them into one boolean was the previous arrangement and it left an
+         * operator unable to tell a stale submission from a forged one, which are different incidents.
+         */
+        public enum Verification {
+
+            /** Every check passed: the code is this application's own, for this message and this identifier. */
+            VERIFIED,
+
+            /** No code was presented at all. There is no unsigned mode, so this is a refusal. */
+            ABSENT,
+
+            /** A code was presented, but not of a version this implementation produces. */
+            UNSUPPORTED_VERSION,
+
+            /** The code's shape is wrong: the wrong number of parts, or a part that will not parse. */
+            MALFORMED,
+
+            /** The code was issued for a different submission identifier than the transport delivered. */
+            SUBMISSION_ID_MISMATCH,
+
+            /** The code's validity window has closed. */
+            EXPIRED,
+
+            /** The code's validity window has not opened, beyond the tolerated clock skew. */
+            NOT_YET_VALID,
+
+            /** The code does not match the one this key produces for this message. */
+            CODE_MISMATCH;
+
+            /**
+             * Reports whether the submission may be launched.
+             *
+             * @return {@code true} only for {@link #VERIFIED}
+             */
+            public boolean verified() {
+                return this == VERIFIED;
+            }
+        }
+
+        /**
+         * Renders everything the code covers as one unambiguous string.
+         *
+         * <p>Signing a canonical rendering of the fields rather than the serialised body is deliberate: a
+         * signature over the body would break the moment the encoder changed a space, a field order or an
+         * escape, and it would authenticate a representation rather than a meaning. Every component is
+         * validated to exclude the line feed - the three payload fields by
+         * {@link JobSubmissionMessage}'s own constructor, the identifier by {@link #SUBMISSION_ID_SHAPE}, and
+         * the two instants because they are decimal renderings of a {@code long} - so no two distinct
+         * submissions can render identically.
+         *
+         * @param message the message
+         * @param submissionId the submission identifier
+         * @param issued the issue instant as epoch seconds
+         * @param expires the expiry instant as epoch seconds
+         * @return the canonical rendering, never {@code null}
+         */
+        private static String canonicalForm(final JobSubmissionMessage message, final String submissionId,
+                final long issued, final long expires) {
+
+            return message.canonicalForm() + '\n' + submissionId + '\n' + issued + '\n' + expires;
+        }
+
+        /**
+         * Refuses a submission identifier that could not be bound unambiguously.
+         *
+         * @param submissionId the identifier about to be signed
+         * @throws IllegalArgumentException if it is absent or of the wrong shape. The value is not echoed: on
+         *     the signing path it is this application's own, but the same check guards the shape of a value
+         *     that arrived off the wire
+         */
+        private static void requireSubmissionIdShape(final String submissionId) {
+            if (submissionId == null || !SUBMISSION_ID_SHAPE.matcher(submissionId).matches()) {
+                throw new IllegalArgumentException("the submission identifier is bound into the envelope code,"
+                        + " so it must be a bounded run of unreserved characters carrying neither the part"
+                        + " separator nor a line feed; the presented value is not");
+            }
         }
 
         /**
          * Computes the code of a canonical form under the derived purpose key.
          *
          * @param canonicalForm the exact bytes to authenticate, interpreted as UTF-8
-         * @param signingKey the application signing key
          * @return the raw code bytes, never {@code null}
-         * @throws IllegalArgumentException if the signing key is absent or blank
          */
-        private static byte[] code(final String canonicalForm, final String signingKey) {
-            return mac(purposeKey(signingKey), canonicalForm.getBytes(StandardCharsets.UTF_8));
+        private byte[] code(final String canonicalForm) {
+            return mac(this.purposeKey, canonicalForm.getBytes(StandardCharsets.UTF_8));
         }
 
         /**
-         * Derives the single-purpose key from the application signing key.
+         * Applies the keyed hash to raw key material, for the one derivation the constructor performs.
          *
-         * @param signingKey the application signing key; never blank
-         * @return the derived key material, never {@code null}
-         * @throws IllegalArgumentException if the signing key is absent or blank
+         * @param key the key material
+         * @param data the bytes to authenticate
+         * @return the code, never {@code null}
          */
-        private static byte[] purposeKey(final String signingKey) {
-            if (signingKey == null || signingKey.isBlank()) {
-                throw new IllegalArgumentException("the message envelope key is derived from "
-                        + "carddemo.security.jwt.signing-key, which must be configured; it has no default "
-                        + "anywhere in this repository and an unsigned queue message is never accepted");
-            }
-            return mac(signingKey.getBytes(StandardCharsets.UTF_8),
-                    KEY_DERIVATION_LABEL.getBytes(StandardCharsets.UTF_8));
+        private static byte[] mac(final byte[] key, final byte[] data) {
+            return mac(new SecretKeySpec(key, MAC_ALGORITHM), data);
         }
 
         /**
@@ -1442,23 +1679,23 @@ public class ReportSubmissionService {
          *
          * <p>The two checked exceptions the interface declares cannot occur here and are converted rather
          * than propagated: the algorithm is one every supported runtime implements, and the key is a non-empty
-         * byte array this class constructed. Converting them keeps the two public operations free of a
+         * specification this class constructed. Converting them keeps the two public operations free of a
          * checked contract their callers could not act on, and nothing is swallowed - the original is the
          * cause.
          *
-         * @param key the key material
+         * @param key the key specification
          * @param data the bytes to authenticate
          * @return the code, never {@code null}
          */
-        private static byte[] mac(final byte[] key, final byte[] data) {
+        private static byte[] mac(final SecretKeySpec key, final byte[] data) {
             try {
                 final Mac mac = Mac.getInstance(MAC_ALGORITHM);
-                mac.init(new SecretKeySpec(key, MAC_ALGORITHM));
+                mac.init(key);
                 return mac.doFinal(data);
             } catch (final NoSuchAlgorithmException | InvalidKeyException impossible) {
                 throw new IllegalStateException(MAC_ALGORITHM
-                        + " is required by every supported runtime and the key is a non-empty array built by "
-                        + "this class, so neither failure is reachable", impossible);
+                        + " is required by every supported runtime and the key is a non-empty specification"
+                        + " built by this class, so neither failure is reachable", impossible);
             }
         }
 
@@ -1679,7 +1916,7 @@ public class ReportSubmissionService {
     private static final String KEY_NOTIFICATION_TOPIC = "carddemo.aws.sns.notification-topic";
 
     /**
-     * Property key behind {@link #envelopeSigningKey}.
+     * Property key the {@link #envelope} is derived from.
      *
      * <p>Deliberately the <em>application</em> signing key rather than a key of this service's own.
      * {@link JobSubmissionEnvelope} derives a single-purpose key from it, so the two uses are
@@ -1722,14 +1959,22 @@ public class ReportSubmissionService {
     private final String notificationTopic;
 
     /**
-     * The key material the queue envelope code is derived from, bound from
-     * {@value #KEY_ENVELOPE_SIGNING_KEY}.
+     * The authenticator that makes a submission provably this application's own.
      *
-     * <p>Held as the configured string and never logged, rendered or reported. Every use goes through
-     * {@link JobSubmissionEnvelope}, which derives a single-purpose key from it, so this field's value never
-     * signs anything directly.
+     * <p><strong>Finding SEC-001, severity High, RESOLVED here.</strong> This field replaces a
+     * {@code String} that held the application signing key for the life of the bean. The key is now read as a
+     * constructor argument, handed to {@link JobSubmissionEnvelope} which derives a single-purpose key from
+     * it, and never retained here in any form - see that type for how it destroys its own temporaries. The
+     * previous arrangement also re-derived the purpose key on every publish, leaving an intermediate array
+     * per message for the collector; this one derives once, at startup.
+     *
+     * <p>Constructed rather than injected, deliberately. A bean would have to be declared somewhere, and the
+     * two places that need one - this service and the queue listener in {@code com.cardemo.config.BatchConfig}
+     * - are a publisher and a consumer that must not share mutable state; each holding its own instance over
+     * the same derived key keeps the dependency graph honest about that, and the derivation is deterministic
+     * so the two agree by construction.
      */
-    private final String envelopeSigningKey;
+    private final JobSubmissionEnvelope envelope;
 
     /**
      * Assembles the bean.
@@ -1777,7 +2022,9 @@ public class ReportSubmissionService {
      * @param envelopeSigningKey      the application signing key, from
      *                                {@value #KEY_ENVELOPE_SIGNING_KEY}, from which
      *                                {@link JobSubmissionEnvelope} derives the single-purpose key that makes
-     *                                a submission provably this application's own
+     *                                a submission provably this application's own. Finding SEC-001: it is
+     *                                consumed here to construct {@link #envelope} and is not retained by this
+     *                                service in any field
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if the message group identifier is blank, longer than
      *                               {@value #MAX_MESSAGE_GROUP_ID_LENGTH} characters, or contains a character
@@ -1808,28 +2055,11 @@ public class ReportSubmissionService {
                 Objects.requireNonNull(reportMessageGroupId, "reportMessageGroupId must not be null"));
         this.notificationTopic =
                 Objects.requireNonNull(notificationTopic, "notificationTopic must not be null");
-        this.envelopeSigningKey = requireEnvelopeSigningKey(envelopeSigningKey);
+        // The key is used here and not kept: the envelope derives its own single-purpose key from it and
+        // zeroes every temporary, and this constructor's parameter goes out of scope with the frame.
+        this.envelope = new JobSubmissionEnvelope(envelopeSigningKey);
     }
 
-    /**
-     * Proves the envelope key material is present before any message can be published without it.
-     *
-     * <p>Checked at construction rather than at first send, so a deployment that failed to supply the key
-     * fails to start instead of accepting submissions it cannot authenticate. The value itself is never
-     * echoed, not even by length: it is the application signing key.
-     *
-     * @param signingKey the configured key material
-     * @return the same value, once proven usable
-     * @throws IllegalArgumentException if the value is absent or blank
-     */
-    private static String requireEnvelopeSigningKey(final String signingKey) {
-        if (signingKey == null || signingKey.isBlank()) {
-            throw new IllegalArgumentException("Property " + KEY_ENVELOPE_SIGNING_KEY + " must be configured: "
-                    + "the queue envelope code that makes a report submission provably this application's own "
-                    + "is derived from it, and there is no unsigned mode");
-        }
-        return signingKey;
-    }
 
     /**
      * Proves the configured message group identifier is one Amazon SQS will accept.
@@ -2703,7 +2933,7 @@ public class ReportSubmissionService {
      * {@link JobSubmissionMessage} declares: identity travels in headers, never inside the typed body, so the
      * payload contract the batch tier consumes is unchanged.
      *
-     * <p><strong>Deduplication. Finding H-08, severity High, RESOLVED here.</strong> An explicit
+     * <p><strong>Deduplication.</strong> An explicit
      * {@code MessageDeduplicationId} is generated once per call by {@link #newDeduplicationId()}. That alone is
      * what carries the parity, and it carries it unconditionally: an explicit identifier takes precedence over
      * the queue's body hash, so two identical submissions are both delivered even against a queue that still
@@ -2715,10 +2945,11 @@ public class ReportSubmissionService {
      * to start over it, because it is mutable by any holder of the queue and this send path does not depend on
      * it.
      *
-     * <p>The previous arrangement was the reverse and it lost submissions. Setting no identifier left the queue's
+     * <p><strong>Omitting the identifier loses submissions, and that is why it may not be omitted.</strong>
+     * Setting no identifier leaves the queue's
      * body hash as the deduplication key, so two submissions of the same period - identical report name,
-     * identical start and end dates, which is exactly what an operator re-submitting produces - collapsed into
-     * one inside the five-minute deduplication window. The second was accepted here, logged as published and
+     * identical start and end dates, which is exactly what an operator re-submitting produces - collapse into
+     * one inside the five-minute deduplication window. The second is accepted here, logged as published and
      * then discarded by the queue, with nothing on the caller's side to show it. That is not what the source
      * does: {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} <em>appends</em>, and {@code :L515-L523} writes
      * unconditionally with no idempotency key at all, so two identical writes produced two reader entries.
@@ -2742,13 +2973,20 @@ public class ReportSubmissionService {
         try {
             final Map<String, Object> headers = propagationHeaders(span);
 
-            // Finding M-11. The envelope code is added last, after the propagation headers, so that the
-            // header map this method sends is the one the consumer verifies against. It covers the three
-            // payload fields and nothing else: the propagation headers are diagnostic context, which the
-            // consumer validates for shape rather than trusting, so signing them would authenticate values
-            // no decision is taken on.
+            // Finding M-11, extended by finding SEC-002. The envelope code is added last, after the
+            // propagation headers, so that the header map this method sends is the one the consumer verifies
+            // against. It covers the three payload fields, the submission identifier and the validity window,
+            // and nothing else: the propagation headers are diagnostic context, which the consumer validates
+            // for shape rather than trusting, so signing them would authenticate values no decision is taken
+            // on.
+            //
+            // One identifier per call, generated HERE and before signing, held in a local so the value bound
+            // into the code is the same value that reaches the queue and the same value that could be logged.
+            // Reading it twice from a generator would produce two identities and the consumer would refuse the
+            // message; generating it after signing would leave it unbound, which is the replay SEC-002 names.
+            final String deduplicationId = newDeduplicationId();
             headers.put(JobSubmissionEnvelope.SIGNATURE_HEADER,
-                    JobSubmissionEnvelope.sign(card, this.envelopeSigningKey));
+                    this.envelope.sign(card, deduplicationId, this.clock.instant()));
 
             // :L517-L523. The queue name and the message group are both configuration; the template and the
             // client beneath it belong to com.cardemo.config.AwsConfig, so no endpoint is named here.
@@ -2761,11 +2999,6 @@ public class ReportSubmissionService {
             // caller-visible bound and NO handle to abandon. SqsTemplateOptions exposes no send timeout
             // either (defaultPollTimeout governs receive), so this form is the only bounded synchronous
             // send available. It costs nothing extra and adds the deadline and the cancellation.
-            //
-            // One identifier per call, held in a local so the value that reaches the queue is also the value
-            // that could be logged: reading it twice from a generator would produce two different identities.
-            final String deduplicationId = newDeduplicationId();
-
             pending = this.sqsTemplate.sendAsync(options -> options
                     .queue(this.reportQueueName)
                     .payload(card)
@@ -2874,7 +3107,7 @@ public class ReportSubmissionService {
      * nothing, and an application-level retry would change how many notifications a failing topic eventually
      * receives.
      *
-     * <p><strong>Finding I-01, informational, DOCUMENTED.</strong> Beneath this method the shared client does
+     * <p><strong>Finding I-01, severity Low, DOCUMENTED.</strong> Beneath this method the shared client does
      * apply a bounded standard retry, and unlike the queue send there is no deduplication token to collapse a
      * repeat: a first publish that succeeded and then lost its response is sent again and <em>delivered
      * twice</em>. So a subscriber observes <strong>at least once</strong>, not exactly once. That is stated
@@ -2883,22 +3116,22 @@ public class ReportSubmissionService {
      * not act twice on one notice is expected to be idempotent; the payload carries no identity to key on and
      * inventing one would change what the notified party receives.
      *
-     * <p><strong>Finding M-04, severity Major, RESOLVED - by provisioning, not here.</strong> This method
-     * reports a successful publish, and a successful publish is <em>acceptance by the service</em>, which is
-     * not the same thing as delivery to anyone. That distinction used to be fatal to the capability, because
-     * {@code localstack-init/init-aws.sh} created the topic with no subscriber and asserted that count, so
-     * every notification this method logged as published was accepted and immediately discarded. The script now
-     * provisions a durable inbox queue subscribed to the topic and <em>fails</em> when the topic reports no
-     * subscription, which is the enforceable half of the guarantee; the log line below is honest about being
-     * the other half, since a publisher cannot observe a subscriber's receipt. There is deliberately no
-     * delivery check here: it would require this method to read the inbox, which is the operator's to read.
+     * <p><strong>Acceptance is not delivery, and the guarantee is provisioned rather than asserted here.</strong>
+     * This method reports a successful publish, and a successful publish is <em>acceptance by the service</em>,
+     * which is not the same thing as delivery to anyone. A topic created with no subscriber makes that
+     * distinction fatal to the capability, because every notification this method logged as published would be
+     * accepted and immediately discarded. {@code localstack-init/init-aws.sh} therefore provisions a durable
+     * inbox queue subscribed to the topic and <em>fails</em> when the topic reports no subscription, which is
+     * the enforceable half of the guarantee; the log line below is honest about being the other half, since a
+     * publisher cannot observe a subscriber's receipt. There is deliberately no delivery check here: it would
+     * require this method to read the inbox, which is the operator's to read.
      *
-     * <p><strong>Boundedness. Finding M-08, severity Medium, RESOLVED.</strong> This publish is synchronous on
+     * <p><strong>Boundedness.</strong> This publish is synchronous on
      * the request thread, and the submission it follows has already succeeded - so whatever budget bounds it
-     * bounds how long a successful request can be held open by a courtesy. It used to share the object and
-     * queue clients' thirty-second budget, which is sized for a batch generation, so an unreachable topic
-     * delayed a completed submission for thirty seconds before the failure was logged and discarded. The
-     * notification client now carries its own much shorter budget, applied by
+     * bounds how long a successful request can be held open by a courtesy. Sharing the object and queue
+     * clients' thirty-second budget, which is sized for a batch generation, would let an unreachable topic
+     * delay a completed submission for thirty seconds before the failure was logged and discarded. The
+     * notification client therefore carries its own much shorter budget, applied by
      * {@code com.cardemo.config.AwsConfig.applyNotificationPolicy}, so the worst case here is that budget.
      *
      * <p>The publish is deliberately <em>not</em> moved onto another thread. An executor would need lifecycle
@@ -2925,8 +3158,8 @@ public class ReportSubmissionService {
                     JOB_NAME + " " + JOB_DESCRIPTION);
 
             // "accepted by" rather than "delivered to": the service acknowledges the publish, and delivery to
-            // the subscribed inbox is the service's to perform. Finding M-04 - the wording used to claim more
-            // than the call proves, at a time when the topic had no subscriber at all.
+            // the subscribed inbox is the service's to perform. Wording that claimed more than the call proves
+            // would be wrong here whatever the topic's subscriber count happened to be.
             LOG.info("operator notification for the {} period accepted by the {} topic for delivery to its "
                             + "subscribed inbox, replacing the {} card; the topic is provisioned with a "
                             + "subscriber by localstack-init/init-aws.sh, which fails when it has none",

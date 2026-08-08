@@ -199,10 +199,8 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * would prove nothing about any of the three. Where no daemon or socket is available the correct report is
  * that the gate is <em>blocked</em>, never an untested pass. Measured in the provisioned environment on
  * 2026-08-03: Docker Engine 29.7.0 with Compose v5.3.1 and a socket present, and host {@code java} 25.0.3
- * and {@code mvn} 3.9.11 both on the path. An earlier note claiming Docker was unavailable, and a later one
- * claiming host {@code java}, {@code javac} and {@code mvn} were absent so Maven had to run inside a
- * container, are <strong>both withdrawn as stale</strong>; severity of what they left behind:
- * <strong>Low</strong>, a wrong instruction rather than a wrong artefact.
+ * and {@code mvn} 3.9.11 both on the path. Neither Docker nor host {@code java}, {@code javac} and
+ * {@code mvn} is absent, so Maven does not have to run inside a container.
  *
  * <h2>3. Key configuration and defaults</h2>
  *
@@ -519,20 +517,7 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
     @Autowired
     private MockMvc mockMvc;
 
-    /**
-     * Sole constructor.
-     *
-     * <p>Explicit and empty. Declared rather than defaulted so that no initialisation can be added to it
-     * by accident: this class is instantiated per test method by the framework and holds no state of its
-     * own beyond what is injected.
-     */
-    ObservabilityHealthMetricsIntegrationTest() {
-        super();
-    }
-
-    // =================================================================================================
     // Discovery helpers. Pure where they can be, and never dependent on a literal metric name.
-    // =================================================================================================
 
     /**
      * Every instrument this application registered, in a deterministic order.

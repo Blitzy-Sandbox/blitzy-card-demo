@@ -9,7 +9,7 @@
  *               outside printable ASCII is encoded, the encoding is
  *               injective, and no recognised status changes behaviour.
  * Source      : app/cbl/CBTRN02C.cbl:L707-L711 (abend 999, RC 12)
- *               app/cbl/CBTRN02C.cbl:L714-L731 (9910-DISPLAY-IO-STATUS)
+ *               app/cbl/CBTRN02C.cbl:L714-L727 (9910-DISPLAY-IO-STATUS)
  *               app/cbl/CBTRN02C.cbl:L142-L144 (APPL-RESULT guard) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.

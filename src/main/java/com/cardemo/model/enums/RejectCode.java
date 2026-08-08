@@ -174,9 +174,10 @@ import java.util.Optional;
  *       is what the source says and the duplication is reproduced, not resolved.</li>
  *   </ul>
  *
- * <p>Both findings are owed an entry in {@code DECISION_LOG.md} and a row in
- * {@code TRACEABILITY_MATRIX.md}. <strong>Both registers are authored at the repository root</strong>; a
- * reading of 1 August 2026 that recorded neither as available is withdrawn. This Javadoc together with
+ * <p>Both findings are held in {@code DECISION_LOG.md} - the unobservable code at
+ * {@code DL-PP-03}, the byte-identical description text at {@code DL-PP-13} - and both have rows in
+ * {@code TRACEABILITY_MATRIX.md}. <strong>Both registers are authored at the repository root</strong>. This
+ * Javadoc together with
  * {@code docs/technical-specifications.md} remains the tracking record that cannot drift from the code.
  * Neither finding is untracked residue.
  *
@@ -242,7 +243,7 @@ public enum RejectCode {
      *       reject as {@code 102}, changing the reject file.</li>
      * </ul>
      *
-     * <p>Remediation: <strong>none - preserve and log.</strong> It is owed an entry in
+     * <p>Remediation: <strong>none - preserve and log.</strong> It is held as {@code DL-LD-04} in
      * {@code DECISION_LOG.md} among the preserved legacy defects and a row in {@code TRACEABILITY_MATRIX.md} as a
      * {@code CBTRN02C} fidelity hot spot. Both registers are authored at the repository root; a reading of
      * 1 August 2026 that recorded neither as available is withdrawn. This Javadoc stays the record that

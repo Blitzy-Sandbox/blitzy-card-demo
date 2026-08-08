@@ -187,10 +187,9 @@ import org.slf4j.LoggerFactory;
  *       an {@code EXEC CICS SEND MAP} with no {@code EXEC CICS RETURN}, so after a bounds-check failure
  *       control falls through into the guard and dispatch region. Remediation, and a
  *       <strong>labelled deviation</strong>: Java refuses an out-of-range selection before any option-record
- *       lookup, because an uninitialised-storage read has no defined Java semantics. Owed an entry in
- *       {@code DECISION_LOG.md} and a row in {@code TRACEABILITY_MATRIX.md}, both of which are authored at
- *       the repository root; an earlier revision recorded them as <em>Not available</em> and that record is
- *       withdrawn.</li>
+ *       lookup, because an uninitialised-storage read has no defined Java semantics. Held as
+ *       {@code DL-DV-10} in {@code DECISION_LOG.md} - boundary (3), the menu bounds short-circuit - with a
+ *       row in {@code TRACEABILITY_MATRIX.md}.</li>
  *   <li><strong>High</strong> - the coming-soon block at {@code app/cbl/COADM01C.cbl:L147-L154} sits outside
  *       the placeholder {@code IF} but inside {@code IF NOT ERR-FLG-ON}, so a transliteration that lets the
  *       {@code XCTL} return announces "coming soon" on every successful dispatch. Remediation: the transfer
@@ -234,10 +233,8 @@ import org.slf4j.LoggerFactory;
 @DisplayName("AdminMenuService - app/cbl/COADM01C.cbl and app/cpy/COADM02Y.cpy, at anchor 7756d89")
 class AdminMenuServiceTest {
 
-    // ==================================================================
     // Corpus constants. Every one is transcribed from a frozen artefact and carries its locator. None is
     // read back off the production class, so a regression in the code cannot make a test agree with it.
-    // ==================================================================
 
     /** {@code CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4} at {@code app/cpy/COADM02Y.cpy:L20}. */
     private static final int POPULATED_OPTION_COUNT = 4;
@@ -485,9 +482,7 @@ class AdminMenuServiceTest {
         this.serviceLogger.setLevel(this.restoreLevel);
     }
 
-    // ==================================================================
     // 1. The shape of app/cpy/COADM02Y.cpy, and the byte that is missing from it.
-    // ==================================================================
 
     /**
      * The administrator option table as {@code app/cpy/COADM02Y.cpy} declares it: four populated slots of
@@ -619,9 +614,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 2. Blocker: the count field is the bound. The OCCURS arity never is.
-    // ==================================================================
 
     /**
      * The bound applied to a keyed option number. {@code app/cpy/COADM02Y.cpy:L20} populates four slots and
@@ -668,7 +661,7 @@ class AdminMenuServiceTest {
             // EXEC CICS SEND MAP with no EXEC CICS RETURN, so the source falls through a bounds-check
             // failure into the guard at :L138, which subscripts the over-redefined region. Java refuses
             // before any element access, because reading uninitialised storage has no defined semantics
-            // here. Owed an entry in the DECISION_LOG.md.
+            // here. Held as DL-DV-10, boundary (3), in DECISION_LOG.md.
             final AdminMenuService service = new AdminMenuService();
 
             final Throwable refusal = catchThrowable(() -> service.selectOption("9"));
@@ -760,9 +753,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 3. PROCESS-ENTER-KEY: the JUST RIGHT field and the space-to-zero substitution.
-    // ==================================================================
 
     /**
      * Normalisation of the keyed selection, {@code app/cbl/COADM01C.cbl:L117-L125}: a backward scan from the
@@ -902,9 +893,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 4. Hostile input. Every value below is refused, and nothing is echoed back.
-    // ==================================================================
 
     /**
      * Untrusted input reaching {@code selectOption}. {@code OPTIONI} is a two-character screen field, so
@@ -1037,9 +1026,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 5. The placeholder guard at :L138, and the notice at :L149-L153 which is CLEAN here.
-    // ==================================================================
 
     /**
      * The guard at {@code app/cbl/COADM01C.cbl:L138} and the notice it leads to at {@code :L149-L153}.
@@ -1216,9 +1203,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 6. Paragraph correspondence: seven labels, seven private methods, no consolidation.
-    // ==================================================================
 
     /**
      * The structural contract. {@code app/cbl/COADM01C.cbl} is 268 lines and declares seven paragraph
@@ -1359,9 +1344,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 7. Least privilege. The table has no user-type byte, so authorisation lives at the endpoint.
-    // ==================================================================
 
     /**
      * Where authorisation for this surface lives. {@code app/cpy/COADM02Y.cpy} declares no
@@ -1509,9 +1492,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 8. Determinism: POPULATE-HEADER-INFO reads the injected clock once, in the clock's own zone.
-    // ==================================================================
 
     /**
      * {@code POPULATE-HEADER-INFO} at {@code app/cbl/COADM01C.cbl:L202-L221} and
@@ -1669,9 +1650,7 @@ class AdminMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // Helpers. Every one is a pure function of its arguments or of the fixed fixtures above.
-    // ==================================================================
 
     /**
      * Returns the options the canonically constructed service serves.

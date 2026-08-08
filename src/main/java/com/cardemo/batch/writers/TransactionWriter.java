@@ -9,7 +9,7 @@
  *               app/cpy/CVTRA05Y.cpy (350-byte TRAN-RECORD layout, ":L2 RECLN = 350");
  *               app/jcl/TRANFILE.jcl :L53-L54 (KEYS(16 0) RECORDSIZE(350 350));
  *               app/catlg/LISTCAT.txt :L3593-L3594 (KEYLEN 16, AVGLRECL = MAXLRECL = 350);
- *               app/cbl/CBACT04C.cbl :L473-L516 (1300-B-WRITE-TX, the second exposure) @ 7756d89
+ *               app/cbl/CBACT04C.cbl :L473-L515 (1300-B-WRITE-TX, the second exposure) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -151,8 +151,7 @@ import io.awspring.cloud.s3.S3Operations;
  * four profiles: the base, {@code test} and {@code prod} profiles bind it to a bare
  * {@code ${AWS_ENDPOINT_URL}} with no default, so an unset variable fails the context at startup, and only
  * {@code application-local.yml} defaults it to the LocalStack edge. No live cloud path is therefore
- * structurally reachable from this class. An earlier revision of this sentence said the override existed only
- * in the {@code local} and {@code test} profiles; that is withdrawn.
+ * structurally reachable from this class.
  *
  * <h2>Object keys and generation-data-group translation</h2>
  *
@@ -236,7 +235,7 @@ import io.awspring.cloud.s3.S3Operations;
  * exception rather than substituting a sequence, which would change generated values and break the boundary
  * comparison. A collision is the intended outcome.
  *
- * <p>A second exposure must stay observable for the same reason. {@code app/cbl/CBACT04C.cbl:L473-L516}
+ * <p>A second exposure must stay observable for the same reason. {@code app/cbl/CBACT04C.cbl:L473-L515}
  * writes interest transactions to a sequential generation-data-group output with no duplicate detection at
  * all, concatenating the ten-character date parameter with a <strong>global six-digit suffix counter that is
  * never reset per account</strong> ({@code ADD 1 TO WS-TRANID-SUFFIX} at {@code :L474}). The collision
@@ -265,7 +264,7 @@ import io.awspring.cloud.s3.S3Operations;
  *
  * <p>That is a deliberate, labelled <strong>deviation</strong> and not a parity claim. The source performs
  * <strong>three independent commits</strong> in {@code 2000-POST-TRANSACTION}
- * ({@code app/cbl/CBTRN02C.cbl:L424-L465}), so its reject-code-109 rewrite-failure path at
+ * ({@code app/cbl/CBTRN02C.cbl:L424-L444}), so its reject-code-109 rewrite-failure path at
  * {@code app/cbl/CBTRN02C.cbl:L545-L560} leaves an orphaned category-balance row and an orphaned transaction
  * row behind. Collapsing the three writes into one atomic Java unit closes that hazard as a side effect,
  * which is a genuine behavioural improvement and therefore must be labelled rather than absorbed silently.
@@ -366,16 +365,16 @@ import io.awspring.cloud.s3.S3Operations;
  * executor - each hold their own {@link #stepExecution}, their own object ownership and their own view of the
  * context they publish into. No field is shared between them and there is no static mutable state at all.
  *
- * <p><b>Finding, severity Blocker, RESOLVED.</b> An earlier revision was a plain singleton
- * {@code @Component} holding the captured step execution in a {@code volatile} field, and argued that this was
- * safe because the declared step is single-threaded and that a multi-threaded step "must declare this writer
- * step-scoped - a wiring decision owned by {@code BatchConfig}". Both halves were wrong in the same way. The
- * {@code volatile} qualifier fixes <em>publication</em>, not <em>ownership</em>: two concurrent executions
- * writing the field in turn each observe the other's value safely and are each then wrong about which job
- * instance owns the object key they are about to compose, so the two runs interleave their key namespaces and
- * overwrite each other's published context entry. And deferring the remedy to a configuration file that this
- * class cannot see left correctness contingent on a promise nobody enforces - a step declared with a task
- * executor would have silently corrupted output rather than failing. <i>Remediation, applied:</i> the scope is
+ * <p><b>The step scope is declared here, on the bean, and may not be deferred to configuration.</b> A plain
+ * singleton {@code @Component} holding the captured step execution in a {@code volatile} field is not a
+ * substitute, and neither is the argument that a multi-threaded step "must declare this writer step-scoped - a
+ * wiring decision owned by {@code BatchConfig}". Both fail in the same way. The {@code volatile} qualifier
+ * fixes <em>publication</em>, not <em>ownership</em>: two concurrent executions writing the field in turn each
+ * observe the other's value safely and are each then wrong about which job instance owns the object key they
+ * are about to compose, so the two runs interleave their key namespaces and overwrite each other's published
+ * context entry. And deferring the remedy to a configuration file this class cannot see would leave
+ * correctness contingent on a promise nobody enforces - a step declared with a task executor would silently
+ * corrupt output rather than failing. The scope is
  * declared here, on the bean, where it is a property of the component and not of its wiring. A step-scoped
  * bean cannot be injected into a singleton without a proxy, so the container enforces the contract.
  *
@@ -430,14 +429,14 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names the one prefix that holds every object of this
      * generation.
      *
-     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision published only the latest chunk key,
-     * and only into the <em>step</em> execution context, while its documentation asserted that promotion to
-     * the job execution context "is configured by {@code BatchConfig}". No such promotion existed, and
-     * {@code BatchConfig} does not exist, so nothing downstream could reconstruct a generation: a run of a
-     * hundred chunks left one key behind and the other ninety-nine were unrecoverable. Worse, a consumer that
-     * fell back to resolving "the lexicographically greatest prefix" would race any concurrent producer. Two
-     * things were wrong - the <em>completeness</em> of what was published and the <em>scope</em> it was
-     * published into - and a promotion listener would only have fixed the second. <i>Remediation, applied:</i>
+      * <p><b>Every chunk key is published, and into the <em>job</em> execution context.</b> Publishing only
+      * the latest chunk key, and only into the <em>step</em> execution context on the assurance that promotion
+      * to the job execution context "is configured by {@code BatchConfig}", leaves nothing downstream able to
+      * reconstruct a generation: a run of a hundred chunks would leave one key behind and the other
+      * ninety-nine unrecoverable. Worse, a consumer that fell back to resolving "the lexicographically
+      * greatest prefix" would race any concurrent producer. Two things go wrong that way - the
+      * <em>completeness</em> of what is published and the <em>scope</em> it is published into - and a
+      * promotion listener would only address the second.
      * every key is appended here, in creation order, in the job execution context, by this class, with no
      * external wiring required for the record to be complete.
      *
@@ -452,11 +451,11 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     /**
      * Step execution context entry naming the object a committed chunk still owes the store, {@value}.
      *
-     * <p><strong>Finding M-07, severity Major, RESOLVED - and this entry is the outbox.</strong> The object is
-     * uploaded after the chunk transaction commits, which is the only ordering that cannot publish an object
-     * describing rows that were rolled back. But it leaves the mirror image of that problem: if the upload
-     * fails, the rows are already durable and cannot be taken back, so the relation held transactions that no
-     * object described and nothing in the target could ever notice or repair.
+      * <p><strong>This entry is the outbox.</strong> The object is
+      * uploaded after the chunk transaction commits, which is the only ordering that cannot publish an object
+      * describing rows that were rolled back. But it leaves the mirror image of that problem: if the upload
+      * fails, the rows are already durable and cannot be taken back, so without this entry the relation would
+      * hold transactions that no object described and nothing in the target could ever notice or repair.
      *
      * <p>The remedy is a transactional outbox, and it needs no table of its own.
      * {@code TaskletStep$ChunkTransactionCallback.doInTransaction} calls {@code ItemStream.update} and then
@@ -506,14 +505,15 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * {@code carddemo.batch.transaction-writer.max-indexed-object-keys}, and equal to that cap on any run that
      * passes it. It is the bound a consumer iterates to.
      *
-     * <p><b>Finding, severity Minor, RESOLVED.</b> An earlier revision appended one indexed entry per created
-     * object with <b>no bound of any kind</b>. Because the commit interval of the posting step is pinned at one
-     * record as a parity contract - see {@code DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL}, grounded on
-     * the three separate commits of {@code app/cbl/CBTRN02C.cbl:L440-L442} - Spring Batch re-serialises the
-     * whole job execution context once per <em>record</em>, so the work of writing this manifest grew with the
-     * square of the record count. A measured 300-record run of {@code app/data/ASCII/dailytran.txt} left 262
-     * indexed entries and a serialised job context of 36,664 bytes, about 140 bytes per record; a hundred
-     * thousand records would have reached roughly fourteen megabytes re-serialised a hundred thousand times.
+      * <p><b>The manifest is bounded, and an unbounded one is quadratic here.</b> Appending one indexed entry
+      * per created object with <b>no bound of any kind</b> is quadratic in this job: because the commit
+      * interval of the posting step is pinned at one record as a parity contract - see
+      * {@code DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL}, grounded on the three separate commits of
+      * {@code app/cbl/CBTRN02C.cbl:L440-L442} - Spring Batch re-serialises the whole job execution context once
+      * per <em>record</em>, so the work of writing the manifest grows with the square of the record count. A
+      * measured 300-record run of {@code app/data/ASCII/dailytran.txt} leaves 262 indexed entries and a
+      * serialised job context of 36,664 bytes, about 140 bytes per record; a hundred thousand records would
+      * reach roughly fourteen megabytes re-serialised a hundred thousand times.
      * No cap, no marker and no disclosed ceiling existed. <i>Remediation, applied:</i> the indexed enumeration
      * is bounded, the bound is a documented property, passing it is reported once at {@code WARN} and marked in
      * the context by {@link #OBJECT_KEYS_TRUNCATED_ENTRY}, and the three facts that make the generation
@@ -687,17 +687,17 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * Human-readable description of the permitted set, used in the diagnostic so an operator does not have to
      * infer the rule from a code point.
      *
-     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision guarded only the <em>upper</em> bound -
-     * it refused anything above {@link #MAX_ENCODABLE_CHAR} because such a character could not be encoded in
-     * one byte - and admitted every control byte below the space. That is a security defect rather than a
-     * cosmetic one, and specifically an injection defect. The emitted stream is <b>unblocked and
-     * undelimited</b>: {@code app/jcl/POSTTRAN.jcl} declares {@code RECFM=FB}, so a consumer finds record
-     * boundaries by counting {@value #RECORD_LENGTH} bytes and by nothing else. A carriage return, a line feed
-     * or a NUL inside a {@code PIC X} field is therefore not merely odd - it is a byte that a line-oriented
-     * downstream reader, a shell pipeline, a text editor or a log ingester will treat as a record boundary that
-     * the format does not have, letting a merchant name carried in from an upstream system split one record
-     * into two or terminate a C string early. The width check cannot catch it, because a control byte occupies
-     * exactly one column like any other.
+      * <p><b>Both bounds are guarded, not only the upper one.</b> Refusing anything above
+      * {@link #MAX_ENCODABLE_CHAR} because such a character cannot be encoded in one byte, while admitting
+      * every control byte below the space, is a security defect rather than a cosmetic one, and specifically an
+      * injection defect. The emitted stream is <b>unblocked and undelimited</b>: {@code app/jcl/POSTTRAN.jcl}
+      * declares {@code RECFM=FB}, so a consumer finds record boundaries by counting
+      * {@value #RECORD_LENGTH} bytes and by nothing else. A carriage return, a line feed or a NUL inside a
+      * {@code PIC X} field is therefore not merely odd - it is a byte that a line-oriented downstream reader, a
+      * shell pipeline, a text editor or a log ingester will treat as a record boundary that the format does not
+      * have, letting a merchant name carried in from an upstream system split one record into two or terminate
+      * a C string early. The width check cannot catch it, because a control byte occupies exactly one column
+      * like any other.
      *
      * <p><i>Remediation, applied:</i> an explicit <b>permitted</b> set, expressed as a positive rule rather
      * than as a list of things to exclude, because a deny-list of control characters is exactly the kind of
@@ -813,15 +813,14 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     /**
      * The closed vocabulary of symbolic failure reasons this class writes to the log.
      *
-     * <p><b>Finding, severity Medium, RESOLVED.</b> Every failure diagnostic in an earlier revision logged the
-     * fully composed exception message, and those messages carry - correctly, for an exception - the candidate
-     * {@code TRAN-ID} values of the chunk, the destination bucket and the concrete object key. On the log
-     * channel that is a different question, and three properties made it the wrong answer. A transaction
-     * identifier is a business key that {@code app/cbl/COTRN02C.cbl:L444-L451} derives by max-plus-one, so a
-     * run of them discloses the shape of the key space; a bucket name and an object key are infrastructure
-     * topology that an operator reading a failure does not need and an attacker reading a leaked log does; and
-     * an identifier list is unbounded in length, so one failing chunk of a hundred could emit a hundred keys
-     * into a log line.
+      * <p><b>No failure diagnostic logs the composed exception message.</b> Those messages carry - correctly,
+      * for an exception - the candidate {@code TRAN-ID} values of the chunk, the destination bucket and the
+      * concrete object key. On the log channel that is a different question, and three properties make it the
+      * wrong answer. A transaction identifier is a business key that
+      * {@code app/cbl/COTRN02C.cbl:L444-L451} derives by max-plus-one, so a run of them discloses the shape of
+      * the key space; a bucket name and an object key are infrastructure topology that an operator reading a
+      * failure does not need and an attacker reading a leaked log does; and an identifier list is unbounded in
+      * length, so one failing chunk of a hundred could emit a hundred keys into a log line.
      *
      * <p><i>Remediation, applied:</i> the log carries a <b>closed symbolic reason</b> from the set below plus
      * the safe metadata the review names - logical file, relation, operation, status and chunk size - and the
@@ -868,15 +867,15 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     /**
      * The single owner of the four sanctioned instruments.
      *
-     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision held a {@code Counter} resolved from the
-     * {@code MeterRegistry} against a name literal declared privately in this file, and defended it on the
-     * grounds that {@code MeterRegistry.counter} returns the already-registered meter of that name rather than
-     * adding a second one. That is true of the <em>registry</em> and beside the point: resolving by an
-     * independently declared literal means the name exists in two files, so it is a second declaration site,
-     * and the two drift the moment either is edited - at which point a fifth instrument appears and the
-     * four-instrument contract is broken without any test noticing, because both files still agree with
-     * themselves. The description and base unit that {@code MetricsConfig} attaches were also silently lost,
-     * since whichever site resolves the meter first wins. <i>Remediation, applied:</i> the canonical facade is
+      * <p><b>No instrument is resolved here from a locally declared name literal.</b> Holding a
+      * {@code Counter} resolved from the {@code MeterRegistry} against a name literal declared privately in
+      * this file, on the grounds that {@code MeterRegistry.counter} returns the already-registered meter of
+      * that name rather than adding a second one, is true of the <em>registry</em> and beside the point:
+      * resolving by an independently declared literal means the name exists in two files, so it is a second
+      * declaration site, and the two drift the moment either is edited - at which point a fifth instrument
+      * appears and the four-instrument contract is broken without any test noticing, because both files still
+      * agree with themselves. The description and base unit that {@code MetricsConfig} attaches would also be
+      * silently lost, since whichever site resolves the meter first wins. The canonical facade is
      * injected and the literal is gone from this file; {@code MetricsConfig} is the only place any instrument
      * is named.
      */
@@ -949,11 +948,11 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * @param metrics the canonical owner of the four sanctioned instruments. Never {@code null}
      * @param outputBucket the destination bucket, required and never defaulted
      * @param objectPrefix the base-name segment every key starts with.
-     *        <b>Finding, severity High, RESOLVED:</b> an earlier revision carried an inline default of
-     *        {@code transact} here. An inline default is a second declaration site for a value that
-     *        {@code application.yml} already declares authoritatively - and that file says so in as many words
-     *        - so the two drift, and a context that failed to supply the key wrote a whole generation under a
-     *        silently different prefix instead of failing. The property also sat outside the canonical
+      *        <b>No inline default may be carried here.</b> An inline default of {@code transact} would be a
+      *        second declaration site for a value that {@code application.yml} already declares
+      *        authoritatively - and that file says so in as many words - so the two drift, and a context that
+      *        failed to supply the key would write a whole generation under a silently different prefix
+      *        instead of failing.
      *        {@code carddemo.aws.s3.gdg-prefixes.*} catalogue with nothing recording why: it is deliberately
      *        outside it, because {@code app/jcl/POSTTRAN.jcl:L26-27} writes posted transactions to the
      *        {@code INDEXED} cluster {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}, which is not one of the seven
@@ -1079,13 +1078,13 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * Defers the object write, the key publication and the two counters until the surrounding transaction has
      * committed, and abandons all three if it rolls back.
      *
-     * <p><strong>Finding, severity High - remediated here.</strong> These three effects used to run inline,
-     * immediately after {@code saveAllAndFlush}. A flush is not a commit, so the object existed in the bucket,
-     * the key was published into the execution contexts and both counters had moved <em>before</em> the chunk
-     * transaction reached its commit point. Any failure between the two - the commit itself, a later listener,
-     * a constraint checked at commit time - left an object naming rows that had been rolled back, an execution
-     * context advertising a generation that described nothing, and counters claiming work that never landed.
-     * There was no compensating action anywhere, so the divergence was permanent.
+      * <p><strong>None of the three effects may run inline, immediately after {@code saveAllAndFlush}.</strong>
+      * A flush is not a commit, so the object would exist in the bucket, the key would be published into the
+      * execution contexts and both counters would have moved <em>before</em> the chunk transaction reached its
+      * commit point. Any failure between the two - the commit itself, a later listener, a constraint checked at
+      * commit time - would leave an object naming rows that had been rolled back, an execution context
+      * advertising a generation that described nothing, and counters claiming work that never landed, with no
+      * compensating action anywhere and so a permanent divergence.
      *
      * <p>The remedy publishes nothing before the commit rather than publishing early and compensating
      * afterwards. The composed payload is a byte array already held on the stack, so holding it until
@@ -1414,7 +1413,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      *
      * <p>Side effects: inserts one row per item and flushes the persistence context.
      *
-     * <p><strong>Finding F-8, severity Major - the collision is now recognised by {@code SQLSTATE}.</strong>
+     * <p><strong>Finding F-8, severity High - the collision is now recognised by {@code SQLSTATE}.</strong>
      * This previously caught {@code org.springframework.dao.DuplicateKeyException} ahead of its supertype,
      * which recognises a collision only when the persistence layer chose that subtype. For a batched flush it
      * need not: the driver reports the batch and links the exception carrying the state of the entry that
@@ -1473,7 +1472,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * {@code APPL_RESULT_INITIAL}, {@code APPL_AOK}, {@code APPL_EOF} and {@code APPL_FAILURE} from
      * {@code app/cbl/CBTRN02C.cbl:L142-L144}; restating them here would duplicate a published contract.
      *
-     * <p><b>Deadline and retry, and where they come from. Finding, severity High, RESOLVED.</b> The upload is
+      * <p><b>Deadline and retry, and where they come from.</b> The upload is
      * synchronous, so an unbounded call would hold the chunk transaction open for as long as the endpoint chose
      * to stall - which on a step with a hundred chunks means a stalled emulator wedges the job rather than
      * failing it. This method deliberately configures <b>no</b> per-call override, because a deadline written
@@ -1823,7 +1822,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
                 "Duplicate TRAN-ID rejected by the insert into %s (relation %s). Candidate identifiers: %s. "
                         + "Identifiers are generated by the descending-browse max-plus-one idiom of "
                         + "app/cbl/COTRN02C.cbl:L444-L451 and app/cbl/COBIL00C.cbl:L212-L219, and "
-                        + "app/cbl/CBACT04C.cbl:L473-L516 appends a global suffix counter that is never reset "
+                        + "app/cbl/CBACT04C.cbl:L473-L515 appends a global suffix counter that is never reset "
                         + "per account, so a collision is the intended observable outcome of re-driving with a "
                         + "used date parameter. Re-drive with an unused one; do not retry, do not overwrite "
                         + "the existing row, and do not substitute a sequence. Set the chunk size to 1 to "
@@ -2217,7 +2216,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * configured namespace and refuses a {@code //} segment, so a doubled separator here is a key the reader
      * is right to reject.
      *
-     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to <em>strip</em> a
+     * <p><strong>Finding m-02, severity Medium, RESOLVED.</strong> This method used to <em>strip</em> a
      * trailing separator so that either form composed the same key, and it checked nothing else. The shared
      * grammar of {@link GenerationPrefixContract#requireRelativePrefix(String, String)} refuses the trailing
      * form instead, which reaches the same guarantee by a stronger route: there is now exactly one accepted

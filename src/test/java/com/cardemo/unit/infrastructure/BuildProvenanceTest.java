@@ -37,6 +37,7 @@ package com.cardemo.unit.infrastructure;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -46,11 +47,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -63,16 +67,16 @@ import org.xml.sax.SAXException;
  * Asserts the build-provenance properties of {@code pom.xml} that a reader must be able to
  * establish without running Maven.
  *
- * <p>Two defects motivated this file, and both were invisible from the POM text.
+ * <p>Two defects this file forbids are invisible from the POM text.
  *
- * <p><strong>A bill of materials imported twice.</strong> An earlier revision imported
+ * <p><strong>A bill of materials imported twice.</strong> Importing
  * {@code io.netty:netty-bom} in this project's {@code dependencyManagement} at
- * {@code ${netty.version}}. The Spring Boot parent already imports that same BOM at that same
- * property, so one BOM was imported twice at one version and which import won was settled by
+ * {@code ${netty.version}} is one such defect. The Spring Boot parent already imports that same BOM at that
+ * same property, so one BOM would be imported twice at one version and which import won would be settled by
  * declaration order rather than by intent. A reviewer reading the file could not tell which
- * declaration was load bearing. The duplicate is gone and the property is the single lever;
+ * declaration was load bearing. No duplicate is declared and the property is the single lever;
  * {@code dependency:list} filtered to {@code io.netty} reports the same ten artifacts at
- * {@code 4.1.136.Final} either way. {@link OneBomPerCoordinate} keeps it gone.
+ * {@code 4.1.136.Final} either way. {@link OneBomPerCoordinate} keeps it that way.
  *
  * <p><strong>A version split that looks like an oversight and is not.</strong> The coverage plugin
  * is pinned at {@code 0.8.12} because the requirement pins it there, while its bytecode reader is
@@ -497,6 +501,14 @@ final class BuildProvenanceTest {
         /** A 40-character lowercase hexadecimal Git commit identifier, and nothing looser. */
         private static final Pattern COMMIT_SHA = Pattern.compile("^[0-9a-f]{40}$");
 
+        /** A runner label naming one dated OS release, such as {@code ubuntu-24.04}. */
+        private static final Pattern DATED_RUNNER =
+                Pattern.compile("^ubuntu-\\d{2}\\.\\d{2}(-arm)?$");
+
+        /** Any {@code -latest} runner alias, whose target the platform re-points without a diff here. */
+        private static final Pattern MOVING_RUNNER_ALIAS =
+                Pattern.compile("\\b(?:ubuntu|windows|macos)-latest\\b");
+
         /**
          * Reads the workflow as UTF-8 lines.
          *
@@ -636,6 +648,351 @@ final class BuildProvenanceTest {
                         support while this job stays green.""")
                     .contains("--ignore-unfixed=false");
         }
+
+        @Test
+        @DisplayName("no captured HTTP response body is printed raw into the persistent job log")
+        void noCapturedBodyIsPrintedRaw() {
+            final List<String> lines = workflowLines();
+            final Pattern rawPrint =
+                    Pattern.compile("\\b(cat|printf\\s+'%s'|echo)\\s+\"\\$\\{RUNNER_TEMP}/[\\w-]+\\.json\"");
+
+            final List<String> offenders = new ArrayList<>();
+            for (final String line : lines) {
+                final String stripped = line.strip();
+                if (stripped.startsWith("#")) {
+                    continue;
+                }
+                if (rawPrint.matcher(stripped).find()) {
+                    offenders.add(stripped);
+                }
+            }
+
+            assertThat(offenders)
+                    .as("""
+                        The packaged-image smoke drives five requests and captures each response to a \
+                        file so a failing probe can explain itself. Three of those bodies can legitimately \
+                        carry a JWT and a fourth was produced by a request carrying a password, yet only \
+                        the bootstrap token was masked. So the single regression the wildcard-media-type \
+                        probe exists to catch - a negotiation failure answered with 200 and a normal token \
+                        instead of 415 - would have written a live credential into a job log that persists \
+                        for the artefact retention period and is readable by everyone who can read the run. \
+                        Every such branch must describe the body through the redacting filter instead.""")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every job names a dated runner family, never a moving `-latest` alias")
+        void everyJobPinsADatedRunnerImage() {
+            final Map<String, String> runners = declaredRunners();
+
+            assertThat(runners)
+                    .as("the scan must find the workflow's jobs, so a silent empty pass is impossible")
+                    .isNotEmpty();
+
+            final List<String> undated = new ArrayList<>();
+            runners.forEach((job, label) -> {
+                if (label == null || !DATED_RUNNER.matcher(label).matches()) {
+                    undated.add(job + " -> " + label);
+                }
+            });
+
+            assertThat(undated)
+                    .as("""
+                        `ubuntu-latest` is an alias the platform re-points at a new OS release once that \
+                        release reaches general availability. When it moves, the operating system this \
+                        harness runs on changes with NO DIFF IN THIS REPOSITORY - which is the one \
+                        unpinned input a file that pins every action to a commit, every coordinate to a \
+                        version and every image to a digest cannot justify keeping. Each job must name a \
+                        dated family such as ubuntu-24.04. Offending jobs are listed.""")
+                    .isEmpty();
+
+            // Asserted over the comment-stripped body as well as over the parsed map, and for the reason
+            // the Actuator premise is: a text pattern alone missed a nested spelling once already, and a
+            // parse alone would miss a `runs-on` expressed as a list or through a matrix. Both, or
+            // neither is sufficient. The workflow discusses `ubuntu-latest` at length in prose, so the
+            // comment strip is what keeps that explanation from reading as the alias being in use.
+            final List<String> aliasUses = new ArrayList<>();
+            for (final String line : workflowLines()) {
+                final String code = line.replaceFirst("#.*$", "");
+                if (MOVING_RUNNER_ALIAS.matcher(code).find()) {
+                    aliasUses.add(line.strip());
+                }
+            }
+
+            assertThat(aliasUses)
+                    .as("and no executable line may name a `-latest` runner alias by any route - a "
+                            + "matrix value or a list entry pins exactly as little as a scalar does")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every captured body is masked before anything can print it")
+        void everyCapturedBodyIsMaskedBeforeItCanBePrinted() {
+            final List<String> lines = workflowLines();
+
+            final Map<String, Integer> firstMask = new LinkedHashMap<>();
+            final Map<String, Integer> firstDescribe = new LinkedHashMap<>();
+            final Pattern call =
+                    Pattern.compile("(mask_body|describe_body)\\s+\"\\$\\{RUNNER_TEMP}/([\\w-]+)\\.json\"");
+
+            for (int index = 0; index < lines.size(); index++) {
+                final String stripped = lines.get(index).strip();
+                if (stripped.startsWith("#")) {
+                    continue;
+                }
+                final Matcher matcher = call.matcher(stripped);
+                while (matcher.find()) {
+                    final Map<String, Integer> target =
+                            "mask_body".equals(matcher.group(1)) ? firstMask : firstDescribe;
+                    target.putIfAbsent(matcher.group(2), index);
+                }
+            }
+
+            assertThat(firstMask)
+                    .as("the smoke step must mask the bodies it captures, or this assertion is "
+                            + "vacuously true and proves nothing")
+                    .isNotEmpty();
+
+            for (final Map.Entry<String, Integer> described : firstDescribe.entrySet()) {
+                final String body = described.getKey();
+                assertThat(firstMask)
+                        .as("%s is described in the log, so it must also be masked - a body that is "
+                                + "printed without being registered with the scrubber is the defect "
+                                + "itself", body)
+                        .containsKey(body);
+                assertThat(firstMask.get(body))
+                        .as("""
+                            %s must be masked BEFORE the first branch that prints it. Ordering is the \
+                            whole control here: ::add-mask:: scrubs subsequent output only, so masking \
+                            after a print does not unprint it. The mask therefore belongs immediately \
+                            after the request that captures the body, not inside the failure branch.""",
+                                body)
+                        .isLessThan(described.getValue());
+            }
+        }
+
+        @Test
+        @DisplayName("the redacting filter withholds by allowlist, so an unnamed credential key cannot leak")
+        void theRedactingFilterWithholdsByAllowlist() {
+            final Path filter = ROOT.resolve(".github/smoke/redact_auth_body.py");
+            assertThat(filter)
+                    .as("the redacting filter must exist: it is what the workflow calls instead of cat, "
+                            + "and it lives outside the workflow precisely so that it can be tested")
+                    .isRegularFile();
+
+            final String source;
+            try {
+                source = Files.readString(filter, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + filter, cause);
+            }
+
+            // Asserted on the SOURCE rather than by execution, because this must hold on every host
+            // including the image build stage, which ships no Python interpreter. The executable
+            // proof below is the stronger check where an interpreter exists; this one is the check
+            // that can never be skipped.
+            final int allowlistStart = source.indexOf("PRINTABLE_KEYS");
+            final int allowlistEnd = source.indexOf(')', allowlistStart);
+            assertThat(allowlistStart)
+                    .as("the filter must declare an allowlist of printable keys; a denylist would emit "
+                            + "any credential field whose name nobody anticipated")
+                    .isNotNegative();
+            final String allowlist = source.substring(allowlistStart, allowlistEnd);
+
+            for (final String hint : List.of("token", "secret", "password", "credential",
+                    "authorization", "jwt")) {
+                assertThat(allowlist.toLowerCase(Locale.ROOT))
+                        .as("""
+                            no credential-bearing key may be printable. The finding this closes is a \
+                            wildcard-media-type probe answered with 200 and a normal JWT, whose body was \
+                            then printed into a persistent job log - so "%s" appearing in the printable \
+                            set would reopen it.""", hint)
+                        .doesNotContain('"' + hint + '"');
+            }
+
+            assertThat(source)
+                    .as("and everything outside the allowlist must be reported as present with its "
+                            + "value withheld, so a diagnostic stays useful without echoing a value")
+                    .contains("<withheld");
+        }
+
+        @Test
+        @DisplayName("a planted sentinel JWT cannot reach the log through the redacting filter")
+        void aPlantedSentinelTokenCannotReachTheLog() throws IOException, InterruptedException {
+            final Path filter = ROOT.resolve(".github/smoke/redact_auth_body.py");
+            assertThat(filter)
+                    .as("the redacting filter must exist: it is what the workflow calls instead of cat, "
+                            + "and it lives outside the workflow precisely so that this test can execute it")
+                    .isRegularFile();
+
+            // The workflow runs on a GitHub runner, which ships Python; the image build stage does
+            // not, and this same suite runs there. So the EXECUTABLE proof is conditional while
+            // theRedactingFilterWithholdsByAllowlist above covers the same property unconditionally.
+            // Assumed rather than asserted because an absent interpreter is a property of the host,
+            // not a defect in the workflow being verified.
+            Assumptions.assumeTrue(
+                    interpreterAvailable(),
+                    "no python3 on this host, so the filter cannot be executed here; the allowlist "
+                            + "assertions on its source still apply");
+
+            final String sentinel =
+                    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJTRU5USU5FTC1CUFQiLCJyb2xlIjoiVSJ9"
+                            + ".s3nt1n3lSignatureThatMustNeverBeLogged";
+            final Path body = Files.createTempFile("blitzy_adhoc_test_sentinel", ".json");
+            try {
+                // The reviewer's exact regression: a 200 carrying a normal token on a probe that
+                // expected 415, which is the branch that used to `cat` this body.
+                Files.writeString(
+                        body,
+                        "{\"token\":\"" + sentinel + "\",\"userId\":\"CISMOKE1\",\"userType\":\"U\"}",
+                        StandardCharsets.UTF_8);
+
+                final String described = run(filter, "--describe", body);
+                assertThat(described)
+                        .as("""
+                            --describe is what replaced cat in every failure branch, so if the sentinel \
+                            survives it the finding is not fixed. Redaction is allowlist-driven rather \
+                            than denylist-driven for this reason: a value is emitted only when its key is \
+                            explicitly printable, so a credential under an unanticipated key name is \
+                            withheld rather than echoed because nobody added it to a list of things to \
+                            hide.""")
+                        .doesNotContain(sentinel);
+                assertThat(described)
+                        .as("and the diagnostic must still be useful: structure and the non-sensitive "
+                                + "fields survive, which is what makes withholding the value acceptable")
+                        .contains("token = <withheld")
+                        .contains("userId = CISMOKE1");
+
+                final String masked = run(filter, "--mask", body);
+                assertThat(masked)
+                        .as("""
+                            --mask must register the whole token AND each dot-delimited segment. The \
+                            runner scrubs exact matches, so a wrapped or re-encoded log line split at a \
+                            dot would otherwise leave a segment unscrubbed.""")
+                        .contains("::add-mask::" + sentinel)
+                        .contains("::add-mask::eyJhbGciOiJIUzI1NiJ9");
+
+                // A body the filter cannot parse must be withheld, not echoed: a 500 page can quote
+                // the request it failed on.
+                Files.writeString(body, "<html>500 " + sentinel + "</html>", StandardCharsets.UTF_8);
+                assertThat(run(filter, "--describe", body))
+                        .as("a non-JSON body is described by length alone; echoing it would defeat the "
+                                + "filter on exactly the responses most likely to quote a request")
+                        .doesNotContain(sentinel);
+            } finally {
+                Files.deleteIfExists(body);
+            }
+        }
+
+        /**
+         * Reports whether a Python interpreter can be executed on this host.
+         *
+         * @return {@code true} when {@code python3 --version} runs successfully
+         */
+        private boolean interpreterAvailable() {
+            try {
+                final Process probe = new ProcessBuilder("python3", "--version")
+                        .redirectErrorStream(true)
+                        .start();
+                try (var stream = probe.getInputStream()) {
+                    stream.readAllBytes();
+                }
+                return probe.waitFor() == 0;
+            } catch (final IOException cause) {
+                return false;
+            } catch (final InterruptedException cause) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        /**
+         * Runs the redacting filter and returns everything it wrote to stdout and stderr.
+         *
+         * <p>Both streams are captured together deliberately: a credential that escaped onto stderr
+         * is in the job log just as surely as one on stdout.
+         *
+         * @param filter the script to execute
+         * @param mode the filter mode, {@code --mask} or {@code --describe}
+         * @param body the captured response body to filter
+         * @return the combined output
+         * @throws IOException if the process cannot be started or read
+         * @throws InterruptedException if the wait for the process is interrupted
+         */
+        private String run(final Path filter, final String mode, final Path body)
+                throws IOException, InterruptedException {
+            final Process process = new ProcessBuilder(
+                            "python3", filter.toString(), mode, body.toString())
+                    .redirectErrorStream(true)
+                    .start();
+            final String output;
+            try (var stream = process.getInputStream()) {
+                output = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            assertThat(process.waitFor())
+                    .as("""
+                        the filter must succeed even on a body it cannot parse: it is a log filter, and \
+                        failing it would fail the probe whose result the caller is about to report. \
+                        Output was: %s""", output)
+                    .isZero();
+            return output;
+        }
+
+        @Test
+        @DisplayName("the pin states the drift a dated family still leaves rather than implying exactness")
+        void theRunnerPinDisclosesItsResidualLimit() {
+            // Normalised - comment markers dropped and runs of whitespace collapsed - before matching,
+            // because the claim is about what the file SAYS and not about where its lines happen to
+            // wrap. A guard over unnormalised comment text fails the moment someone re-flows the
+            // paragraph, which trains the next reader to weaken the assertion rather than keep the
+            // disclosure. This one survives re-wrapping and fails only on the disclosure being removed.
+            final String workflow = String.join("\n", workflowLines())
+                    .replaceAll("(?m)^\\s*#", " ")
+                    .replaceAll("\\s+", " ");
+
+            assertThat(workflow)
+                    .as("""
+                        a dated label selects an OS family, not an image build: the platform rebuilds \
+                        these images on a weekly cadence, so ubuntu-24.04 on two dates can ship \
+                        different preinstalled tools. Claiming the pin makes the harness exactly \
+                        reproducible would overstate it, so the file must name the bound it actually \
+                        achieves and the two mechanisms that would close the remainder. This assertion \
+                        exists because the same overstatement - describing this harness as pinned while \
+                        an input moved - is what the runner finding was raised against.""")
+                    .contains("digest-pinned job container")
+                    .contains("immutable self-hosted runner image");
+        }
+
+        /**
+         * Reads each job's declared runner label from the parsed workflow.
+         *
+         * <p>Parsed rather than pattern-matched because a runner label is structure: it may be a scalar, a
+         * list of labels or a matrix reference, and only the parse sees all three the same way.
+         *
+         * @return job key to declared {@code runs-on} label, rendered as text
+         */
+        private Map<String, String> declaredRunners() {
+            final Path workflow = ROOT.resolve(".github/workflows/build.yml");
+            final Map<String, String> runners = new LinkedHashMap<>();
+            try (InputStream stream = Files.newInputStream(workflow)) {
+                final Object document = new org.yaml.snakeyaml.Yaml().load(stream);
+                assertThat(document)
+                        .as("the workflow must parse: an unparseable harness fails here, in the unit "
+                                + "tier, rather than as a confusing job error")
+                        .isInstanceOf(Map.class);
+                final Object jobs = ((Map<?, ?>) document).get("jobs");
+                assertThat(jobs)
+                        .as("the workflow must declare jobs")
+                        .isInstanceOf(Map.class);
+                ((Map<?, ?>) jobs).forEach((key, value) -> {
+                    final Object label = value instanceof Map<?, ?> job ? job.get("runs-on") : null;
+                    runners.put(String.valueOf(key), label == null ? null : String.valueOf(label));
+                });
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + workflow, cause);
+            }
+            return runners;
+        }
     }
 
     /**
@@ -676,6 +1033,34 @@ final class BuildProvenanceTest {
         /** The Tomcat examples advisory whose withdrawal assumes no WebSocket surface and an absent fix. */
         private static final String TOMCAT_EXAMPLES_CVE = "CVE-2026-66299";
 
+        /**
+         * The PID-file symlink advisory whose deployed-exposure classification assumes no writer is
+         * registered.
+         *
+         * <p>It carries no suppression, by design, so nothing withdraws it from the report and nothing but a
+         * test can hold its stated premise true. That premise is a repository fact about what the application
+         * registers, and until this guard existed nothing checked it.
+         */
+        private static final String PID_WRITER_CVE = "CVE-2026-40977";
+
+        /**
+         * A registration of a Spring Boot file-writing application listener.
+         *
+         * <p>Both writers are matched, not only the one the advisory names, because they share a shape and a
+         * base class: a change that adds either is a change that starts writing a predictable-path file from
+         * the application, which is the condition being held false.
+         */
+        private static final Pattern PID_WRITER_REGISTRATION = Pattern.compile(
+                "(?:new\\s+|=\\s*|:\\s*|\\.class|addListeners?\\s*\\()\\s*"
+                        + "(?:org\\.springframework\\.boot\\.context\\.)?"
+                        + "(?:ApplicationPidFileWriter|WebServerPortFileWriter)"
+                        + "|(?:ApplicationPidFileWriter|WebServerPortFileWriter)\\s*(?:\\(|\\.class)");
+
+        /** A property or variable that supplies a PID-file path, which enables the write without Java code. */
+        private static final Pattern PID_PATH_PROPERTY =
+                Pattern.compile("(?:spring\\.pid\\.file|spring\\.pid\\.fail-on-write-error"
+                        + "|^\\s*PIDFILE\\s*[:=]|\\bPIDFILE=)");
+
         /** The Tomcat release that fixes {@link #TOMCAT_EXAMPLES_CVE} on the 10.1 line. */
         private static final String TOMCAT_FIX_VERSION = "10.1.58";
 
@@ -693,6 +1078,28 @@ final class BuildProvenanceTest {
                 "Dockerfile",
                 ".github/workflows/build.yml");
 
+        /**
+         * The Prometheus release the metrics-scrape disposition reasons about, as {@code v<major.minor.patch>}.
+         *
+         * <p>This and {@link #MICROMETER_CLAIM} exist because a note once attributed v3.5.5 and 1.15.9 while
+         * the topology ran v3.13.2 and the build resolved 1.15.12. A disposition that reasons about a version
+         * the project does not run is not evidence about the project, and nothing was checking the two agreed.
+         */
+        private static final Pattern PROMETHEUS_CLAIM =
+                Pattern.compile("docker-compose\\.yml - (v\\d+\\.\\d+\\.\\d+) at the time of writing");
+
+        /** The Micrometer version the same note attributes to the {@code micrometer.version} property. */
+        private static final Pattern MICROMETER_CLAIM = Pattern.compile(
+                "version this build resolves, (\\d+\\.\\d+\\.\\d+) from the micrometer\\.version property");
+
+        /** The Prometheus image tag {@code docker-compose.yml} pins, as {@code v<major.minor.patch>}. */
+        private static final Pattern PROMETHEUS_PIN =
+                Pattern.compile("image:\\s*(?:docker\\.io/)?prom/prometheus:(v\\d+\\.\\d+\\.\\d+)");
+
+        /** The {@code micrometer.version} property {@code pom.xml} declares. */
+        private static final Pattern MICROMETER_PIN =
+                Pattern.compile("<micrometer\\.version>(\\d+\\.\\d+\\.\\d+)</micrometer\\.version>");
+
         /** The numerals the file writes about itself, as {@code N <cve> ... M <cpe> ... across K <suppress>}. */
         private static final Pattern SELF_COUNT = Pattern.compile(
                 "declares (\\d+) <cve> identifiers, all distinct, and (\\d+) <cpe>\\s+identifiers across "
@@ -706,6 +1113,30 @@ final class BuildProvenanceTest {
         /** The tier a note declares for itself. */
         private static final Pattern TIER = Pattern.compile("TIER\\s+(\\d)");
 
+        /**
+         * The scanner version the requirements pin, and the only value this build may carry.
+         *
+         * <p>Held as a literal rather than read from the build file, because reading it from the file the
+         * guard is checking would make the assertion vacuous: the pin would then equal itself whatever it
+         * had been changed to.
+         */
+        private static final String PINNED_SCANNER_VERSION = "12.1.0";
+
+        /**
+         * The upstream release measured on 7 August 2026, which the register entry must name.
+         *
+         * <p>This is deliberately <em>not</em> re-measured at test time. A guard that fetched the registry
+         * would fail on a network outage and would change its own expectation every time upstream published,
+         * turning a disclosure check into a version-currency check the pin is explicitly not trying to pass.
+         * What is guarded is that the disclosure names the release it was written against; re-measuring is the
+         * owner's job at the moment of a move.
+         */
+        private static final String MEASURED_SCANNER_RELEASE = "13.0.0";
+
+        /** The property through which the build declares the scanner version. */
+        private static final Pattern SCANNER_PIN = Pattern.compile(
+                "<dependency-check-maven\\.version>([^<]+)</dependency-check-maven\\.version>");
+
         /** An {@code until} attribute value: an ISO date with the zone suffix Dependency-Check expects. */
         private static final Pattern UNTIL = Pattern.compile("^\\d{4}-\\d{2}-\\d{2}Z$");
 
@@ -718,6 +1149,54 @@ final class BuildProvenanceTest {
                 Map.entry("fourteen", 14), Map.entry("fifteen", 15), Map.entry("sixteen", 16),
                 Map.entry("seventeen", 17), Map.entry("eighteen", 18), Map.entry("nineteen", 19),
                 Map.entry("twenty", 20));
+
+        /**
+         * Reads the Prometheus image tag the compose topology actually pins.
+         *
+         * <p>The tag is read with its leading {@code v}, because that is how both the image reference and the
+         * suppression note spell it, and a comparison that strips it would pass on a mismatched spelling.
+         *
+         * @return the pinned tag, such as {@code v3.13.2}
+         */
+        private String pinnedPrometheusVersion() {
+            final Matcher pin = PROMETHEUS_PIN.matcher(readRepositoryText("docker-compose.yml"));
+            assertThat(pin.find())
+                    .as("docker-compose.yml must pin a Prometheus image, or the note's subject does not exist")
+                    .isTrue();
+            return pin.group(1);
+        }
+
+        /**
+         * Reads the {@code micrometer.version} property the build resolves.
+         *
+         * @return the pinned version, such as {@code 1.15.12}
+         */
+        private String pinnedMicrometerVersion() {
+            final Matcher pin = MICROMETER_PIN.matcher(readRepositoryText("pom.xml"));
+            assertThat(pin.find())
+                    .as("pom.xml must declare micrometer.version, because the note attributes a version to "
+                            + "that property specifically rather than to a transitively resolved one")
+                    .isTrue();
+            return pin.group(1);
+        }
+
+        /**
+         * Reads a repository file as UTF-8 text.
+         *
+         * @param relativePath the path relative to the repository root
+         * @return the whole file
+         */
+        private String readRepositoryText(final String relativePath) {
+            final Path file = ROOT.resolve(relativePath);
+            assertThat(file)
+                    .as("%s holds a pin this guard compares a written claim against", relativePath)
+                    .isRegularFile();
+            try {
+                return Files.readString(file, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + file, cause);
+            }
+        }
 
         /**
          * Reads the suppression file as UTF-8 text.
@@ -958,6 +1437,228 @@ final class BuildProvenanceTest {
         }
 
         @Test
+        @DisplayName("no PID-file writer is registered while the symlink record stands on that absence")
+        void noPidFileWriterIsRegisteredWhileTheSymlinkRecordStands() {
+            assertThat(POM)
+                    .as("pom.xml must still carry the CVE-2026-40977 record; if it was removed because the "
+                            + "parent advanced past 3.5.14, delete this guard with it rather than leaving a "
+                            + "test whose premise is gone")
+                    .anySatisfy(line -> assertThat(line).contains(PID_WRITER_CVE));
+
+            final List<String> scanned = new ArrayList<>();
+            final List<String> offenders = registeredPidWriters(scanned);
+            offenders.addAll(pidPropertiesInProfiles(scanned));
+
+            assertThat(scanned)
+                    .as("the guard must read both the sources a listener can be registered from and the "
+                            + "surfaces a PID path can be set from, or it passes on nothing")
+                    .contains("src/main/java", "src/main/resources/application.yml",
+                            "src/main/resources/application-prod.yml (parsed)")
+                    .hasSizeGreaterThanOrEqualTo(6);
+
+            assertThat(offenders)
+                    .as("""
+                        the CVE-2026-40977 record in pom.xml classifies its DEPLOYED EXPOSURE as NOT \
+                        PRESENT on one fact: this application registers no PID-file writer, so the \
+                        symlink-following write the advisory describes is never performed. Registering \
+                        ApplicationPidFileWriter or WebServerPortFileWriter - on SpringApplication, as a \
+                        bean, through a spring.factories listener list - or setting a PID path through \
+                        spring.pid.file or PIDFILE makes that classification false while the parent is \
+                        still pinned below 3.5.14 and while the finding sits in the ACTIVE scan set. \
+                        Either revert the registration, or advance spring-boot-starter-parent to 3.5.14 or \
+                        later, correct the record and delete this guard. Offending lines are listed.""")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("both two-axis records state their deployed exposure and their invalidation triggers")
+        void bothVersionMatchRecordsStateExposureAndTriggers() {
+            final String pom = String.join("\n", POM);
+
+            assertThat(pom)
+                    .as("the register defines APPLICABLE as a version-range fact and DEPLOYED EXPOSURE as a "
+                            + "separate configuration fact; a record that states only the first is the "
+                            + "conflation this pair of records was corrected for")
+                    .contains("TWO AXES, NEVER CONFLATED");
+            assertThat(countOf(pom, "APPLICABLE (VERSION MATCH). DEPLOYED EXPOSURE: NOT PRESENT"))
+                    .as("both CVE-2026-22731 and CVE-2026-40977 must carry the two-axis classification, so "
+                            + "neither can drift back to a bare APPLICABLE")
+                    .isEqualTo(2);
+            assertThat(countOf(pom, "INVALIDATION TRIGGERS"))
+                    .as("a classification that rests on an absent prerequisite is only reviewable if the "
+                            + "changes that would restore the prerequisite are named; record 3 states its "
+                            + "own, and record 2 states its remediation and defers its triggers to the "
+                            + "suppression entry, which names them")
+                    .isGreaterThanOrEqualTo(1);
+
+            final String suppressions = suppressionText();
+            assertThat(suppressions)
+                    .as("the suppression register must define the two axes once, rather than each entry "
+                            + "inventing its own vocabulary")
+                    .contains("WHAT \"APPLICABLE\" MEANS HERE, AND WHAT IT DOES NOT")
+                    .contains("DEPLOYED EXPOSURE: PRESENT or NOT PRESENT");
+            assertThat(suppressions)
+                    .as("the Actuator entry must state its exposure axis and its invalidation triggers, and "
+                            + "must say in writing that the suppression is kept despite the absent "
+                            + "prerequisite - otherwise a later reader may 'tidy' it into a Tier 3 entry and "
+                            + "silently drop the expiry")
+                    .contains("TIER 4 - APPLICABLE (VERSION MATCH). DEPLOYED EXPOSURE: NOT PRESENT")
+                    .contains("INVALIDATION TRIGGERS")
+                    .contains("WHY THE SUPPRESSION AND THE EXPIRY ARE KEPT ANYWAY");
+        }
+
+        /**
+         * Lists every registration of a Spring Boot file-writing application listener, and every property
+         * that would give one a path.
+         *
+         * <p>Two shapes are searched because two are reachable. A listener can be registered in Java, on
+         * {@code SpringApplication} or as a bean, or declared in a {@code spring.factories} listener list; and
+         * a PID path can be supplied by property or environment variable without any Java change at all.
+         * Comment lines are skipped, so a record that merely names the class - as
+         * {@code CardDemoApplication}'s Javadoc and this project's evidence files do - is not an offender.
+         *
+         * @param scanned collects the surfaces actually read, so a vacuous pass is detectable
+         * @return one {@code file:line} description per offending line
+         */
+        private List<String> registeredPidWriters(final List<String> scanned) {
+            final List<String> offenders = new ArrayList<>();
+            for (final Path source : javaSourcesAndConfiguration(scanned)) {
+                final List<String> lines;
+                try {
+                    lines = Files.readAllLines(source, StandardCharsets.UTF_8);
+                } catch (final IOException cause) {
+                    throw new UncheckedIOException("Cannot read " + source, cause);
+                }
+                for (int index = 0; index < lines.size(); index++) {
+                    final String stripped = lines.get(index).strip();
+                    if (stripped.startsWith("#") || stripped.startsWith("*") || stripped.startsWith("//")
+                            || stripped.startsWith("/*")) {
+                        continue;
+                    }
+                    final boolean registersWriter = PID_WRITER_REGISTRATION.matcher(stripped).find();
+                    final boolean setsPidPath = PID_PATH_PROPERTY.matcher(stripped).find();
+                    if (registersWriter || setsPidPath) {
+                        offenders.add(ROOT.relativize(source) + ":" + (index + 1) + " " + stripped);
+                    }
+                }
+            }
+            return offenders;
+        }
+
+        /**
+         * Lists every {@code spring.pid.*} property declared in a profile, by parsing the YAML rather than
+         * grepping it.
+         *
+         * <p><strong>Why parsing rather than a text match.</strong> A dotted {@code spring.pid.file} is only
+         * one of two spellings; the natural one in these files is nested, and a nested declaration escapes any
+         * search for the dotted form entirely. That gap was real: an injected
+         * {@code spring:}/{@code pid:}/{@code file:} block passed the textual scan, which is precisely the
+         * shape a genuine change would take. Flattening each document to dotted paths - which is what the
+         * framework itself does when binding - closes both spellings with one reading.
+         *
+         * @param scanned collects each parsed profile, marked so the non-vacuity assertion can tell a parsed
+         *                surface from a textually scanned one
+         * @return one {@code file -> property} description per offending declaration
+         */
+        private List<String> pidPropertiesInProfiles(final List<String> scanned) {
+            final List<String> offenders = new ArrayList<>();
+            for (final String surface : CONFIGURATION_SURFACES) {
+                if (!surface.endsWith(".yml")) {
+                    continue;
+                }
+                final Path file = ROOT.resolve(surface);
+                if (!Files.isRegularFile(file)) {
+                    continue;
+                }
+                scanned.add(surface + " (parsed)");
+                final Map<String, Object> flattened = new LinkedHashMap<>();
+                try (java.io.InputStream stream = Files.newInputStream(file)) {
+                    for (final Object document : new org.yaml.snakeyaml.Yaml().loadAll(stream)) {
+                        flatten("", document, flattened);
+                    }
+                } catch (final IOException cause) {
+                    throw new UncheckedIOException("Cannot read " + file, cause);
+                }
+                flattened.keySet().stream()
+                        .filter(key -> key.startsWith("spring.pid."))
+                        .forEach(key -> offenders.add(surface + " -> " + key + "=" + flattened.get(key)));
+            }
+            return offenders;
+        }
+
+        /**
+         * Flattens a parsed YAML node into dotted property paths.
+         *
+         * <p>A sequence is indexed the way the framework indexes one, so a listener list declared as a
+         * sequence is still reachable by path. Values are kept because a failure message that names the value
+         * is a failure message a reader can act on.
+         *
+         * @param prefix the path accumulated so far, empty at the root
+         * @param node   the parsed node: a map, a list or a scalar
+         * @param into   the map to collect leaf paths into
+         */
+        private void flatten(final String prefix, final Object node, final Map<String, Object> into) {
+            if (node instanceof Map<?, ?> map) {
+                map.forEach((key, value) ->
+                        flatten(prefix.isEmpty() ? String.valueOf(key) : prefix + "." + key, value, into));
+            } else if (node instanceof List<?> list) {
+                for (int index = 0; index < list.size(); index++) {
+                    flatten(prefix + "[" + index + "]", list.get(index), into);
+                }
+            } else if (!prefix.isEmpty()) {
+                into.put(prefix, node);
+            }
+        }
+
+        /**
+         * Collects the main Java sources and the configuration surfaces a listener or a PID path can come
+         * from.
+         *
+         * @param scanned collects a description of each region read, for the non-vacuity assertion
+         * @return the files to scan, in a stable order
+         */
+        private List<Path> javaSourcesAndConfiguration(final List<String> scanned) {
+            final List<Path> sources = new ArrayList<>();
+            final Path javaRoot = ROOT.resolve("src/main/java");
+            try (Stream<Path> walk = Files.walk(javaRoot)) {
+                walk.filter(path -> path.toString().endsWith(".java")).sorted().forEach(sources::add);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot walk " + javaRoot, cause);
+            }
+            scanned.add("src/main/java");
+            for (final String surface : CONFIGURATION_SURFACES) {
+                final Path file = ROOT.resolve(surface);
+                if (Files.isRegularFile(file)) {
+                    sources.add(file);
+                    scanned.add(surface);
+                }
+            }
+            final Path factories = ROOT.resolve("src/main/resources/META-INF/spring.factories");
+            if (Files.isRegularFile(factories)) {
+                sources.add(factories);
+                scanned.add("src/main/resources/META-INF/spring.factories");
+            }
+            return sources;
+        }
+
+        /**
+         * Counts non-overlapping occurrences of a literal.
+         *
+         * @param text    the text to scan
+         * @param literal the literal to count
+         * @return the number of occurrences
+         */
+        private int countOf(final String text, final String literal) {
+            int count = 0;
+            int from = text.indexOf(literal);
+            while (from >= 0) {
+                count++;
+                from = text.indexOf(literal, from + literal.length());
+            }
+            return count;
+        }
+
+        @Test
         @DisplayName("the Tomcat examples entry never coexists with the pin that fixes it")
         void theTomcatExamplesEntryNeverCoexistsWithItsFix() {
             final boolean suppressed = declares(TOMCAT_EXAMPLES_CVE);
@@ -1022,7 +1723,8 @@ final class BuildProvenanceTest {
             final Matcher selfCount = SELF_COUNT.matcher(text);
             assertThat(selfCount.find())
                     .as("the file states its own counts in the REGISTER CURRENCY block; this guard exists "
-                            + "because it has twice stated a count that disagreed with its contents")
+                            + "because a stated count can disagree with the file's contents and nothing else "
+                            + "would notice")
                     .isTrue();
             assertThat(Integer.parseInt(selfCount.group(1)))
                     .as("the file says it declares %s <cve> identifiers; it declares %d",
@@ -1058,6 +1760,133 @@ final class BuildProvenanceTest {
                     .as("the Tier 3 tally is spelled \"%s\"; %d entries declare TIER 3",
                             tally.group(4), byTier.getOrDefault(3, 0))
                     .isEqualTo(byTier.getOrDefault(3, 0));
+        }
+
+        @Test
+        @DisplayName("every version the notes attribute to a pinned component is that component's pin")
+        void everyAttributedVersionMatchesThePinItDescribes() {
+            final String text = suppressionText();
+
+            final Matcher prometheus = PROMETHEUS_CLAIM.matcher(text);
+            assertThat(prometheus.find())
+                    .as("the note that disposes of the metrics-scrape surface names the Prometheus release "
+                            + "it reasons about; if the wording changes, change this guard with it rather "
+                            + "than letting the version claim go unchecked")
+                    .isTrue();
+            assertThat(pinnedPrometheusVersion())
+                    .as("the note attributes Prometheus %s; docker-compose.yml pins %s. A disposition that "
+                            + "reasons about a version the topology does not run is reasoning about "
+                            + "something else - this guard exists because the note once named v3.5.5 while "
+                            + "the compose file ran v3.13.2", prometheus.group(1), pinnedPrometheusVersion())
+                    .isEqualTo(prometheus.group(1));
+
+            final Matcher micrometer = MICROMETER_CLAIM.matcher(text);
+            assertThat(micrometer.find())
+                    .as("the same note names the Micrometer version this build resolves")
+                    .isTrue();
+            assertThat(pinnedMicrometerVersion())
+                    .as("the note attributes Micrometer %s; the micrometer.version property in pom.xml is "
+                            + "%s, and the property is what the build resolves",
+                            micrometer.group(1), pinnedMicrometerVersion())
+                    .isEqualTo(micrometer.group(1));
+
+            assertThat(text)
+                    .as("the superseded versions must stay withdrawn in writing, so a reader of the note "
+                            + "can see the correction rather than wondering whether it happened")
+                    .contains("An earlier revision of this note named v3.5.5 and 1.15.9");
+        }
+
+        /**
+         * The scanner pin is exact and the reason it stays behind upstream is disclosed.
+         *
+         * <p>This guard exists because of an asymmetry that made a silent breach possible. Seven documents
+         * cite the scanner version, but until now <strong>no test asserted it</strong>, so editing the single
+         * property in {@code pom.xml} would have moved the build off a version the requirements pin while
+         * every one of those citations kept claiming the pinned value. The requirements pin the coordinate and
+         * forbid resolving the divergence unilaterally, so the pin is the behaviour under test, not an
+         * incidental number.
+         *
+         * <p>Two halves are asserted together on purpose. Asserting the pin alone would freeze the version
+         * without recording why it is frozen, which is the state the raising review objected to. Asserting the
+         * disclosure alone would let the pin drift away from the entry that explains it. Requiring both means a
+         * future maintainer who moves the pin must amend the entry in the same change, which is exactly the
+         * owner-approval step {@code DL-CR-09} reserves.
+         */
+        @Test
+        @DisplayName("the vulnerability scanner pin is exact, and its distance from upstream is disclosed")
+        void theVulnerabilityScannerPinIsExactAndItsDivergenceIsDisclosed() {
+            final String descriptor = readRepositoryText("pom.xml");
+
+            final Matcher pin = SCANNER_PIN.matcher(descriptor);
+            assertThat(pin.find())
+                    .as("pom.xml declares the scanner version through the dependency-check-maven.version "
+                            + "property; if that property is renamed, change this guard with it rather than "
+                            + "letting the pin go unasserted")
+                    .isTrue();
+            final String pinned = pin.group(1);
+
+            assertThat(pinned)
+                    .as("docs/technical-specifications.md 0.6.1.1 pins org.owasp:dependency-check-maven at "
+                            + "%s and 0.8.4 states that pinned versions are honoured as given, with any "
+                            + "divergence recorded rather than resolved unilaterally. Moving this pin is an "
+                            + "owner decision under DL-CR-09, not a maintenance edit", PINNED_SCANNER_VERSION)
+                    .isEqualTo(PINNED_SCANNER_VERSION);
+            assertThat(pinned)
+                    .as("a range or a floating version would satisfy the equality check above only by "
+                            + "accident and would break the reproducible-build requirement that makes every "
+                            + "coordinate in this build exact")
+                    .doesNotContain("[")
+                    .doesNotContain("(")
+                    .doesNotContain(",")
+                    .isNotEqualToIgnoringCase("LATEST")
+                    .isNotEqualToIgnoringCase("RELEASE");
+
+            final String register = readRepositoryText("DECISION_LOG.md");
+            assertThat(register)
+                    .as("the pin is kept, so clause D's flag-the-risky-pattern requirement is discharged by "
+                            + "disclosure instead. DL-CR-09 is that disclosure, and a pin without it is the "
+                            + "unflagged state the raising review found")
+                    .contains("<a id=\"dl-cr-09\"></a>");
+
+            final String entry = registerEntry(register, "dl-cr-09");
+            assertThat(entry)
+                    .as("the entry names the pinned version it defends, so a reader comparing pom.xml "
+                            + "against the register does not have to infer which number is meant")
+                    .contains(PINNED_SCANNER_VERSION);
+            assertThat(entry)
+                    .as("the entry names the upstream release measured against, and the distance from the "
+                            + "pin. Publishing the pin without the distance discloses nothing a reader could "
+                            + "not already see in pom.xml")
+                    .contains(MEASURED_SCANNER_RELEASE);
+            assertThat(entry)
+                    .as("the entry reserves any move to a named owner and requires the scan to be re-run "
+                            + "with the skip flag absent afterwards, because a different engine reports a "
+                            + "different suppressed-match count")
+                    .contains("approval")
+                    .contains("-Ddependency-check.skip=true");
+        }
+
+        /**
+         * Extracts one register entry's text, from its anchor to the start of the next entry.
+         *
+         * <p>Entry-scoped rather than whole-file, for the reason recorded in the register's own self-check
+         * section: a claim asserted against the whole document passes when the words it looks for happen to
+         * appear in a neighbouring entry, which is not the property being checked.
+         *
+         * @param register the whole register text, never {@code null}
+         * @param identifier the lower-case anchor identifier, without the {@code <a id=...>} wrapper
+         * @return the entry's text, from its anchor up to the next anchored entry or the end of the document
+         */
+        private String registerEntry(final String register, final String identifier) {
+            Objects.requireNonNull(register, "register must not be null");
+            Objects.requireNonNull(identifier, "identifier must not be null");
+            final String anchor = "<a id=\"" + identifier + "\"></a>";
+            final int from = register.indexOf(anchor);
+            assertThat(from)
+                    .as("%s must be present for its content to be checked", anchor)
+                    .isNotNegative();
+            final int next = register.indexOf("<a id=\"dl-", from + anchor.length());
+            return next < 0 ? register.substring(from) : register.substring(from, next);
         }
 
         @Test

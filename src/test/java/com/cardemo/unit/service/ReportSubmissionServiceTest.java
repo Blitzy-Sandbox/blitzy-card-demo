@@ -19,7 +19,7 @@
  *               the four-state confirmation handshake; the seventeen
  *               eighty-byte job cards collapsed into ONE FIFO message;
  *               and the byte-exact queue-failure literal
- * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 paragraphs) @ 7756d89
+ * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 own paragraph labels) @ 7756d89
  * Source      : app/cpy-bms/CORPT00.CPY (17 input fields) @ 7756d89
  * Source      : app/csd/CARDDEMO.CSD (TRANSACTION(CR00), TDQUEUE(JOBS)) @ 7756d89
  * Source      : app/cbl/CSUTLDTC.cbl (the validator behind the two CALLs) @ 7756d89
@@ -69,6 +69,8 @@ import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.ReportRequest;
 import com.cardemo.service.report.ReportSubmissionService;
 import com.cardemo.service.report.ReportSubmissionService.AttentionIdentifier;
+import com.cardemo.service.report.ReportSubmissionService.JobSubmissionEnvelope;
+import com.cardemo.service.report.ReportSubmissionService.JobSubmissionEnvelope.Verification;
 import com.cardemo.service.report.ReportSubmissionService.JobSubmissionMessage;
 import com.cardemo.service.report.ReportSubmissionService.ReportSubmissionScreen;
 import com.cardemo.service.shared.DateValidationService;
@@ -272,10 +274,23 @@ class ReportSubmissionServiceTest {
     private static final String ENVELOPE_SIGNING_KEY =
             "report-submission-test-envelope-key-0123456789";
 
+    /**
+     * The authenticator this test signs and verifies with, derived from {@link #ENVELOPE_SIGNING_KEY}.
+     *
+     * <p>Finding SEC-001. The authenticator derives its single-purpose key once, at construction, and destroys
+     * the temporaries; two instances built from the same configured key therefore agree by construction, which
+     * is what lets this fixture verify what the production instance signed without either holding the key.
+     */
+    private static final JobSubmissionEnvelope ENVELOPE = new JobSubmissionEnvelope(ENVELOPE_SIGNING_KEY);
 
-    // -----------------------------------------------------------------------------------------------------
+    /** A submission identifier of the shape the producer mints, for the codes this test issues by hand. */
+    private static final String SUBMISSION_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+
+    /** The instant the hand-issued codes are dated, so every window assertion is relative to one value. */
+    private static final Instant ISSUED_AT = FixedClockProvider.CANONICAL_INSTANT;
+
+
     // Screen and program identity. app/cbl/CORPT00C.cbl:37-38 and app/cpy/COTTL01Y.cpy.
-    // -----------------------------------------------------------------------------------------------------
 
     /** {@code WS-TRANID PIC X(04) VALUE 'CR00'}, app/cbl/CORPT00C.cbl:37, rendered at :619. */
     private static final String TRANSACTION_ID = "CR00";
@@ -295,9 +310,7 @@ class ReportSubmissionServiceTest {
     /** {@code CCDA-TITLE02} from app/cpy/COTTL01Y.cpy, forty characters including its centring blanks. */
     private static final String SCREEN_TITLE_02 = "              CardDemo                  ";
 
-    // -----------------------------------------------------------------------------------------------------
     // Cursor fields: the symbolic-map length fields that received MOVE -1.
-    // -----------------------------------------------------------------------------------------------------
 
     /** app/cbl/CORPT00C.cbl:441, :533 and :181. */
     private static final String CURSOR_MONTHLY = "MONTHLYL";
@@ -323,10 +336,8 @@ class ReportSubmissionServiceTest {
     /** app/cbl/CORPT00C.cbl:472 and :492. */
     private static final String CURSOR_CONFIRM = "CONFIRML";
 
-    // -----------------------------------------------------------------------------------------------------
     // Message literals, byte exact. Every ellipsis is exactly three full stops; "can NOT" carries a capital
     // N, O and T; and the submitted notice carries a space before its ellipsis where the empties do not.
-    // -----------------------------------------------------------------------------------------------------
 
     /** {@code CCDA-MSG-INVALID-KEY} from app/cpy/CSMSG01Y.cpy, moved at app/cbl/CORPT00C.cbl:192. */
     private static final String MSG_INVALID_KEY = "Invalid key pressed. Please see below...";
@@ -394,10 +405,8 @@ class ReportSubmissionServiceTest {
     /** app/cbl/CORPT00C.cbl:531. */
     private static final String MSG_UNABLE_TO_WRITE_TDQ = "Unable to Write TDQ (JOBS)...";
 
-    // -----------------------------------------------------------------------------------------------------
     // The three report names, app/cbl/CORPT00C.cbl:214, :240 and :433. Unpadded, because every use composes
     // through DELIMITED BY SPACE, which stops at the first blank of the PIC X(10) field.
-    // -----------------------------------------------------------------------------------------------------
 
     /** app/cbl/CORPT00C.cbl:214. */
     private static final String REPORT_NAME_MONTHLY = "Monthly";
@@ -416,9 +425,7 @@ class ReportSubmissionServiceTest {
      */
     private static final int MAX_DEDUPLICATION_ID_LENGTH = 128;
 
-    // -----------------------------------------------------------------------------------------------------
     // Validator outcome tokens, app/cbl/CORPT00C.cbl:396 and :399. Opaque to this class by design.
-    // -----------------------------------------------------------------------------------------------------
 
     /** The severity that accepts a date outright, app/cbl/CORPT00C.cbl:396. */
     private static final String SEVERITY_ACCEPTED = "0000";
@@ -441,9 +448,7 @@ class ReportSubmissionServiceTest {
     /** {@code CSUTLDTC-RESULT-MSG-NUM PIC X(04)}, app/cbl/CORPT00C.cbl:135. */
     private static final int MESSAGE_NUMBER_LENGTH = 4;
 
-    // -----------------------------------------------------------------------------------------------------
     // Deck and field geometry, app/cbl/CORPT00C.cbl:79-127 and app/cpy-bms/CORPT00.CPY.
-    // -----------------------------------------------------------------------------------------------------
 
     /** The cards the deck declares at app/cbl/CORPT00C.cbl:83-125. Seventeen, not eighteen. */
     private static final int JOB_CARD_COUNT = 17;
@@ -469,9 +474,7 @@ class ReportSubmissionServiceTest {
     /** The ten input components {@code INITIALIZE-ALL-FIELDS} blanks at :637-645. */
     private static final int CLEARED_FIELD_COUNT = 10;
 
-    // -----------------------------------------------------------------------------------------------------
     // Time. Every instant is explicit; none is read from the host.
-    // -----------------------------------------------------------------------------------------------------
 
     /** Mid-June 2022, a thirty-day month. The instant every seed fixture in this repository carries. */
     private static final Instant MID_THIRTY_DAY_MONTH = FixedClockProvider.CANONICAL_INSTANT;
@@ -482,10 +485,8 @@ class ReportSubmissionServiceTest {
     /** The header time the canonical instant renders to, app/cbl/CORPT00C.cbl:627-628. */
     private static final String EXPECTED_HEADER_TIME = "19:27:53";
 
-    // -----------------------------------------------------------------------------------------------------
     // Injected configuration. Transparently synthetic: no endpoint, host, port, URL, ARN, account identifier
     // or credential, and nothing here can reach a real service.
-    // -----------------------------------------------------------------------------------------------------
 
     /** A synthetic physical queue name. The deployed value lives in configuration, never in a test. */
     private static final String QUEUE_NAME = "unit-test-report-jobs.fifo";
@@ -499,10 +500,8 @@ class ReportSubmissionServiceTest {
     /** A synthetic notification destination, standing in for the operator notify card at :85-86. */
     private static final String TOPIC = "unit-test-carddemo-notifications";
 
-    // -----------------------------------------------------------------------------------------------------
     // Collaborators. Instance state only - no static mutable field exists in this class, so no test can
     // observe another's leftovers (Rule 1 Clause B, "avoid global mutable state").
-    // -----------------------------------------------------------------------------------------------------
 
     /** The queue-publishing collaborator, mocked: nothing here may reach a real client. */
     @Mock
@@ -528,9 +527,7 @@ class ReportSubmissionServiceTest {
         this.service = serviceWithClock(FixedClockProvider.fixedClock(MID_THIRTY_DAY_MONTH));
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Fixtures and helpers. Every one is used; an unused helper would be dead code under Rule 1 Clause B.
-    // -----------------------------------------------------------------------------------------------------
 
     /**
      * Builds the subject over an explicit clock, which is the only way a period assertion can be
@@ -718,9 +715,7 @@ class ReportSubmissionServiceTest {
                 .toList();
     }
 
-    // =====================================================================================================
     // 1. Construction and state. Rule 1 Clause B: explicit null handling, and no global mutable state.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("1. Construction - every collaborator refused when absent, and no mutable state anywhere")
@@ -880,10 +875,8 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 2. Paragraph correspondence and the field budget. app/cbl/CORPT00C.cbl has ten labels and
     // app/cpy-bms/CORPT00.CPY seventeen input fields.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("2. Paragraph map - ten labels, ten methods, three public entry points, seventeen fields")
@@ -982,7 +975,7 @@ class ReportSubmissionServiceTest {
         @Test
         @DisplayName("the report name is a closed set of exactly the three source literals")
         void theReportNameIsAClosedSet() {
-            // FINDING M-12, severity Major. Null-checking was the only validation, so an arbitrary and
+            // FINDING M-12, severity High. Null-checking was the only validation, so an arbitrary and
             // unbounded name travelled to the queue and then into an IDENTIFYING job parameter that the batch
             // repository persists and keys a job instance on. WS-REPORT-NAME is PIC X(10) at
             // app/cbl/CORPT00C.cbl:58, so no longer value could exist on the mainframe at all, and the only
@@ -1018,38 +1011,91 @@ class ReportSubmissionServiceTest {
         @Test
         @DisplayName("the envelope code verifies for the message it was made for, and for no other")
         void theEnvelopeCodeVerifiesForItsOwnMessageOnly() {
-            // FINDING M-11, severity Major. The emulator queue enforces no authorisation of its own, so the
+            // FINDING M-11, severity High. The emulator queue enforces no authorisation of its own, so the
             // code is what distinguishes a submission this application published from one any process able to
             // reach the emulator port could publish.
             final JobSubmissionMessage message =
                     new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
             final JobSubmissionMessage otherPeriod =
                     new JobSubmissionMessage("Monthly", "2022-08-01", "2022-08-31");
-            final String code = ReportSubmissionService.JobSubmissionEnvelope
-                    .sign(message, ENVELOPE_SIGNING_KEY);
+            final String code = ENVELOPE.sign(message, SUBMISSION_ID, ISSUED_AT);
 
-            assertThat(ReportSubmissionService.JobSubmissionEnvelope
-                    .verify(message, ENVELOPE_SIGNING_KEY, code)).isTrue();
-            assertThat(ReportSubmissionService.JobSubmissionEnvelope
-                    .verify(otherPeriod, ENVELOPE_SIGNING_KEY, code))
+            assertThat(ENVELOPE.verify(message, SUBMISSION_ID, code, ISSUED_AT))
+                    .isEqualTo(Verification.VERIFIED);
+            assertThat(ENVELOPE.verify(otherPeriod, SUBMISSION_ID, code, ISSUED_AT))
                     .as("a code covers the period it was made for, so a replay onto another period fails")
-                    .isFalse();
-            assertThat(ReportSubmissionService.JobSubmissionEnvelope
-                    .verify(message, ENVELOPE_SIGNING_KEY + "-other", code))
+                    .isEqualTo(Verification.CODE_MISMATCH);
+            assertThat(new JobSubmissionEnvelope(ENVELOPE_SIGNING_KEY + "-other")
+                    .verify(message, SUBMISSION_ID, code, ISSUED_AT))
                     .as("and it is keyed, so a publisher without the key cannot produce one")
-                    .isFalse();
+                    .isEqualTo(Verification.CODE_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("the code binds the submission identifier, so it authenticates one submission only")
+        void theCodeBindsTheSubmissionIdentifier() {
+            // FINDING SEC-002, severity HIGH. Before this, the code covered the payload alone. An observer who
+            // captured one (body, code) pair could re-publish it under any deduplication identifier, and
+            // because that identifier is an IDENTIFYING Spring Batch job parameter each fresh value resolved
+            // to a new job instance - an unbounded report-run amplifier from a single captured message.
+            final JobSubmissionMessage message =
+                    new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+            final String code = ENVELOPE.sign(message, SUBMISSION_ID, ISSUED_AT);
+
+            assertThat(ENVELOPE.verify(message, "a-different-submission-id", code, ISSUED_AT))
+                    .as("the identifier the code was issued for is not the identifier presented")
+                    .isEqualTo(Verification.SUBMISSION_ID_MISMATCH);
+            assertThat(ENVELOPE.verify(message, null, code, ISSUED_AT))
+                    .as("and a delivery carrying no identifier at all cannot borrow one")
+                    .isEqualTo(Verification.SUBMISSION_ID_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("the code carries its own validity window, so an authentic code does not last forever")
+        void theCodeCarriesItsOwnValidityWindow() {
+            // FINDING SEC-002. The second replay the payload-only code admitted: the authentic message, with
+            // its authentic code and its authentic identifier, presented indefinitely. Nothing bounded it but
+            // whatever the job repository still remembered.
+            final JobSubmissionMessage message =
+                    new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+            final String code = ENVELOPE.sign(message, SUBMISSION_ID, ISSUED_AT);
+            final long lifetime = JobSubmissionEnvelope.LIFETIME_SECONDS;
+            final long skew = JobSubmissionEnvelope.CLOCK_SKEW_TOLERANCE_SECONDS;
+
+            assertThat(ENVELOPE.verify(message, SUBMISSION_ID, code, ISSUED_AT.plusSeconds(lifetime - 1L)))
+                    .as("inside its window it verifies, so an ordinary redelivery is not an incident")
+                    .isEqualTo(Verification.VERIFIED);
+            assertThat(ENVELOPE.verify(message, SUBMISSION_ID, code,
+                    ISSUED_AT.plusSeconds(lifetime + skew + 1L)))
+                    .as("past the window plus the declared skew allowance it does not")
+                    .isEqualTo(Verification.EXPIRED);
+            assertThat(ENVELOPE.verify(message, SUBMISSION_ID, code, ISSUED_AT.minusSeconds(skew + 60L)))
+                    .as("and a verifier whose clock is far behind the issuer's refuses rather than guesses")
+                    .isEqualTo(Verification.NOT_YET_VALID);
         }
 
         @ParameterizedTest(name = "a presented code of [{0}] does not verify")
-        @ValueSource(strings = {"", "v1=", "v1=zz", "v1=abc", "v2=0011", "0011",
-            "v1=00000000000000000000000000000000000000000000000000000000000000ff"})
+        @ValueSource(strings = {"", "0011", "v2=", "v2=id:1:2", "v2=id:1:2:zz", "v2=id:1:2:3:4",
+            "v2=id:notanumber:2:00ff", "v2=with:colon:1:2:00ff", "v2=id:1:2:0011",
+            "v2=id:1:2:00000000000000000000000000000000000000000000000000000000000000ff"})
         @DisplayName("a malformed or wrong envelope code is refused rather than tolerated")
         void aMalformedEnvelopeCodeIsRefused(final String presented) {
             final JobSubmissionMessage message =
                     new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
 
-            assertThat(ReportSubmissionService.JobSubmissionEnvelope
-                    .verify(message, ENVELOPE_SIGNING_KEY, presented)).isFalse();
+            assertThat(ENVELOPE.verify(message, "id", presented, ISSUED_AT).verified()).isFalse();
+        }
+
+        @ParameterizedTest(name = "a code rendered as [{0}] is refused as an unsupported version")
+        @ValueSource(strings = {"v1=00ff", "v1=", "v3=id:1:2:00ff", "V2=id:1:2:00ff", "0011"})
+        @DisplayName("the retired payload-only version is refused rather than honoured as legacy")
+        void theRetiredVersionIsRefused(final String presented) {
+            // The version prefix is what lets a signing contract be replaced without a window in which both
+            // are honoured. A v1 code - the shape resolved by finding SEC-002 - is not downgraded to.
+            final JobSubmissionMessage message =
+                    new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+
+            assertThat(ENVELOPE.verify(message, "id", presented, ISSUED_AT).verified()).isFalse();
         }
 
         @Test
@@ -1058,8 +1104,37 @@ class ReportSubmissionServiceTest {
             final JobSubmissionMessage message =
                     new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
 
-            assertThat(ReportSubmissionService.JobSubmissionEnvelope
-                    .verify(message, ENVELOPE_SIGNING_KEY, null)).isFalse();
+            assertThat(ENVELOPE.verify(message, SUBMISSION_ID, null, ISSUED_AT))
+                    .isEqualTo(Verification.ABSENT);
+        }
+
+        @Test
+        @DisplayName("a submission identifier that could not be rendered unambiguously is refused at signing")
+        void anUnrenderableSubmissionIdentifierIsRefusedAtSigning() {
+            // The rendered code separates its parts with a colon and its canonical form with a newline, so an
+            // identifier containing either could make two distinct submissions render identically - which is
+            // precisely the ambiguity the identifier binding exists to remove. Refused at the producer, where
+            // the value is this application's own and a refusal is a defect rather than an attack.
+            final JobSubmissionMessage message =
+                    new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+
+            for (final String unrenderable : new String[] {null, "", "  ", "with:colon", "with\nnewline",
+                "with space", "x".repeat(129)}) {
+                assertThatIllegalArgumentException()
+                        .as("identifier [%s]", unrenderable)
+                        .isThrownBy(() -> ENVELOPE.sign(message, unrenderable, ISSUED_AT))
+                        .withMessageContaining("submission identifier");
+            }
+        }
+
+        @Test
+        @DisplayName("the authenticator refuses to be built without key material, so no path is unsigned")
+        void theAuthenticatorRefusesToBeBuiltWithoutKeyMaterial() {
+            for (final String absent : new String[] {null, "", "   "}) {
+                assertThatIllegalArgumentException()
+                        .isThrownBy(() -> new JobSubmissionEnvelope(absent))
+                        .withMessageContaining("carddemo.security.jwt.signing-key");
+            }
         }
 
         @Test
@@ -1084,16 +1159,62 @@ class ReportSubmissionServiceTest {
                     .get(ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER);
             assertThat(presented).as("the header the consumer verifies before it launches anything")
                     .isNotNull();
-            assertThat(ReportSubmissionService.JobSubmissionEnvelope
-                    .verify(sendOptions.payload(), ENVELOPE_SIGNING_KEY, presented))
-                    .as("the code the producer sent must be the code the consumer computes")
-                    .isTrue();
+            assertThat(ENVELOPE.verify(sendOptions.payload(), sendOptions.messageDeduplicationId(),
+                    presented, FixedClockProvider.CANONICAL_INSTANT))
+                    .as("the code the producer sent must be the code the consumer computes, for the "
+                            + "deduplication identifier the producer set on the very same publish")
+                    .isEqualTo(Verification.VERIFIED);
+        }
+
+        @Test
+        @DisplayName("the code is issued for the deduplication identifier the same publish carries")
+        void theCodeIsIssuedForTheIdentifierThePublishCarries() {
+            // FINDING SEC-002. The producer generates the identifier BEFORE it signs, so the two cannot
+            // disagree. Asserted from the transport's own two values rather than from a recomputation, because
+            // an implementation that signed a different identifier than it set would still pass a
+            // recomputation of its own choosing.
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            final String presented = sendOptions.headers()
+                    .get(ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER).toString();
+            assertThat(presented)
+                    .as("the identifier is rendered into the code, immediately after the version prefix")
+                    .startsWith(JobSubmissionEnvelope.SIGNATURE_VERSION + '='
+                            + sendOptions.messageDeduplicationId() + ':');
+            assertThat(ENVELOPE.verify(sendOptions.payload(), "some-other-identifier", presented,
+                    FixedClockProvider.CANONICAL_INSTANT))
+                    .as("and presenting that same code for another identifier is refused")
+                    .isEqualTo(Verification.SUBMISSION_ID_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("the service retains no field holding the configured signing key")
+        void theServiceRetainsNoFieldHoldingTheSigningKey() throws Exception {
+            // FINDING SEC-001, severity HIGH, CWE-316. The service used to keep the application signing key in
+            // a String field for the life of the bean, where it was immutable, uncollectable and recoverable
+            // from any heap dump. It now keeps only the derived authenticator. Asserted structurally, because
+            // the absence of a retained secret is a property of the FIELD SET and not of any one call.
+            for (final Field field : ReportSubmissionService.class.getDeclaredFields()) {
+                if (field.isSynthetic() || java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                field.setAccessible(true);
+                final Object held = field.get(service);
+                if (held instanceof String text) {
+                    assertThat(text)
+                            .as("field %s holds a String; no field may hold the signing key", field.getName())
+                            .isNotEqualTo(ENVELOPE_SIGNING_KEY);
+                }
+            }
+            assertThat(ReportSubmissionService.class.getDeclaredField("envelope").getType())
+                    .as("what is retained instead is the authenticator, which holds only a derived key")
+                    .isEqualTo(JobSubmissionEnvelope.class);
         }
     }
 
-    // =====================================================================================================
     // 3. Entry modes and the three EIBAID arms, app/cbl/CORPT00C.cbl:165-195.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("3. Entry and attention :165-195 - first entry, no commarea, enter, PF3 and any other key")
@@ -1200,9 +1321,7 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 4. Report-type precedence, app/cbl/CORPT00C.cbl:212-442. EVALUATE TRUE, first match wins.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("4. Report-type precedence :212-442 - monthly, then yearly, then custom, then none")
@@ -1293,7 +1412,6 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 5. The monthly period, app/cbl/CORPT00C.cbl:213-236. A FULL CALENDAR MONTH.
     //
     // :223 MOVE 1 TO WS-CURDATE-DAY; :224 ADD 1 TO WS-CURDATE-MONTH; :225-228 carry the year when the month
@@ -1301,7 +1419,6 @@ class ReportSubmissionServiceTest {
     // less one day, is the last day of THIS one; :232-234 then read the mutated year, month and day back out
     // through the WS-CURDATE-N REDEFINES alias of app/cpy/CSDAT01Y.cpy:23. The start is the first of this
     // month, from :217-219.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("5. The monthly period :213-236 - a FULL CALENDAR MONTH with the twelve-month carry")
@@ -1438,8 +1555,11 @@ class ReportSubmissionServiceTest {
                     .isEqualTo("2022-06-01");
             assertThat(sendOptions.payload().endDate()).isEqualTo("2022-06-30");
             assertThat(clock.reads())
-                    .as("one reading for the period, one more for the header at :611")
-                    .isEqualTo(2);
+                    .as("one reading for the period, one for the header at :611, and one for the instant the"
+                            + " envelope code is dated from - which finding SEC-002 introduced and which"
+                            + " cannot reach either date, as the two assertions above prove on a clock that"
+                            + " advances two seconds per reading across a month boundary")
+                    .isEqualTo(3);
         }
 
         @Test
@@ -1507,9 +1627,7 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 6. The yearly period, app/cbl/CORPT00C.cbl:239-253. January first through December thirty-first.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("6. The yearly period :239-253 - January first through December thirty-first")
@@ -1583,10 +1701,8 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 7. The custom period, layer one: emptiness. app/cbl/CORPT00C.cbl:258-303, an EVALUATE TRUE whose six
     // WHEN clauses are mutually exclusive, so only the FIRST empty component is ever reported.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("7. Custom layer 1 :258-303 - six emptiness guards in source order, first match wins")
@@ -1710,14 +1826,12 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 8. The custom period, layers two and three. :305-327 normalise each component through a MOVE into
     // PIC 9(n) after FUNCTION NUMVAL-C; :329-379 then apply SIX INDEPENDENT IF statements.
     //
     // Each of those six ends in PERFORM SEND-TRNRPT-SCREEN, and that paragraph ends GO TO RETURN-TO-CICS at
     // :580 - a terminal EXEC CICS RETURN. The FIRST guard to fire therefore ends the turn, and no later
     // guard can run. A secondary description of this program claims the LAST guard wins; it cannot.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("8. Custom layers 2 and 3 :305-379 - string upper bounds, no lower bound, no year bound")
@@ -1926,13 +2040,11 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 9. The custom period, whole-date validation. :388-406 for the start date and :408-426 for the end.
     //
     // :396 accepts a severity of '0000' outright. :399 then forgives a NON-ZERO severity when the message
     // number is exactly '2513'. Only those two values are read; the sixty-one characters of message text at
     // :136 are never consulted. The taxonomy behind the numbers belongs to the validation suite.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("9. Custom whole-date validation :388-426 - severity 0000 accepted, 2513 tolerated")
@@ -2144,14 +2256,12 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 10. The confirmation handshake, app/cbl/CORPT00C.cbl:462-493. It lives INSIDE the submission
     // paragraph, so it is demanded only after the report type has been resolved and the dates computed -
     // which is observable, because the blank re-prompt names the report.
     //
     // The gate is CONFIRMI, PIC X(1) in app/cpy-bms/CORPT00.CPY:114, so at most one character is ever
     // compared. :478 is the combined relation = 'Y' OR 'y', not a case function.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("10. The confirmation handshake :462-493 - four states over a one-character gate")
@@ -2394,14 +2504,12 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 11. Publication. app/cbl/CORPT00C.cbl:496-508 walked seventeen eighty-byte cards and wrote every one
     // of them to the extrapartition queue, terminator included; :515-523 is the write itself.
     //
     // The whole deck collapses into ONE typed message. Three properties of the loop survive as assertions:
     // the terminator card was written BEFORE the loop exited (:504 sets the flag, :507 still writes on that
     // same iteration), a blank card terminated it just as the terminator did, and the bound was 1000.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("11. Publication :496-523 - seventeen job cards collapse into ONE FIFO message")
@@ -2544,7 +2652,7 @@ class ReportSubmissionServiceTest {
         /**
          * The report name is drawn from a closed vocabulary, not merely from a non-null string.
          *
-         * <p><strong>Finding C-02, severity Critical.</strong> This record is the type a queue payload binds
+         * <p><strong>Finding C-02, severity Blocker.</strong> This record is the type a queue payload binds
          * to, so until its constructor screened the values a publisher could put anything at all in any of the
          * three fields - and those values flowed into job parameters and, before the remediation, into log
          * records. {@code app/cbl/CORPT00C.cbl} assigns {@code WS-REPORT-NAME} from one of three literals on
@@ -2704,11 +2812,9 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 12. Publish failure, app/cbl/CORPT00C.cbl:525-535. WHEN DFHRESP(NORMAL) is a CONTINUE no-op, retained;
     // WHEN OTHER displays the response and reason codes, sets the literal and puts the cursor on the MONTHLY
     // selector whatever the report type actually was. That last part is a copy-paste defect, preserved.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("12. Publish failure :525-535 - byte-exact literal, cause preserved, monthly cursor")
@@ -2903,11 +3009,9 @@ class ReportSubmissionServiceTest {
 
     }
 
-    // =====================================================================================================
     // 13. The success tail, the header and the clear. :445-454 clears the form, composes the notice and
     // sends with the green attribute; :609-628 paints six computed header values; :633-646 blanks ten input
     // components and the working message.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("13. Success tail :445-454, header :609-628 and clear :633-646")
@@ -3118,10 +3222,8 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 14. Hostile input. Rule 1 Clause A: treat inputs as untrusted; Clause B: handle null and empty
     // explicitly. Nothing here may reach the queue, and nothing may raise anything but a typed failure.
-    // =====================================================================================================
 
     @Nested
     @DisplayName("14. Hostile input - every malformed component produces a typed failure, never a leak")
@@ -3253,10 +3355,8 @@ class ReportSubmissionServiceTest {
         }
     }
 
-    // =====================================================================================================
     // Test doubles. Hand written rather than mocked wherever a mock would need leniency or could not observe
     // what the assertion needs, which keeps every Mockito stub in this class strictly checked.
-    // =====================================================================================================
 
     /**
      * A provider that yields no tracer, tracing being an optional collaborator the production code resolves

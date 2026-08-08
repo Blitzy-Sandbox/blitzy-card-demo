@@ -965,7 +965,7 @@ final class TransactionCombineProcessorCoverageTest {
                             (org.springframework.dao.DataAccessException) cause));
 
             assertThat(failure.getAbendCode())
-                    .as("app/cbl/CBTRN02C.cbl:L707-L710 moves 999 to ABCODE before CALL 'CEE3ABD', and "
+                    .as("app/cbl/CBTRN02C.cbl:L707-L711 moves 999 to ABCODE before CALL 'CEE3ABD', and "
                             + "every fatal batch path in the target reproduces that code")
                     .isEqualTo(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE));
             assertThat(failure.getAbendCulprit())

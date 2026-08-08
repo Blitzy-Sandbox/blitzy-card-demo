@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : AccountViewServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
@@ -12,7 +12,7 @@
  *               0000-MAIN-EXIT label at :408 and :411, and the CICS ONLINE
  *               abend code '9999' at :935 which is NOT the batch 999 / RC 12
  *               contract.
- * Source      : app/cbl/COACTVWC.cbl      (941 lines, 38 paragraphs)
+ * Source      : app/cbl/COACTVWC.cbl      (941 lines, 35 own / 37 mapped paragraph labels)
  *               app/cpy-bms/COACTVW.CPY   (37 input fields; ACCTSIDI at :60)
  *               app/cpy/CVACT01Y.cpy      (ACCOUNT-RECORD, RECLN 300, key 11)
  *               app/cpy/CVACT03Y.cpy      (CARD-XREF-RECORD, 36 of 50 bytes)
@@ -20,7 +20,7 @@
  *               app/cbl/CBACT04C.cbl:1-21 (this banner's canonical form)
  *               CONTRIBUTING.md:33-34     (repository hygiene)
  *               NOTICE                    (copyright line) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -35,7 +35,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -638,10 +638,8 @@ final class AccountViewServiceTest {
         this.appender.stop();
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Fixtures and stubbing helpers. Every helper is used; an unused one would be dead code under Clause B
     // and an unused stubbing would additionally fail the strict-stub check.
-    // -----------------------------------------------------------------------------------------------------
 
     /**
      * Truncates a composed diagnostic to {@code WS-RETURN-MSG PIC X(75)}. {@code STRING ... DELIMITED BY SIZE}
@@ -853,9 +851,7 @@ final class AccountViewServiceTest {
         return rendered;
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // 9000-READ-ACCT: the three-step lookup chain, :687-720
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":693-711 reads the cross-reference, then the account master, then the customer master")
@@ -934,9 +930,7 @@ final class AccountViewServiceTest {
         verify(this.customerRepository, never()).findByIdForUpdate(XREF_CUSTOMER_ID);
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // The two dead early-exit guards at :704-706 and :713-715
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":704-706 DEAD GUARD - an account-master miss still reads the customer master")
@@ -1030,9 +1024,7 @@ final class AccountViewServiceTest {
         assertThat(screen.creditLimit()).isNull();
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // 2210-EDIT-ACCOUNT and the diagnostic literals, :649-683 and :129-138
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":671-673 the account-filter message carries TWO spaces between 'must' and 'be'")
@@ -1227,9 +1219,7 @@ final class AccountViewServiceTest {
                 .isNotEqualTo(SEARCHED_ACCT_MESSAGE);
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // WS-EDIT-ACCT-FLAG: a three-valued flag, :59-61, rendered by 1300-SETUP-SCREEN-ATTRS at :541-574
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":59-61 the filter flag has exactly three states and BLANK is a SPACE, not a zero")
@@ -1310,9 +1300,7 @@ final class AccountViewServiceTest {
         assertThat(result.attributes().accountFilterAttribute()).isEqualTo("DFHBMFSE");
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // 0000-MAIN-EXIT. is declared twice, at :408 and :411
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":408 and :411 - both declarations of 0000-MAIN-EXIT map to their own distinct method")
@@ -1353,9 +1341,7 @@ final class AccountViewServiceTest {
         }
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // ABEND-ROUTINE at :916 and the CICS ONLINE abend contract at :935
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":935 an unexpected runtime failure abends with the FOUR-character online code '9999'")
@@ -1403,9 +1389,7 @@ final class AccountViewServiceTest {
                 .isEqualTo(12);
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // 0000-MAIN dispatch arms, :323-383
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":328-352 PF03 transfers to the menu without reading any file")
@@ -1476,9 +1460,7 @@ final class AccountViewServiceTest {
                 .isEqualTo(AidKey.ENTER);
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Field contracts: app/cpy-bms/COACTVW.CPY and the decimal discipline
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("severity Medium - the response carries the 37-field symbolic-map contract, not 36")
@@ -1519,10 +1501,10 @@ final class AccountViewServiceTest {
         //   CUST-PHONE-NUM-2 PIC X(15)  app/cpy/CVCUS01Y.cpy:16
         //   ACSPHN1O         PIC X(13)  app/cpy-bms/COACTVW.CPY:428
         //   ACSPHN2O         PIC X(13)  app/cpy-bms/COACTVW.CPY:440
-        // and the two MOVEs that join them, app/cbl/COACTVWC.cbl:517 and :518. An earlier revision of this
-        // test cited ACSPHN1I - the INPUT twin at :204 - and put both MOVEs at :516, which is
-        // CUST-ADDR-COUNTRY-CD TO ACSCTRYO. Both widths happened to be right, so the numbers passed while the
-        // evidence pointed at the wrong field and the wrong line.
+        // and the two MOVEs that join them, app/cbl/COACTVWC.cbl:517 and :518. Citing ACSPHN1I - the INPUT
+        // twin at :204 - or putting both MOVEs at :516, which is CUST-ADDR-COUNTRY-CD TO ACSCTRYO, would
+        // leave both widths right and the numbers passing while the evidence pointed at the wrong field and
+        // the wrong line.
         stubCompleteChain();
 
         final AccountDto screen = reenter(VALID_FILTER).screen();
@@ -1613,9 +1595,7 @@ final class AccountViewServiceTest {
         }
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Clause A, security by default: hostile and boundary input
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":652-661 a null filter is the blank path, not a null-pointer failure")
@@ -1707,9 +1687,7 @@ final class AccountViewServiceTest {
                 .isEqualTo("12345678901");
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // viewAccount: the REST entry point's failure contract, type AND message AND cause
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("viewAccount reports an absent filter as a BLANK validation failure")
@@ -1787,9 +1765,7 @@ final class AccountViewServiceTest {
                 .toException(STATUS_IO_ERROR, XREF_ACCOUNT_PATH_NAME, OPERATION_READ);
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Clause A determinism, Clause B state discipline, Clause D data protection
-    // -----------------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName(":434 and :441 both header fields derive from the injected clock, never from the wall clock")

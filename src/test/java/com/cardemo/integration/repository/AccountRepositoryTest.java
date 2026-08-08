@@ -317,10 +317,12 @@ import com.cardemo.repository.AccountRepository;
  * inventing either would manufacture a false oracle and Rule 1 Clause F requires the gap to be named.
  *
  * <ol>
- *   <li><p><strong>The end-to-end boundary parity baseline is Not available.</strong> No captured legacy
- *       output exists anywhere in this repository; searches across expected, baseline, golden, {@code .out}
- *       and system-output name patterns, and across the reject, report, statement and HTML dataset names,
- *       return only dataset <em>definition</em> members and no captured data. Closing it would need a
+ *   <li><p><strong>The end-to-end boundary parity expectation exists; what is Not available is a captured z/OS run to
+ *       corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own output --
+ *       {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected}, {@code DALYREJS.expected}
+ *       and {@code CBTRN02C.sysout.expected} -- derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and
+ *       running it against the frozen fixtures, with the harness and the derivation recorded beside them in
+ *       {@code PROVENANCE.properties}. Closing it would need a
  *       captured 430-byte reject dataset from a real posting run at a known input state, together with the
  *       resulting transaction, account and category-balance images. Until that exists: this file creates no
  *       baseline file and fabricates no expected bytes. Generating a baseline by running this
@@ -1253,19 +1255,10 @@ class AccountRepositoryTest extends AbstractRepositoryIntegrationTest {
     /**
      * The complete PostgreSQL metadata contract for the {@code account} table.
      *
-     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
-     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
-     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
-     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
-     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
-     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
-     * a frozen picture clause, that was the gap that mattered most.
-     *
-     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
-     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
-     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
-     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
-     * with the authority.
+     * <p>Why this delegates rather than restating the facets, and why asserting whichever columns the
+     * behavioural tests happen to touch would state no contract at all, is recorded once on
+     * {@link SchemaMetadataMatrix}, which declares every facet and asserts the live catalogue against
+     * it by exact equality on ordered lists.
      *
      * <p>For {@code account} that is thirteen columns, the eleven-digit key of app/catlg/LISTCAT.txt:L59, five NUMERIC(12,2) money columns, the version column COACTUPC's dual-dataset rewrite depends on, and the Y/N status check - every value measured from the schema the migrations
      * produce and checked against {@code app/cpy/CVACT01Y.cpy}, never transcribed from prose.

@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionTypeRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -10,7 +10,7 @@
  *               app/jcl/TRANTYPE.jcl:L36, L40-L41 KEYS(2 0) RECORDSIZE(60 60));
  *               record layout app/cpy/CVTRA03Y.cpy:L4-L7; ABSENT from
  *               app/csd/CARDDEMO.CSD (batch-only proof) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -25,7 +25,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 

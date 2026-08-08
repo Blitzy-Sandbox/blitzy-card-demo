@@ -113,16 +113,21 @@
  *   <li>{@link JwtAuthenticationFilter} - <strong>per-request authentication</strong>. Extracts a bearer
  *       credential, verifies it, and populates a request-local security context. It performs
  *       <strong>no database read</strong>.</li>
- *   <li>{@link SnapshotTokenService} - <strong>carriage of the browse position and row identity</strong>.
- *       The legacy conversation kept its browse state in the COMMAREA: {@code WS-CA-SCREEN-NUM} at
- *       {@code app/cbl/COCRDLIC.cbl:L237} held the page number and the lookahead at {@code :L1197-L1205}
- *       saved the first and last keys of the page on display. Transformation Rule 7 leaves no server-side
- *       session to hold them, and those keys are card numbers, so this component seals them into an
- *       authenticated, encrypted, expiring opaque string bound to one operation and one record - which
- *       keeps the card number unreadable, the browse position untamperable and the reference unreplayable.
- *       It does <em>not</em> carry the as-displayed snapshot for {@code 9700-CHECK-CHANGE-IN-REC}: that
- *       group travels in the request body as {@code oldDetails}, so no endpoint emits an {@code ETag} and
- *       none reads {@code If-Match}.</li>
+ *   <li>{@link SnapshotTokenService} - <strong>carriage of the browse position, the row identity and the
+ *       as-displayed snapshot</strong>. The legacy conversation kept all three in the COMMAREA:
+ *       {@code WS-CA-SCREEN-NUM} at {@code app/cbl/COCRDLIC.cbl:L237} held the page number, the lookahead at
+ *       {@code :L1197-L1205} saved the first and last keys of the page on display, and
+ *       {@code WS-THIS-PROGCOMMAREA} at {@code app/cbl/COACTUPC.cbl:L652} held {@code ACUP-OLD-DETAILS}
+ *       between the two turns of the pseudo-conversation. Transformation Rule 7 leaves no server-side session
+ *       to hold any of them, and none may travel in the clear - the browse keys are card numbers, and the
+ *       snapshot carries the customer's names, both telephone numbers, the social security number, the date of
+ *       birth, the government-issued identifier and the electronic funds account identifier. So this component
+ *       seals each into an authenticated, encrypted, expiring opaque string bound to one operation and one
+ *       record, and for the snapshot additionally to one principal. That keeps the card number unreadable, the
+ *       browse position untamperable, the snapshot both confidential and non-transferable, and every one of
+ *       them unreplayable past its lifetime. The snapshot travels as a request-body member and the row
+ *       reference as a request parameter, so <strong>no endpoint emits an {@code ETag} and none reads
+ *       {@code If-Match}</strong>.</li>
  *   </ul>
  *
  * <h3>Upper-case both, trim neither</h3>

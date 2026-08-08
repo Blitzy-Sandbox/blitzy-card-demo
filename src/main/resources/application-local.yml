@@ -1,35 +1,35 @@
 # ******************************************************************
-# * File         : application-local.yml
-# * Application  : CardDemo
-# * Type         : Spring Boot 'local' profile (YAML) - environment delta
-# * Function     : Binds the CardDemo modular monolith to the root-owned
-# *                Docker Compose substrate - PostgreSQL 16, LocalStack
-# *                (S3, SQS FIFO, SNS) and the Jaeger OTLP receiver - and
-# *                makes it structurally impossible for a local run to
-# *                reach a live AWS endpoint. This file is a DELTA over
-# *                application.yml: it restates nothing that the base
-# *                profile already declares, so every key below either
-# *                changes a base value or exists only in this profile.
-# * Source       : app/csd/CARDDEMO.CSD:L499-L505 (DEFINE TDQUEUE(JOBS),
-# *                TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT)
-# *                RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(
-# *                UNBLOCKED) DISPOSITION(MOD) -> one SQS FIFO queue);
-# *                app/jcl/DEFGDGB.jcl:L24-L57 (six GDG bases; TRANREPT
-# *                LIMIT(5) at :L38);
-# *                app/jcl/DALYREJS.jcl:L24-L26 (the seventh base);
-# *                app/jcl/REPTFILE.jcl:L25-L27 (TRANREPT LIMIT(10) -
-# *                the retention conflict, resolved to 10);
-# *                app/jcl/POSTTRAN.jcl:L34-L38 (DALYREJS DD,
-# *                DCB=(RECFM=F,LRECL=430,BLKSIZE=0),
-# *                DSN=AWS.M2.CARDDEMO.DALYREJS(+1));
-# *                app/jcl/OPENFIL.jcl:L26-L30 and
-# *                app/jcl/CLOSEFIL.jcl:L26-L30 (CEMT SET FIL for
-# *                TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC, whose
-# *                availability is now the readiness surface);
-# *                app/catlg/LISTCAT.txt:L684, :L1098, :L1202, :L1527,
-# *                :L1631, :L2919, :L3021 (the 7 GDG bases) plus the
-# *                entry census GDG 7 / CLUSTER 10 / AIX 3 / PATH 3
-# *                - all @ 7756d89
+# * Program     : application-local.yml
+# * Application : CardDemo
+# * Type        : Spring Boot 'local' profile (YAML) - environment delta
+# * Function    : Binds the CardDemo modular monolith to the root-owned
+# *               Docker Compose substrate - PostgreSQL 16, LocalStack
+# *               (S3, SQS FIFO, SNS) and the Jaeger OTLP receiver - and
+# *               makes it structurally impossible for a local run to
+# *               reach a live AWS endpoint. This file is a DELTA over
+# *               application.yml: it restates nothing that the base
+# *               profile already declares, so every key below either
+# *               changes a base value or exists only in this profile.
+# * Source      : app/csd/CARDDEMO.CSD:L499-L505 (DEFINE TDQUEUE(JOBS),
+# *               TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT)
+# *               RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(
+# *               UNBLOCKED) DISPOSITION(MOD) -> one SQS FIFO queue);
+# *               app/jcl/DEFGDGB.jcl:L24-L57 (six GDG bases; TRANREPT
+# *               LIMIT(5) at :L38);
+# *               app/jcl/DALYREJS.jcl:L24-L26 (the seventh base);
+# *               app/jcl/REPTFILE.jcl:L25-L27 (TRANREPT LIMIT(10) -
+# *               the retention conflict, resolved to 10);
+# *               app/jcl/POSTTRAN.jcl:L34-L38 (DALYREJS DD,
+# *               DCB=(RECFM=F,LRECL=430,BLKSIZE=0),
+# *               DSN=AWS.M2.CARDDEMO.DALYREJS(+1));
+# *               app/jcl/OPENFIL.jcl:L26-L30 and
+# *               app/jcl/CLOSEFIL.jcl:L26-L30 (CEMT SET FIL for
+# *               TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC, whose
+# *               availability is now the readiness surface);
+# *               app/catlg/LISTCAT.txt:L684, :L1098, :L1202, :L1527,
+# *               :L1631, :L2919, :L3021 (the 7 GDG bases) plus the
+# *               entry census GDG 7 / CLUSTER 10 / AIX 3 / PATH 3
+# *               - all @ 7756d89
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -81,20 +81,30 @@
 #
 #   * ENDPOINT OVERRIDE, now in application.yml for every runnable profile.
 #     spring.cloud.aws.s3.endpoint, .sqs.endpoint and .sns.endpoint are
-#     indirected through ${AWS_ENDPOINT_URL}, defaulting to the LocalStack
-#     edge. An AWS SDK client built with an endpoint override never performs
-#     regional endpoint discovery, so when LocalStack is down the call fails
-#     with a connection error to 127.0.0.1 - it does not silently fall back to
-#     a real regional host.
-#   * STATIC NON-LIVE CREDENTIALS, now in application.yml as literals rather
-#     than as ${AWS_ACCESS_KEY_ID}/${AWS_SECRET_ACCESS_KEY} indirections.
-#     Supplying the pair pins a static credentials provider, which REPLACES
-#     the default provider chain: without it the chain reads a developer's
-#     real ~/.aws/credentials profile, a web-identity token, container
-#     credentials or EC2 instance metadata and signs a request with a live
-#     principal. Indirecting to the ambient variables re-admitted exactly
-#     that, which is why the literals are the safer choice - LocalStack
-#     validates no credential, so the values are inert.
+#     indirected there through ${AWS_ENDPOINT_URL} with NO literal default -
+#     an unset variable fails placeholder resolution and aborts startup rather
+#     than being papered over. THE DEVELOPER DEFAULT LIVES HERE, NOT THERE:
+#     this profile re-declares the same three keys as
+#     ${AWS_ENDPOINT_URL:http://localhost:4566}, which is the one place the
+#     emulator edge is assumed. An AWS SDK client built with an endpoint
+#     override never performs regional endpoint discovery, so when LocalStack
+#     is down the call fails with a connection error to 127.0.0.1 - it does not
+#     silently fall back to a real regional host.
+#   * STATIC NON-LIVE CREDENTIALS, now in application.yml as
+#     ${AWS_ACCESS_KEY_ID}/${AWS_SECRET_ACCESS_KEY} - again with NO literal
+#     default, and again deliberately. Supplying the pair pins a static
+#     credentials provider, which REPLACES the default provider chain: without
+#     it the chain reads a developer's real ~/.aws/credentials profile, a
+#     web-identity token, container credentials or EC2 instance metadata and
+#     signs a request with a live principal. Two mechanisms keep the
+#     indirection from re-admitting that. An unset variable does not degrade
+#     to the chain - it fails placeholder resolution, which is the abort
+#     described under WHEN IT WILL NOT START below. And whatever does resolve
+#     is checked by AwsConfig, which requires both properties to be present
+#     and rejects an access key carrying the AKIA or ASIA prefix of a real AWS
+#     key, so a resolved-but-live pair aborts the refresh too. LocalStack
+#     validates no credential, so the placeholder values .env.example ships
+#     are inert and grant nothing.
 #   * APPLICATION-SIDE VALIDATION in AwsConfig's constructor, which runs
 #     before any S3/SQS/SNS template it declares and therefore before any
 #     client can address or sign anything. Each endpoint must be an absolute
@@ -130,9 +140,8 @@
 # an `app` service alongside the five substrate services, building from this
 # repository root against the committed Dockerfile and pinning
 # SPRING_PROFILES_ACTIVE=local, so `--build` builds this application. An
-# earlier revision of this paragraph recorded the file as provisioning
-# substrate services only, with nothing of this application to build; that
-# was true when written and is withdrawn. Building by hand with
+# SPRING_PROFILES_ACTIVE=local, so `--build` builds this application - it does
+# not provision substrate services only. Building by hand with
 # `docker build -t carddemo:local .` remains available, and in that case
 # override POSTGRES_HOST to `postgres` and AWS_ENDPOINT_URL to
 # `http://carddemo-localstack:4566`, because `localhost` inside a container
@@ -320,16 +329,14 @@
 # Severities follow Rule 1 Clause F. Each entry names its evidence and its
 # remediation. None is a defect introduced by this file.
 #
-#   * WITHDRAWN - was HIGH: "three writers bind a property namespace that no
-#     profile declares", namely carddemo.s3.* against the declared
-#     carddemo.aws.s3.*. RE-VERIFIED AT HEAD AND NO LONGER TRUE. The three
-#     writers now bind the declared namespace:
+#   * NOT A DEFECT HERE, AND THE VERIFICATION IS WHAT SAYS SO: "three writers
+#     bind a property namespace that no profile declares", namely carddemo.s3.*
+#     against the declared carddemo.aws.s3.*. The three
+#     writers bind the declared namespace:
 #     RejectWriter.java:616 and TransactionWriter.java:585 read
 #     carddemo.aws.s3.batch-output-bucket, TransactionWriter.java:590 reads
 #     carddemo.aws.s3.transaction-object-prefix and StatementWriter.java:923
-#     reads carddemo.aws.s3.statements-bucket. The remediation this entry
-#     recommended was applied in the owning Java classes exactly as described,
-#     so the finding is withdrawn rather than left standing as a current defect.
+#     reads carddemo.aws.s3.statements-bucket.
 #     Command used to re-verify:
 #       grep -rn 'carddemo\.s3\.' src/main/java   ->  no matches
 #     What remains from it, and is closed elsewhere: the two active keys that
@@ -430,13 +437,14 @@ spring:
     # NEITHER CREDENTIAL IS REDECLARED HERE ANY LONGER, and their absence is
     # the control rather than an omission. This profile exists to give the
     # NON-SECRET segments of a local run a working default; a database
-    # principal is not one of those segments. An earlier revision read
+    # principal is not one of those segments. A pair such as
     # ${CARDDEMO_DB_APP_USER:${POSTGRES_USER:carddemo}} and
-    # ${CARDDEMO_DB_APP_PASSWORD:${POSTGRES_PASSWORD}} here, and because this
-    # is the profile docker-compose.yml activates, that pair of fallbacks was
-    # what actually decided the local principal: with the dedicated variables
-    # unset every local run connected as the cluster BOOTSTRAP role, which the
-    # postgres image creates as a SUPERUSER, whatever the base profile said.
+    # ${CARDDEMO_DB_APP_PASSWORD:${POSTGRES_PASSWORD}} must not be reintroduced
+    # here: this is the profile docker-compose.yml activates, so that pair of
+    # fallbacks would be what actually decided the local principal - with the
+    # dedicated variables unset every local run would connect as the cluster
+    # BOOTSTRAP role, which the postgres image creates as a SUPERUSER, whatever
+    # the base profile said.
     #
     # application.yml now binds ${CARDDEMO_DB_APP_USER} and
     # ${CARDDEMO_DB_APP_PASSWORD} bare, with no default and no fallback, so
@@ -504,10 +512,10 @@ spring:
     # full reasoning.
     #
     # REQUIRED, WITH NO FALLBACK, for the same reason the datasource credentials
-    # above are no longer declared here at all. The fallback these two lines
-    # once carried ended at ${POSTGRES_USER:carddemo}, so an operator who had
-    # not been told about the migration role migrated the schema as the
-    # bootstrap SUPERUSER - and then owned every object in it as that role,
+    # above are not declared here at all. A fallback on these two lines
+    # ending at ${POSTGRES_USER:carddemo} would let an operator who had
+    # not been told about the migration role migrate the schema as the
+    # bootstrap SUPERUSER - and then own every object in it as that role,
     # which is the condition the ALTER DEFAULT PRIVILEGES declarations in
     # docker-compose.yml exist to work around rather than to bless.
     #
@@ -675,12 +683,13 @@ carddemo:
 
     sns:
       # Operator notification. Exactly ONE topic is provisioned, by the
-      # NOTIFICATION_TOPIC declaration in localstack-init/init-aws.sh (line 543),
-      # together with exactly ONE subscriber: the standard queue
-      # NOTIFICATION_INBOX_QUEUE, subscribed with raw delivery by
-      # ensure_notification_subscription. A topic with no subscriber accepts every
-      # publish and discards it, which is the defect finding M-04 reported; least
-      # privilege means one subscriber, not none. Base declares the key with no
+      # NOTIFICATION_TOPIC declaration in localstack-init/init-aws.sh, together
+      # with exactly ONE subscriber: the standard queue NOTIFICATION_INBOX_QUEUE,
+      # whose name that script derives from the topic name and subscribes with raw
+      # delivery in ensure_notification_subscription. A topic with no subscriber
+      # accepts every publish and discards it, which is the defect finding M-04
+      # reported; least privilege means one subscriber, not none. Symbols are cited
+      # rather than line numbers, per DL-RM-10. Base declares the key with no
       # default; only the default is new.
       notification-topic: ${CARDDEMO_SNS_NOTIFICATION_TOPIC:carddemo-notifications}
 
@@ -857,13 +866,20 @@ logging:
 #   output bucket only; the other two return no status, which is the
 #   intended asymmetry - only the GDG-derived output prefix needs
 #   object versions.
-#   SQS: exactly one queue, logical carddemo-report-jobs resolved to
-#   physical carddemo-report-jobs.fifo, attributes FifoQueue=true and
-#   ContentBasedDeduplication=false - the latter is what finding H-08
-#   requires provisioning to establish, and init-aws.sh converges an
-#   existing queue onto it. The full URL is withheld here, matching the
-#   convention localstack-init/init-aws.sh already follows.
-#   SNS: exactly one topic, carddemo-notifications, 0 subscriptions.
+#   SQS: two queues. The submission queue, logical carddemo-report-jobs
+#   resolved to physical carddemo-report-jobs.fifo, attributes
+#   FifoQueue=true and ContentBasedDeduplication=false - the latter is
+#   what finding H-08 requires provisioning to establish, and
+#   init-aws.sh converges an existing queue onto it. And the standard
+#   notification inbox carddemo-notifications-inbox, which exists to be
+#   the topic's subscriber and which this application never reads. Full
+#   URLs are withheld here, matching the convention
+#   localstack-init/init-aws.sh already follows.
+#   SNS: exactly one topic, carddemo-notifications, with exactly one
+#   subscription - the inbox above, protocol sqs, raw delivery. Zero
+#   subscriptions is the state in which every publish is accepted and
+#   discarded, so init-aws.sh treats it as fatal rather than verifying
+#   it.
 #
 # ---- No-live-AWS proof, the safety property ----------------------
 #
@@ -871,19 +887,22 @@ logging:
 #   matches. That domain is deliberately never spelled out anywhere in
 #   this file, comments included, so the assertion stays true of this
 #   evidence section itself rather than being falsified by it. The only
-#   endpoint this file now configures is http://localhost:4318/v1/traces;
-#   the three service endpoints moved to the base profile, where they
-#   resolve to http://localhost:4566 by default and are validated
-#   against the permitted emulator hosts by AwsConfig before any client
-#   is built.
+#   endpoint this file now configures for tracing is
+#   http://localhost:4318/v1/traces. The three service endpoints moved to
+#   the base profile, which indirects each through ${AWS_ENDPOINT_URL}
+#   with NO literal default; this profile re-declares the same three keys
+#   with the developer default ${AWS_ENDPOINT_URL:http://localhost:4566},
+#   so the emulator edge is assumed HERE and nowhere else. Whatever
+#   resolves is validated against the permitted emulator hosts by
+#   AwsConfig before any client is built.
 #   Pointed at a closed port, an S3 call fails with:
 #     SdkClientException: Unable to execute HTTP request: Connect to
 #     localhost:4599 failed | HttpHostConnectException | ConnectException:
 #     Connection refused
 #   No frame of that chain names a live AWS host. The client surfaces a
 #   local connection error and never falls back to a real regional
-#   endpoint - which is the whole point of pinning static credentials
-#   alongside the endpoint override.
+#   endpoint - which is the whole point of pinning a static credentials
+#   provider alongside the endpoint override.
 #
 # ---- Flyway, applied exactly once, 2026-08-02T07:08:23Z ----------
 #
@@ -948,23 +967,19 @@ logging:
 #   (default) and Jaeger, both readOnly, plus one dashboard. All of it
 #   is owned by observability/ and docker-compose.yml, not by this file.
 #
-# ---- Withdrawn: the boot prerequisite is satisfied ---------------
+# ---- The boot prerequisite is satisfied --------------------------
 #
-#   An earlier revision recorded full application boot under
-#   SPRING_PROFILES_ACTIVE=local as NOT AVAILABLE, on the ground that
-#   src/main/java/com/cardemo/CardDemoApplication.java did not exist and
-#   that there were zero @SpringBootApplication declarations outside
-#   comments anywhere in src/main/java, even though the built JAR
-#   manifest already declared Start-Class: com.cardemo.
-#   CardDemoApplication. That claim is withdrawn. The class is present
-#   in this branch and carries the single @SpringBootApplication
-#   declaration in the tree, so the stated prerequisite is met and the
+#   src/main/java/com/cardemo/CardDemoApplication.java is present in
+#   this branch and carries the single @SpringBootApplication
+#   declaration in the tree - which the built JAR manifest also names as
+#   Start-Class - so full application boot under
+#   SPRING_PROFILES_ACTIVE=local is not a missing prerequisite and the
 #   context starts under this profile. Every property this file sets is
 #   additionally verified through the framework's own configuration
 #   machinery and against the live substrate, as recorded above.
 #
-#   What remains genuinely unmeasured HERE is narrower than the old
-#   claim: exercising the actuator health, liveness and readiness
+#   What remains genuinely unmeasured HERE is narrow: exercising the
+#   actuator health, liveness and readiness
 #   endpoints over HTTP against a running process, and observing the
 #   Prometheus application target flip to UP, is runtime evidence that
 #   belongs to the runtime validation of the deployed process, not to a
@@ -974,9 +989,8 @@ logging:
 # ---- Findings by severity, Rule 1 Clause F -----------------------
 #
 #   Blocker  none in this file.
-#   High     none outstanding. The previously recorded namespace finding -
-#            the three batch writers binding carddemo.s3.* - was remediated
-#            in the owning Java classes and is WITHDRAWN; see the
-#            DISCREPANCY REGISTER above for the re-verification command.
+#   High     none outstanding. The namespace question - whether the three
+#            batch writers bind carddemo.s3.* - is answered in the
+#            DISCREPANCY REGISTER above, with the verification command.
 #   Medium   resource-variable spelling, recorded in the register.
 #   Low      three cosmetic items, recorded in the register.

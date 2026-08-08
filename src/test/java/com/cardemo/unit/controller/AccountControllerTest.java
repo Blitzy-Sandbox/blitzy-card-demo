@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -50,6 +51,7 @@ import com.cardemo.model.dto.AccountUpdateResponse;
 import com.cardemo.model.dto.AccountViewResponse;
 import com.cardemo.service.account.AccountUpdateService;
 import com.cardemo.service.account.AccountViewService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
 import java.util.List;
@@ -82,12 +84,12 @@ import org.springframework.security.core.Authentication;
  *       birth, the three names, both telephone numbers, the government-issued identifier and the electronic
  *       funds account identifier are withheld from the read response, and the whole submitted map is withheld
  *       from the write response.</li>
- *   <li><em>The as-displayed snapshot travels in the request body.</em> It is projected by the update
- *       service on the read - which is what makes {@code AccountUpdateService.fetchForUpdate} reachable at
- *       all - and echoed back unaltered as the body's {@code oldDetails} group on the write, per
- *       transformation Rule 7. It travels as the group rather than as flat fields because
- *       {@code app/cbl/COACTUPC.cbl:4174-4179} compares the date of birth across an offset asymmetry a
- *       client cannot be expected to reconstruct.</li>
+ *   <li><em>The as-displayed snapshot travels in the request body, sealed.</em> The read publishes it as a
+ *       single opaque {@code snapshot} member that {@code AccountUpdateService.sealSnapshotForUpdate}
+ *       produced, and the write echoes that value back unaltered, per transformation Rule 7. It is sealed
+ *       rather than readable for two independent reasons: the group carries nine protected customer values,
+ *       and the comparison at {@code app/cbl/COACTUPC.cbl:4109-4193} exists to detect that the record moved
+ *       under the operator, which it cannot do if the operator supplies its own second operand.</li>
  *   <li><em>The confirmation admits exactly two spellings.</em> The framework's {@code Boolean} binding
  *       accepts six; on the one parameter that decides whether two datasets are written, that is not
  *       acceptable.</li>
@@ -106,14 +108,15 @@ import org.springframework.security.core.Authentication;
  *
  * <p><strong>3. Key configuration and defaults.</strong> Both services are mocked and no Spring context is
  * started: every handler and every exception handler is a plain method call. What this class tests is where
- * the group travels and that it arrives unaltered; the comparison it feeds is pinned by
- * {@code AccountUpdateServiceTest}.</p>
+ * the sealed value travels and that it arrives unaltered; the sealing itself, and the comparison it feeds,
+ * are pinned by {@code SnapshotTokenServiceTest} and {@code AccountUpdateServiceTest}.</p>
  *
  * <p><strong>4. Common failure modes.</strong> A failure in the privacy group means a protected customer
- * value reached a diagnostic rendering. A failure in the snapshot group means the read stopped projecting
- * the group, or the write stopped relaying it unaltered - either of which refuses every update. A failure in
- * the confirmation group means the parameter is being coerced again. A failure in the disclosure group means
- * a {@code 404} is naming keys.</p>
+ * value reached a diagnostic rendering or the serialised response. A failure in the snapshot group means the
+ * read stopped sealing the group, started publishing it readably, or the write stopped relaying the sealed
+ * value unaltered - the first and third refuse every update, the second discloses nine protected values. A
+ * failure in the confirmation group means the parameter is being coerced again. A failure in the disclosure
+ * group means a {@code 404} is naming keys.</p>
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
@@ -144,6 +147,22 @@ class AccountControllerTest {
     /** {@code CUST-PHONE-NUM-1}, likewise. */
     private static final String PHONE_1 = "(206)555-0100";
 
+    /**
+     * A stand-in for the sealed as-displayed snapshot.
+     *
+     * <p>An arbitrary base64url run rather than a real sealed value, because the update service is mocked
+     * here and never opens it. What this tier asserts is that the value the read publishes is the value the
+     * write relays, unaltered and by reference; {@code SnapshotTokenServiceTest} owns the sealing itself and
+     * {@code AccountUpdateServiceTest} owns the round trip through the bean.</p>
+     */
+    private static final String SEALED_SNAPSHOT = "c2VhbGVkLWFjY291bnQtdXBkYXRlLXNuYXBzaG90";
+
+    /**
+     * The authenticated principal {@link #principal} presents, which the controller must relay to both
+     * service entry points so that the sealed value is bound to the operator who was shown the screen.
+     */
+    private static final String SUBJECT = "USER0001";
+
     /** The account-view service, mocked because this tier reaches no database. */
     @Mock
     private AccountViewService accountViewService;
@@ -164,7 +183,7 @@ class AccountControllerTest {
     @BeforeEach
     void createControllerUnderTest() {
         controller = new AccountController(accountViewService, accountUpdateService);
-        principal = new TestingAuthenticationToken("USER0001", "n/a", "ROLE_USER");
+        principal = new TestingAuthenticationToken(SUBJECT, "n/a", "ROLE_USER");
     }
 
     /**
@@ -182,12 +201,12 @@ class AccountControllerTest {
     }
 
     /**
-     * Builds a submitted map, with the snapshot group either present or absent.
+     * Builds a submitted map, with the sealed snapshot either present or absent.
      *
-     * @param oldDetails the snapshot group, or null to omit it as the contract requires
+     * @param snapshot the sealed as-displayed snapshot, or null to omit it
      * @return a populated request
      */
-    private static AccountUpdateRequest updateRequest(final AccountUpdateRequest.OldDetails oldDetails) {
+    private static AccountUpdateRequest updateRequest(final String snapshot) {
         // The record is immutable and declares fifty-four screen fields plus the two groups, so the
         // fixture supplies the account identifier - the one field these assertions read - and leaves the
         // rest absent. The service is mocked here, so no edit runs over them.
@@ -199,7 +218,7 @@ class AccountControllerTest {
                 null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
-                oldDetails, null);
+                snapshot, null);
     }
 
     /**
@@ -226,7 +245,7 @@ class AccountControllerTest {
         return new AccountUpdateService.AccountUpdateResult(
                 AccountUpdateService.ResponseKind.MAP,
                 changeAction,
-                updateRequest(suppliedSnapshot()),
+                updateRequest(SEALED_SNAPSHOT).withOldDetails(suppliedSnapshot()),
                 new AccountUpdateService.Navigation("CAUP", "COACTUPC", "CM00", "COMEN01C", "COACTUP",
                         "CACTUPA"),
                 List.of(new AccountUpdateService.FieldAttribute("ACSTTUS", "attribute", "DFHBMPRF")),
@@ -250,8 +269,8 @@ class AccountControllerTest {
         @DisplayName("the read response neither declares nor carries any of the nine withheld values")
         void theReadResponseWithholdsTheNineProtectedValues() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID))
-                    .thenReturn(suppliedSnapshot());
+            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+                    .thenReturn(SEALED_SNAPSHOT);
 
             final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
 
@@ -277,8 +296,8 @@ class AccountControllerTest {
         @DisplayName("the read response still carries every value the account screen needs")
         void theReadResponseCarriesWhatTheScreenNeeds() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID))
-                    .thenReturn(suppliedSnapshot());
+            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+                    .thenReturn(SEALED_SNAPSHOT);
 
             final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
 
@@ -298,7 +317,7 @@ class AccountControllerTest {
         @Test
         @DisplayName("the write response carries no submitted map, no navigation and no 3270 attributes")
         void theWriteResponseIsApiNative() {
-            when(accountUpdateService.updateAccount(any()))
+            when(accountUpdateService.updateAccount(any(), eq(SUBJECT)))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
 
@@ -325,7 +344,7 @@ class AccountControllerTest {
         @Test
         @DisplayName("applied is true only for CHANGES_OKAYED_AND_DONE")
         void appliedIsTrueOnlyForTheCompletedOutcome() {
-            when(accountUpdateService.updateAccount(any()))
+            when(accountUpdateService.updateAccount(any(), eq(SUBJECT)))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE))
                     .thenReturn(updateResult(
@@ -345,7 +364,7 @@ class AccountControllerTest {
         @Test
         @DisplayName("the change action is reported by name")
         void theChangeActionIsReportedByName() {
-            when(accountUpdateService.updateAccount(any()))
+            when(accountUpdateService.updateAccount(any(), eq(SUBJECT)))
                     .thenReturn(updateResult(AccountUpdateService.ChangeAction.SHOW_DETAILS));
 
             assertThat(applyOnce().changeAction()).isEqualTo("SHOW_DETAILS");
@@ -364,65 +383,93 @@ class AccountControllerTest {
     }
 
     /**
-     * The as-displayed group is projected by the read, travels in the update's request body, and is relayed
-     * to the service byte for byte.
+     * The as-displayed snapshot is sealed by the read, travels in the update's request body as one opaque
+     * member, and is relayed to the service byte for byte.
      */
     @Nested
-    @DisplayName("the update precondition travels in the request body")
+    @DisplayName("the update precondition travels in the request body, sealed")
     class SnapshotContract {
 
         /**
-         * The read publishes the group the matching write must echo. Without it the field-by-field
+         * The read publishes the sealed value the matching write must echo. Without it the field-by-field
          * comparison of {@code app/cbl/COACTUPC.cbl:4109-4193} would have no operands and every write
          * would be refused, so this is what makes the update usable at all.
          */
         @Test
-        @DisplayName("the read publishes the as-displayed group, as the very type the PUT binds")
-        void theReadPublishesTheAsDisplayedGroup() {
+        @DisplayName("the read publishes the sealed as-displayed snapshot, exactly as the service issued it")
+        void theReadPublishesTheSealedSnapshot() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID)).thenReturn(suppliedSnapshot());
+            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+                    .thenReturn(SEALED_SNAPSHOT);
 
             final ResponseEntity<AccountViewResponse> response =
                     controller.viewAccount(ACCOUNT_ID, principal);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().oldDetails()).isNotNull();
-            assertThat(response.getBody().oldDetails().getSsn()).isEqualTo(SSN);
-            assertThat(response.getBody().oldDetails().getDateOfBirth()).isEqualTo("19800115");
+            assertThat(response.getBody().snapshot())
+                    .as("the value is relayed unaltered: the write must present the same bytes")
+                    .isEqualTo(SEALED_SNAPSHOT);
         }
 
         /**
-         * The snapshot date of birth is unseparated where the live record is dash-separated, which is the
-         * offset asymmetry {@code :4174-4179} compares across. It is asserted here because it is the single
-         * reason the group travels as a group rather than as flat display fields: a client reassembling it
-         * from {@code customerDateOfBirth} would send the dash-separated form and be refused on every
-         * request.
+         * The read seals for the <em>authenticated</em> operator, not for the account alone. That binding is
+         * what makes a snapshot issued to one operator useless to another, so the controller must relay the
+         * principal rather than a constant or the path variable.
          */
         @Test
-        @DisplayName("the projected group keeps the unseparated date of birth the comparison expects")
-        void theProjectedGroupKeepsTheUnseparatedDateOfBirth() {
+        @DisplayName("the read seals for the authenticated principal, not for the account alone")
+        void theReadSealsForTheAuthenticatedPrincipal() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID)).thenReturn(suppliedSnapshot());
+            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+                    .thenReturn(SEALED_SNAPSHOT);
 
-            final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
+            controller.viewAccount(ACCOUNT_ID, principal);
 
-            assertThat(body).isNotNull();
-            assertThat(body.oldDetails().getDateOfBirth())
-                    .as("the snapshot form carries no separators - offsets 1, 5 and 7")
-                    .doesNotContain("-")
-                    .hasSize(8);
+            verify(accountUpdateService).sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT);
         }
 
         /**
-         * A failure to project the group is not suppressed. Returning {@code 200} with no group would answer
+         * The whole reason the value is sealed rather than published as a group: the group carries nine
+         * protected customer values, and a readable member would put every one of them on the wire on a
+         * plain read. Asserted against the <em>serialised</em> form rather than {@code toString}, because
+         * serialisation is what a client actually receives and is the only rendering a suppressed accessor
+         * cannot quietly reappear in.
+         */
+        @Test
+        @DisplayName("no protected value appears in the serialised read response")
+        void theSerialisedReadResponseCarriesNoProtectedValue() throws Exception {
+            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
+            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+                    .thenReturn(SEALED_SNAPSHOT);
+
+            final String json = new ObjectMapper()
+                    .writeValueAsString(controller.viewAccount(ACCOUNT_ID, principal).getBody());
+
+            assertThat(json)
+                    .as("the sealed member is what travels, and it is the only thing that travels")
+                    .contains("\"snapshot\":\"" + SEALED_SNAPSHOT + "\"")
+                    .doesNotContain("oldDetails")
+                    .doesNotContain(SSN)
+                    .doesNotContain(DATE_OF_BIRTH)
+                    .doesNotContain("19800115")
+                    .doesNotContain(GOVERNMENT_ID)
+                    .doesNotContain(EFT_ACCOUNT_ID)
+                    .doesNotContain(PHONE_1)
+                    .doesNotContain("(425)555-0199")
+                    .doesNotContain("MARGARET")
+                    .doesNotContain("GOLD");
+        }
+
+        /**
+         * A failure to seal the snapshot is not suppressed. Returning {@code 200} with no value would answer
          * with a response the client cannot update from, which is the gap this contract closes.
          */
         @Test
-        @DisplayName("a failure to project the group propagates rather than yielding a groupless 200")
+        @DisplayName("a failure to seal the snapshot propagates rather than yielding a valueless 200")
         void aFailedSnapshotAcquisitionPropagates() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID))
+            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
                     .thenThrow(new RecordNotFoundException("account not found", "account", ACCOUNT_ID));
 
             assertThatThrownBy(() -> controller.viewAccount(ACCOUNT_ID, principal))
@@ -430,58 +477,76 @@ class AccountControllerTest {
         }
 
         /**
-         * A body that carries the snapshot group is <em>accepted</em>, which is the frozen contract of
-         * transformation Rule 7: the group the preceding read projected is echoed back in the request body,
+         * A body that carries the sealed snapshot is <em>accepted</em>, which is the frozen contract of
+         * transformation Rule 7: the value the preceding read issued is echoed back in the request body,
          * because a stateless server keeps no COMMAREA between the two turns of the pseudo-conversation.
          */
         @Test
-        @DisplayName("a body-carried snapshot is accepted and reaches the service")
+        @DisplayName("a body-carried sealed snapshot is accepted and reaches the service")
         void aBodyCarriedSnapshotIsAccepted() {
-            when(accountUpdateService.updateAccount(any()))
+            when(accountUpdateService.updateAccount(any(), eq(SUBJECT)))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
 
             final ResponseEntity<AccountUpdateResponse> response =
-                    controller.updateAccount(updateRequest(suppliedSnapshot()), "true", principal);
+                    controller.updateAccount(updateRequest(SEALED_SNAPSHOT), "true", principal);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-            verify(accountUpdateService).updateAccount(any());
+            verify(accountUpdateService).updateAccount(any(), eq(SUBJECT));
         }
 
         /**
-         * The group reaches the service exactly as bound. Nothing is trimmed, case folded, re-formatted or
-         * reordered on the way through, because the comparison it feeds is byte-sensitive - the date of
-         * birth most of all.
+         * The sealed value reaches the service exactly as bound. Nothing is trimmed, re-encoded or
+         * re-padded on the way through: authenticated encryption fails closed on a single altered byte, so
+         * any normalisation here would refuse every write.
          */
         @Test
-        @DisplayName("the submitted group reaches the service byte for byte, by reference")
-        void theSubmittedGroupReachesTheServiceUnaltered() {
-            when(accountUpdateService.updateAccount(any()))
+        @DisplayName("the submitted sealed value reaches the service byte for byte, by reference")
+        void theSubmittedSnapshotReachesTheServiceUnaltered() {
+            when(accountUpdateService.updateAccount(any(), eq(SUBJECT)))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
-            final AccountUpdateRequest.OldDetails submitted = suppliedSnapshot();
-            final AccountUpdateRequest request = updateRequest(submitted);
+            final AccountUpdateRequest request = updateRequest(SEALED_SNAPSHOT);
 
             controller.updateAccount(request, "true", principal);
 
             final ArgumentCaptor<AccountUpdateRequest> relayed =
                     ArgumentCaptor.forClass(AccountUpdateRequest.class);
-            verify(accountUpdateService).updateAccount(relayed.capture());
+            verify(accountUpdateService).updateAccount(relayed.capture(), eq(SUBJECT));
             assertThat(relayed.getValue()).isSameAs(request);
-            assertThat(relayed.getValue().getOldDetails()).isSameAs(submitted);
-            assertThat(relayed.getValue().getOldDetails().getSsn()).isEqualTo(SSN);
-            assertThat(relayed.getValue().getOldDetails().getDateOfBirth()).isEqualTo("19800115");
+            assertThat(relayed.getValue().getSnapshot()).isEqualTo(SEALED_SNAPSHOT);
         }
 
         /**
-         * An absent group relays null, which the service reports as a validation failure naming
-         * {@code oldDetails}. The controller does not fabricate one and does not pre-empt the service's own
-         * outcome.
+         * No readable group is bound from the body, whatever the caller sends. The submitted request reaches
+         * the service with {@code getOldDetails()} null, so the only group the comparison can ever see is one
+         * the service opened for itself.
          */
         @Test
-        @DisplayName("an absent group relays null rather than a fabricated value")
-        void anAbsentGroupRelaysNull() {
-            when(accountUpdateService.updateAccount(any()))
+        @DisplayName("no readable snapshot group is bound from the body")
+        void noReadableGroupIsBoundFromTheBody() {
+            when(accountUpdateService.updateAccount(any(), eq(SUBJECT)))
+                    .thenReturn(updateResult(
+                            AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
+
+            controller.updateAccount(updateRequest(SEALED_SNAPSHOT), "true", principal);
+
+            final ArgumentCaptor<AccountUpdateRequest> relayed =
+                    ArgumentCaptor.forClass(AccountUpdateRequest.class);
+            verify(accountUpdateService).updateAccount(relayed.capture(), eq(SUBJECT));
+            assertThat(relayed.getValue().getOldDetails())
+                    .as("the group is server-side only; a caller cannot supply the comparison's operand")
+                    .isNull();
+        }
+
+        /**
+         * An absent sealed member relays null, which the service reports as an unmet precondition. The
+         * controller does not fabricate one and does not pre-empt the service's own outcome.
+         */
+        @Test
+        @DisplayName("an absent sealed member relays null rather than a fabricated value")
+        void anAbsentSnapshotRelaysNull() {
+            when(accountUpdateService.updateAccount(any(), eq(SUBJECT)))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
 
@@ -489,8 +554,8 @@ class AccountControllerTest {
 
             final ArgumentCaptor<AccountUpdateRequest> relayed =
                     ArgumentCaptor.forClass(AccountUpdateRequest.class);
-            verify(accountUpdateService).updateAccount(relayed.capture());
-            assertThat(relayed.getValue().getOldDetails()).isNull();
+            verify(accountUpdateService).updateAccount(relayed.capture(), eq(SUBJECT));
+            assertThat(relayed.getValue().getSnapshot()).isNull();
         }
     }
 

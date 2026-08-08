@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Boot Service Bean (Java 25)
  * Function    : List credit cards, filtered by account and card number.
- * Source      : app/cbl/COCRDLIC.cbl (1,459 lines, 42 paragraphs) @ 7756d89
+ * Source      : app/cbl/COCRDLIC.cbl (1,459 lines, 39 own / 41 mapped paragraph labels) @ 7756d89
  ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -45,7 +45,7 @@ import com.cardemo.repository.CardRepository;
 
 /**
  * Paged credit-card listing, migrated one-to-one from the frozen COBOL program
- * {@code app/cbl/COCRDLIC.cbl} (1,459 lines, 42 paragraphs) at traceability anchor {@code 7756d89}.
+ * {@code app/cbl/COCRDLIC.cbl} (1,459 lines, 39 own / 41 mapped paragraph labels) at traceability anchor {@code 7756d89}.
  *
  * <h2>1. What this service does</h2> <p>Reproduces CICS transaction {@code CCLI}, defined at
  * {@code app/csd/CARDDEMO.CSD:357-358} as {@code DEFINE TRANSACTION(CCLI) ... PROGRAM(COCRDLIC)}. It browses the card
@@ -249,7 +249,7 @@ import com.cardemo.repository.CardRepository;
  *       so a following page-down starts at that key and, under {@code GTEQ}, redisplays the page
  *       just left including its first row. Off-by-one preserved.</li>
  *   <li>On the outer end-of-file path the last keys are saved from the stale
- *       record buffer, which still holds the previously read record ({@code :1236-1237}). Preserved;
+ *       record buffer, which still holds the record read before it ({@code :1236-1237}). Preserved;
  *       where no record was ever read the keys are left untouched, because the source would copy an
  *       uninitialised buffer that a fresh CICS task presents as low values.</li>
  *   <li>{@code CRDSTP1I} is absent from {@code app/cpy-bms/COCRDLI.CPY}: row
@@ -368,12 +368,10 @@ public class CardListService {
     private static final int SCREEN_ROW_COUNT = 7;
 
 
-    // ----------------------------------------------------------------------------------------
     // WS-CONSTANTS - app/cbl/COCRDLIC.cbl:176-217. WS-MAX-SCREEN-LINES is deliberately absent:
     // it is bound from configuration instead. The four literals the source declares but never
     // moves are documented in the class Javadoc rather than declared here, so that no constant in
     // this file is dead.
-    // ----------------------------------------------------------------------------------------
 
     /** {@code LIT-THISPGM PIC X(8) VALUE 'COCRDLIC'} - app/cbl/COCRDLIC.cbl:179-180. */
     private static final String LIT_THISPGM = "COCRDLIC";
@@ -419,11 +417,9 @@ public class CardListService {
      */
     private static final String LIT_CARD_FILE = "CARDDAT ";
 
-    // ----------------------------------------------------------------------------------------
     // Message literals. Each 88-level condition name in the source is a value test on the message
     // field itself (WS-INFO-MSG at :112-116, WS-ERROR-MSG at :117-126), so the Java transcription
     // tests the message against the same literal rather than carrying a parallel boolean.
-    // ----------------------------------------------------------------------------------------
 
     /** {@code 88 WS-INFORM-REC-ACTIONS} - app/cbl/COCRDLIC.cbl:115-116. */
     private static final String MSG_INFORM_REC_ACTIONS = "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD";
@@ -457,12 +453,10 @@ public class CardListService {
     /** Inline literal - app/cbl/COCRDLIC.cbl:908-909. Reachable only via the two-press latch. */
     private static final String MSG_NO_MORE_PAGES = "NO MORE PAGES TO DISPLAY";
 
-    // ----------------------------------------------------------------------------------------
     // WS-FILE-ERROR-MESSAGE - app/cbl/COCRDLIC.cbl:153-171. Eighty bytes of fixed layout moved
     // into the 75-byte WS-ERROR-MSG, so the final FILLER X(5) that carries no VALUE clause is
     // unobservable. The leading filler is 'File Error:' with no trailing space, which is unique to
     // this program; no formatter is shared with COCRDSLC or COCRDUPC.
-    // ----------------------------------------------------------------------------------------
 
     /** {@code FILLER PIC X(12) VALUE 'File Error:'} - app/cbl/COCRDLIC.cbl:154-155. */
     private static final String FILE_ERROR_PREFIX = "File Error:";
@@ -504,10 +498,8 @@ public class CardListService {
     /** Placeholder for {@code WS-REAS-CD}, which no CICS reason code is available to supply. */
     private static final String RESP2_NONE = "0";
 
-    // ----------------------------------------------------------------------------------------
     // Field widths taken from the BMS symbolic map and the record copybook. These are field
     // contracts, entirely distinct from the page-size parity contract.
-    // ----------------------------------------------------------------------------------------
 
     /** {@code ACCTSIDI PIC X(11)} - app/cpy-bms/COCRDLI.CPY:66, matching {@code CARD-ACCT-ID PIC 9(11)}. */
     private static final int ACCOUNT_FILTER_WIDTH = 11;
@@ -544,10 +536,8 @@ public class CardListService {
     /** The space byte {@code INITIALIZE} leaves in {@code WS-CA-NEXT-PAGE-IND}, matching neither 88. */
     private static final char CA_NEXT_PAGE_UNSET = ' ';
 
-    // ----------------------------------------------------------------------------------------
     // CCARD-AID values - app/cpy/CVCRD01Y.cpy. Resolved from the raw attention identifier by
     // YYYY-STORE-PFKEY, copied in at app/cbl/COCRDLIC.cbl:1416.
-    // ----------------------------------------------------------------------------------------
 
     /** {@code 88 CCARD-AID-ENTER VALUE 'ENTER'} - app/cpy/CVCRD01Y.cpy. */
     private static final String AID_ENTER = "ENTER";
@@ -579,9 +569,7 @@ public class CardListService {
     /** Number of function keys the {@code CCARD-AID} family models - {@code PFK01} through {@code PFK12}. */
     private static final int FUNCTION_KEY_FOLD = 12;
 
-    // ----------------------------------------------------------------------------------------
     // Selection codes - app/cbl/COCRDLIC.cbl:77-82.
-    // ----------------------------------------------------------------------------------------
 
     /** {@code 88 VIEW-REQUESTED-ON VALUE 'S'} - app/cbl/COCRDLIC.cbl:78. */
     private static final String SELECT_VIEW = "S";
@@ -604,7 +592,6 @@ public class CardListService {
     /** Screen title two, {@code CCDA-TITLE02} from app/cpy/COTTL01Y.cpy - moved at :648. */
     private static final String CCDA_TITLE02 = "CardDemo";
 
-    // ----------------------------------------------------------------------------------------
     // Filter-flag states - app/cbl/COCRDLIC.cbl:61-68. The source declares WS-EDIT-ACCT-FLAG at :61
     // and WS-EDIT-CARD-FLAG at :65, each a PIC X(1) carrying the same three 88-level condition names.
     // The three byte values below are the source's own, not invented ones. They are transcribed as
@@ -614,7 +601,6 @@ public class CardListService {
     // the initialised state IS the blank state. That is what makes the optimistic default at :1004
     // and :1039 consistent, and it is why a request that never reaches the edit paragraphs - a fresh
     // entry from the menu - browses unfiltered.
-    // ----------------------------------------------------------------------------------------
 
     /** {@code 88 FLG-ACCTFILTER-BLANK VALUE ' '} - :64; the card twin at :68. */
     private static final char FILTER_BLANK = ' ';
@@ -625,10 +611,8 @@ public class CardListService {
     /** {@code 88 FLG-ACCTFILTER-NOT-OK VALUE '0'} - :62; the card twin at :66. */
     private static final char FILTER_NOT_OK = '0';
 
-    // ----------------------------------------------------------------------------------------
     // Field identities. These name the offending input on a validation failure and the field the
     // cursor is placed on; they never carry a field value.
-    // ----------------------------------------------------------------------------------------
 
     /** The account filter's field name, reported on a validation failure raised at :1017-1025. */
     private static final String FIELD_ACCOUNT_ID = "accountId";
@@ -754,11 +738,9 @@ public class CardListService {
         return result;
     }
 
-    // ============================================================================================
     // PROCEDURE DIVISION - app/cbl/COCRDLIC.cbl:297 onward. One private method per Area-A label,
     // in source order. Thirty-nine in-file labels plus the two contributed by
     // COPY 'CSSTRPFY' at :1416.
-    // ============================================================================================
 
     /**
      * Decides what to do with the received screen and dispatches accordingly.
@@ -2173,7 +2155,7 @@ public class CardListService {
         state.caNextPageIndicator = CA_NEXT_PAGE_NOT_EXISTS;
 
         // MOVE CARD-ACCT-ID / CARD-NUM TO the LAST key - :1236-1237. Read from the record buffer,
-        // which end of file leaves holding the previously read record. When nothing was ever read the
+        // which end of file leaves holding the record read before it. When nothing was ever read the
         // buffer is empty and the keys stay unset, which is the faithful rendering of an untouched
         // buffer without inventing byte content for it. Preserved.
         state.caLastCardAccountId = accountIdOf(state.cardRecord);
@@ -2471,7 +2453,6 @@ public class CardListService {
         // EXIT - app/cpy/CSSTRPFY.cpy:81.
     }
 
-    // ============================================================================================
     // RETAINED UNREACHABLE PARAGRAPHS
     //
     // An authoritative census over every Area-A label in app/cbl/COCRDLIC.cbl, checking for any
@@ -2483,7 +2464,6 @@ public class CardListService {
     // The bodies stay empty on purpose. Elaborating them would multiply uncoverable lines against the
     // 80% JaCoCo line gate, and no JaCoCo exclusion is permitted for this class or package. The
     // Javadoc carries the fidelity; the body carries the no-op.
-    // ============================================================================================
 
     /**
      * {@code SEND-PLAIN-TEXT.} - <b>intentional no-op: unreachable, retained for control-flow parity.</b>
@@ -2541,7 +2521,6 @@ public class CardListService {
     private void sendLongTextExit() {
     }
 
-    // ============================================================================================
     // BROWSE PRIMITIVES
     //
     // These render the four VSAM browse verbs the program issues against the CARDDAT base cluster:
@@ -2550,7 +2529,6 @@ public class CardListService {
     //
     // Only the mandated finder is used - CardRepository.findAllByOrderByCardNumberAsc(Pageable) - and
     // no method is added to that interface, no query string is built and no criteria API is touched.
-    // ============================================================================================
 
     /**
      * Renders {@code EXEC CICS STARTBR ... GTEQ}: positions the browse at the first card whose number
@@ -2857,7 +2835,6 @@ public class CardListService {
                 state.fileErrorCause);
     }
 
-    // ============================================================================================
     // FIXED-WIDTH AND CONDITION-NAME PRIMITIVES
     //
     // COBOL moves are width-driven, and the browse depends on that: a partially typed filter arrives
@@ -2868,7 +2845,6 @@ public class CardListService {
     // consulted: this program performs no case folding of any kind, so 88 SELECT-OK VALUES 'S','U' at
     // :78-79 genuinely rejects a lowercase code, which then falls to WHEN OTHER at :1108 and reports
     // INVALID ACTION CODE. Upper-casing anything here would break that parity.
-    // ============================================================================================
 
     /**
      * Renders {@code MOVE} into an alphanumeric {@code PIC X(n)}: left justified, space filled on the
@@ -3147,7 +3123,6 @@ public class CardListService {
     }
 
 
-    // ============================================================================================
     // REQUEST, RESULT AND PER-REQUEST WORKING STORAGE
     //
     // Three nested types, and deliberately no more: this package is exactly three .java files, so no
@@ -3160,7 +3135,6 @@ public class CardListService {
     // file exercises, inflating the class against the 80% JaCoCo line gate for no behavioural gain.
     // Serialization reads public fields directly, so the JSON contract is unaffected. The tradeoff is
     // recorded here because Rule 1 Clause A asks for tradeoffs to be justified rather than assumed.
-    // ============================================================================================
 
     /**
      * One turn of the card list screen: the received map plus the paging state the client echoes back.

@@ -60,7 +60,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>What this proves</h2>
  *
- * <p><strong>Finding m-02, severity Minor.</strong> Six classes each carried a private prefix validator and no
+ * <p><strong>Finding m-02, severity Medium.</strong> Six classes each carried a private prefix validator and no
  * two agreed. The weakest accepted a leading separator, a doubled separator, a {@code ..} segment, a control
  * character and interior whitespace, and five of the six silently rewrote the configured value so that the
  * spelling in the profile and the spelling in force could differ with nothing reporting it. No pairwise

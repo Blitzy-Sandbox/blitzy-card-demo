@@ -11,8 +11,8 @@
  *               case asymmetry and its asymmetric rollback. This is the
  *               largest program in the corpus and the one whose obvious
  *               mechanical translation is wrong.
- * Source      : app/cbl/COACTVWC.cbl (941 lines, 38 paragraphs) @ 7756d89
- * Source      : app/cbl/COACTUPC.cbl (4,236 lines, 88 paragraphs) @ 7756d89
+ * Source      : app/cbl/COACTVWC.cbl (941 lines, 35 own / 37 mapped paragraph labels) @ 7756d89
+ * Source      : app/cbl/COACTUPC.cbl (4,236 lines, 85 own / 87 mapped paragraph labels) @ 7756d89
  * Source      : app/cbl/COACTUPC.cbl:L3888-L4105 (9600-WRITE-PROCESSING, the seven steps in fixed order) @ 7756d89
  * Source      : app/cbl/COACTUPC.cbl:L669-L756 (9700-CHECK-CHANGE-IN-REC, twelve account predicates plus the customer
  *               set) @ 7756d89
@@ -50,7 +50,7 @@
  *       cross-reference, account and customer lookup chain, in that order, with typed exceptions replacing the
  *       source's response-code branching.</li>
  *   <li>{@link com.cardemo.service.account.AccountUpdateService} - {@code app/cbl/COACTUPC.cbl}, 4,236 lines
- *       across 88 paragraphs. A dual-dataset write with change detection.</li>
+ *       across 85 own paragraph labels, 87 mapped. A dual-dataset write with change detection.</li>
  *   </ul>
  *
  * <h3>The seven-step write sequence, whose order is the behaviour</h3>
@@ -112,7 +112,7 @@
  * <p>{@code app/cbl/COACTUPC.cbl:L517-L523} declares four outcome flags - account lock failure, customer lock
  * failure, data changed before update, and locked-but-update-failed - and {@code :L667} sets a fifth marker
  * specifically when the account lock fails. The legacy screen showed which had occurred, so collapsing them into
- * one conflict loses information the operator used to have.
+ * one conflict loses information the legacy screen made available to the operator.
  *
  * <h2>Key configuration and defaults</h2>
  *

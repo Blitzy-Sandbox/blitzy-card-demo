@@ -976,7 +976,7 @@ class ValidationLookupServiceTest {
         void aLoadFailureLeavesTheAbendCodeUnset() {
             assertThat(loadFailureFor("{\"VALID-PHONE-AREA-CODE\": []}").getAbendCode())
                     .as("app/cpy/CSMSG02Y.cpy declares ABEND-CODE PIC X(4) and the load path supplies none, "
-                            + "so it stays unset; app/cbl/CBTRN02C.cbl:L707-L710 moves 999 into ABCODE "
+                            + "so it stays unset; app/cbl/CBTRN02C.cbl:L707-L711 moves 999 into ABCODE "
                             + "inside 9999-ABEND-PROGRAM, which is a different field. Observed rather than "
                             + "assumed: FatalProcessingException substitutes a default for a null message "
                             + "only, never for a null code")

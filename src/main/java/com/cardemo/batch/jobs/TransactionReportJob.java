@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Batch Job Configuration
  * Function    : Transaction report — backup, card-ordered filtered sort and paginated 133-byte report emission.
- * Source      : app/jcl/TRANREPT.jcl + app/proc/TRANREPT.prc + app/proc/REPROC.prc + app/ctl/REPROCT.ctl + app/cbl/CBTRN03C.cbl (649 lines, 27 paragraphs) @ 7756d89
+ * Source      : app/jcl/TRANREPT.jcl + app/proc/TRANREPT.prc + app/proc/REPROC.prc + app/ctl/REPROCT.ctl + app/cbl/CBTRN03C.cbl (649 lines, 26 own paragraph labels) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -116,13 +116,13 @@ import software.amazon.awssdk.services.s3.S3Client;
  * {@code @StepScope}, so the container publishes no definition of either and there is exactly one ownership
  * model per type.
  *
- * <p><b>Finding F-008, severity Medium, remediated here.</b> An earlier revision annotated both classes as
+ * <p><b>Finding F-008, severity Medium.</b> Annotating both classes as
  * {@code @Component @StepScope} with {@code @Value} bindings on their constructors <em>while</em> this class
- * built them with {@code new}. The bean definitions were never resolved by any production path, so the
- * annotations described a container lifecycle that never ran and a property binding that never took effect -
- * two ownership models for one type, with the unused one the more prominent in the source. The annotations
- * and the {@code @Value} expressions are removed and this class is the declared owner, for three reasons
- * that are properties of this job rather than preferences:
+ * builds them with {@code new} publishes bean definitions no production path resolves, so the
+ * annotations would describe a container lifecycle that never runs and a property binding that never takes
+ * effect - two ownership models for one type, with the unused one the more prominent in the source. Neither
+ * annotation nor {@code @Value} expression is declared on either class, and this class is the declared owner,
+ * for three reasons that are properties of this job rather than preferences:
  * <ul>
  *   <li><b>One scoped definition could not have served both reader call sites.</b> STEP01R needs the
  *       {@code repository} substrate over the {@code TRANSACT.BKUP} prefix with no promoted key, and STEP10R
@@ -241,9 +241,10 @@ import software.amazon.awssdk.services.s3.S3Client;
  *       one spelling and is deliberate: {@code DailyTransactionPostingJob},
  *       {@code InterestCalculationJob}, {@code CombineTransactionsJob} and
  *       {@code StatementGenerationJob} all bind {@code carddemo.batch.jobs.<id>.name}, and the profile
- *       declares the registry under that namespace. An earlier revision of this class bound
- *       {@code carddemo.batch.tranrept.name} instead, so the declared profile key was read by nothing
- *       while the key this class actually read appeared in no profile - both halves of one drift, recorded as finding CFG-002.</li>
+ *       declares the registry under that namespace. Binding
+ *       {@code carddemo.batch.tranrept.name} instead would leave the declared profile key read by nothing
+ *       while the key this class actually reads appears in no profile - both halves of one drift, recorded as
+ *       finding CFG-002.</li>
  *   <li>{@code carddemo.batch.tranrept.chunk-size}: falls back to
  *       {@code carddemo.batch.chunk-size}, then 100. It bounds report-writer batches. The chunk-size
  *       namespace is deliberately {@code carddemo.batch.<id>.chunk-size} and not
@@ -297,10 +298,9 @@ import software.amazon.awssdk.services.s3.S3Client;
  * <p><strong>Not available:</strong> the source does not state whether an external object consumer expects
  * newline-delimited records, so this implementation preserves fixed blocks with no delimiter; no service-level
  * latency or throughput objective exists, so none is invented; and integration Gates 1, 4 and 8 require a
- * container runtime. {@code DECISION_LOG.md} is authored at the repository root and owed an entry for the
- * retention decision; that decision is recorded here and in the {@code application.yml} block that cites both
- * declarations, which is where it cannot drift from the value it explains. An earlier revision said the
- * register was absent from this clone and could not be created here; the first half is withdrawn.
+ * container runtime. The retention decision is held as {@code DL-CR-02} in {@code DECISION_LOG.md} at the
+ * repository root, and restated here and in the {@code application.yml} block that cites both declarations,
+ * which is where it cannot drift from the value it explains.
  */
 @Configuration("transactionReportJobConfiguration")
 public class TransactionReportJob {
@@ -1071,11 +1071,11 @@ public class TransactionReportJob {
      * {@code STEP10R}, {@code app/jcl/PRTCATBL.jcl:L43-L63}: read the generation back and print the edited
      * line, one record at a time.
      *
-     * <p><strong>Finding M-08, severity Major, RESOLVED here as well as in the sort step.</strong> This
-     * method used to read the whole {@code TCATBALF.BKUP(+1)} generation into a {@code List<byte[]>}, sort
-     * that list and build the entire report in one {@code StringBuilder}. The category-balance cluster has
-     * one row per account, type and category triple and is unbounded, so peak memory was the whole unload
-     * twice over. It now streams: one 50-byte record is read, rendered as its 40-byte line, written and
+     * <p><strong>Finding M-08, severity High, here as well as in the sort step.</strong> Reading the whole
+     * {@code TCATBALF.BKUP(+1)} generation into a {@code List<byte[]>}, sorting
+     * that list and building the entire report in one {@code StringBuilder} makes peak memory the whole unload
+     * twice over, and the category-balance cluster has one row per account, type and category triple and is
+     * unbounded. This streams instead: one 50-byte record is read, rendered as its 40-byte line, written and
      * discarded, so peak memory is one record regardless of cluster size.
      *
      * <p><b>The sort becomes an assertion, which is stronger than sorting.</b> {@code :L52} declares
@@ -1432,12 +1432,12 @@ public class TransactionReportJob {
     /**
      * Verifies {@code SORTIN} without retaining it, and proves it holds the population the ordered scan reads.
      *
-     * <p><b>Finding F-012, severity High, remediated by this method and by
-     * {@link #writeSortedGeneration(String, String, String)}.</b> This step used to read the whole generation
-     * into a {@code List<byte[]>}, drop the non-matching entries with {@code removeIf} and sort the remainder
-     * in heap. At 350 bytes per element plus per-object overhead that is roughly 370 bytes of live heap per
-     * transaction with no bound of any kind, and the peak arrives before the first byte of output is written.
-     * The replacement retains one page of rows.
+     * <p><b>Finding F-012, severity High, addressed by this method and by
+     * {@link #writeSortedGeneration(String, String, String)}.</b> Reading the whole generation
+     * into a {@code List<byte[]>}, dropping the non-matching entries with {@code removeIf} and sorting the
+     * remainder in heap costs, at 350 bytes per element plus per-object overhead, roughly 370 bytes of live
+     * heap per transaction with no bound of any kind - and the peak arrives before the first byte of output is
+     * written. This retains one page of rows instead.
      *
      * <p><b>Why reading the generation for its bytes was replaceable at all.</b> STEP01R writes the generation
      * by copying the transaction relation record for record: {@code app/ctl/REPROCT.ctl:L15} is
@@ -1535,13 +1535,12 @@ public class TransactionReportJob {
 
     // SORT FIELDS=(TRAN-CARD-NUM,A), app/proc/TRANREPT.prc:L44, IS NOT IMPLEMENTED AS A COMPARATOR HERE.
     //
-    // A private sortFieldsCardNumberAscending(byte[], byte[]) comparator stood here and has been REMOVED
-    // under finding F-012. It was reachable only from the heap sort that finding removed, so once the
-    // ordering moved into the indexed query it had zero callers and zero test references, and Rule 1 Clause B
-    // forbids dead code. It is NOT one of the three retained no-ops that AAP section 0.8.2 protects -
-    // 1400-COMPUTE-FEES, the redundant index assignment in CBSTM03A and the never-consumed reject code 109 -
-    // so the parity exception recorded there does not extend to it and deleting it is required rather than
-    // permitted.
+    // No private sortFieldsCardNumberAscending(byte[], byte[]) comparator exists here, and none may be
+    // added. Rule 1 Clause B forbids dead code, and such a comparator would have zero callers and zero test
+    // references once the ordering is declared on the query. The parity exception of AAP section 0.8.2 does
+    // not reach it either: DL-CR-01's register is keyed by identifier and locator and admits an artefact only
+    // when the frozen source genuinely reaches a no-op or an unobservable value, which a Java comparator that
+    // nothing calls does not. Deleting it is therefore required rather than merely permitted.
     //
     // The ordering itself is NOT lost, and this is the important part: it is declared as
     // "order by t.cardNumber asc, t.transactionId asc" on
@@ -2620,7 +2619,7 @@ public class TransactionReportJob {
     /**
      * Validates an object-key prefix without silently normalising it.
      *
-     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This validator was the strict one the review
+     * <p><strong>Finding m-02, severity Medium, RESOLVED.</strong> This validator was the strict one the review
      * named as the benchmark, and five sibling classes each carried a weaker variant. The grammar it applied is
      * now published once as {@link GenerationPrefixContract#requireRelativePrefix(String, String)} and all six
      * delegate to it, so the rule is defined in one place and cannot diverge again. The shared form adds three
@@ -2829,9 +2828,8 @@ public class TransactionReportJob {
      */
     private final class TransactionReportParametersValidator implements JobParametersValidator {
 
-        /** Stateless constructor. */
+        /** Narrows the implicit constructor: only the enclosing job builds this. */
         private TransactionReportParametersValidator() {
-            // Validation delegates to immutable outer collaborators.
         }
 
         /** {@inheritDoc} */
@@ -2858,9 +2856,8 @@ public class TransactionReportJob {
      */
     private final class TransactionReportJobListener implements JobExecutionListener {
 
-        /** Stateless constructor; the displaced context lives on the thread that established it. */
+        /** Narrows the implicit constructor; the displaced context lives on the thread that raised it. */
         private TransactionReportJobListener() {
-            // No mutable listener state.
         }
 
         /**
@@ -2927,9 +2924,8 @@ public class TransactionReportJob {
      */
     private static final class TransactionReportReturnCodeDecider implements JobExecutionDecider {
 
-        /** Stateless constructor. */
+        /** Narrows the implicit constructor: only the enclosing job builds this. */
         private TransactionReportReturnCodeDecider() {
-            // Pure decision object.
         }
 
         /** {@inheritDoc} */
@@ -3035,22 +3031,22 @@ public class TransactionReportJob {
      */
     private static final class FixedWidthReportItemWriter implements ItemStreamWriter<ReportLines> {
 
-        /** Object storage supplied by the enclosing configuration. */
+        /** Injected rather than constructed, so the emulator endpoint override reaches this writer too. */
         private final S3Operations objectStorage;
 
-        /** FILE STATUS translator supplied by the enclosing configuration. */
+        /** Injected rather than constructed, so open, write and close report through one translation. */
         private final FileStatusMapper fileStatusMapper;
 
-        /** Destination bucket. */
+        /** Where {@code REPTFILE} of {@code app/jcl/TRANREPT.jcl} publishes, resolved once per step. */
         private final String outputBucket;
 
-        /** Concrete report-generation key. */
+        /** Fixed when the step opened, so a retry rewrites the same generation rather than adding one. */
         private final String objectKey;
 
-        /** Open object stream, scoped to one writer instance. */
+        /** Held open across the chunk boundary, and never shared: one stream per STEP10R execution. */
         private OutputStream output;
 
-        /** Number of 133-byte records successfully written. */
+        /** Republished to the step context on every update, so a restart diagnostic reports progress. */
         private long linesWritten;
 
         /**
@@ -3074,7 +3070,13 @@ public class TransactionReportJob {
             this.objectKey = Objects.requireNonNull(objectKey, "objectKey must not be null");
         }
 
-        /** Opens one unblocked report-generation object. */
+        /**
+         * Opens one unblocked report-generation object.
+         *
+         * @param executionContext the step's context. Nothing is resumed from it: a report generation is
+         *         written whole under a fresh key rather than appended to, so a restart re-opens rather
+         *         than continues
+         */
         @Override
         public void open(final ExecutionContext executionContext) {
             if (output != null) {
@@ -3128,7 +3130,12 @@ public class TransactionReportJob {
             }
         }
 
-        /** Publishes the current line count for restart diagnostics. */
+        /**
+         * Publishes the current line count for restart diagnostics.
+         *
+         * @param executionContext the context to publish into; a {@code null} context is tolerated and
+         *         publishes nothing
+         */
         @Override
         public void update(final ExecutionContext executionContext) {
             if (executionContext != null) {
@@ -3177,7 +3184,7 @@ public class TransactionReportJob {
             if (line.length() > REPORT_RECORD_LENGTH) {
                 throw fatal("REPORT LINE TOO LONG", "TRANREPT LINE EXCEEDS 133 CHARACTERS", null);
             }
-            // FINDING M-09, severity Major, RESOLVED. This loop used to admit every code point through 0xFF,
+            // FINDING M-09, severity High, RESOLVED. This loop used to admit every code point through 0xFF,
             // which let a carriage return, a line feed or any other control byte into a 133-byte record.
             // app/proc/TRANREPT.prc declares DCB=(LRECL=133,RECFM=FB) - fixed blocks with no delimiter - so
             // the object stays well formed and still parses by byte count, which is precisely what makes the

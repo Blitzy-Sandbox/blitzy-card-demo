@@ -5,7 +5,7 @@
  * Type        : Spring Batch ItemStreamReader (read-only verification step)
  * Function    : Read-only sequential scan of the card master, replacing the
  *               COBOL batch reader CBACT02C.
- * Source      : app/cbl/CBACT02C.cbl (178 lines, 6 paragraphs)
+ * Source      : app/cbl/CBACT02C.cbl (178 lines, 5 own paragraph labels)
  *               app/cpy/CVACT02Y.cpy (150-byte CARD-RECORD)
  *               app/catlg/LISTCAT.txt:L202 (KEYLEN 16 / AVGLRECL 150)
  *               app/jcl/READCARD.jcl (job that executes CBACT02C)
@@ -206,16 +206,15 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to run, build and test</h2>
  * The read-only verification {@code Step} that owns this reader is <strong>authored</strong>, and nothing
- * about the batch tier around it is outstanding. Two earlier revisions of this paragraph are withdrawn:
- * the first named {@code com.cardemo.config.BatchConfig} as the home of every {@code Job} and
- * {@code Step} and said {@code com.cardemo.batch.jobs} held one job, {@code InterestCalculationJob}; the
- * second said this reader's verification step and its launcher were still owed. Both exist:
+ * about the batch tier around it is outstanding. Both this reader's verification step and its launcher are
+ * declared, the launcher being the framework's own rather than a job of its own inside {@code com.cardemo.config.BatchConfig}:
  * {@link com.cardemo.config.BatchConfig#datasetVerificationReadCardStep} is the
  * Java counterpart of {@code app/jcl/READCARD.jcl}, and
  * {@link com.cardemo.config.BatchConfig#datasetVerificationJob} composes it with the
  * three sibling members as one operator submission, selectable by name through the framework's own
- * {@code spring.batch.job.name} property, which is the launch signal that survives after the
- * bespoke operator launcher was withdrawn. The step writes nothing: its sink reaches no relation, no object store and no
+ * {@code spring.batch.job.name} property, which is the launch signal - no
+ * bespoke operator launcher is declared, because one would launch from inside
+ * {@code SpringApplication.run}. The step writes nothing: its sink reaches no relation, no object store and no
  * queue, because {@code app/cbl/CBACT02C.cbl} performs {@code OPEN}, {@code READ} and {@code CLOSE} only.
  * {@code com.cardemo.batch.jobs} holds its six target jobs and <strong>each declares its own
  * {@code Step} beans</strong>, while {@code BatchConfig} owns the dataset bindings and the record
@@ -242,16 +241,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
  * warning category {@code javac} 25 publishes. Coverage is gated by JaCoCo at an eighty percent line floor
- * with no package excluded. <strong>Both test tiers now cover this class.</strong> An earlier revision of this
- * paragraph said neither was authored, that {@code unit/batch} held three classes none of which referenced this
- * reader, and that {@code integration/batch} held one abstract Testcontainers base with no concrete subclass
- * beneath it; every part of that is withdrawn. {@code src/test/java/com/cardemo/unit/batch} holds
- * <strong>36</strong> sources and covers the status renderer, the guard logic and the identifier-only
- * projection through {@code CardReaderTest}, {@code SequentialReaderContractTest},
- * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and {@code BatchLogHygieneTest}.
- * {@code src/test/java/com/cardemo/integration/batch} holds <strong>4</strong> sources - one abstract
- * Testcontainers base and three concrete classes that execute under Failsafe against PostgreSQL 16 and
- * LocalStack. This class still creates neither, because test sources are outside the scope of the package it
+ * with no package excluded. <strong>Both test tiers cover this class.</strong>
+ * {@code src/test/java/com/cardemo/unit/batch} covers the status renderer, the guard logic and the
+ * identifier-only projection through the reader's own test class, {@code SequentialReaderContractTest},
+ * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and {@code BatchLogHygieneTest}, and
+ * {@code src/test/java/com/cardemo/integration/batch} holds the abstract
+ * Testcontainers base and the concrete classes that execute under Failsafe against PostgreSQL 16 and
+ * LocalStack; re-measure either tier's size with a directory listing rather than quoting a figure. This class
+ * creates neither, because test sources are outside the scope of the package it
  * belongs to.
  *
  * <h2>Key configs and defaults</h2>
@@ -273,10 +270,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     {@code spring.jpa.open-in-view} is {@code false} and {@code spring.jpa.show-sql} is {@code false}; the
  *     schema is owned by the Flyway migrations, and no bind-parameter logging is enabled anywhere, which is
  *     what keeps the card-number primary key out of the log path entirely.</li>
- * <li>No AWS, bucket, queue or topic configuration is read by this reader, and no AWS client is injected, so
- *     it requests no cloud privilege whatever.</li>
- * <li>No transaction annotation is declared. See {@link #read()} for why a {@code readOnly} annotation here
- *     would be decorative rather than effective, and how read-only is guaranteed instead.</li>
+ * <li>No cloud privilege and no transaction annotation, both stated for all four verification readers in
+ *     {@code com.cardemo.batch.readers}' package documentation; {@link #read()} records how read-only is
+ *     guaranteed here.</li>
  * </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -399,12 +395,10 @@ public class CardReader implements ItemStreamReader<Card> {
      */
     private static final String ABEND_CULPRIT = "CBACT02C";
 
-    // ----------------------------------------------------------------------------------------------------
     // Legacy DISPLAY literals, reproduced byte for byte. Each is followed by its measured inner length so a
     // reviewer can confirm fidelity without opening the source. Rule 1 clause F: every assertion is cited.
     // All seven literals of the program are represented; there is no eighth, because DISPLAY CARD-RECORD at
     // :L78 emits a record rather than a literal and is covered by the deviation described above.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/CBACT02C.cbl:L71}, 38 characters. */
     private static final String START_OF_EXECUTION_MESSAGE = "START OF EXECUTION OF PROGRAM CBACT02C";
@@ -432,10 +426,8 @@ public class CardReader implements ItemStreamReader<Card> {
     /** {@code app/cbl/CBACT02C.cbl:L155}, 16 characters. */
     private static final String ABENDING_PROGRAM_MESSAGE = "ABENDING PROGRAM";
 
-    // ----------------------------------------------------------------------------------------------------
     // Execution-context keys for the restart cursor. Namespaced by simple class name so two readers in the
     // same step cannot collide.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Key under which the number of rows already emitted is checkpointed. */
     private static final String CONTEXT_KEY_RECORDS_READ = "CardReader.recordsRead";
@@ -463,10 +455,8 @@ public class CardReader implements ItemStreamReader<Card> {
     /** The character a COBOL {@code MOVE} into a numeric display item pads with on the left. */
     private static final char NUMERIC_PAD = '0';
 
-    // ----------------------------------------------------------------------------------------------------
     // File-status literals, derived from com.cardemo.model.enums.FileStatus rather than restated, so that the
     // single definition of each code stays single (Rule 1 clause C, avoid duplication).
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code '00'}: the status the source tests at {@code :L94}, {@code :L121} and {@code :L139}. */
     private static final String STATUS_SUCCESS = requireExactCode(FileStatus.SUCCESS);
@@ -491,9 +481,7 @@ public class CardReader implements ItemStreamReader<Card> {
     private static final String STATUS_PHYSICAL_IO_ERROR =
             String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_PAD;
 
-    // ----------------------------------------------------------------------------------------------------
     // Collaborators, injected through the constructor and never reassigned.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The persistence access point for the card master, replacing the {@code CARDFILE} VSAM cluster
@@ -526,11 +514,9 @@ public class CardReader implements ItemStreamReader<Card> {
     /** Rows fetched per round trip; validated at construction and never changed afterwards. */
     private final int pageSize;
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor state. Every field below is the Java counterpart of a WORKING-STORAGE item at
     // app/cbl/CBACT02C.cbl:L42-L67 and is therefore an INSTANCE field: never static, never shared. The step
     // scope gives each step execution its own instance.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01)} ({@code :L65}). Held as its literal {@code 'N'} or {@code 'Y'} value. */
     private String endOfFile = END_OF_FILE_NO;
@@ -599,9 +585,7 @@ public class CardReader implements ItemStreamReader<Card> {
         this.pageSize = requirePositivePageSize(pageSize);
     }
 
-    // ====================================================================================================
     // Mainline PROCEDURE DIVISION, app/cbl/CBACT02C.cbl:L70-L87, realised as the ItemStream lifecycle.
-    // ====================================================================================================
 
     /**
      * Opens the scan: emits the start-of-execution banner and performs {@code 0000-CARDFILE-OPEN},
@@ -816,9 +800,7 @@ public class CardReader implements ItemStreamReader<Card> {
         return recordsRead;
     }
 
-    // ====================================================================================================
     // 1000-CARDFILE-GET-NEXT, app/cbl/CBACT02C.cbl:L92-L116.
-    // ====================================================================================================
 
     /**
      * Reads the next record and applies the three-way sequential-read guard of
@@ -857,7 +839,6 @@ public class CardReader implements ItemStreamReader<Card> {
         // nested test and its documentation cites this very paragraph (Rule 1 clause C).
         applResult = fileStatusMapper.applResultForSequentialRead(ioStatus);
 
-        // ------------------------------------------------------------------------------------------------
         // PRESERVED QUIRK, parity structure 2. The next line of the source, inside the '00' branch and
         // immediately after MOVE 0 TO APPL-RESULT, is:
         //
@@ -872,7 +853,6 @@ public class CardReader implements ItemStreamReader<Card> {
         //   3. This is the position CBACT01C fills with PERFORM 1100-DISPLAY-ACCT-RECORD (:L96 of that
         //      program). CBACT02C has no 1100- paragraph, so there is nothing to perform and no empty
         //      branch is introduced here to stand in for one.
-        // ------------------------------------------------------------------------------------------------
 
         // IF APPL-AOK CONTINUE  (:L104-L105)
         if (applResult == FileStatusMapper.APPL_AOK) {
@@ -990,9 +970,7 @@ public class CardReader implements ItemStreamReader<Card> {
         return STATUS_SUCCESS;
     }
 
-    // ====================================================================================================
     // 0000-CARDFILE-OPEN, app/cbl/CBACT02C.cbl:L118-L134.
-    // ====================================================================================================
 
     /**
      * Opens the card master, reproducing {@code 0000-CARDFILE-OPEN}
@@ -1066,9 +1044,7 @@ public class CardReader implements ItemStreamReader<Card> {
         // EXIT.  (:L134)
     }
 
-    // ====================================================================================================
     // 9000-CARDFILE-CLOSE, app/cbl/CBACT02C.cbl:L136-L152.
-    // ====================================================================================================
 
     /**
      * Closes the card master, reproducing {@code 9000-CARDFILE-CLOSE}
@@ -1133,9 +1109,7 @@ public class CardReader implements ItemStreamReader<Card> {
         // EXIT.  (:L152)
     }
 
-    // ====================================================================================================
     // 9999-ABEND-PROGRAM, app/cbl/CBACT02C.cbl:L154-L158.
-    // ====================================================================================================
 
     /**
      * Abends the step, reproducing {@code 9999-ABEND-PROGRAM} ({@code app/cbl/CBACT02C.cbl:L154-L158}).
@@ -1187,9 +1161,7 @@ public class CardReader implements ItemStreamReader<Card> {
                 cause);
     }
 
-    // ====================================================================================================
     // 9910-DISPLAY-IO-STATUS, app/cbl/CBACT02C.cbl:L161-L174.
-    // ====================================================================================================
 
     /**
      * Renders a file status as the legacy diagnostic line, reproducing {@code 9910-DISPLAY-IO-STATUS}
@@ -1226,11 +1198,9 @@ public class CardReader implements ItemStreamReader<Card> {
         return fileStatusMapper.displayIoStatus(fileStatus);
     }
 
-    // ====================================================================================================
     // Restart support and construction-time validation. No legacy counterpart: the mainline at
     // app/cbl/CBACT02C.cbl:L70-L87 always scans from the first record, because a JES2 job restart re-ran the
     // step from the top. Restartability is additive, and it changes no emitted value.
-    // ====================================================================================================
 
     /**
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead

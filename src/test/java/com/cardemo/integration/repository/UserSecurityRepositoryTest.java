@@ -133,11 +133,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p>There is no {@code usrsec.txt} fixture. The ten records exist only as inline {@code SYSUT1 DD *} card
  * images at {@code app/jcl/DUSRSECJ.jcl:35-44}, fed through {@code IEBGENER} into the cluster defined at
- * {@code :62-71}. Five are administrators of type {@code A} - {@code ADMIN001} MARGARET GOLD,
- * {@code ADMIN002} RUSSELL RUSSELL, {@code ADMIN003} RAYMOND WHITMORE, {@code ADMIN004} EMMANUEL CASGRAIN,
- * {@code ADMIN005} GRANVILLE LACHAPELLE - and five are standard users of type {@code U} - {@code USER0001}
- * LAWRENCE THOMAS, {@code USER0002} AJITH KUMAR, {@code USER0003} LAURITZ ALME, {@code USER0004} AVERARDO
- * MAZZI, {@code USER0005} LEE TING.
+ * {@code :62-71}. Five carry type {@code A} under identifiers {@code ADMIN001} to {@code ADMIN005}, and five
+ * carry type {@code U} under identifiers {@code USER0001} to {@code USER0005}. Each record also carries a
+ * first and last name in {@code SEC-USR-FNAME PIC X(20)} and {@code SEC-USR-LNAME PIC X(20)}; those personal
+ * names are read from the frozen card images rather than reproduced here.
  *
  * <p><strong>All ten carry one shared eight-character literal plaintext value in {@code SEC-USR-PWD},
  * bytes 49-56 of the frozen card images. That value appears nowhere in this file, in any form.</strong> It
@@ -313,10 +312,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * because each would otherwise become a false oracle.
  *
  * <ol>
- *   <li><p><strong>The end-to-end boundary parity baseline is Not available.</strong> No captured legacy
- *       output exists anywhere in this repository; searches across expected, baseline, golden,
- *       system-output and {@code .out} name patterns, and across the reject, report, statement and HTML
- *       dataset names, return only dataset <em>definition</em> members and no captured data. What is needed
+ *   <li><p><strong>The end-to-end boundary parity expectation exists; what is Not available is a captured z/OS run to
+ *       corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own output --
+ *       {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected}, {@code DALYREJS.expected}
+ *       and {@code CBTRN02C.sysout.expected} -- derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and
+ *       running it against the frozen fixtures, with the harness and the derivation recorded beside them in
+ *       {@code PROVENANCE.properties}. What is needed
  *       is a captured 430-byte reject dataset from a real posting run at a known input state, together with
  *       the resulting transaction, account and category-balance images. Until that exists: create no
  *       baseline file, fabricate no expected bytes, and do not generate a baseline by running this

@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : AccountUpdateServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
@@ -16,7 +16,7 @@
  *               two-word "some one" at :521-522 and the four dots at :527-528,
  *               and the CICS ONLINE abend code '9999' at :4223 which is NOT
  *               the batch 999 / RC 12 contract.
- * Source      : app/cbl/COACTUPC.cbl      (4,236 lines, 88 paragraphs, CRLF)
+ * Source      : app/cbl/COACTUPC.cbl      (4,236 lines, 85 own / 87 mapped paragraph labels, CRLF)
  *               app/cpy/CSMSG02Y.cpy      (CABENDD.CPY ABEND-DATA, 134 bytes)
  *               app/cpy/CVACT01Y.cpy      (ACCOUNT-RECORD, RECLN 300, key 11)
  *               app/cpy/CVCUS01Y.cpy      (CUSTOMER-RECORD, RECLN 500, PII)
@@ -25,7 +25,7 @@
  *               app/cbl/CBACT04C.cbl:1-21 (this banner's canonical form)
  *               CONTRIBUTING.md:33-34     (repository hygiene)
  *               NOTICE                    (copyright line) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -40,7 +40,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -75,6 +75,7 @@ import com.cardemo.model.entity.Customer;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
+import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.account.AccountUpdateService;
 import com.cardemo.service.account.AccountUpdateService.AccountUpdateResult;
 import com.cardemo.service.account.AccountUpdateService.ChangeAction;
@@ -84,6 +85,7 @@ import com.cardemo.service.account.AccountUpdateService.ResponseKind;
 import com.cardemo.service.shared.DateValidationService;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.service.shared.ValidationLookupService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Method;
@@ -116,7 +118,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Surefire unit tier for {@link AccountUpdateService}, the Java replacement for
- * {@code app/cbl/COACTUPC.cbl} - at 4,236 lines and 88 paragraphs the largest program in the corpus
+ * {@code app/cbl/COACTUPC.cbl} - at 4,236 lines and 85 own paragraph labels the largest program in the corpus
  * and the one with the subtlest contract.
  *
  * <h2>1. What it does</h2>
@@ -297,9 +299,7 @@ import org.springframework.transaction.annotation.Transactional;
 @DisplayName("AccountUpdateService - COACTUPC / transaction CAUP")
 final class AccountUpdateServiceTest {
 
-    // ---------------------------------------------------------------------------------------------
     // Attention identifiers, exactly as app/cpy/CSSTRPFY.cpy names them for EIBAID.
-    // ---------------------------------------------------------------------------------------------
 
     /** {@code DFHENTER}, the Enter key; {@code :906} accepts it unconditionally. */
     private static final String AID_ENTER = "DFHENTER";
@@ -310,10 +310,8 @@ final class AccountUpdateServiceTest {
     /** {@code DFHPF12}, which diverts to the fall-through pair at {@code :2568}/{@code :2572}. */
     private static final String AID_PFK12 = "DFHPF12";
 
-    // ---------------------------------------------------------------------------------------------
     // File-control names and statuses. The two file names carry the trailing blank of the COBOL
     // literals LIT-ACCTFILENAME and LIT-CUSTFILENAME, which are PIC X(8) declarations.
-    // ---------------------------------------------------------------------------------------------
 
     /** {@code LIT-ACCTFILENAME}: CICS FILE {@code ACCTDAT} padded to eight bytes. */
     private static final String ACCOUNT_FILE = "ACCTDAT ";
@@ -327,10 +325,8 @@ final class AccountUpdateServiceTest {
     /** {@code FILE STATUS '23'} / {@code DFHRESP(NOTFND)}, the status both lock guards report. */
     private static final String IO_STATUS_NOT_FOUND = "23";
 
-    // ---------------------------------------------------------------------------------------------
     // The twelve outcome literals of :505-528. Each is an 88-level on WS-RETURN-MSG PIC X(75), so
     // asserting the literal asserts the condition name.
-    // ---------------------------------------------------------------------------------------------
 
     /** {@code :505-506}. */
     private static final String CREDIT_LIMIT_MUST_BE_SUPPLIED = "Credit Limit must be supplied";
@@ -368,9 +364,7 @@ final class AccountUpdateServiceTest {
     /** {@code :527-528}. Note the <strong>four</strong> dots. */
     private static final String CODING_TO_BE_DONE = "Looks Good.... so far";
 
-    // ---------------------------------------------------------------------------------------------
     // Information messages of 3250-SETUP-INFOMSG, :2958-2976. These are what the operator reads.
-    // ---------------------------------------------------------------------------------------------
 
     /** {@code :2968-2969}, chosen for {@code ACUP-CHANGES-OKAYED-AND-DONE}. */
     private static final String INFO_UPDATE_SUCCESS = "Changes committed to database";
@@ -390,9 +384,7 @@ final class AccountUpdateServiceTest {
     /** {@code 1275-EDIT-FICO-SCORE} at {@code :2515-2528}, the new-side range gate's message. */
     private static final String FICO_RANGE_MESSAGE = "FICO Score: should be between 300 and 850";
 
-    // ---------------------------------------------------------------------------------------------
     // Abend contract: CSMSG02Y.cpy field widths and the two distinct codes.
-    // ---------------------------------------------------------------------------------------------
 
     /** {@code :2635} {@code MOVE '0001' TO ABEND-CODE}. */
     private static final String UNEXPECTED_SCENARIO_CODE = "0001";
@@ -459,12 +451,41 @@ final class AccountUpdateServiceTest {
     /** {@code ERRMSGO} of {@code app/cpy-bms/COACTUP.CPY} is {@code X(40)}; the info line never exceeds it. */
     private static final int INFO_MESSAGE_WIDTH = 40;
 
-    // ---------------------------------------------------------------------------------------------
     // Keys. ACCT-ID is PIC 9(11) (app/cpy/CVACT01Y.cpy:5); CUST-ID is PIC 9(09).
-    // ---------------------------------------------------------------------------------------------
 
     /** The eleven-digit screen key {@code ACCTSIDI} requires; {@code 1210-EDIT-ACCOUNT} rejects fewer. */
     private static final String SCREEN_ACCOUNT_ID = "00000000001";
+
+    // ---------------------------------------------------------------------------------------------
+    // Snapshot sealing. Transformation Rule 7 moves the storage lifetime of WS-THIS-PROGCOMMAREA
+    // (app/cbl/COACTUPC.cbl:652) onto the request, and the value travels sealed so that the operand of
+    // 9700-CHECK-CHANGE-IN-REC is never one the guarded party could choose.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The authenticated principal every sealed value below is bound to. {@code SEC-USR-ID} is
+     * {@code PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:14}, and this is one of the ten seeded identifiers
+     * of {@code app/jcl/DUSRSECJ.jcl}.
+     */
+    private static final String SUBJECT = "ADMIN001";
+
+    /** A second principal, used to prove a value sealed for one operator is useless to another. */
+    private static final String OTHER_SUBJECT = "USER0001";
+
+    /**
+     * The operation kind {@code AccountUpdateService} seals under. Duplicated rather than exposed, because
+     * the constant is private to the bean and a test that reached for it would assert its own value.
+     */
+    private static final String SNAPSHOT_KIND = "account-update-snapshot";
+
+    /**
+     * A test-only sealing key. Thirty-two ASCII bytes, comfortably over the component's documented
+     * minimum, and local to this file - no configured or deployed key appears here.
+     */
+    private static final String SEALING_KEY = "account-update-service-test-key!";
+
+    /** The sealer's documented default lifetime, in seconds. */
+    private static final long SEAL_LIFETIME_SECONDS = 900L;
 
     /**
      * The width of {@code WS-EDIT-CURRENCY-9-2-F}, declared {@code PIC +ZZZ,ZZZ,ZZZ.99} at
@@ -501,8 +522,10 @@ final class AccountUpdateServiceTest {
     private static final Long CUSTOMER_VERSION = 3L;
 
     /**
-     * The paragraph census of {@code app/cbl/COACTUPC.cbl}: 88 labels, counted on the CR-stripped
-     * source with {@code grep -cE '^       [0-9A-Z][0-9A-Z-]*\.$'}.
+     * The Area-A label-shaped-line census of {@code app/cbl/COACTUPC.cbl}: 88 lines, counted on the
+     * CR-stripped source with {@code grep -cE '^       [0-9A-Z][0-9A-Z-]*\.$'}. It is NOT the paragraph
+     * count - three of the 88 are IDENTIFICATION DIVISION entries, so the own paragraph count is 85 and
+     * the mapped count is 87. {@code theParagraphCountReconciles} performs that arithmetic.
      */
     private static final int SOURCE_PARAGRAPH_COUNT = 88;
 
@@ -564,13 +587,11 @@ final class AccountUpdateServiceTest {
     /** {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at {@code :848-849}, upper bound. */
     private static final int FICO_MAXIMUM = 850;
 
-    // ---------------------------------------------------------------------------------------------
     // Retrieval turn, navigation and edit-cascade literals.
     //
     // Every value below was read out of the frozen COBOL and cross-checked against the bean, so a
     // drift in either direction fails a test rather than passing silently. They are declared here
     // rather than inlined so that the byte-exact evidence Rule 1 clause F asks for sits in one place.
-    // ---------------------------------------------------------------------------------------------
 
     /** {@code DFHPF3} of {@code COPY DFHAID} at {@code :614}; the exit key tested at {@code :925-927}. */
     private static final String AID_PFK03 = "DFHPF3";
@@ -946,9 +967,7 @@ final class AccountUpdateServiceTest {
             "DFHCLEAR", "DFHPA1", "DFHPA2", "DFHPF1", "DFHPF2", "DFHPF4",
             "DFHPF6", "DFHPF7", "DFHPF8", "DFHPF9", "DFHPF10", "DFHPF11");
 
-    // ---------------------------------------------------------------------------------------------
     // Collaborators. All five are mocked; none is a Spring bean here.
-    // ---------------------------------------------------------------------------------------------
 
     @Mock
     private CardCrossReferenceRepository cardCrossReferenceRepository;
@@ -989,15 +1008,29 @@ final class AccountUpdateServiceTest {
     /** The mutable symbolic-map builder. */
     private Screen screen;
 
+    /**
+     * The <em>real</em> sealer, deliberately not a mock.
+     *
+     * <p>The as-displayed snapshot reaches {@code updateAccount} only by being opened from a sealed value,
+     * so a mocked sealer would assert nothing about the one property that matters: that the group the
+     * comparison of {@code :4109-4193} consumes is the group <em>this server</em> issued, for this account,
+     * to this principal. Sealing and opening for real is what lets the rejection tests below present a
+     * tampered, transplanted, foreign-principal or expired value and observe the refusal.</p>
+     */
+    private SnapshotTokenService snapshotTokenService;
+
     @BeforeEach
     void setUp() {
+        this.snapshotTokenService = new SnapshotTokenService(SEALING_KEY, SEAL_LIFETIME_SECONDS,
+                this.clock, new ObjectMapper());
         this.service = new AccountUpdateService(this.cardCrossReferenceRepository,
                 this.accountRepository,
                 this.customerRepository,
                 this.fileStatusMapper,
                 this.dateValidationService,
                 this.validationLookupService,
-                this.clock);
+                this.clock,
+                this.snapshotTokenService);
         this.account = liveAccount();
         this.customer = liveCustomer();
         this.snapshot = new Snapshot();
@@ -1031,11 +1064,9 @@ final class AccountUpdateServiceTest {
         lenient().when(this.validationLookupService.isValidStateZipCodeCombination(any())).thenReturn(true);
     }
 
-    // =============================================================================================
     // Fixtures. Every value is synthetic and every object is built through the production
     // constructor - there is no reflection, no setAccessible and no parameter-name matching
     // anywhere in this class, because Rule 1 clause D rules out reflection-driven invocation.
-    // =============================================================================================
 
     /**
      * The live {@code ACCTDAT} record, shaped by {@code app/cpy/CVACT01Y.cpy}: three
@@ -1166,6 +1197,11 @@ final class AccountUpdateServiceTest {
             this.ficoScore = "";
         }
 
+        /**
+         * Assembles the {@code ACUP-OLD-DETAILS} snapshot group from the builder state.
+         *
+         * @return the snapshot the change-detection comparison reads.
+         */
         private AccountUpdateRequest.OldDetails build() {
             return new AccountUpdateRequest.OldDetails(this.accountId,
                     this.activeStatus,
@@ -1264,6 +1300,12 @@ final class AccountUpdateServiceTest {
          */
         private boolean omitNewDetails;
 
+        /**
+         * Assembles the {@code ACUP-NEW-DETAILS} group, joining each date back into the single
+         * component the record declares from the three the screen sends.
+         *
+         * @return the new-details group.
+         */
         private AccountUpdateRequest.NewDetails newDetails() {
             return new AccountUpdateRequest.NewDetails(this.accountId,
                     this.accountStatus,
@@ -1302,7 +1344,25 @@ final class AccountUpdateServiceTest {
                     this.ficoScore);
         }
 
+        /**
+         * Assembles the request around a caller-supplied snapshot group, so a case can present a
+         * snapshot that disagrees with the stored row without disturbing any other field.
+         *
+         * @param oldDetails the {@code ACUP-OLD-DETAILS} group to send.
+         * @return the assembled request.
+         */
         private AccountUpdateRequest build(final AccountUpdateRequest.OldDetails oldDetails) {
+            return buildSealed(null).withOldDetails(oldDetails);
+        }
+
+        /**
+         * Builds the symbolic-map area exactly as the wire constructor does, carrying the opaque sealed
+         * snapshot member and no readable group, which is the shape a REST caller submits.
+         *
+         * @param snapshot the sealed value to carry, or {@code null} to carry none
+         * @return the populated request
+         */
+        private AccountUpdateRequest buildSealed(final String snapshot) {
             return new AccountUpdateRequest(null, null, null, null, null, null,
                     this.accountId,
                     this.accountStatus,
@@ -1348,7 +1408,7 @@ final class AccountUpdateServiceTest {
                     this.eftAccountId,
                     this.primaryCardHolderIndicator,
                     null, null, null, null, null,
-                    oldDetails,
+                    snapshot,
                     this.omitNewDetails ? null : newDetails());
         }
 
@@ -1363,10 +1423,8 @@ final class AccountUpdateServiceTest {
         }
     }
 
-    // =============================================================================================
     // Arrangement and invocation helpers. Each stubbing helper installs exactly one stubbing, so a
     // test never declares more than it exercises.
-    // =============================================================================================
 
     /**
      * {@code :3894-3903} succeeds: the read-for-update returns the live account.
@@ -1475,7 +1533,33 @@ final class AccountUpdateServiceTest {
         if (java.util.Objects.equals(this.screen.addressLine2, this.snapshot.addressLine2)) {
             this.screen.addressLine2 = CHANGED_ADDRESS_LINE_2;
         }
-        return this.service.updateAccount(this.screen.build(this.snapshot.build()));
+        return this.service.updateAccount(sealedRequest(), SUBJECT);
+    }
+
+    /**
+     * Builds the request a REST caller submits: the current symbolic map, plus the current snapshot group
+     * sealed for {@link #SUBJECT} and for the account the map addresses.
+     *
+     * @return the populated request, carrying an opaque sealed snapshot and no readable group
+     */
+    private AccountUpdateRequest sealedRequest() {
+        return this.screen.buildSealed(seal(this.snapshot.build(), this.screen.accountId, SUBJECT));
+    }
+
+    /**
+     * Seals a snapshot group the way {@code sealSnapshotForUpdate} does, so that {@code updateAccount} can
+     * open it.
+     *
+     * @param group the group to seal
+     * @param accountId the account the value is bound to; blank and {@code null} both bind the
+     *     no-account-addressed placeholder the bean uses
+     * @param subject the principal the value is bound to
+     * @return the sealed value
+     */
+    private String seal(final AccountUpdateRequest.OldDetails group, final String accountId,
+                        final String subject) {
+        return this.snapshotTokenService.seal(SNAPSHOT_KIND,
+                accountId == null || accountId.isBlank() ? "-" : accountId, subject, group);
     }
 
     /**
@@ -1708,9 +1792,7 @@ final class AccountUpdateServiceTest {
         return result.errorMessage().stripTrailing();
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Retrieval-turn, navigation and edit-cascade helpers.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * An unfetched turn: Enter against {@code ACUP-DETAILS-NOT-FETCHED}, the arm of
@@ -1958,7 +2040,6 @@ final class AccountUpdateServiceTest {
                 .toList();
     }
 
-    // =============================================================================================
     // PARITY TRAP - :3934-3942 sets COULD-NOT-LOCK-CUST-FOR-UPDATE, :2606-2615 never tests it.
     //
     // The source reads, verbatim at :3934-3942:
@@ -1985,7 +2066,6 @@ final class AccountUpdateServiceTest {
     // ever relaxed, the change would be one inserted arm
     // between :2607 and :2609: WHEN COULD-NOT-LOCK-CUST-FOR-UPDATE / SET
     // ACUP-CHANGES-OKAYED-LOCK-ERROR. Nothing of the kind is done here.
-    // =============================================================================================
 
     @Test
     @DisplayName(":3934-3942 sets the customer-lock flag AND :2606-2615 reports it as success")
@@ -2073,7 +2153,6 @@ final class AccountUpdateServiceTest {
                 });
     }
 
-    // =============================================================================================
     // The seven-step write sequence of 9600-WRITE-PROCESSING, in the source's fixed order.
     //
     //   1. :3892-3894  account READ ... UPDATE RIDFLD
@@ -2107,7 +2186,6 @@ final class AccountUpdateServiceTest {
     // Exception, or if the two writes stop sharing one annotated method. Integration-level proof
     // that a real rollback occurs belongs to the repository tier and is additive to that guard, not
     // a substitute for it.
-    // =============================================================================================
 
     @Test
     @DisplayName(":3892-4091 performs the seven steps in the source's order, account before customer")
@@ -2260,7 +2338,6 @@ final class AccountUpdateServiceTest {
         assertThat(result.changeAction()).isEqualTo(ChangeAction.CHANGES_OKAYED_BUT_FAILED);
     }
 
-    // =============================================================================================
     // 9700-CHECK-CHANGE-IN-REC, :4109-4195. The account IF carries SIXTEEN comparison clauses over
     // TEN logical fields; the customer IF carries nineteen clauses over seventeen. Every clause is
     // asserted separately below because consolidating any two of them would hide a regression in
@@ -2273,7 +2350,6 @@ final class AccountUpdateServiceTest {
     // not substitutes, and both layers are mandatory. Because the target is stateless the snapshot
     // cannot live on the server between requests, which is why ACUP-OLD-DETAILS travels in the
     // request body as {@code oldDetails}.
-    // =============================================================================================
 
     /**
      * Arranges both read-for-update calls, takes the confirming turn and asserts the shared
@@ -2514,9 +2590,19 @@ final class AccountUpdateServiceTest {
         // Layer two's mechanism is present on both entities.
         assertThat(this.account.getVersion()).isEqualTo(ACCOUNT_VERSION);
         assertThat(this.customer.getVersion()).isEqualTo(CUSTOMER_VERSION);
-        // Layer one's mechanism is present in the request: the snapshot the operator was shown.
-        assertThat(this.screen.build(this.snapshot.build()).getOldDetails())
-                .as("ACUP-OLD-DETAILS travels in the body because the server keeps no session state")
+        // Layer one's mechanism is present in the request, sealed: the snapshot the operator was shown
+        // travels in the body because the server keeps no session state, but it travels as an opaque value
+        // this server issued rather than as a group the caller could compose.
+        final AccountUpdateRequest submitted = sealedRequest();
+        assertThat(submitted.getSnapshot())
+                .as("the as-displayed snapshot travels sealed, because Rule 7 forbids server-side state")
+                .isNotBlank();
+        assertThat(submitted.getOldDetails())
+                .as("and it travels ONLY sealed - no readable group is bound from a request")
+                .isNull();
+        assertThat(this.snapshotTokenService.open(submitted.getSnapshot(), SNAPSHOT_KIND,
+                SCREEN_ACCOUNT_ID, SUBJECT, AccountUpdateRequest.OldDetails.class))
+                .as("and it opens, for this account and this principal, to the group 9700 compares")
                 .isNotNull();
         // And layer one alone still catches a value change that left the version untouched.
         this.account.setCurrentBalance(new BigDecimal("0.00"));
@@ -2524,17 +2610,18 @@ final class AccountUpdateServiceTest {
     }
 
     @Test
-    @DisplayName(":669 a write with no oldDetails group is an unmet precondition, never a skipped check")
+    @DisplayName(":669 a write presenting no snapshot is an unmet precondition, never a skipped check")
     void aWriteWithoutTheSnapshotIsRejected() {
-        assertThatThrownBy(() -> this.service.updateAccount(this.screen.build(null)))
-                .isInstanceOf(ValidationException.class)
-                .satisfies(thrown -> {
-                    final ValidationException typed = (ValidationException) thrown;
-                    assertThat(typed.getFieldName()).isEqualTo("oldDetails");
-                    assertThat(typed.getCause()).isNull();
-                });
-        // Turn one performs no read for update, so a request without the group is refused before either
-        // dataset is touched. Silently treating the absent group as "nothing changed" would forfeit the
+        final AccountUpdateRequest withoutSnapshot = this.screen.buildSealed(null);
+
+        assertThatThrownBy(() -> this.service.updateAccount(withoutSnapshot, SUBJECT))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage(SnapshotTokenService.MISSING_TOKEN_MESSAGE)
+                .extracting(thrown -> ((ConcurrentUpdateException) thrown).getOutcome())
+                .as("absent is CHANGES_NOT_CONFIRMED: the remedy is to read again and obtain one")
+                .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
+        // The snapshot is opened before turn one begins, so a request without one is refused before either
+        // dataset is touched. Silently treating the absent value as "nothing changed" would forfeit the
         // guarantee 9700-CHECK-CHANGE-IN-REC provides.
         verifyNoInteractions(this.accountRepository, this.customerRepository);
     }
@@ -2542,52 +2629,165 @@ final class AccountUpdateServiceTest {
     @Test
     @DisplayName(":757 ACUP-NEW-DETAILS cannot stand in for the snapshot the comparison needs")
     void newDetailsCannotSubstituteForTheSnapshot() {
-        final AccountUpdateRequest withoutSnapshot = this.screen.build(null);
+        final AccountUpdateRequest withoutSnapshot = this.screen.buildSealed(null);
 
         assertThat(withoutSnapshot.getNewDetails())
                 .as("the submitted side IS present, so the failure is specific to the snapshot")
                 .isNotNull();
-        assertThat(withoutSnapshot.getOldDetails()).isNull();
-        assertThatThrownBy(() -> this.service.updateAccount(withoutSnapshot))
-                .isInstanceOf(ValidationException.class)
-                .satisfies(thrown -> assertThat(((ValidationException) thrown).getFieldName())
-                        .isEqualTo("oldDetails"));
+        assertThat(withoutSnapshot.getSnapshot()).isNull();
+        assertThatThrownBy(() -> this.service.updateAccount(withoutSnapshot, SUBJECT))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage(SnapshotTokenService.MISSING_TOKEN_MESSAGE);
     }
 
     @Test
-    @DisplayName("the submitted group is the only source of the snapshot, never the live row")
-    void theSnapshotIsNeverDerivedFromTheLiveRow() {
-        // The decisive property of transformation Rule 7's substitution. If the service derived the old
-        // group from the row it is about to write, the comparison at :4109-4193 would be tautologically
-        // true and the guard would be worthless. Here the live row is mutated behind a group that still
-        // holds the displayed values, and the write is refused - which can only happen if the two sides
-        // came from different places.
-        this.account.setCurrentBalance(new java.math.BigDecimal("0.00"));
+    @DisplayName("the snapshot is opened from the sealed value, never composed by the caller")
+    void theSnapshotCannotBeComposedByTheCaller() {
+        // The decisive property of the substitution. 9700-CHECK-CHANGE-IN-REC exists to detect that the
+        // record moved under the operator, and it can only do that if its second operand is the one this
+        // server displayed. A group the caller composed would let the caller assert the record had not
+        // changed - which is why AccountUpdateRequest binds no readable group from JSON at all.
+        assertThat(Arrays.stream(AccountUpdateRequest.class.getDeclaredMethods())
+                .filter(method -> "getOldDetails".equals(method.getName()))
+                .findFirst()
+                .orElseThrow()
+                .isAnnotationPresent(com.fasterxml.jackson.annotation.JsonIgnore.class))
+                .as("the accessor is server-side only, so it is excluded from the serialised form")
+                .isTrue();
+        // Only the copy constructor reachable through withOldDetails can attach one, and that is called by
+        // this application projecting a screen for its own use - never by a request.
+        assertThat(this.screen.buildSealed("c2VhbGVkLXZhbHVl").getOldDetails()).isNull();
+    }
+
+    @Test
+    @DisplayName(":4158-4159 a rival write to the live customer address is detected, not only an account one")
+    void rivalWriteToTheLiveCustomerAddressIsDetected() {
+        // The account half of :4109-4193 returns early, so a test that only ever moves an ACCOUNT field
+        // never reaches the nineteen customer clauses at all. This one moves a CUSTOMER field, which is the
+        // half the end-to-end tier exercises.
+        this.customer.setAddressLine1("AN ADDRESS THIS RECORD NEVER HELD");
 
         assertRivalWriteDetected();
     }
 
     @Test
-    @DisplayName("all twenty-nine ACUP-OLD-DETAILS components reach the comparison from the body")
-    void everyComponentTravelsInTheBody() {
+    @DisplayName("the snapshot is never derived from the live row, only ever opened from the sealed value")
+    void theSnapshotIsNeverDerivedFromTheLiveRow() {
+        // The decisive property of transformation Rule 7's substitution. If the service derived the old
+        // group from the row it is about to write, the comparison at :4109-4193 would be tautologically
+        // true and the guard would be worthless. Here the live row is mutated behind a sealed snapshot that
+        // still holds the displayed values, and the write is refused - which can only happen if the two
+        // sides came from different places.
+        this.account.setCurrentBalance(new BigDecimal("0.00"));
+
+        assertRivalWriteDetected();
+    }
+
+    @Test
+    @DisplayName("an edited snapshot is refused as a rival write, and no dataset is touched")
+    void aTamperedSnapshotIsRefused() {
+        final String sealed = seal(this.snapshot.build(), SCREEN_ACCOUNT_ID, SUBJECT);
+        // The FIRST character, deliberately. In an unpadded base64url string the last character can carry
+        // slack bits the decoder discards, so editing it need not change a single byte of the value.
+        final char[] characters = sealed.toCharArray();
+        characters[0] = characters[0] == 'A' ? 'B' : 'A';
+        final AccountUpdateRequest edited = this.screen.buildSealed(new String(characters));
+
+        assertThatThrownBy(() -> this.service.updateAccount(edited, SUBJECT))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE)
+                .extracting(thrown -> ((ConcurrentUpdateException) thrown).getOutcome())
+                .as("presented-but-unverifiable is DATA_CHANGED_BEFORE_UPDATE: the remedy is to read again")
+                .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @Test
+    @DisplayName("a snapshot issued to another principal does not open for this one")
+    void aSnapshotSealedForAnotherPrincipalIsRefused() {
+        final AccountUpdateRequest foreign = this.screen
+                .buildSealed(seal(this.snapshot.build(), SCREEN_ACCOUNT_ID, OTHER_SUBJECT));
+
+        assertThatThrownBy(() -> this.service.updateAccount(foreign, SUBJECT))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @Test
+    @DisplayName("a snapshot issued for another account cannot be transplanted onto this one")
+    void aSnapshotSealedForAnotherAccountIsRefused() {
+        final AccountUpdateRequest transplanted = this.screen
+                .buildSealed(seal(this.snapshot.build(), "00000000022", SUBJECT));
+
+        assertThatThrownBy(() -> this.service.updateAccount(transplanted, SUBJECT))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @Test
+    @DisplayName("a snapshot older than its lifetime is refused rather than opened")
+    void anExpiredSnapshotIsRefused() {
+        // Sealed by a server whose clock stood one second beyond the lifetime before this one, so the value
+        // is well formed, correctly keyed and correctly addressed - and stale.
+        final SnapshotTokenService earlier = new SnapshotTokenService(SEALING_KEY, SEAL_LIFETIME_SECONDS,
+                Clock.fixed(this.clock.instant().minusSeconds(SEAL_LIFETIME_SECONDS + 1), ZoneOffset.UTC),
+                new ObjectMapper());
+        final AccountUpdateRequest stale = this.screen.buildSealed(earlier.seal(SNAPSHOT_KIND,
+                SCREEN_ACCOUNT_ID, SUBJECT, this.snapshot.build()));
+
+        assertThatThrownBy(() -> this.service.updateAccount(stale, SUBJECT))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @Test
+    @DisplayName("a write reaching the bean without a principal is a wiring defect, not a request outcome")
+    void aWriteWithoutAPrincipalIsRefused() {
+        final AccountUpdateRequest submitted = sealedRequest();
+
+        for (final String absent : new String[] {null, "", "   "}) {
+            assertThatThrownBy(() -> this.service.updateAccount(submitted, absent))
+                    .as("the route is declared authenticated, so an absent principal is not a 400")
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @Test
+    @DisplayName("all twenty-nine ACUP-OLD-DETAILS components survive the sealed round trip")
+    void everyComponentSurvivesTheSealedRoundTrip() throws Exception {
         final AccountUpdateRequest.OldDetails original = this.snapshot.build();
 
         // Every accessor is counted, not sampled: a component that failed to travel would arrive null and
         // silently defeat the comparison at :4109-4193, which is the one failure mode a spot check misses.
-        assertThat(Arrays.stream(AccountUpdateRequest.OldDetails.class.getDeclaredMethods())
+        final List<Method> accessors = Arrays.stream(AccountUpdateRequest.OldDetails.class
+                        .getDeclaredMethods())
                 .filter(method -> method.getName().startsWith("get"))
                 .filter(method -> method.getParameterCount() == 0)
-                .map(Method::getName)
-                .toList())
+                .toList();
+        assertThat(accessors)
                 .as("the snapshot declares twenty-nine components, each of which must reach the service")
                 .hasSize(29);
-        // The group is relayed by reference, so what the comparison sees is what the caller submitted.
-        assertThat(this.screen.build(original).getOldDetails()).isSameAs(original);
+
+        final AccountUpdateRequest.OldDetails recovered = this.snapshotTokenService.open(
+                seal(original, SCREEN_ACCOUNT_ID, SUBJECT), SNAPSHOT_KIND, SCREEN_ACCOUNT_ID, SUBJECT,
+                AccountUpdateRequest.OldDetails.class);
+
+        // Sealing is authenticated encryption, not a rewrite: every one of the twenty-nine values the read
+        // displayed comes back byte-identical, so 9700 compares exactly what the operator saw.
+        for (final Method accessor : accessors) {
+            assertThat(accessor.invoke(recovered))
+                    .as("component %s must survive sealing unchanged", accessor.getName())
+                    .isEqualTo(accessor.invoke(original));
+        }
     }
 
     @Test
-    @DisplayName("fetchSnapshotForUpdate reads the chain and produces a group the write then accepts")
-    void fetchSnapshotForUpdateProducesAGroupTheWriteAccepts() {
+    @DisplayName("sealSnapshotForUpdate reads the chain and produces a value the write then accepts")
+    void sealSnapshotForUpdateProducesAValueTheWriteAccepts() {
         // The read chain of 9000-READ-ACCT: CXACAIX, then the account master, then the customer master.
         when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_KEY))
                 .thenReturn(Optional.of(new CardCrossReference("4111111111111111", CUSTOMER_KEY,
@@ -2597,33 +2797,43 @@ final class AccountUpdateServiceTest {
         givenAccountLocked();
         givenCustomerLocked();
 
-        final AccountUpdateRequest.OldDetails projected =
-                this.service.fetchSnapshotForUpdate(SCREEN_ACCOUNT_ID);
+        final String sealed = this.service.sealSnapshotForUpdate(SCREEN_ACCOUNT_ID, SUBJECT);
 
-        assertThat(projected).isNotNull();
-        assertThat(projected.getAccountId()).isEqualTo(SCREEN_ACCOUNT_ID);
+        assertThat(sealed).isNotBlank();
+        // The value is opaque: none of the nine protected components appears in it, which is the whole
+        // point of sealing rather than echoing the group.
+        assertThat(sealed)
+                .as("the sealed value discloses nothing; the ciphertext carries the group")
+                .doesNotContain(this.customer.getSsn())
+                .doesNotContain(this.customer.getDateOfBirth().replace("-", ""))
+                .doesNotContain(this.customer.getLastName())
+                .doesNotContain(SCREEN_ACCOUNT_ID);
+        assertThat(this.snapshotTokenService.open(sealed, SNAPSHOT_KIND, SCREEN_ACCOUNT_ID, SUBJECT,
+                AccountUpdateRequest.OldDetails.class).getAccountId())
+                .isEqualTo(SCREEN_ACCOUNT_ID);
         // And the write accepts it: the values projected are the values the read displayed, so 9700 finds
         // no difference and the confirmed turn reaches the rewrite rather than reporting a rival write.
         // One field must differ from the snapshot or 1205-COMPARE-OLD-NEW reports NO-CHANGES-DETECTED and
         // nothing is written - see the note on write().
         this.screen.addressLine2 = CHANGED_ADDRESS_LINE_2;
         final AccountUpdateResult applied =
-                this.service.updateAccount(this.screen.build(projected));
+                this.service.updateAccount(this.screen.buildSealed(sealed), SUBJECT);
 
         assertThat(applied.changeAction()).isEqualTo(ChangeAction.CHANGES_OKAYED_AND_DONE);
     }
 
     @Test
-    @DisplayName("fetchSnapshotForUpdate projects the unseparated date of birth the comparison expects")
-    void fetchSnapshotForUpdateProjectsTheUnseparatedDateOfBirth() {
+    @DisplayName("sealSnapshotForUpdate seals the unseparated date of birth the comparison expects")
+    void sealSnapshotForUpdateProjectsTheUnseparatedDateOfBirth() {
         when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_KEY))
                 .thenReturn(Optional.of(new CardCrossReference("4111111111111111", CUSTOMER_KEY,
                         ACCOUNT_KEY)));
         when(this.accountRepository.findById(ACCOUNT_KEY)).thenReturn(Optional.of(this.account));
         when(this.customerRepository.findById(CUSTOMER_KEY)).thenReturn(Optional.of(this.customer));
 
-        final AccountUpdateRequest.OldDetails projected =
-                this.service.fetchSnapshotForUpdate(SCREEN_ACCOUNT_ID);
+        final AccountUpdateRequest.OldDetails projected = this.snapshotTokenService.open(
+                this.service.sealSnapshotForUpdate(SCREEN_ACCOUNT_ID, SUBJECT), SNAPSHOT_KIND,
+                SCREEN_ACCOUNT_ID, SUBJECT, AccountUpdateRequest.OldDetails.class);
 
         // :4174-4179 reads the live record at offsets 1, 6 and 9 - dash separated - and the snapshot at
         // offsets 1, 5 and 7, which are only correct if the snapshot form carries no separators. Projecting
@@ -2635,9 +2845,19 @@ final class AccountUpdateServiceTest {
     }
 
     @Test
+    @DisplayName("a read reaching the bean without a principal is a wiring defect, not a request outcome")
+    void aReadWithoutAPrincipalIsRefused() {
+        for (final String absent : new String[] {null, "", "   "}) {
+            assertThatThrownBy(() -> this.service.sealSnapshotForUpdate(SCREEN_ACCOUNT_ID, absent))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @Test
     @DisplayName("a null symbolic-map area is rejected before any dataset is touched")
     void aNullRequestIsRejected() {
-        assertThatThrownBy(() -> this.service.updateAccount(null))
+        assertThatThrownBy(() -> this.service.updateAccount(null, SUBJECT))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("app/cpy-bms/COACTUP.CPY")
                 .satisfies(thrown -> {
@@ -2649,7 +2869,6 @@ final class AccountUpdateServiceTest {
         verifyNoInteractions(this.accountRepository, this.customerRepository);
     }
 
-    // =============================================================================================
     // 9700 slices dates into THREE SUBSTRINGS; 1205-COMPARE-OLD-NEW compares them as WHOLE FIELDS.
     //
     // 1205-COMPARE-OLD-NEW spans :1681-1777, opens with SET NO-CHANGES-FOUND TO TRUE at :1682 over
@@ -2662,7 +2881,6 @@ final class AccountUpdateServiceTest {
     // Unifying them would pass most tests and then fail on the date of birth,
     // where 1205's whole-field convention works because both of its sides are compact and 9700's
     // cannot, because its live side carries separators.
-    // =============================================================================================
 
     @Test
     @DisplayName(":1769 1205 compares the SUBMITTED side and finds no change, touching no dataset")
@@ -2735,7 +2953,6 @@ final class AccountUpdateServiceTest {
         verify(this.accountRepository, never()).save(any(Account.class));
     }
 
-    // =============================================================================================
     // Case handling in 9700 is DELIBERATELY ASYMMETRIC, and normalising it in either direction
     // changes which updates are accepted:
     //
@@ -2757,7 +2974,6 @@ final class AccountUpdateServiceTest {
     //
     // Normalising the asymmetry would change which updates are accepted. Every Java case operation
     // therefore pins Locale.ROOT, never the ambient default.
-    // =============================================================================================
 
     /**
      * Arranges both read-for-update calls, takes the confirming turn and asserts that {@code 9700}
@@ -2942,7 +3158,6 @@ final class AccountUpdateServiceTest {
         assertRivalWriteDetected();
     }
 
-    // =============================================================================================
     // PARITY TRAP - the date-of-birth OFFSET ASYMMETRY at :4174-4179.
     //
     // ACUP-OLD-CUST-DOB-YYYY-MM-DD is PIC X(08) at :746 - COMPACT, no separators - redefined into
@@ -2960,7 +3175,6 @@ final class AccountUpdateServiceTest {
     // evidence that the source author met this trap too.
     //
     // The rule that prevents the regression: slice both sides, never compare whole.
-    // =============================================================================================
 
     @Test
     @DisplayName(":4174-4179 an unchanged DOB is NOT flagged - dashed live against compact snapshot")
@@ -3043,7 +3257,7 @@ final class AccountUpdateServiceTest {
     /**
      * The abend diagnostic reports the code the caller is told, not the empty work-area field.
      *
-     * <p>FINDING, severity Informational - remediated. The diagnostic used to be written before the
+     * <p>FINDING, severity Low - remediated. The diagnostic used to be written before the
      * substitution the exception payload performs, so an abend that never moved a value into
      * {@code ABEND-CODE} logged {@code code=null} while the response reported {@code 9999}. An operator
      * correlating a log line with a response had no way to see they were the same event.
@@ -3103,7 +3317,6 @@ final class AccountUpdateServiceTest {
         verifyNoInteractions(this.accountRepository, this.customerRepository);
     }
 
-    // =============================================================================================
     // Outcome literals, state markers and the abend contract.
     //
     // The outcome group is declared at :505-528 with the four write outcomes at :517-524. Each
@@ -3123,7 +3336,6 @@ final class AccountUpdateServiceTest {
     // behaviourally: observing one would take a source revision reinstating the commented-out SET
     // statements, which parity forbids. Byte-exactness
     // is instead asserted structurally below.
-    // =============================================================================================
 
     @Test
     @DisplayName(":517-524 the four assigned outcome literals are byte-exact")
@@ -3326,8 +3538,8 @@ final class AccountUpdateServiceTest {
     void theDefaultAbendMessageSubstitutionIsATrackedNoOp() {
         // The guard reads IF ABEND-MSG EQUAL LOW-VALUES, but every member of ABEND-DATA is declared
         // VALUE SPACES, and the one source path that reaches ABEND-ROUTINE assigns ABEND-MSG first at
-        // :2639. The substitution therefore never fires in COBOL - an intentional no-op, retained
-        // rather than deleted because removing it would break the paragraph map.
+        // :2639. The substitution therefore never fires in COBOL - an intentional no-op that is retained for
+        // control-flow parity, because removing it would break the paragraph map.
         assertThat(FatalProcessingException.DEFAULT_ABEND_MESSAGE)
                 .isEqualTo("UNEXPECTED ABEND OCCURRED.");
         assertThat(FatalProcessingException.DEFAULT_ABEND_MESSAGE)
@@ -3373,7 +3585,6 @@ final class AccountUpdateServiceTest {
         verifyNoInteractions(this.accountRepository, this.customerRepository);
     }
 
-    // =============================================================================================
     // Validation-side field contracts that must NOT leak into the entity.
     //
     // 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 is declared at :848-849, INSIDE ACUP-NEW-DETAILS,
@@ -3391,7 +3602,6 @@ final class AccountUpdateServiceTest {
     // ACUP-OLD-ADDR-ZIP is X(10) at :721 while the screen field ACSZIPCI is X(5) at
     // app/cpy-bms/COACTUP.CPY:246 - a ten-byte snapshot slot behind a five-byte input field. Both
     // widths are reproduced; they are not unified.
-    // =============================================================================================
 
     @Test
     @DisplayName(":848-849 a credit score below 300 is rejected by REQUEST validation")
@@ -3560,7 +3770,6 @@ final class AccountUpdateServiceTest {
         assertThat(this.snapshot.currentBalance.length()).isEqualTo(12);
     }
 
-    // =============================================================================================
     // Paragraph correspondence.
     //
     // app/cbl/COACTUPC.cbl is 4,236 lines. Eighty-eight of its lines carry the shape of a paragraph
@@ -3570,7 +3779,6 @@ final class AccountUpdateServiceTest {
     // its :80. Eighty-five plus two is 87, which is exactly the number of paragraph labels the bean
     // cites, one private method each. Labels are NEVER consolidated - not the exits, not the empty
     // bodies, not the unreachable ones.
-    // =============================================================================================
 
     @Test
     @DisplayName("COACTUPC.cbl:22,24,26 and CSSTRPFY.cpy:17,80 reconcile 88 label-shaped lines to 87")
@@ -3682,12 +3890,10 @@ final class AccountUpdateServiceTest {
         assertThat(request.getNewDetails()).isNotNull();
     }
 
-    // =============================================================================================
     // Hostile input. Clause A requires untrusted input to be treated as untrusted and clause B
     // requires every boundary condition, null and empty case to be handled explicitly. Every case
     // below is a shape a real caller can submit, and each asserts the TYPE, the MESSAGE and the CAUSE
     // rather than merely that something was thrown.
-    // =============================================================================================
 
     @Test
     @DisplayName(":2085-2225 ACUP-NEW-DETAILS may be absent - the screen half rides the flat fields")
@@ -3801,7 +4007,6 @@ final class AccountUpdateServiceTest {
         verify(this.customerRepository).save(this.customer);
     }
 
-    // =============================================================================================
     // The server-owned customer binding. NOT a paragraph of COACTUPC.cbl: it replaces a guarantee the
     // region gave structurally.
     //
@@ -3824,7 +4029,6 @@ final class AccountUpdateServiceTest {
     //
     // Every probe below fails without the guard: the write completes and the foreign row is
     // overwritten. They are the F9 regression net.
-    // =============================================================================================
 
     @Test
     @DisplayName(":3919 a snapshot naming another customer is refused before either lock is taken")
@@ -4152,7 +4356,6 @@ final class AccountUpdateServiceTest {
         assertThat(result.informationMessage()).hasSizeLessThanOrEqualTo(INFO_MESSAGE_WIDTH);
     }
 
-    // =============================================================================================
     // The retrieval turn - 9000-READ-ACCT and 9200-GETCARDXREF-BYACCT.
     //
     // 2000-DECIDE-ACTION reaches 9000-READ-ACCT through its first arm at :2568-2580, which is a
@@ -4169,7 +4372,6 @@ final class AccountUpdateServiceTest {
     // those three paragraphs are covered by the repository and end-to-end tiers, which own the entity.
     // They are pure field projection with no branch of their own beyond the
     // two dead guards already asserted here.
-    // =============================================================================================
 
     @Test
     @DisplayName(":3617-3622 the read-only fetch stops at CXACAIX and never reaches the account master")
@@ -4309,7 +4511,6 @@ final class AccountUpdateServiceTest {
         verifyNoInteractions(this.accountRepository, this.customerRepository);
     }
 
-    // =============================================================================================
     // The PF03 exit - 0000-MAIN at :925-959.
     //
     // PF03 is tested before any input is processed, so the exit neither edits nor reads anything. The
@@ -4322,7 +4523,6 @@ final class AccountUpdateServiceTest {
     // unobservable through the public surface: exhibiting it would take a caller pair on
     // AccountUpdateRequest, or a navigation argument on processRequest. The arm is a
     // pass-through of a value nothing can supply.
-    // =============================================================================================
 
     @Test
     @DisplayName(":927-959 PF03 transfers to the main menu and touches no repository")
@@ -4383,7 +4583,6 @@ final class AccountUpdateServiceTest {
         assertThat(reentered.changeAction()).isEqualTo(ChangeAction.SHOW_DETAILS);
     }
 
-    // =============================================================================================
     // 1200-EDIT-MAP-INPUTS - the twenty-five-step edit cascade and its per-field diagnostics.
     //
     // The cascade at :1431-1675 has two arms. On ACUP-DETAILS-NOT-FETCHED (:1433-1449) the account
@@ -4409,7 +4608,6 @@ final class AccountUpdateServiceTest {
     //
     // Consolidating the suffix literals, or normalising the
     // label truncation, changes the text a 3270 operator reads and breaks the parity comparison.
-    // =============================================================================================
 
     @Test
     @DisplayName(":1441-1443 a blank account filter reports 'No input received', overwriting the latch")
@@ -5222,7 +5420,6 @@ final class AccountUpdateServiceTest {
                         "containsOnlyLettersDigitsAndSpaces");
     }
 
-    // =============================================================================================
     // 2000-DECIDE-ACTION - the remaining arms, and the two that no turn can reach.
     //
     // The EVALUATE TRUE at :2568-2640 has six arms plus a WHEN OTHER. Three are already covered
@@ -5247,7 +5444,6 @@ final class AccountUpdateServiceTest {
     // WS-THIS-PROGCOMMAREA independently of the marker 0000-MAIN derives from the request - which the
     // stateless contract deliberately does not provide, because the marker travels in the payload.
     // No behaviour is lost, and both arms are reproduced and cited to their source lines.
-    // =============================================================================================
 
     @Test
     @DisplayName(":2596-2597 the redisplay arm is a no-op and touches no repository")
@@ -5349,9 +5545,7 @@ final class AccountUpdateServiceTest {
         assertThat(errorText(changed)).isEmpty();
     }
 
-    // =============================================================================================
     // 3009-SETUP-CURSOR and 3300-SETUP-SCREEN-ATTRS - cursor placement and the protection branches.
-    // =============================================================================================
 
     @Test
     @DisplayName(":3165-3166 with no field in error the cursor falls through to the account filter")
@@ -5424,7 +5618,6 @@ final class AccountUpdateServiceTest {
                 .containsExactly(ATTRIBUTE_PROTECTED_FSET);
     }
 
-    // =============================================================================================
     // The three screen-painting branches of 3200-SETUP-SCREEN-VARS, one test each.
     //
     // :2710-2724 is a five-branch decider over three bodies: 3201-SHOW-INITIAL-VALUES blanks the
@@ -5433,7 +5626,6 @@ final class AccountUpdateServiceTest {
     // only in the painted screen, and the three produce three different screens from the same
     // request - so a test that asserts one of them cannot pass against an implementation that ran
     // another. Without these three the paragraphs are reachable but unwitnessed.
-    // =============================================================================================
 
     @Test
     @DisplayName(":2711-2714 a zero filter takes the initial-values branch and paints NO detail field")
@@ -5553,7 +5745,6 @@ final class AccountUpdateServiceTest {
                 .isNotEmpty();
     }
 
-    // =============================================================================================
     // The remaining fourteen branches of the cursor cascade, one per test, none consolidated.
     //
     // Six are ordinary field failures whose diagnostics are asserted here for the first time. The
@@ -5564,7 +5755,6 @@ final class AccountUpdateServiceTest {
     //
     // A collapsed three-into-one date verdict compiles, passes
     // a naive test, and silently parks the cursor on the wrong component on every rejected date.
-    // =============================================================================================
 
     @Test
     @DisplayName(":1250 a blank cash credit limit places the cursor on its own field")
@@ -5778,10 +5968,8 @@ final class AccountUpdateServiceTest {
         assertThat(cursorField(editTurn())).isEqualTo(FIELD_DATE_OF_BIRTH_DAY);
     }
 
-    // =============================================================================================
     // The read-only retrieval entry point's rejection path, YYYY-STORE-PFKEY's remaining arms, and
     // the NUMVAL-C conversion contract.
-    // =============================================================================================
 
     @Test
     @DisplayName(":905-916 the twelve recognised-but-not-actionable keys are silently coerced to Enter")
@@ -5940,9 +6128,7 @@ final class AccountUpdateServiceTest {
         assertThat(errorText(editTurn())).isEqualTo(labelled(LABEL_CREDIT_LIMIT, MUST_BE_SUPPLIED));
     }
 
-    // =============================================================================================
     // 0000-MAIN's two cold-start arms, its abend net, and the arms that cannot be reached at all.
-    // =============================================================================================
 
     @Test
     @DisplayName(":880-893 the very first turn clears the caller context and paints an empty screen")
@@ -6077,9 +6263,7 @@ final class AccountUpdateServiceTest {
         }
     }
 
-    // =============================================================================================
     // The snapshot's absence on the two paths that do NOT gate it up front, and the snapshot echo.
-    // =============================================================================================
 
     @Test
     @DisplayName(":1684-1773 an edit turn without the snapshot fails validation instead of comparing")
@@ -6437,11 +6621,11 @@ final class AccountUpdateServiceTest {
      *
      * <h4>What this test asserts, and what it refuses to assert</h4>
      *
-     * <p>An earlier revision of this test asserted the substitute outcome as though it were the expectation,
-     * with the reasoning "since neither available answer is parity, the one that names the field beats the one
-     * that abends on a well-formed request". Choosing between two non-parity answers is a legitimate
-     * engineering decision; presenting the winner as the expected behaviour is not, because a reader then has
-     * no way to tell an intended substitute from an accidental divergence.
+     * <p>Asserting the substitute outcome as though it were the expectation would be wrong, and the tempting
+     * reasoning - "since neither available answer is parity, the one that names the field beats the one
+     * that abends on a well-formed request" - is where that error hides. Choosing between two non-parity
+     * answers is a legitimate engineering decision; presenting the winner as the expected behaviour is not,
+     * because a reader then has no way to tell an intended substitute from an accidental divergence.
      *
      * <p>So this test asserts three things, in this order: <b>the reason</b> - that the source's own outcome is
      * genuinely unrepresentable, which is what makes a substitute necessary at all; <b>the substitute</b> -

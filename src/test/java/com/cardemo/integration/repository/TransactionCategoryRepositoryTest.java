@@ -265,20 +265,22 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <h2>Evidence gaps, stated plainly</h2>
  *
  * <ol>
- *   <li><strong>The end-to-end parity baseline is Not available.</strong> No captured mainframe output
- *       exists anywhere in this repository; searching for expected, baseline and golden artefacts, for
- *       {@code .out} and system-output captures, and for the reject, report, statement and HTML dataset
- *       names returns dataset <em>definition</em> job control only and zero captured data. What is needed
+ *   <li><strong>The end-to-end boundary parity expectation exists; what is Not available is a captured z/OS run to
+ *       corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own output --
+ *       {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected}, {@code DALYREJS.expected}
+ *       and {@code CBTRN02C.sysout.expected} -- derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and
+ *       running it against the frozen fixtures, with the harness and the derivation recorded beside them in
+ *       {@code PROVENANCE.properties}. What is needed
  *       is a captured 430-byte reject dataset together with the resulting transaction, account and
  *       category-balance images from a real posting run at a known input state, which would corroborate the
  *       source-derived expectation rather than replace it. This class still creates no baseline file and
  *       fabricates no expected bytes, and a baseline generated from this Java implementation would still be
- *       circular. But the further claim an earlier revision made - that "two models over these same fixtures
- *       disagree on the reject count, which proves the count is model-sensitive and not an oracle" - is
- *       <strong>withdrawn</strong>. {@code 2800-UPDATE-ACCOUNT-REC} ends in {@code REWRITE FD-ACCTFILE-REC}
- *       at {@code app/cbl/CBTRN02C.cbl:561}, and a VSAM {@code REWRITE} replaces the record in the cluster,
- *       so the next {@code READ} of that key returns the mutated accumulators: the stateless reading is a
- *       misreading rather than a second model. Exactly one faithful model exists and
+ *       circular. Nor do "two models over these same fixtures disagree on the reject count, which proves the
+ *       count is model-sensitive and not an oracle": {@code 2800-UPDATE-ACCOUNT-REC} ends in
+ *       {@code REWRITE FD-ACCTFILE-REC} at {@code app/cbl/CBTRN02C.cbl:561}, and a VSAM {@code REWRITE}
+ *       replaces the record in the cluster, so the next {@code READ} of that key returns the mutated
+ *       accumulators: the stateless reading is a misreading rather than a second model. Exactly one faithful
+ *       model exists and
  *       {@code com.cardemo.e2e.PostingParityOracle} re-derives it into
  *       {@code src/test/resources/expected/posttran}. The reason no posting outcome is asserted <em>here</em>
  *       is scope - this class owns a reference table, not the posting job.</li>
@@ -769,19 +771,10 @@ class TransactionCategoryRepositoryTest extends AbstractRepositoryIntegrationTes
     /**
      * The complete PostgreSQL metadata contract for the {@code transaction_category} table.
      *
-     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
-     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
-     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
-     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
-     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
-     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
-     * a frozen picture clause, that was the gap that mattered most.
-     *
-     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
-     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
-     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
-     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
-     * with the authority.
+     * <p>Why this delegates rather than restating the facets, and why asserting whichever columns the
+     * behavioural tests happen to touch would state no contract at all, is recorded once on
+     * {@link SchemaMetadataMatrix}, which declares every facet and asserts the live catalogue against
+     * it by exact equality on ordered lists.
      *
      * <p>For {@code transaction_category} that is three columns, the two-part composite key of the catalogue's KEYLEN 6, and fk09 onto the transaction type - every value measured from the schema the migrations
      * produce and checked against {@code app/cpy/CVTRA04Y.cpy}, never transcribed from prose.

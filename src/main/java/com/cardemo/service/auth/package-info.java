@@ -9,7 +9,7 @@
  *               verification and token issue, replacing the plaintext
  *               password compare of COSGN00C and the COMMAREA identity
  *               it populated.
- * Source      : app/cbl/COSGN00C.cbl (260 lines, 6 paragraphs) @ 7756d89
+ * Source      : app/cbl/COSGN00C.cbl (260 lines, 6 own paragraph labels) @ 7756d89
  * Source      : app/cbl/COSGN00C.cbl:L132-L136 (UPPER-CASE BOTH identifier and password) @ 7756d89
  * Source      : app/cbl/COSGN00C.cbl:L209-L257 (READ-USER-SEC-FILE), :L223 (SEC-USR-PWD compare) @ 7756d89
  * Source      : app/cpy/CSUSR01Y.cpy:L17-L23 (80-byte SEC-USER-DATA layout, key 8) @ 7756d89
@@ -146,11 +146,10 @@
  *       instead of leaving every later child inheriting them. {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
- *       <strong>Measured 4 August 2026:</strong> {@code AuthenticationServiceTest} covers this service and
+ *       {@code AuthenticationServiceTest} covers this service and
  *       {@code AuthControllerTest} covers the sign-on endpoint that delegates to it, so the package is
- *       exercised by name. <strong>An earlier revision recorded this service as having no test class and
- *       contributing zero covered lines</strong>; that was true when written and is withdrawn here. The
- *       assertions it named as required are the ones now made: both the identifier and the password upper-cased; a lower-case credential
+ *       exercised by name and neither is without a test class. Those classes assert: both the identifier and
+ *       the password upper-cased; a lower-case credential
  *       accepted; a wrong password and an unknown user indistinguishable to the caller; the two authorities
  *       routing to their respective menus; each of the ten seeded users authenticating against its BCrypt
  *       digest; and no credential, digest or token appearing in any message or log event.</li>

@@ -5,7 +5,7 @@
  * Type        : Spring Service Bean (online)
  * Function    : Account view - cross-reference, account and customer
  *               lookup chain for CICS transaction CAVW.
- * Source      : app/cbl/COACTVWC.cbl (941 lines, 38 paragraphs) @ 7756d89
+ * Source      : app/cbl/COACTVWC.cbl (941 lines, 35 own / 37 mapped paragraph labels) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -233,8 +233,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>Eight legacy behaviours below are defects, redundancies or unreachable artefacts. Seven are reproduced
  * rather than repaired, because behavioural parity is the acceptance contract and the paragraph-level
  * traceability matrix must stay mechanically provable; the eighth cannot be reproduced and is labelled a
- * deviation rather than dressed up as parity. Each is owed an entry in the {@code DECISION_LOG.md} and
- * {@code TRACEABILITY_MATRIX.md}, so none is untracked deferred work, and no deferred-work marker token of
+ * deviation rather than dressed up as parity. Each is held in the {@code DECISION_LOG.md} - the
+ * specific defects under {@code DL-LD-*}, the low-severity behaviours a well-meaning implementer would
+ * normalise under {@code DL-PP-13} - and each has its rows in {@code TRACEABILITY_MATRIX.md}, so none is
+ * untracked deferred work, and no deferred-work marker token of
  * any kind appears anywhere in this file.</p>
  *
  * <ul>
@@ -1741,8 +1743,8 @@ public class AccountViewService {
      * {@code :708-711}.</strong> The general claim that a downstream lookup must not run once an upstream one failed
      * is true here <em>only</em> of cross-reference to account; the account-to-customer transition is unguarded. This
      * is reproduced verbatim. No guard the source lacks is added, and the two dead guards are retained as written so
-     * that the paragraph map stays provable. Severity High; owed an entry in the {@code DECISION_LOG.md} and
-     * {@code TRACEABILITY_MATRIX.md}.</p>
+     * that the paragraph map stays provable. Severity High; held as {@code DL-PP-13} in the
+     * {@code DECISION_LOG.md}, with its rows in {@code TRACEABILITY_MATRIX.md}.</p>
      *
      * @param context the per-request work areas; the cross-reference, account and customer results plus the
      *                found flags, the filter states and any diagnostic message are set
@@ -2303,13 +2305,11 @@ public class AccountViewService {
         // EXIT
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Repository adapters. These are not paragraph translations: they are the boundary at which a Spring
     // Data outcome is expressed as the two-character file status the corpus works in, so that the
     // status-to-exception decision stays where it belongs - in FileStatusMapper - and is not duplicated
     // once per read paragraph. Each records the CICS RESP ordinal the diagnostic messages of :747-757,
     // :796-806 and :846-856 render, and each is the only place a DataAccessException is caught.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Performs the alternate-index read of {@code :727-735} and reports its outcome as a file status.
@@ -2489,11 +2489,9 @@ public class AccountViewService {
                 ERROR_RESPONSE_LENGTH);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // COBOL data-movement primitives. These reproduce MOVE, class-test and PICTURE-edit semantics, which the
     // language performs implicitly and Java does not. They are pure functions of their arguments - no clock,
     // no locale default, no collaborator - so they are deterministic by construction (Rule 1 Clause A).
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Blank-pads on the right to an exact width, truncating on the right when the value is already longer.
@@ -2745,13 +2743,11 @@ public class AccountViewService {
                 + digits.substring(digits.length() - MASK_VISIBLE_DIGITS);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Nested types. They are declared here rather than as separate files for a reason that is not stylistic:
     // this package is capped at exactly two compilation units - AccountViewService and its sibling
     // AccountUpdateService - so a third file is not permitted. Every type below is specific to this
     // conversation's shape and has no other consumer, which is also why nesting is the correct modelling
     // choice independently of the cap.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * What the transaction produced. The legacy program ends its task in three distinct ways and a caller has

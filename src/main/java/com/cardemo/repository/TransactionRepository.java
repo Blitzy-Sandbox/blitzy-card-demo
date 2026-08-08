@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -18,7 +18,7 @@
  *               defined by app/jcl/TRANFILE.jcl:L82-L84 KEYS(26 304) and
  *               app/jcl/TRANIDX.jcl:L25-L27 KEYS(26 304); record layout
  *               app/cpy/CVTRA05Y.cpy:L4-L18 @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -33,7 +33,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 
@@ -319,8 +319,8 @@ import com.cardemo.model.entity.Transaction;
  *   <li><em>The range finder returns one row where several were expected</em> - the return type was
  *       narrowed to {@code Optional}. The alternate key is {@code NONUNIQKEY}.</li>
  *   <li><em>The report job exhausts the heap on a wide date range</em> - the caller ignored
- *       {@code Slice#hasNext()} and requested an unbounded page, or an earlier revision of this
- *       interface returning a plain {@code List} is still on the classpath. The range finder is
+ *       {@code Slice#hasNext()} and requested an unbounded page, or a variant of this
+ *       interface returning a plain {@code List} is on the classpath. The range finder is
  *       chunked by a caller-supplied {@link Pageable} precisely because the source streamed one record
  *       at a time.</li>
  *   <li><em>A page repeats its last row, or skips one</em> - an inclusive paged finder was used where
@@ -334,9 +334,8 @@ import com.cardemo.model.entity.Transaction;
  * Stated plainly rather than assumed, with what is needed in each case.
  *
  * <ul>
- *   <li><strong>All three Flyway migrations are present</strong>, and an earlier revision of this bullet
- *       recorded {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as not available - that is no
- *       longer true and the claim is withdrawn.
+ *   <li><strong>All three Flyway migrations are present</strong>, so neither
+ *       {@code V2__create_indexes.sql} nor {@code V3__seed_data.sql} is unavailable.
  *       {@code src/main/resources/db/migration/V1__create_schema.sql}
  *       declares {@code CREATE TABLE "transaction"} with a {@code version BIGINT} column
  *       and the three foreign keys {@code fk04_transaction_card},
@@ -473,9 +472,9 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * member here is {@code default} or {@code static}.
      *
      * <h4>Medium - RESOLVED: the predicate is sargable, and was measured</h4>
-     * <strong>Severity Medium, resolved.</strong> The earlier revision of this finder wrote both bounds
-     * as {@code substring(t.procTs, 1, 10)}. Wrapping the indexed column in a function makes the
-     * predicate non-sargable, and a plain B-tree cannot serve it. That was not a theoretical concern; it
+ * <strong>Severity Medium.</strong> Writing both bounds
+ * as {@code substring(t.procTs, 1, 10)} wraps the indexed column in a function, which makes the
+ * predicate non-sargable, and a plain B-tree cannot serve it. That is not a theoretical concern; it
      * was measured on PostgreSQL 16.10 against this exact table with 200,000 rows spread over 400
      * distinct processing dates and the single plain non-unique B-tree that
      * {@code V2__create_indexes.sql} specifies:
@@ -606,9 +605,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
             Pageable pageable);
 
     /*
-     * ------------------------------------------------------------------------------------------------
      * The online browse - three methods, because the source has three boundary semantics
-     * ------------------------------------------------------------------------------------------------
      *
      * app/cbl/COTRN00C.cbl browses the keyed cluster in both directions and pages TEN rows at a time.
      *
@@ -661,7 +658,6 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * a page-forward request, and Slice avoids a COUNT query that the source never issues. Pagination
      * state is carried in request parameters and response metadata - com.cardemo.model.dto.PageResponse -
      * so no server-side cursor and no session state exists here or anywhere else.
-     * ------------------------------------------------------------------------------------------------
      */
 
     /**

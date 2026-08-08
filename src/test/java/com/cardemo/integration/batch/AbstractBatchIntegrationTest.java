@@ -327,12 +327,14 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       {@code @TestConfiguration}, which is detected normally.</dd>
  *   </dl>
  *
- * <p><strong>There is no captured legacy output to compare against, and none may be invented.</strong> The
- * repository holds dataset <em>definition</em> job control and zero captured data: no expected, baseline or
- * golden artefact, no system-output capture, and no reject, report, statement or HTML dataset capture.
- * Producing a boundary-parity baseline needs a captured 430-byte reject dataset plus the resulting
- * transaction, account and category-balance images from a real posting run at a known input state. Until
- * those exist this harness creates no baseline file and no subclass may invent one. Likewise, file status
+ * <p><strong>The boundary-parity expectation is source-derived and committed; a mainframe capture is not,
+ * and none may be invented.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own
+ * output, derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and running it against the frozen
+ * fixtures, with the derivation recorded beside it in {@code PROVENANCE.properties}. Under {@code app/}
+ * itself there is zero captured data - only dataset <em>definition</em> job control - so corroborating that
+ * expectation against the real runtime needs a captured 430-byte reject dataset plus the resulting
+ * transaction, account and category-balance images from a real posting run on z/OS at a known input state.
+ * Until that exists this harness creates no baseline file of its own and no subclass may invent one. Likewise, file status
  * {@code '35'} and its file-unavailable response code do not occur anywhere in the COBOL corpus, so no test
  * for that path is fabricated here.
  */
@@ -389,19 +391,17 @@ public abstract class AbstractBatchIntegrationTest {
      * is the reference the sibling repository harness names, so the two tiers cannot drift onto different
      * engines.
      *
-     * <p>It is a <strong>digest</strong> rather than the {@code postgres:16} tag this field previously
-     * named. The earlier note called the residual risk of a republished tag "small and real" and deferred the
-     * remedy until the environment's image cache was refreshed. The risk was neither hypothetical nor small:
-     * {@code postgres:16} was measured resolving to <em>16.14</em> while the sibling repository harness named
-     * 16.10, so a single build was exercising the migrated schema against two different engines while both
-     * files claimed to pin "PostgreSQL 16". Severity of what that left in place: <strong>Medium</strong>. A
-     * mutable tag also defeats the very determinism the stated literal was there to provide - the same source
+     * <p>It is a <strong>digest</strong> rather than the {@code postgres:16} tag, and the residual risk of a
+     * republished tag is neither hypothetical nor small: {@code postgres:16} was measured resolving to
+     * <em>16.14</em> while the sibling repository harness named 16.10, so a single build would exercise the
+     * migrated schema against two different engines while both files claimed to pin "PostgreSQL 16". A
+     * mutable tag also defeats the very determinism a stated literal is there to provide - the same source
      * can produce a different engine tomorrow with nothing in the build changing. An exact patch-level tag
      * would narrow that risk; a digest removes it, because a digest is content-addressed and cannot move at
      * all.
      *
-     * <p>The deferral's precondition is met: the digest below is pulled into the provisioned environment's
-     * cache, so the suite still starts without reaching the network, and a test that needs the network to
+     * <p>The digest below is pulled into the provisioned environment's
+     * cache, so the suite starts without reaching the network, and a test that needs the network to
      * start remains something this tier refuses. The digest resolves to PostgreSQL 16.14 on Debian
      * GNU/Linux 13 (trixie) with GLIBC 2.41, verified by inspecting the pulled image rather than inferred
      * from its name. {@code asCompatibleSubstituteFor} is required because a digest reference carries no tag,
@@ -821,25 +821,6 @@ public abstract class AbstractBatchIntegrationTest {
      * of which test is running rather than of when it ran or of what ran before it.
      */
     private String testIdentity = "unknown";
-
-    /**
-     * Creates the harness for one test instance.
-     *
-     * <p>Declared explicitly rather than left implicit, and {@code protected} rather than {@code public},
-     * because an abstract class's constructor is part of the contract its subclasses inherit and belongs in the
-     * documented surface: JUnit instantiates the concrete subclass, whose own constructor reaches this one
-     * through an implicit {@code super()} call. Narrowing it from the implicit {@code public} also keeps the
-     * type from looking instantiable in its own right, which it is not.
-     *
-     * <p>The body is empty by design and that is not an omission. Every collaborator this class needs - the
-     * persistence context, the job launcher and the fixed clock - arrives by injection <em>after</em>
-     * construction, and the two containers are already running by the time any test instance exists, having
-     * been started once per JVM by the static initialiser above. There is consequently nothing to initialise
-     * here, and doing anything here would introduce per-instance state the tier deliberately does not have.
-     */
-    protected AbstractBatchIntegrationTest() {
-        // Intentionally empty; see the constructor documentation above.
-    }
 
     /**
      * Returns the fixed clock the application context is running on.
@@ -1511,17 +1492,6 @@ public abstract class AbstractBatchIntegrationTest {
      */
     @TestConfiguration(proxyBeanMethods = false)
     static class FixedClockTestConfiguration {
-
-        /**
-         * Creates the configuration.
-         *
-         * <p>Declared explicitly, and empty by design: the single bean below is stateless and there is nothing
-         * to initialise. Spring instantiates this type reflectively, so the constructor is package-private
-         * rather than public.
-         */
-        FixedClockTestConfiguration() {
-            // Intentionally empty; see the constructor documentation above.
-        }
 
         /**
          * The fixed UTC clock every time-dependent bean in the context receives.

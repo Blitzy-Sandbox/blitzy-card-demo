@@ -174,9 +174,20 @@
  *       five files: {@code TRANSACT}, {@code CCXREF}, {@code ACCTDAT}, {@code CXACAIX} and
  *       {@code USRSEC}.</li>
  *   <li><strong>{@code com.cardemo.config.WebConfig}</strong> - the request-binding half of the
- *       CICS-to-REST substitution. It declares exactly three beans and overrides exactly two methods: the
- *       <strong>two distinct</strong> numeric parsers the corpus keeps separate and never interchanges, and
- *       the edited-amount printer that reproduces a display picture character for character. It publishes
+ *       CICS-to-REST substitution. It declares exactly <strong>five</strong> beans and overrides exactly
+ *       <strong>four</strong> {@code WebMvcConfigurer} methods. Three of the beans are the binding
+ *       primitives - the <strong>two distinct</strong> numeric parsers the corpus keeps separate and never
+ *       interchanges, and the edited-amount printer that reproduces a display picture character for
+ *       character. The remaining two are the error-rendering pair that keeps a refusal raised
+ *       <em>before</em> any handler from escaping as container HTML: a servlet-container customiser
+ *       installing the problem-JSON error report valve, and a security customiser for a request the
+ *       firewall rejects. The four overridden methods are {@code addFormatters},
+ *       {@code extendMessageConverters}, {@code addInterceptors} and
+ *       {@code extendHandlerExceptionResolvers}; the eleven further {@code @Override} annotations in the
+ *       file all belong to nested types and are not this class overriding anything.
+ *       <strong>Finding CODE-003, severity Medium, resolved:</strong> this entry said three beans and two
+ *       overrides, which was accurate before the error-rendering pair and the two later
+ *       {@code WebMvcConfigurer} hooks were added and was never revised. It publishes
  *       the navigation-action request-parameter name as a constant that the card controller binds, and
  *       registers no navigation-action converter or type - one existed, had no consumer, and was removed
  *       rather than wired to something. Origin: {@code app/cpy/CVCRD01Y.cpy}, 46 lines of navigation and
@@ -235,9 +246,9 @@
  * }</pre>
  *
  * <p>The {@code -Ddependency-check.skip=true} flag suppresses only the vulnerability scan, which needs
- * network access to the feed and takes roughly half an hour on a cold cache. <strong>An earlier revision of
- * this paragraph added that continuous integration "runs it as a separate job so that skipping it locally
- * cannot hide a finding"; that clause is withdrawn.</strong> No separate scan job exists. The workflow's
+ * network access to the feed and takes roughly half an hour on a cold cache. <strong>No separate scan job
+ * exists</strong>, so continuous integration does not "run it as a separate job so that skipping it locally
+ * cannot hide a finding". The workflow's
  * {@code verify} job runs one {@code ./mvnw --batch-mode --no-transfer-progress clean verify} carrying no skip
  * flag - the step named <em>Verify - compile warning-free, run every tier, enforce every gate</em> of the
  * {@code verify} job in {@code .github/workflows/build.yml} - so the scan is part of the full gate itself and a
@@ -523,8 +534,8 @@
  *
  *   <dt>{@code carddemo.aws.sns.notification-topic}</dt>
  *   <dd>From {@code CARDDEMO_SNS_NOTIFICATION_TOPIC}, <strong>no default</strong>. Exactly one topic is
- *       provisioned; an earlier revision of the initialisation script created a second that nothing
- *       published to, and it was removed rather than left to look like an integration surface.</dd>
+ *       provisioned, and a second that nothing publishes to must not be created: an unconsumed topic looks
+ *       like an integration surface and is not one.</dd>
  *
  *   <dt>{@code spring.cloud.aws.s3.endpoint}, {@code spring.cloud.aws.sqs.endpoint} and
  *       {@code spring.cloud.aws.sns.endpoint}</dt>
@@ -882,11 +893,12 @@
  *
  *   <dt>2. A locator for the CICS transaction identifier field: {@code Not available}</dt>
  *   <dd>{@code EIBTRNID} has <strong>zero occurrences under {@code app/}</strong>. The complete
- *       exec-interface-block census across {@code app/cbl} is {@code EIBCALEN} at 49 occurrences and
- *       {@code EIBAID} at 16, and nothing else, so no {@code app/...:Lnnn} citation may be fabricated for it -
- *       including in support of the claim that the correlation identifier replaces it. <em>Needed:</em>
- *       nothing. The correlation identifier does replace the per-request identity, and where a citation is
- *       wanted the honest ones are {@code app/cbl/COSGN00C.cbl:L37}, where the transaction identifier is a
+ *       exec-interface-block census under {@code app/} is {@code EIBCALEN} at 49 occurrences and
+ *       {@code EIBAID} at 44 - 16 of them in {@code app/cbl} and 28 in {@code app/cpy/CSSTRPFY.cpy} - and
+ *       nothing else, so no {@code app/...:Lnnn} citation may be fabricated for it, and in particular none
+ *       may be fabricated in support of a claim that the correlation identifier replaces it.
+ *       <em>Needed:</em> nothing, because there is nothing to replace: the correlation identifier is
+ *       additive capability, and where a citation is wanted the honest ones are {@code app/cbl/COSGN00C.cbl:L37}, where the transaction identifier is a
  *       working-storage literal {@code WS-TRANID PIC X(04) VALUE 'CC00'}, and
  *       {@code app/cbl/COCRDLIC.cbl:L295}, the {@code DFHCOMMAREA} declaration
  *       {@code OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN}.</dd>

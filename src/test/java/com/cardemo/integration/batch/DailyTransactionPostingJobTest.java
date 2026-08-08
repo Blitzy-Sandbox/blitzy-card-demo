@@ -125,8 +125,8 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
  * <strong>Not available</strong>: it occurs nowhere in the frozen COBOL corpus, so a faithful test would
  * require a source occurrence or a captured legacy run that exercises an unavailable dataset.
  *
- * <p><strong>The exact reject count IS asserted.</strong> An earlier revision declined it, holding that "the
- * count is model-sensitive fixture data". That was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+ * <p><strong>The exact reject count IS asserted.</strong> Declining it on the ground that "the
+ * count is model-sensitive fixture data" would be wrong: {@code 2800-UPDATE-ACCOUNT-REC} ends in
  * {@code REWRITE FD-ACCTFILE-REC} at {@code app/cbl/CBTRN02C.cbl:561} and a VSAM {@code REWRITE} replaces the
  * record in the cluster, so the re-read at {@code :394} returns the mutated accumulators and the stateless
  * reading is a misreading rather than a second model. Exactly one faithful model exists,

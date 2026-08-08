@@ -447,10 +447,8 @@ class TransactionCategoryBalanceIdTest {
         return constructor.newInstance();
     }
 
-    // ==================================================================
     // 0 - Build path self check. A test class that stops being collected
     //     stops protecting anything, and says nothing while it happens.
-    // ==================================================================
 
     @Test
     @DisplayName("0. this class sits where Surefire collects it, and nowhere Failsafe would claim it")
@@ -500,10 +498,8 @@ class TransactionCategoryBalanceIdTest {
                 .hasSize(7);
     }
 
-    // ==================================================================
     // 1 - The field contract of app/cpy/CVTRA01Y.cpy:L5-L8, proved against
     //     the frozen copybook, the seed fixture and the migration.
-    // ==================================================================
 
     @Nested
     @DisplayName("1. Field contract: three components, COBOL order, 17 bytes")
@@ -707,10 +703,8 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // ==================================================================
     // 2 - Why the component order is load bearing: the account level
     //     control break of app/cbl/CBACT04C.cbl:L188-L222.
-    // ==================================================================
 
     /**
      * Replays the control break of {@code app/cbl/CBACT04C.cbl:L194} over a browse sequence.
@@ -877,10 +871,8 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // ==================================================================
     // 3 - Freely constructible for a row that is absent from the table:
     //     the upsert path of app/cbl/CBTRN02C.cbl:L467-L530.
-    // ==================================================================
 
     @Nested
     @DisplayName("3. Constructible for a row that does not yet exist")
@@ -1001,10 +993,8 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // ==================================================================
     // 4 - @Embeddable, Serializable, a pinned serialized form, and an
     //     equals/hashCode contract total over all three components.
-    // ==================================================================
 
     @Nested
     @DisplayName("4. Embeddable value type with a total identity")
@@ -1316,10 +1306,8 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // ==================================================================
     // 5 - The verified name collision: TRAN-CAT-KEY is declared twice,
     //     in CVTRA01Y (17 bytes) and CVTRA04Y (6 bytes).
-    // ==================================================================
 
     @Nested
     @DisplayName("5. The two TRAN-CAT-KEY groups are different contracts")
@@ -1464,10 +1452,8 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // ==================================================================
     // 6 - Hostile input. Rule 1 clause A: treat inputs as untrusted.
     //     Every rejection asserts the exact message AND the cause.
-    // ==================================================================
 
     @Nested
     @DisplayName("6. Hostile input: every component boundary is guarded")

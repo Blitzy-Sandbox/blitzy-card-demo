@@ -1,12 +1,12 @@
 /*
- * **************************************************************************
+ * ******************************************************************
  * Program     : AccountDto.java
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 data transfer object
  * Function    : Account-view response payload; account and customer fields
  *               interleaved as in the source.
  * Source      : app/cpy-bms/COACTVW.CPY (37 fields) @ 7756d89
- * **************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -21,7 +21,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * **************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.model.dto;
 

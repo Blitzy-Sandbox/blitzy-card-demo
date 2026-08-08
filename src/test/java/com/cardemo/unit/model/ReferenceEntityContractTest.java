@@ -455,7 +455,7 @@ class ReferenceEntityContractTest {
         void theFormerlyUnguardedEntitiesNowEnforceTheirColumns() {
             assertThatIllegalArgumentException()
                     .as("the composite primary key is now guarded, and this does NOT break the posting "
-                            + "job's upsert. 2700-UPDATE-TCATBAL at app/cbl/CBTRN02C.cbl:L467-L500 MOVEs "
+                            + "job's upsert. 2700-UPDATE-TCATBAL at app/cbl/CBTRN02C.cbl:L467-L501 MOVEs "
                             + "all three key components (XREF-ACCT-ID, DALYTRAN-TYPE-CD, DALYTRAN-CAT-CD) "
                             + "BEFORE the READ, and 2700-A-CREATE-TCATBAL-REC creates the row with that "
                             + "same populated key. The guard refuses an ABSENT key, which the source never "
@@ -585,8 +585,8 @@ class ReferenceEntityContractTest {
                     new DisclosureGroup(new DisclosureGroupId("DEFAULT", "01", 5), new BigDecimal("15.00"));
 
             assertThat(group.getId().getAccountGroupId())
-                    .as("app/cbl/CBACT04C.cbl:L415-L460 substitutes the LITERAL group id DEFAULT and "
-                            + "retries when the first lookup returns not-found. The retry accepts ONLY "
+                    .as("app/cbl/CBACT04C.cbl:L415-L440 substitutes the LITERAL group id DEFAULT and "
+                            + "retries at :L443-L460 when the first lookup returns not-found. The retry accepts ONLY "
                             + "success, so a missing DEFAULT row abends the job - which makes this exact "
                             + "literal a functional dependency, not a convention")
                     .isEqualTo("DEFAULT");

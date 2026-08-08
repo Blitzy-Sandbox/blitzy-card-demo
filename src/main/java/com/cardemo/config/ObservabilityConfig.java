@@ -278,8 +278,8 @@ import org.springframework.context.annotation.Configuration;
  * <p><strong>The mainframe identifier this replaces cannot be cited, because it is not there.</strong> The
  * identifier commonly named as the mainframe's thread of request identity, {@code EIBTRNID},
  * <strong>does not occur anywhere in this repository</strong>: it has zero occurrences at {@code 7756d89},
- * and the complete exec-interface-block census in {@code app/cbl} is {@code EIBCALEN} with 49 occurrences
- * and {@code EIBAID} with 16. No
+ * and the complete exec-interface-block census under {@code app/} is {@code EIBCALEN} with 49 occurrences
+ * and {@code EIBAID} with 44, 16 of them in {@code app/cbl} and 28 in {@code app/cpy/CSSTRPFY.cpy}. No
  * line-level citation for it can therefore be given, and none is fabricated. What is needed to describe the
  * legacy per-transaction identity instead is already available and is what this class cites:
  * {@code app/csd/CARDDEMO.CSD} for the transaction inventory, {@code app/cbl/COSGN00C.cbl:L37}

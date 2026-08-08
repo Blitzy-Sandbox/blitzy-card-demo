@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : CustomerRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -10,7 +10,7 @@
  *               (app/catlg/LISTCAT.txt:L632 DATA-component attribute line;
  *               app/jcl/CUSTFILE.jcl:L46, L50-L51 KEYS(9 0) RECORDSIZE(500 500));
  *               record layout app/cpy/CVCUS01Y.cpy:L4-L23 @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -25,7 +25,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 
 package com.cardemo.repository;
@@ -359,9 +359,9 @@ import java.util.Optional;
  * disclosed rather than guessed at.
  * </p>
  * <ol>
- *   <li><strong>All three Flyway migrations are present.</strong> An earlier revision of this bullet
- *       recorded {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as not available; that is no
- *       longer true and the claim is withdrawn. {@code V1__create_schema.sql} declares
+ *   <li><strong>All three Flyway migrations are present</strong>, so neither
+ *       {@code V2__create_indexes.sql} nor {@code V3__seed_data.sql} is unavailable.
+ *       {@code V1__create_schema.sql} declares
  *       {@code CREATE TABLE customer} with {@code ck_customer_ssn_numeric}, {@code V2} correctly declares
  *       no index for this table because {@code CUSTDATA} has no alternate index in
  *       {@code app/catlg/LISTCAT.txt}, and {@code V3} seeds it from

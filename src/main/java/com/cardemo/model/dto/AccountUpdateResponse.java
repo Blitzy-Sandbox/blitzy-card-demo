@@ -39,9 +39,10 @@ package com.cardemo.model.dto;
  * <h2>What it does</h2>
  *
  * <p>It reports what happened and nothing more. The service's own result type cannot be this response, for
- * three independent reasons: it carries the whole submitted request including both snapshot groups, so
- * returning it would echo the caller's social security number, date of birth, government identifier and
- * electronic-funds identifier straight back; it carries the per-field 3270 presentation instructions - field
+ * three independent reasons: it carries the whole submitted request together with the as-displayed group the
+ * service <em>opened</em> from the sealed snapshot, so returning it would publish in the clear the social
+ * security number, date of birth, government identifier and electronic-funds identifier that sealing exists to
+ * keep off the wire; it carries the per-field 3270 presentation instructions - field
  * attribute, colour, marker and cursor - which describe a terminal that no longer exists; and it carries the
  * CICS navigation quadruple naming the transaction and program control would have passed to, which a client
  * addresses by URL instead.</p>

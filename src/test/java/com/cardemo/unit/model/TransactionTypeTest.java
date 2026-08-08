@@ -1370,10 +1370,8 @@ class TransactionTypeTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Private helpers. Each is a pure function of its arguments and of the frozen, read-only corpus; none
     // holds state between calls, and none writes, copies or moves a file of any kind.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Walks upward from the working directory to the directory holding both {@code pom.xml} and {@code app/}.

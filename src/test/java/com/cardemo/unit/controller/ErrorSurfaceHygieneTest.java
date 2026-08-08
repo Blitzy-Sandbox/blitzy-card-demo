@@ -420,7 +420,7 @@ class ErrorSurfaceHygieneTest {
             // What survives is a symbolic reason from a closed vocabulary - unavailable, timeout,
             // interrupted, error - plus the failing type's class name and the LOGICAL queue name, which is a
             // literal in application.yml and therefore provably free of an account identifier. The RESP slot
-            // previously carried MessagingOperationFailedException.getEndpoint(), a resolved queue URL that
+            // may not carry MessagingOperationFailedException.getEndpoint(), a resolved queue URL that
             // spells out the region and the owning account number on a channel an operator reads.
             //
             // 'unavailable' specifically: the publisher reported a messaging failure, which is the one reason

@@ -6,7 +6,7 @@
  * Function    : Interest calculation - account control break, disclosure-rate
  *               fallback and synthetic transaction generation.
  * Source      : app/jcl/INTCALC.jcl + app/cbl/CBACT04C.cbl (652 lines,
- *               23 paragraphs) @ 7756d89
+ *               22 own paragraph labels) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -101,7 +101,7 @@ import io.awspring.cloud.s3.S3Operations;
 
 /**
  * The interest-calculation batch job: the Spring Batch replacement for {@code app/jcl/INTCALC.jcl},
- * whose single step {@code STEP15} runs {@code app/cbl/CBACT04C.cbl} - 652 lines, 23 paragraphs.
+ * whose single step {@code STEP15} runs {@code app/cbl/CBACT04C.cbl} - 652 lines, 22 own paragraph labels.
  *
  * <h2>What it does</h2>
  *
@@ -152,13 +152,11 @@ import io.awspring.cloud.s3.S3Operations;
  * over-limit test by subtracting the cycle-debit accumulator, that one account's over-limit arithmetic
  * behaves differently on the following posting cycle - in
  * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which <strong>is authored</strong>, so the
- * consequence is observable rather than hypothetical. An earlier revision of this paragraph described that
- * job as unauthored and this one as the only job {@code batch/jobs} holds; both statements are withdrawn.
- * The package now holds <strong>four of its six target jobs</strong> - this one,
- * {@code DailyTransactionPostingJob}, {@code StatementGenerationJob} and
- * {@code com.cardemo.batch.jobs.TransactionReportJob} - and what remains outstanding is
- * {@code CombineTransactionsJob} and the planned
- * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. The lost final flush is the behaviour
+ * consequence is observable rather than hypothetical. The package holds <strong>all six</strong> of its
+ * target jobs - this one, {@code DailyTransactionPostingJob}, {@code StatementGenerationJob},
+ * {@code com.cardemo.batch.jobs.TransactionReportJob}, {@code CombineTransactionsJob} and
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} - so none of them is planned and this one is not
+ * the only job here. The lost final flush is the behaviour
  * of the system of record and it is reproduced exactly.
  * {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} reproduces the branch faithfully so the
  * paragraph map stays provable - it lives there, with the rest of the {@code :L185}-{@code :L232} loop body
@@ -179,7 +177,8 @@ import io.awspring.cloud.s3.S3Operations;
  * at all, so that program has no flush construct to reason about.
  *
  * <p><b>Numbering divergence, severity Low.</b> The folder requirements number this finding 3 while a
- * sibling prompt numbers it 2. It is owed a <em>single</em> entry in the {@code DECISION_LOG.md}, against the
+ * sibling prompt numbers it 2. It has a <em>single</em> row - {@code CIT-FINDING-NUMBER} under
+ * {@code DL-CR-09} in {@code DECISION_LOG.md} - against the
  * Agent Action Plan claim it corrects. Neither number is asserted here, because asserting either would
  * contradict the other source.
  *
@@ -226,7 +225,8 @@ import io.awspring.cloud.s3.S3Operations;
  * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}. The generation prefix is
  * {@code carddemo.aws.s3.gdg-prefixes.systran}, whose shipped value is {@code gdg/systran} and whose
  * comment names {@code app/jcl/DEFGDGB.jcl:L49} as its origin. This class binds the declared names.
- * The divergence is owed an entry in the {@code DECISION_LOG.md} under clause F.
+ * The divergence is registered as {@code CIT-PROPERTY-NAMES} under {@code DL-CR-09} in
+ * {@code DECISION_LOG.md}, which is its clause F record.
  *
  * <h2>Finding 4 - Low - three locator corrections</h2>
  *
@@ -443,7 +443,8 @@ import io.awspring.cloud.s3.S3Operations;
  * They are documented from here because a reader of the <em>job</em> is who needs to know which flush the
  * source reaches; they are not re-declared here, because a second never-invoked copy of a method the
  * processor already owns would be the very dead code and duplication clauses B and C forbid. Severity
- * of that placement decision: <b>Low</b>, owed an entry in the {@code DECISION_LOG.md}.
+ * of that placement decision: <b>Low</b>, registered as {@code CIT-PARAGRAPH-PLACEMENT} under
+ * {@code DL-CR-09} in {@code DECISION_LOG.md}.
  *
  * <p><b>Parity governs</b>, because clause B forbids <em>untracked</em> dead code and deferred-work markers "without
  * owners or tracking reference". Both members carry, in the processor, an explicit {@code intentional-no-op} marker,
@@ -652,12 +653,12 @@ public class InterestCalculationJob {
      * generation back means reading this count and then that many indexed entries, which yields the keys in
      * creation order.
      *
-     * <p><b>Finding M-07, severity Medium, RESOLVED.</b> This entry used to hold every key in one string joined
-     * by a comma, and the Javadoc justified that by asserting a key "never contains the separator because it is
-     * built from digits, the configured prefix and a fixed suffix". <b>That justification was false.</b> The
-     * prefix is {@code carddemo.aws.s3.gdg-prefixes.systran}, an externally configured value, and
-     * the prefix validator of the day only stripped trailing separators and rejected an empty result - a
-     * prefix written {@code gdg,systran} passed validation and silently split one key into two on read, so a
+     * <p><b>Finding M-07, severity Medium.</b> Holding every key in one string joined
+     * by a comma, justified by asserting that a key "never contains the separator because it is
+     * built from digits, the configured prefix and a fixed suffix", rests on a <b>false</b> premise. The
+     * prefix is {@code carddemo.aws.s3.gdg-prefixes.systran}, an externally configured value, and a
+     * validator that only strips trailing separators and rejects an empty result lets a
+     * prefix written {@code gdg,systran} pass and silently split one key into two on read, so a
      * downstream step would resolve a generation to object names that were never created. The shared grammar
      * of {@link GenerationPrefixContract} is stricter but still does not forbid a comma, and deliberately so:
      * see the next paragraph.
@@ -684,15 +685,16 @@ public class InterestCalculationJob {
      * keys live one per entry under {@link #SYSTRAN_PART_KEYS_INDEX_PREFIX}, read with the same
      * count-then-indexed-entries protocol as the generation keys above.
      *
-     * <p><b>Finding C-03, severity Critical, RESOLVED - and this entry is the mechanism.</b> The writer used
-     * to upload one object per chunk directly into this run's generation and publish every one of them as a
-     * generation key. A generation is one sequential dataset: {@code app/jcl/INTCALC.jcl:L37}-{@code :L41}
+     * <p><b>Finding C-03, severity Blocker - and this entry is the mechanism that forecloses it.</b>
+     * Uploading one object per chunk directly into this run's generation and publishing every one of them as a
+     * generation key breaks what a generation is. A generation is one sequential dataset:
+     * {@code app/jcl/INTCALC.jcl:L37}-{@code :L41}
      * allocates {@code DSN=AWS.M2.CARDDEMO.SYSTRAN(+1)} with {@code DISP=(NEW,CATLG,DELETE)} and
      * {@code DCB=(RECFM=F,LRECL=350)}, which is a single dataset written from open to close, not one dataset
-     * per commit interval. So a run of more than one chunk published a generation of several objects, and
+     * per commit interval. A run of more than one chunk would publish a generation of several objects, and
      * {@code CombinedTransactionReader} - correctly - refuses to read a generation holding more than one
      * object, because concatenating siblings would impose an order no convention defines. The two components
-     * therefore disagreed, and the disagreement was invisible for any run small enough to fit one chunk,
+     * would disagree, and the disagreement would be invisible for any run small enough to fit one chunk,
      * which is every unit test.
      *
      * <p>Parts are the resolution rather than a reader change. They are staged under a {@code parts/} segment
@@ -780,17 +782,17 @@ public class InterestCalculationJob {
      * The diagnostic context entries this job's listener owns for the duration of a run, captured on entry so
      * that {@code afterJob} can put them back instead of deleting them.
      *
-     * <p><b>Finding M-03, severity Medium, RESOLVED - two defects, one root cause.</b> This class used to
-     * declare its own {@code "jobInstanceId"} and {@code "correlationId"} literals, duplicating the keys
+     * <p><b>Finding M-03, severity Medium - two defects, one root cause.</b> Declaring local
+     * {@code "jobInstanceId"} and {@code "correlationId"} literals duplicates the keys
      * {@link CorrelationIdFilter} publishes as {@link CorrelationIdFilter#MDC_KEY_JOB_INSTANCE_ID} and
-     * {@link CorrelationIdFilter#MDC_KEY_CORRELATION_ID}, and it ended a run with an unconditional
-     * {@code MDC.remove} on both. The duplication meant a key could be renamed in one place and silently
-     * diverge from {@code logback-spring.xml}; the unconditional removal was worse, because Spring Batch runs
+     * {@link CorrelationIdFilter#MDC_KEY_CORRELATION_ID}, and ending a run with an unconditional
+     * {@code MDC.remove} on both compounds it. The duplication lets a key be renamed in one place and silently
+     * diverge from {@code logback-spring.xml}; the unconditional removal is worse, because Spring Batch runs
      * jobs on pooled threads and a job launched from inside a request, or a partitioned step whose parent
-     * already labelled the thread, had its caller's context destroyed. Note the asymmetry that made it a
-     * defect rather than a style point: the old {@code beforeJob} deliberately <em>respected</em> an inherited
-     * correlation identifier by only setting one when absent, and then {@code afterJob} deleted the very value
-     * it had just taken care not to overwrite.
+     * already labelled the thread, would have its caller's context destroyed. Note the asymmetry that makes it
+     * a defect rather than a style point: a {@code beforeJob} that deliberately <em>respects</em> an inherited
+     * correlation identifier by only setting one when absent, followed by an {@code afterJob} that deletes the
+     * very value it took care not to overwrite, contradicts itself.
      *
      * <p>Held in a {@link ThreadLocal} rather than a field because the listener is documented as stateless and
      * must stay that way: the job bean is a singleton, so an instance field would be shared across concurrent
@@ -827,8 +829,8 @@ public class InterestCalculationJob {
      * second DD. The agent brief describes {@code XREFFIL1} as "a second logical view of the same dataset"; that is
      * true of the JCL's intent but not of the program's behaviour, so the brief is corrected here rather than
      * followed. Retained as a named constant so the unreferenced allocation is traceable and is reported at
-     * {@code DEBUG} by {@link #openCrossReferenceFile()} instead of vanishing silently; owed an entry in the
-     * {@code DECISION_LOG.md}.
+     * {@code DEBUG} by {@link #openCrossReferenceFile()} instead of vanishing silently; registered as
+     * {@code CIT-XREFFIL1} under {@code DL-CR-09} in {@code DECISION_LOG.md}.
      *
      * <p>The Java consequence is nil: both DDs would collapse onto
      * {@link com.cardemo.repository.CardCrossReferenceRepository} regardless - the primary-key finder for
@@ -895,7 +897,7 @@ public class InterestCalculationJob {
      * <b>This is a legacy copy-and-paste defect in the diagnostic text and it is preserved verbatim,
      * not repaired.</b> The literal is part of the observable output the parity comparison is measured
      * against, so correcting it here would register as a diff. Severity <b>Medium</b>: an operator
-     * reading this line is pointed at the wrong dataset. It is owed an entry in the {@code DECISION_LOG.md}
+     * reading this line is pointed at the wrong dataset. It is recorded as {@code DL-LD-08} in {@code DECISION_LOG.md}
      * alongside the other preserved legacy defects.
      */
     private static final String MSG_ERROR_OPENING_DISCGRP = "ERROR OPENING DALY REJECTS FILE";
@@ -1180,7 +1182,8 @@ public class InterestCalculationJob {
      * to the wrong location, which is precisely what clause D's least-privilege standard forbids. The
      * agent brief's instruction to "put a documented default on every {@code @Value}" is therefore
      * honoured for the job name, the chunk size and the generation prefix, and consciously not honoured
-     * for the bucket. Severity of the divergence: <b>Low</b>; owed an entry in the {@code DECISION_LOG.md}.
+     * for the bucket. Severity of the divergence: <b>Low</b>; registered as {@code CIT-BUCKET-DEFAULT}
+     * under {@code DL-CR-09} in {@code DECISION_LOG.md}.
      */
     private final String batchOutputBucket;
 
@@ -1329,11 +1332,11 @@ public class InterestCalculationJob {
     /**
      * Validates the configured {@code SYSTRAN} generation prefix against the one shared grammar.
      *
-     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This class used to carry its own
-     * {@code normalisePrefix}, which stripped trailing separators and refused an empty result and checked
+     * <p><strong>Finding m-02, severity Medium.</strong> A local
+     * {@code normalisePrefix} that strips trailing separators, refuses an empty result and checks
      * nothing else - no whitespace, no leading separator, no doubled separator, no traversal segment, no
-     * character range. It was the weakest of six divergent validators.
-     * {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is now the only grammar, and it
+     * character range - is the weakest of the six divergent validators that finding names.
+     * {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is the only grammar, and it
      * <em>refuses</em> a trailing separator rather than trimming one: silent normalisation means the value an
      * operator wrote and the value in force can differ with nothing reporting it. The declared value is
      * {@code gdg/systran}, which satisfies the grammar, so no shipped configuration changes behaviour.
@@ -1564,7 +1567,8 @@ public class InterestCalculationJob {
      * arithmetic ({@link FileStatusMapper#applResultForGuard(String)}) and of the status rendering
      * ({@link FileStatusMapper#displayIoStatus(String)}); only the choice of terminal type is local, and
      * it is local because the source made it so. Severity of the divergence from the sibling precedent:
-     * Low, and owed an entry in the {@code DECISION_LOG.md}.
+     * Low, and registered as {@code CIT-TERMINAL-TYPE} under {@code DL-CR-09} in
+     * {@code DECISION_LOG.md}.
      *
      * @param ioStatus the status the operation reported, {@code '00'} on success
      * @param logicalName the DD name, for the success trace
@@ -1763,7 +1767,8 @@ public class InterestCalculationJob {
      * realised as <em>release and confirm</em>: the same bounded probe as the open, which makes the guard genuinely
      * reachable - a run that exhausted or broke the connection pool reports {@code '35'} here and abends, which is
      * the class of end-of-run failure the source's close guard exists to catch. Cost is one bounded query per dataset
-     * per run. Owed an entry in the {@code DECISION_LOG.md}.
+     * per run. Held as {@code DL-MS-04} in {@code DECISION_LOG.md}, with the no-dead-code conflict it turns
+     * on resolved at {@code DL-CR-01}.
      *
      * @throws FatalProcessingException if the driving dataset is no longer reachable at end of run
      */
@@ -2143,14 +2148,14 @@ public class InterestCalculationJob {
      * Catalogues this run's generation on success, or leaves the object store exactly as it found it on
      * failure. Runs once per execution, after every {@code CLOSE} paragraph.
      *
-     * <p><b>Finding C-05, severity Critical, RESOLVED.</b>
+     * <p><b>Finding C-05, severity Blocker.</b>
      * {@code app/jcl/INTCALC.jcl:L37}-{@code :L41} allocates the output with
      * {@code DISP=(NEW,CATLG,DELETE)}. The third positional sub-parameter is the <em>abnormal</em>
      * disposition, and it says {@code DELETE}: a step that ends abnormally leaves <b>no catalogued
-     * generation</b> behind. The previous implementation uploaded each chunk as it went, so a run that
-     * abended after its third chunk left three catalogued objects that no successful run had produced and
-     * that nothing would ever remove. The next pipeline execution then resolved "the newest generation" to
-     * the wreckage of a failed one, and read it as though it were a complete interest run.
+     * generation</b> behind. Uploading each chunk as it goes means a run that
+     * abends after its third chunk leaves three catalogued objects that no successful run produced and
+     * that nothing would ever remove. The next pipeline execution would then resolve "the newest generation"
+     * to the wreckage of a failed one, and read it as though it were a complete interest run.
      *
      * <p>The two dispositions are therefore both implemented here, and which one applies is decided from the
      * execution's own outcome rather than from whether this method was reached:
@@ -2598,7 +2603,8 @@ public class InterestCalculationJob {
      * source would have accepted. That is required rather than accidental - clause A demands inputs be
      * treated as untrusted, and a malformed parameter would otherwise corrupt every identifier in the
      * generation and only surface downstream in the combine job's load. The JCL's own value passes
-     * unchanged. Severity <b>Low</b>, and owed an entry in the {@code DECISION_LOG.md}.
+     * unchanged. Severity <b>Low</b>, and recorded as boundary (1) of {@code DL-DV-10} in
+     * {@code DECISION_LOG.md}.
      *
      * <p>Failures are reported as {@link JobParametersInvalidException}, which is what this interface
      * declares and what Spring Batch turns into a refusal to start the job. It is not

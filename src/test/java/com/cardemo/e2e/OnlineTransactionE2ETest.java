@@ -234,11 +234,6 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 @DisplayName("the seventeen-operation online CardDemo REST surface")
 public class OnlineTransactionE2ETest {
 
-    /** JUnit instantiates this class once per class; declared explicitly so doclint has a comment to read. */
-    public OnlineTransactionE2ETest() {
-        super();
-    }
-
     private static final String POSTGRES_IMAGE =
             "postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20";
     private static final String POSTGRES_INIT_ARGUMENTS = "--encoding=UTF8 --locale=C";
@@ -358,6 +353,20 @@ public class OnlineTransactionE2ETest {
         registry.add("carddemo.security.jwt.signing-key", () -> EPHEMERAL_SIGNING_KEY);
     }
 
+    /**
+     * Provisions the emulator resources the online surface reaches: the three buckets, the report
+     * queue and the notification topic.
+     *
+     * @param endpoint the emulator endpoint.
+     * @param region the region to address it in.
+     * @param accessKey the emulator access key.
+     * @param secretKey the emulator secret key.
+     * @param inputBucket the batch input bucket.
+     * @param outputBucket the batch output bucket.
+     * @param statementsBucket the statements bucket.
+     * @param reportQueue the report queue name.
+     * @param notificationTopic the notification topic name.
+     */
     private static void provisionCloudResources(final URI endpoint, final String region,
             final String accessKey, final String secretKey, final String inputBucket,
             final String outputBucket, final String statementsBucket, final String reportQueue,
@@ -405,16 +414,32 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Creates one bucket.
+     *
+     * @param s3 the client to create it with.
+     * @param bucket the bucket name.
+     */
     private static void createBucket(final S3Client s3, final String bucket) {
         s3.createBucket(CreateBucketRequest.builder().bucket(bucket).build());
     }
 
+    /**
+     * Generates a signing key for this run alone, so no key material is committed.
+     *
+     * @return the generated key, base64url encoded.
+     */
     private static String generateEphemeralSigningKey() {
         final byte[] material = new byte[SIGNING_KEY_BYTES];
         new SecureRandom().nextBytes(material);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(material);
     }
 
+    /**
+     * Opens a queue client against the emulator, for the cases that read the report queue directly.
+     *
+     * @return that client; the caller closes it.
+     */
     private static SqsClient queueClient() {
         return SqsClient.builder()
                 .endpointOverride(LOCALSTACK.getEndpoint())
@@ -537,6 +562,12 @@ public class OnlineTransactionE2ETest {
         drainReportQueue();
     }
 
+    /**
+     * Mints an identity whose identifier is not already taken.
+     *
+     * @param userType the type the identity carries.
+     * @return the minted identity.
+     */
     private TestIdentity newIdentity(final UserType userType) {
         Objects.requireNonNull(userType, "userType must not be null");
         String userId;
@@ -546,12 +577,23 @@ public class OnlineTransactionE2ETest {
         return new TestIdentity(userId, randomMixedCaseCredential());
     }
 
+    /**
+     * Stores a test identity with its credential hashed exactly as the sign-on path expects to find it.
+     *
+     * @param identity the identity to store.
+     * @param userType the type the identity carries.
+     */
     private void saveIdentity(final TestIdentity identity, final UserType userType) {
         final String digest = this.passwordEncoder.encode(identity.credential().toUpperCase(Locale.ROOT));
         this.userSecurityRepository.saveAndFlush(new UserSecurity(
                 identity.userId(), "E2E", userType == UserType.ADMIN ? "ADMIN" : "USER", digest, userType));
     }
 
+    /**
+     * Deletes a test identity if it is still present.
+     *
+     * @param identity the identity to delete; a {@code null} identity is ignored.
+     */
     private void deleteIdentity(final TestIdentity identity) {
         if (identity != null && this.userSecurityRepository.existsById(identity.userId())) {
             this.userSecurityRepository.deleteById(identity.userId());
@@ -559,6 +601,12 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Generates upper-case text from an alphabet with no visually ambiguous letters.
+     *
+     * @param length how many characters to generate.
+     * @return the generated text.
+     */
     private static String randomUppercaseText(final int length) {
         final SecureRandom random = new SecureRandom();
         final String alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -569,6 +617,12 @@ public class OnlineTransactionE2ETest {
         return value.toString();
     }
 
+    /**
+     * Generates a mixed-case credential, so a case can prove the credential is upper-cased before
+     * it is verified.
+     *
+     * @return the generated credential.
+     */
     private static String randomMixedCaseCredential() {
         final SecureRandom random = new SecureRandom();
         final String upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -583,6 +637,13 @@ public class OnlineTransactionE2ETest {
         return value.toString();
     }
 
+    /**
+     * Signs on over the real HTTP surface, presenting the identifier in lower case so the
+     * upper-casing the sign-on path performs is exercised rather than assumed.
+     *
+     * @param identity the identity to sign on as.
+     * @return the authenticated session, carrying the issued token.
+     */
     private AuthenticatedSession signOn(final TestIdentity identity) {
         final ObjectNode body = this.objectMapper.createObjectNode()
                 .put("userId", identity.userId().toLowerCase(Locale.ROOT))
@@ -599,11 +660,30 @@ public class OnlineTransactionE2ETest {
                 payload.path("userType").asText());
     }
 
+    /**
+     * Issues one request with the standard headers alone.
+     *
+     * @param method the HTTP method.
+     * @param path the request path.
+     * @param body the request body, or {@code null} for none.
+     * @param session the session to authenticate as, or {@code null} for an anonymous request.
+     * @return the response.
+     */
     private ResponseEntity<String> request(final HttpMethod method, final String path, final Object body,
             final AuthenticatedSession session) {
         return request(method, path, body, session, Map.of());
     }
 
+    /**
+     * Issues one request, with additional headers.
+     *
+     * @param method the HTTP method.
+     * @param path the request path.
+     * @param body the request body, or {@code null} for none.
+     * @param session the session to authenticate as, or {@code null} for an anonymous request.
+     * @param additionalHeaders headers set after the standard ones, so a case can override them.
+     * @return the response, with the body as text so an error payload is readable.
+     */
     private ResponseEntity<String> request(final HttpMethod method, final String path, final Object body,
             final AuthenticatedSession session, final Map<String, String> additionalHeaders) {
         final HttpHeaders headers = requestHeaders(session);
@@ -617,6 +697,13 @@ public class OnlineTransactionE2ETest {
         return response;
     }
 
+    /**
+     * Builds the headers every request carries: the accept type, the correlation pair and the bearer
+     * token when there is a session.
+     *
+     * @param session the session to authenticate as, or {@code null} for an anonymous request.
+     * @return those headers.
+     */
     private HttpHeaders requestHeaders(final AuthenticatedSession session) {
         final HttpHeaders headers = new HttpHeaders();
         headers.setAccept(List.of(MediaType.APPLICATION_JSON));
@@ -628,6 +715,11 @@ public class OnlineTransactionE2ETest {
         return headers;
     }
 
+    /**
+     * Asserts the correlation header echoes, and that no conversation state leaks into the body.
+     *
+     * @param response the response to screen.
+     */
     private void assertCorrelationAndConversationHygiene(final ResponseEntity<String> response) {
         assertThat(response.getHeaders().getFirst(CorrelationIdFilter.CORRELATION_ID_HEADER))
                 .isEqualTo(CORRELATION_VALUE);
@@ -641,12 +733,23 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Asserts no response field names a conversation component the stateless model has no place for.
+     *
+     * @param root the parsed response body.
+     */
     private void assertNoLegacyConversationFields(final JsonNode root) {
         final List<String> fieldNames = new ArrayList<>();
         collectFieldNames(root, fieldNames);
         assertThat(fieldNames).doesNotContainAnyElementsOf(LEGACY_ONLY_FIELDS);
     }
 
+    /**
+     * Collects every field name in a tree, at every depth.
+     *
+     * @param node the node to walk.
+     * @param destination the list names are appended to.
+     */
     private static void collectFieldNames(final JsonNode node, final List<String> destination) {
         if (node.isObject()) {
             node.fieldNames().forEachRemaining(destination::add);
@@ -656,11 +759,23 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Asserts a body is present, then parses it.
+     *
+     * @param response the response to read.
+     * @return its parsed body.
+     */
     private JsonNode responseBody(final ResponseEntity<String> response) {
         assertThat(response.getBody()).isNotNull().isNotBlank();
         return parseJson(response.getBody());
     }
 
+    /**
+     * Parses a response body, failing the case rather than the harness when it is not JSON.
+     *
+     * @param body the body text.
+     * @return the parsed tree.
+     */
     private JsonNode parseJson(final String body) {
         try {
             return this.objectMapper.readTree(body);
@@ -670,6 +785,12 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Decodes the claim set of a compact token without verifying it.
+     *
+     * @param token the compact token.
+     * @return its claims.
+     */
     private JsonNode jwtClaims(final String token) {
         final String[] segments = token.split("\\.");
         assertThat(segments.length).isEqualTo(3);
@@ -682,6 +803,12 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Mints a token for the same subject whose validity window has already closed.
+     *
+     * @param session the session whose issuer and subject are reused.
+     * @return the expired token.
+     */
     private String expiredToken(final AuthenticatedSession session) {
         final JsonNode issuedClaims = jwtClaims(session.token());
         final JwtClaimsSet claims = JwtClaimsSet.builder()
@@ -695,6 +822,12 @@ public class OnlineTransactionE2ETest {
         return this.jwtEncoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
     }
 
+    /**
+     * Alters one character of a token signature, leaving the compact form otherwise intact.
+     *
+     * @param token the signed token.
+     * @return the same token with an invalid signature.
+     */
     private static String tamperedToken(final String token) {
         final String[] segments = token.split("\\.");
         if (segments.length != 3 || segments[2].isEmpty()) {
@@ -704,10 +837,23 @@ public class OnlineTransactionE2ETest {
         return segments[0] + '.' + segments[1] + '.' + replacement + segments[2].substring(1);
     }
 
+    /**
+     * Renders an account identifier as the eleven-digit {@code ACCT-ID} image.
+     *
+     * @param numericId the numeric identifier.
+     * @return its eleven-character zero-padded image.
+     */
     private static String accountId(final long numericId) {
         return String.format(Locale.ROOT, "%011d", numericId);
     }
 
+    /**
+     * Reads one text column, trailing blanks removed as a fixed-width field would be read.
+     *
+     * @param row the column-keyed projection.
+     * @param key the column name.
+     * @return the value, right-trimmed.
+     */
     private static String text(final Map<String, Object> row, final String key) {
         final Object value = row.get(key);
         if (value == null) {
@@ -716,6 +862,13 @@ public class OnlineTransactionE2ETest {
         return value.toString().stripTrailing();
     }
 
+    /**
+     * Reads one money column at scale 2, whichever type the driver returned it as.
+     *
+     * @param row the column-keyed projection.
+     * @param key the column name.
+     * @return the value as a plain string at scale 2.
+     */
     private static String money(final Map<String, Object> row, final String key) {
         final Object value = row.get(key);
         if (value instanceof BigDecimal decimal) {
@@ -724,14 +877,33 @@ public class OnlineTransactionE2ETest {
         return new BigDecimal(text(row, key)).setScale(2).toPlainString();
     }
 
+    /**
+     * Strips every non-digit, for comparing a rendered value against a stored one.
+     *
+     * @param value the rendered value.
+     * @return its digits alone.
+     */
     private static String digits(final String value) {
         return value.replaceAll("[^0-9]", "");
     }
 
+    /**
+     * Removes the separators from a dash-separated date.
+     *
+     * @param date the persisted date.
+     * @return the same date with no separators.
+     */
     private static String compactDate(final String date) {
         return date.replace("-", "");
     }
 
+    /**
+     * Splits a persisted date into the three components the screen sends separately.
+     *
+     * @param target the body the components are put into.
+     * @param prefix the property-name prefix the three components share.
+     * @param date the persisted date, dash separated.
+     */
     private static void putDateParts(final ObjectNode target, final String prefix, final String date) {
         final String[] parts = date.split("-");
         if (parts.length != 3) {
@@ -742,6 +914,12 @@ public class OnlineTransactionE2ETest {
         target.put(prefix + "Day", parts[2]);
     }
 
+    /**
+     * Captures one account row, version column included.
+     *
+     * @param numericAccountId the account to read.
+     * @return the row as a column-keyed projection.
+     */
     private Map<String, Object> accountState(final long numericAccountId) {
         return this.jdbcTemplate.queryForMap("""
                 SELECT a.acct_id, a.acct_active_status, a.acct_curr_bal, a.acct_credit_limit,
@@ -764,6 +942,11 @@ public class OnlineTransactionE2ETest {
                 """, numericAccountId);
     }
 
+    /**
+     * Restores the captured account row, so the suite leaves the seeded data as it found it.
+     *
+     * @param state the row captured before the case ran.
+     */
     private void restoreAccountState(final Map<String, Object> state) {
         executeCommittedUpdate("""
                 UPDATE account
@@ -917,6 +1100,12 @@ public class OnlineTransactionE2ETest {
         return body;
     }
 
+    /**
+     * Captures the card row of one account, version column included.
+     *
+     * @param numericAccountId the account whose card is read.
+     * @return the row as a column-keyed projection.
+     */
     private Map<String, Object> cardState(final long numericAccountId) {
         return this.jdbcTemplate.queryForMap("""
                 SELECT card_num, card_acct_id, card_cvv_cd, card_embossed_name,
@@ -928,6 +1117,11 @@ public class OnlineTransactionE2ETest {
                 """, numericAccountId);
     }
 
+    /**
+     * Restores the captured card row, so the suite leaves the seeded data as it found it.
+     *
+     * @param state the row captured before the case ran.
+     */
     private void restoreCardState(final Map<String, Object> state) {
         executeCommittedUpdate("""
                 UPDATE card
@@ -940,6 +1134,12 @@ public class OnlineTransactionE2ETest {
                 state.get("card_num"));
     }
 
+    /**
+     * Builds a card-update body that echoes the stored row, so a case perturbs one field only.
+     *
+     * @param state the captured card row.
+     * @return the request body.
+     */
     private ObjectNode cardUpdateBody(final Map<String, Object> state) {
         final String account =
                 accountId(new BigDecimal(state.get("card_acct_id").toString()).longValueExact());
@@ -972,6 +1172,12 @@ public class OnlineTransactionE2ETest {
         return body;
     }
 
+    /**
+     * Builds a transaction-add body against a card and a category that both really exist.
+     *
+     * @param numericAccountId the account whose card the transaction is posted to.
+     * @return the request body.
+     */
     private ObjectNode transactionRequest(final long numericAccountId) {
         final Map<String, Object> card = cardState(numericAccountId);
         final Map<String, Object> category = this.jdbcTemplate.queryForMap("""
@@ -1003,6 +1209,13 @@ public class OnlineTransactionE2ETest {
         assertThat(queryCommittedLong("SELECT count(*) FROM \"transaction\"")).isZero();
     }
 
+    /**
+     * Applies one statement on its own committed connection, so the application tier observes it.
+     *
+     * @param sql the statement to apply.
+     * @param parameters the bind values, in ordinal order.
+     * @return the affected row count.
+     */
     private static int executeCommittedUpdate(final String sql, final Object... parameters) {
         try (Connection connection = POSTGRES.createConnection("");
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -1017,6 +1230,13 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Reads one long on its own committed connection, outside the suite transaction.
+     *
+     * @param sql the query, returning one numeric column of one row.
+     * @param parameters the bind values, in ordinal order.
+     * @return that value.
+     */
     private static long queryCommittedLong(final String sql, final Object... parameters) {
         try (Connection connection = POSTGRES.createConnection("");
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -1036,6 +1256,13 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Reads one decimal on its own committed connection, outside the suite transaction.
+     *
+     * @param sql the query, returning one decimal column of one row.
+     * @param parameters the bind values, in ordinal order.
+     * @return that value.
+     */
     private static BigDecimal queryCommittedDecimal(final String sql, final Object... parameters) {
         try (Connection connection = POSTGRES.createConnection("");
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -1055,6 +1282,13 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Builds a bill-payment body carrying the balance the account currently holds.
+     *
+     * @param numericAccountId the account to pay.
+     * @param confirmation the value {@code CONFIRMI} carries.
+     * @return the request body.
+     */
     private ObjectNode billPaymentRequest(final long numericAccountId, final String confirmation) {
         final Map<String, Object> state = accountState(numericAccountId);
         return this.objectMapper.createObjectNode()
@@ -1063,6 +1297,13 @@ public class OnlineTransactionE2ETest {
                 .put("confirmation", confirmation);
     }
 
+    /**
+     * Builds a report submission body for one reporting period.
+     *
+     * @param period {@code monthly}, {@code yearly} or a custom range.
+     * @param confirmation the value {@code CONFIRMI} carries.
+     * @return the request body.
+     */
     private ObjectNode reportRequest(final String period, final String confirmation) {
         final ObjectNode request = this.objectMapper.createObjectNode().put("confirmation", confirmation);
         if ("monthly".equals(period)) {
@@ -1083,6 +1324,11 @@ public class OnlineTransactionE2ETest {
         return request;
     }
 
+    /**
+     * Receives exactly one message from the report queue and parses its body.
+     *
+     * @return the parsed message body.
+     */
     private JsonNode receiveOneReportMessage() {
         try (SqsClient sqs = queueClient()) {
             final String queueUrl = sqs.getQueueUrl(builder -> builder.queueName(REPORT_QUEUE_NAME)).queueUrl();
@@ -1129,6 +1375,12 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Reads one frozen corpus member whole, so evidence is taken from the source rather than a copy.
+     *
+     * @param relativePath the repository-relative path of the member.
+     * @return its text with carriage returns removed, so the comparison is line-ending neutral.
+     */
     private static String sourceText(final String relativePath) {
         try {
             return Files.readString(Path.of(relativePath), StandardCharsets.UTF_8).replace("\r", "");
@@ -1137,6 +1389,14 @@ public class OnlineTransactionE2ETest {
         }
     }
 
+    /**
+     * Reads one inclusive line range out of a frozen corpus member.
+     *
+     * @param relativePath the repository-relative path of the member.
+     * @param startInclusive the one-based first line to take.
+     * @param endInclusive the one-based last line to take.
+     * @return those lines, newline-joined.
+     */
     private static String sourceLines(final String relativePath, final int startInclusive,
             final int endInclusive) {
         final List<String> lines = sourceText(relativePath).lines().toList();
@@ -1308,29 +1568,34 @@ public class OnlineTransactionE2ETest {
                     request(HttpMethod.GET, "/api/accounts/" + accountId(1L), null, user);
             assertThat(view.getStatusCode()).isEqualTo(HttpStatus.OK);
             final JsonNode account = responseBody(view);
-            // Transformation Rule 7: the read projects the ACUP-OLD-DETAILS group of
-            // app/cbl/COACTUPC.cbl:669 and the matching PUT carries it in its body. No entity tag and no
-            // If-Match are involved, because no server-side state stands between the two turns.
+            // Transformation Rule 7: the read seals the ACUP-OLD-DETAILS group of
+            // app/cbl/COACTUPC.cbl:669 and the matching PUT carries that sealed value in its body. No entity
+            // tag and no If-Match are involved, because no server-side state stands between the two turns.
             assertThat(view.getHeaders().getETag()).isNull();
-            final JsonNode projectedSnapshot = account.path("oldDetails");
-            assertThat(projectedSnapshot.isObject()).isTrue();
-            assertThat(projectedSnapshot.path("accountId").asText()).isEqualTo(accountId(1L));
-            // :4174-4179 reads the snapshot date of birth at offsets 1, 5 and 7 - the unseparated form -
-            // while the live record is dash separated at 1, 6 and 9. A projection that emitted the live
-            // form would be refused on every write.
-            assertThat(projectedSnapshot.path("dateOfBirth").asText().length()).isEqualTo(8);
-            assertThat(projectedSnapshot.path("dateOfBirth").asText()).doesNotContain("-");
-            // The nine protected values remain absent as DISPLAY components; they reach the client only
-            // inside the group above, which is the one carrier the comparison requires.
+            final JsonNode projectedSnapshot = account.path("snapshot");
+            assertThat(projectedSnapshot.isTextual()).isTrue();
+            assertThat(projectedSnapshot.asText()).isNotBlank();
+            // The value is opaque. Neither the nine protected customer values nor the account identifier
+            // appears in it, which is what a readable group could not promise.
+            assertThat(projectedSnapshot.asText())
+                    .doesNotContain(accountId(1L))
+                    .doesNotContain(text(original, "cust_ssn"))
+                    .doesNotContain(text(original, "cust_last_name"));
+            // The nine protected values are absent from the response entirely - not as DISPLAY components,
+            // and not inside a group either. The comparison's operand reaches the client only sealed.
             assertThat(account.fieldNames()).toIterable().doesNotContain(
+                    "oldDetails",
                     "customerSsn", "customerDateOfBirth", "customerFirstName", "customerMiddleName",
                     "customerLastName", "phoneNumber1", "phoneNumber2", "governmentIssuedId",
                     "eftAccountId");
+            assertThat(view.getBody())
+                    .doesNotContain(text(original, "cust_ssn"))
+                    .doesNotContain(text(original, "cust_govt_issued_id"));
 
             final ObjectNode update = accountUpdateBody(original);
             assertThat(update.path("newDetails").path("dateOfBirth").asText().length()).isEqualTo(8);
-            // The group is echoed back exactly as the read returned it, which is the whole contract.
-            update.set("oldDetails", projectedSnapshot.deepCopy());
+            // The sealed value is echoed back exactly as the read returned it, which is the whole contract.
+            update.put("snapshot", projectedSnapshot.asText());
             final ResponseEntity<String> updated = request(
                     HttpMethod.PUT,
                     "/api/accounts?confirm=true",
@@ -1360,45 +1625,64 @@ public class OnlineTransactionE2ETest {
         final ObjectNode body = accountUpdateBody(state);
         final ResponseEntity<String> view =
                 request(HttpMethod.GET, "/api/accounts/" + accountId(1L), null, user);
-        final JsonNode projectedSnapshot = responseBody(view).path("oldDetails");
+        final String projectedSnapshot = responseBody(view).path("snapshot").asText();
 
         // No confirmation: the PF05 gate of :2602-2603 is unmet, so nothing is written whatever else is
-        // right. Asserted with the group present, so the outcome is attributable to the gate alone.
+        // right. Asserted with the sealed value present, so the outcome is attributable to the gate alone.
         final ObjectNode confirmedBody = body.deepCopy();
-        confirmedBody.set("oldDetails", projectedSnapshot.deepCopy());
+        confirmedBody.put("snapshot", projectedSnapshot);
         assertThat(request(HttpMethod.PUT, "/api/accounts", confirmedBody, user).getStatusCode())
                 .isEqualTo(HttpStatus.PRECONDITION_REQUIRED);
 
-        // Confirmed but with NO oldDetails group: 1205-COMPARE-OLD-NEW has nothing to compare against, so
-        // it reports a validation failure naming the group rather than skipping the comparison.
+        // Confirmed but with NO snapshot member: 9700-CHECK-CHANGE-IN-REC has nothing to compare against, so
+        // the request is refused as an unmet precondition rather than the comparison being skipped. It is
+        // 428 rather than 400 because the remedy is to read the record and echo back what that read
+        // returned - a step the caller must take - and not to correct a malformed field.
         assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", body, user).getStatusCode())
-                .isEqualTo(HttpStatus.BAD_REQUEST);
+                .isEqualTo(HttpStatus.PRECONDITION_REQUIRED);
 
-        // Confirmed with an EMPTY group: a DIFFERENT condition, and a different status. The group is
-        // present, so 9700-CHECK-CHANGE-IN-REC has operands and runs - it just compares blanks against the
-        // live record and finds them different, which is DATA-WAS-CHANGED-BEFORE-UPDATE and answers 412.
-        // That is the source's own behaviour: INITIALIZE ACUP-OLD-DETAILS leaves the group blank and
-        // :4109-4192 then compares it, so a blank group is a failed comparison rather than an absent one.
+        // Confirmed with a value that is NOT one this server issued: a DIFFERENT condition, and a different
+        // status. Authenticated encryption fails closed, so the value cannot be opened, and the remedy is to
+        // read again rather than to obtain a first snapshot - which is 412.
         //
-        // The card surface answers 428 for the same shape, and the difference is also in the source rather
-        // than in the target: COCRDUPC's CCUP-CHANGE-ACTION marker at :276-280 is CCUP-DETAILS-NOT-FETCHED
-        // for BOTH LOW-VALUES and SPACES, and the dispatch arm at :954 answers that state by reading rather
-        // than writing, so a hollow group there leaves the write unreachable. COACTUPC declares no such
-        // two-valued marker for its group: :981-983 INITIALIZEs ACUP-OLD-DETAILS and :4109-4192 then
-        // compares whatever it holds. The asymmetry is asserted here deliberately, not normalised away.
-        final ObjectNode emptySnapshot = body.deepCopy();
-        emptySnapshot.set("oldDetails", this.objectMapper.createObjectNode());
-        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", emptySnapshot, user)
+        // A hand-composed group is not among the cases because it is no longer expressible: the request
+        // declares no readable as-displayed member, and Jackson refuses an undeclared property, so a body
+        // naming one is rejected at binding. That is the point of the sealed contract - the operand of the
+        // comparison is not something a caller can choose.
+        final ObjectNode forgedSnapshot = body.deepCopy();
+        forgedSnapshot.put("snapshot", "bm90LWEtc2VhbGVkLXNuYXBzaG90LXZhbHVl");
+        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", forgedSnapshot, user)
                 .getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
 
-        // Confirmed with a group that DISAGREES with the stored row: the guard of :4109-4193 fires and the
-        // write is abandoned. This is the outcome the two layers exist for, and it is the one that proves
-        // the snapshot is not derived from the row being written.
+        // Confirmed with an AUTHENTIC value that no longer agrees with the stored row: the guard of
+        // :4109-4193 fires and the write is abandoned. This is the outcome the two layers exist for, and it
+        // is the one that proves the snapshot is not derived from the row being written - the row is moved
+        // out from under a snapshot this server itself issued.
         final ObjectNode staleSnapshot = body.deepCopy();
-        final ObjectNode staleGroup = projectedSnapshot.deepCopy();
-        staleGroup.put("addressLine1", "AN ADDRESS THIS RECORD NEVER HELD");
-        staleSnapshot.set("oldDetails", staleGroup);
-        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", staleSnapshot, user)
+        staleSnapshot.put("snapshot", projectedSnapshot);
+        // executeCommittedUpdate, not the injected JdbcTemplate: the pool runs with auto-commit off, so a
+        // bare template update outside a transaction is rolled back when the connection is returned and the
+        // rival write would never be visible to the server.
+        assertThat(executeCommittedUpdate(
+                "UPDATE customer SET cust_addr_line_1 = ? WHERE cust_id = ?",
+                "AN ADDRESS THIS RECORD NEVER HELD", state.get("cust_id")))
+                .as("the rival write must actually land, or this case proves nothing")
+                .isEqualTo(1);
+        try {
+            assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", staleSnapshot, user)
+                    .getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
+        } finally {
+            executeCommittedUpdate("UPDATE customer SET cust_addr_line_1 = ? WHERE cust_id = ?",
+                    state.get("cust_addr_line_1"), state.get("cust_id"));
+        }
+
+        // And a value sealed for ANOTHER account does not open against this one, because both the account
+        // and the principal are bound as authenticated additional data rather than merely carried inside.
+        final ObjectNode transplanted = body.deepCopy();
+        transplanted.put("snapshot", responseBody(
+                request(HttpMethod.GET, "/api/accounts/" + accountId(2L), null, user))
+                .path("snapshot").asText());
+        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", transplanted, user)
                 .getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
 
         final Method statusFor = AccountController.class.getDeclaredMethod(
@@ -1477,27 +1761,28 @@ public class OnlineTransactionE2ETest {
             assertThat(detailResponse.getHeaders().getETag()).isNull();
             final JsonNode detail = responseBody(detailResponse);
             assertThat(detail.path("maskedCardNumber").asText().equals(cardNumber)).isFalse();
-            // The CCUP-OLD-DETAILS group of app/cbl/COCRDUPC.cbl:291-301 travels in the body. Its expiry
-            // DAY is asserted because app/cpy-bms/COCRDSL.CPY declares no field for it, which makes this
-            // the only route by which a client obtains the operand :1507 compares.
-            final JsonNode projectedSnapshot = detail.path("oldDetails");
-            assertThat(projectedSnapshot.isObject()).isTrue();
-            assertThat(projectedSnapshot.path("cardData").path("expiraionDate").path("expiryDay").asText())
-                    .isNotBlank();
-            // And the group carries no card number: :1347 sources that member from the RECEIVED map field,
-            // so emitting it would hand back the digits maskedCardNumber exists to withhold.
-            assertThat(projectedSnapshot.path("cardNumber").isNull()
-                    || projectedSnapshot.path("cardNumber").asText().isEmpty()).isTrue();
+            // The CCUP-OLD-DETAILS group of app/cbl/COCRDUPC.cbl:291-301 travels in the body, sealed. The
+            // expiry DAY it carries is the operand :1507 compares, and app/cpy-bms/COCRDSL.CPY declares no
+            // field for it, which is why the read has to supply it at all.
+            final JsonNode projectedSnapshot = detail.path("snapshot");
+            assertThat(projectedSnapshot.isTextual()).isTrue();
+            assertThat(projectedSnapshot.asText()).isNotBlank();
+            // The value is opaque, and in particular it does not hand back the digits maskedCardNumber
+            // exists to withhold - :1347 sources that member from the RECEIVED map field, so the sealed
+            // payload omits it and the write restores it from the request's own identity field.
+            assertThat(projectedSnapshot.asText()).doesNotContain(cardNumber);
+            assertThat(detail.fieldNames()).toIterable().doesNotContain("oldDetails");
+            assertThat(detailResponse.getBody()).doesNotContain(cardNumber);
 
             final ObjectNode cardUpdate = cardUpdateBody(original);
-            cardUpdate.set("oldDetails", projectedSnapshot.deepCopy());
+            cardUpdate.put("snapshot", projectedSnapshot.asText());
             final ResponseEntity<String> updateResponse = request(
                     HttpMethod.PUT,
                     "/api/cards",
                     cardUpdate,
                     user);
             assertThat(updateResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(responseBody(updateResponse).path("oldDetails").isNull()).isTrue();
+            assertThat(responseBody(updateResponse).path("snapshot").isNull()).isTrue();
             assertThat(this.jdbcTemplate.queryForObject(
                     "SELECT trim(card_active_status) FROM card WHERE card_num = ?",
                     String.class, original.get("card_num")))
@@ -1843,13 +2128,103 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
+    @DisplayName("CU02 distinguishes an omitted identifier from an empty one, as COUSR02C does")
+    void adminUpdateDistinguishesAnOmittedIdentifierFromAnEmptyOne() {
+        // FINDING API-003, severity HIGH. Three states, three outcomes, proven through the whole stack rather
+        // than at the controller seam: the controller decides whether to substitute, the service raises the
+        // source's literal, and the mapping to a status happens in a third place, so only an end-to-end
+        // exercise shows what a caller actually receives.
+        //
+        // Before this was resolved, states 2 and 3 were indistinguishable: an empty identifier was overwritten
+        // with the path value and the update SUCCEEDED, which made app/cbl/COUSR02C.cbl's own
+        // 'User ID can NOT be empty...' unreachable through this surface.
+        final TestIdentity subject = newIdentity(UserType.USER);
+        saveIdentity(subject, UserType.USER);
+        final AuthenticatedSession admin = signOn(this.administrator);
+        try {
+            // State 1 - the member is ABSENT. The documented shape: the path addresses the record, and
+            // app/cbl/COUSR02C.cbl:L102-L103 fills USRIDINI from the navigation context.
+            final ResponseEntity<String> omitted = request(HttpMethod.PUT,
+                    "/api/admin/users/" + subject.userId(),
+                    this.objectMapper.createObjectNode()
+                            .put("firstName", "OMITTED")
+                            .put("lastName", "TEST")
+                            .put("password", subject.credential())
+                            .put("userType", "U"),
+                    admin);
+            assertThat(omitted.getStatusCode())
+                    .as("an absent member is silence, and silence is filled from the path")
+                    .isEqualTo(HttpStatus.OK);
+            assertThat(this.userSecurityRepository.findById(subject.userId())
+                    .orElseThrow().getSecUsrFname().strip()).isEqualTo("OMITTED");
+
+            // State 2 - the member is PRESENT and EMPTY. app/cbl/COUSR02C.cbl rejects
+            // USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES twice, at :L146-L151 and at :L179-L185. Both fills
+            // are exercised, because a COBOL field equals SPACES only when every byte is a blank and
+            // LOW-VALUES only when every byte is the low-values byte - and because a NUL-filled value is not
+            // blank to String#isBlank(), which is how it used to escape the check entirely.
+            for (final String empty : new String[] {"", "   ", "\u0000", "\u0000\u0000"}) {
+                final ResponseEntity<String> refused = request(HttpMethod.PUT,
+                        "/api/admin/users/" + subject.userId(),
+                        this.objectMapper.createObjectNode()
+                                .put("userId", empty)
+                                .put("firstName", "EMPTY")
+                                .put("lastName", "TEST")
+                                .put("password", subject.credential())
+                                .put("userType", "U"),
+                        admin);
+                assertThat(refused.getStatusCode())
+                        .as("an explicitly empty identifier reaches the service and is refused there; "
+                                + "value was [%s]", empty)
+                        .isEqualTo(HttpStatus.BAD_REQUEST);
+                assertThat(responseBody(refused).path("detail").asText())
+                        .as("and it is refused in the source's own words, not as a mismatch with the path")
+                        .isEqualTo("User ID can NOT be empty...");
+            }
+            assertThat(this.userSecurityRepository.findById(subject.userId())
+                    .orElseThrow().getSecUsrFname().strip())
+                    .as("no refused submission may have been applied")
+                    .isEqualTo("OMITTED");
+
+            // State 3 - the member NAMES A DIFFERENT USER. Neither place is preferred, so the request is
+            // refused before the service is reached; the message is about the disagreement, not emptiness.
+            final ResponseEntity<String> disagreeing = request(HttpMethod.PUT,
+                    "/api/admin/users/" + subject.userId(),
+                    this.objectMapper.createObjectNode()
+                            .put("userId", this.administrator.userId())
+                            .put("firstName", "DISAGREE")
+                            .put("lastName", "TEST")
+                            .put("password", subject.credential())
+                            .put("userType", "U"),
+                    admin);
+            assertThat(disagreeing.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(responseBody(disagreeing).path("detail").asText())
+                    .as("a disagreement is a different failure from an empty value and says so")
+                    .contains("must match the one in the request path");
+
+            // The frozen authority for all three, read from app/ rather than restated.
+            final String guard = sourceLines("app/cbl/COUSR02C.cbl", 143, 152);
+            assertThat(guard)
+                    .contains("WHEN USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES")
+                    .contains("User ID can NOT be empty...");
+            final String firstEntry = sourceLines("app/cbl/COUSR02C.cbl", 95, 107);
+            assertThat(firstEntry)
+                    .as("the substitution the absent state relies on is guarded by the selection being "
+                            + "non-empty, which is precisely why an empty submitted value is not filled")
+                    .contains("IF CDEMO-CU02-USR-SELECTED NOT =");
+        } finally {
+            deleteIdentity(subject);
+        }
+    }
+
+    @Test
     @DisplayName("CU03 permits self-delete because COUSR03C carries no signed-on-identifier guard")
     void adminDeletePreservesTheAbsentSelfDeleteGuardAndWrongVerbLiteral() {
         // The principal deleted here is one this test creates for the purpose, NOT the shared administrator.
         // The distinction is what makes the scenario safe to run in any position: self-delete is exactly the
         // operation that destroys the credential it authenticated with, so performing it on a principal any
         // other assertion also uses would leave that principal's fate depending on this method's outcome.
-        // An earlier revision did delete the shared one and restored it in a finally block, which held only
+        // Deleting the shared administrator and restoring it in a finally block would hold only
         // as long as nothing failed in between.
         final TestIdentity selfDeleting = newIdentity(UserType.ADMIN);
         saveIdentity(selfDeleting, UserType.ADMIN);
@@ -2161,7 +2536,7 @@ public class OnlineTransactionE2ETest {
     /**
      * The refusal <em>records</em> the boundary layers write, rendered by the encoder the application runs.
      *
-     * <p><strong>Finding C-01, severity Critical - this test pins the remediation end to end.</strong> The
+     * <p><strong>Finding C-01, severity Blocker - this test pins the remediation end to end.</strong> The
      * refusal response was already asserted to echo nothing back; the log record was not, and it was the
      * channel carrying the caller's bytes. Four pre-authentication boundaries logged raw request metadata - the
      * declared {@code Content-Type}, the request method, the request URI, and the HTTP firewall's own rejection
@@ -2273,10 +2648,11 @@ public class OnlineTransactionE2ETest {
      * abandoned with nothing persisted, because the source's guard sits before any rewrite - which is also why
      * the source needs no rollback at this point and does not issue one.
      *
-     * <p>The snapshot the write compares against travels in the request body as {@code oldDetails} rather
-     * than as an entity tag: no endpoint emits an {@code ETag} and none reads {@code If-Match}, which is the
-     * stateless contract of {@code F-018}. It is supplied here MATCHING the stored row deliberately, so the
-     * request is refused by the customer lock guard and by nothing upstream of it.
+     * <p>The snapshot the write compares against travels in the request body as the opaque {@code snapshot}
+     * member rather than as an entity tag: no endpoint emits an {@code ETag} and none reads {@code If-Match},
+     * which is the stateless contract of {@code F-018}. It is the value the preceding read issued, echoed
+     * back unaltered, so it opens and agrees with the stored row - which means the request is refused by the
+     * customer lock guard and by nothing upstream of it.
      *
      * <p>Everything above the injected seam is real - real socket, real filter chain, real token, real
      * controller, real service, real exception mapping - so what is verified is the endpoint's behaviour and
@@ -2290,13 +2666,13 @@ public class OnlineTransactionE2ETest {
         final long customerKey =
                 new BigDecimal(state.get("cust_id").toString()).longValueExact();
         final ObjectNode body = accountUpdateBody(state);
-        // The snapshot travels in the body as oldDetails - see F-018 - so it is taken from the projection
-        // the view endpoint returns and left MATCHING, which is what carries the request past the
-        // validation of 1205-COMPARE-OLD-NEW and the comparison of 9700-CHECK-CHANGE-IN-REC and into the
-        // customer lock read this test exists to reach.
+        // The snapshot travels in the body as the sealed snapshot member - see F-018 - so it is taken from
+        // the value the view endpoint issued and echoed back unaltered, which is what carries the request
+        // past the validation of 1205-COMPARE-OLD-NEW and the comparison of 9700-CHECK-CHANGE-IN-REC and
+        // into the customer lock read this test exists to reach.
         final ResponseEntity<String> view =
                 request(HttpMethod.GET, "/api/accounts/" + accountId(1L), null, user);
-        body.set("oldDetails", responseBody(view).path("oldDetails").deepCopy());
+        body.put("snapshot", responseBody(view).path("snapshot").asText());
 
         final Map<String, Object> before = accountState(1L);
 
@@ -2444,6 +2820,11 @@ public class OnlineTransactionE2ETest {
         return end < 0 ? rawResponse : rawResponse.substring(0, end);
     }
 
+    /**
+     * Asserts that no payload field names a credential, at any depth.
+     *
+     * @param payload the response body to screen.
+     */
     private void assertNoCredentialFields(final JsonNode payload) {
         final List<String> names = new ArrayList<>();
         collectFieldNames(payload, names);
@@ -2490,12 +2871,23 @@ public class OnlineTransactionE2ETest {
     @TestConfiguration(proxyBeanMethods = false)
     static class FixedClockConfiguration {
 
+        /**
+         * Fixes time, so an emitted header date and a token expiry are both predictable.
+         *
+         * @return a clock fixed at the suite instant, in UTC.
+         */
         @Bean
         @Primary
         Clock carddemoFixedE2eClock() {
             return Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
         }
 
+        /**
+         * Verifies the tokens this suite presents, with the same ephemeral key the encoder signs them with.
+         *
+         * @param issuer the configured issuer claim the decoder requires.
+         * @return the decoder bound to that key and issuer.
+         */
         @Bean
         @Primary
         JwtDecoder carddemoFixedE2eJwtDecoder(
@@ -2512,6 +2904,11 @@ public class OnlineTransactionE2ETest {
             return decoder;
         }
 
+        /**
+         * Signs the tokens this suite presents, with the ephemeral key rather than a committed one.
+         *
+         * @return the encoder bound to that key.
+         */
         @Bean
         JwtEncoder carddemoFixedE2eJwtEncoder() {
             final byte[] keyMaterial = EPHEMERAL_SIGNING_KEY.getBytes(StandardCharsets.UTF_8);

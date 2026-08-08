@@ -293,14 +293,23 @@ final class EntityContractTest {
         return CREDENTIAL_PROPERTY.equals(column.property()) ? column.columnName() : column.property();
     }
 
-    /** The width a column is expected to declare, honouring the one AAP-mandated divergence. */
+    /**
+     * The width a column is expected to declare, honouring the one AAP-mandated divergence.
+     * @param column the mapped column.
+     * @return the width it is expected to declare.
+     */
     private static int expectedColumnWidth(final MappedColumn column) {
         return CREDENTIAL_PROPERTY.equals(column.property())
                 ? CREDENTIAL_COLUMN_WIDTH
                 : column.geometry().width();
     }
 
-    /** The columns that carry copybook geometry, so the version column is excluded. */
+    /**
+     * The columns that carry copybook geometry, so the version column is excluded.
+     * @param entity the entity type.
+     * @param member the copybook member it is mapped from.
+     * @return its columns carrying copybook geometry.
+     */
     private static List<MappedColumn> copybookColumns(final Class<?> entity, final String member) {
         return mappedColumns(entity, member).stream().filter(c -> c.geometry() != null).toList();
     }
@@ -344,7 +353,11 @@ final class EntityContractTest {
                 + column.property() + "; extend valueOfWidth so the column is still exercised");
     }
 
-    /** The largest value a numeric column can hold, from its copybook picture. */
+    /**
+     * The largest value a numeric column can hold, from its copybook picture.
+     * @param column the mapped column.
+     * @return the largest value it can hold.
+     */
     private static Object maximumValue(final MappedColumn column) {
         final RecordLayoutCopybook.Geometry geometry = column.geometry();
         if (column.field().getType().equals(Long.class)) {
@@ -378,7 +391,11 @@ final class EntityContractTest {
         }
     }
 
-    /** Instantiates via the provider's no-arg constructor, which JPA requires to be non-private. */
+    /**
+     * Instantiates via the provider's no-arg constructor, which JPA requires to be non-private.
+     * @param entity the entity type.
+     * @return a blank instance of it.
+     */
     private static Object blankInstance(final Class<?> entity) {
         try {
             final Constructor<?> constructor = entity.getDeclaredConstructor();
@@ -390,7 +407,11 @@ final class EntityContractTest {
         }
     }
 
-    /** The constructor application code uses: the public one taking the most parameters. */
+    /**
+     * The constructor application code uses: the public one taking the most parameters.
+     * @param entity the entity type.
+     * @return its widest public constructor, empty when it declares none.
+     */
     private static Optional<Constructor<?>> fullConstructor(final Class<?> entity) {
         return Stream.of(entity.getConstructors())
                 .filter(candidate -> candidate.getParameterCount() > 0)
@@ -438,6 +459,8 @@ final class EntityContractTest {
     /**
      * The copybook member backing {@code entity}, read out of {@link #entitiesWithLayout()} so that the
      * pairing is declared exactly once and cannot drift between the two providers.
+     * @param entity the entity type.
+     * @return the copybook member backing it.
      */
     private static String layoutMemberOf(final Class<?> entity) {
         return entitiesWithLayout()
@@ -448,7 +471,11 @@ final class EntityContractTest {
                         + " has no copybook member in entitiesWithLayout()"));
     }
 
-    /** The field carrying {@code @Id} or {@code @EmbeddedId}, which is what equality is built on. */
+    /**
+     * The field carrying {@code @Id} or {@code @EmbeddedId}, which is what equality is built on.
+     * @param entity the entity type.
+     * @return its identity field.
+     */
     private static Field identityField(final Class<?> entity) {
         return Stream.of(entity.getDeclaredFields())
                 .filter(field -> field.isAnnotationPresent(jakarta.persistence.Id.class)
@@ -461,6 +488,9 @@ final class EntityContractTest {
     /**
      * A valid identity for {@code entity}, with {@code variant} selecting a distinct one. Strings are
      * produced at the mapped column's exact width so that the width guard accepts them.
+     * @param entity the entity type.
+     * @param variant selects one of several distinct identities.
+     * @return a valid identity value.
      */
     private static Object identityValue(final Class<?> entity, final int variant) {
         final Field field = identityField(entity);
@@ -479,7 +509,12 @@ final class EntityContractTest {
         return "0".repeat(width - 1) + variant;
     }
 
-    /** Sets the identity through its setter, which every entity exposes for the provider's benefit. */
+    /**
+     * Sets the identity through its setter, which every entity exposes for the provider's benefit.
+     * @param entity the entity type.
+     * @param variant selects one of several distinct identities.
+     * @return an instance carrying that identity.
+     */
     private static Object instanceWithIdentity(final Class<?> entity, final int variant) {
         final Object instance = blankInstance(entity);
         final Field field = identityField(entity);

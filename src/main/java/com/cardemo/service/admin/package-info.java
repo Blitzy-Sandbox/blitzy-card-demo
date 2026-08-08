@@ -11,10 +11,10 @@
  *               AdminController at /api/admin/*. Note that the
  *               source's delete program has NO self-delete guard,
  *               and none may be invented for it.
- * Source      : app/cbl/COUSR00C.cbl (695 lines, 16 paragraphs; user list, 10 rows per page at :L57) @ 7756d89
- * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 paragraphs; user add) @ 7756d89
- * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 paragraphs; user update) @ 7756d89
- * Source      : app/cbl/COUSR03C.cbl (359 lines, 11 paragraphs; user delete) @ 7756d89
+ * Source      : app/cbl/COUSR00C.cbl (695 lines, 16 own paragraph labels; user list, 10 rows per page at :L57) @ 7756d89
+ * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 own paragraph labels; user add) @ 7756d89
+ * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 own paragraph labels; user update) @ 7756d89
+ * Source      : app/cbl/COUSR03C.cbl (359 lines, 11 own paragraph labels; user delete) @ 7756d89
  * Source      : app/cpy/CSUSR01Y.cpy:L17-L23 (80-byte SEC-USER-DATA layout, key 8) @ 7756d89
  * Source      : app/cpy-bms/COUSR00.CPY (59 input fields), COUSR01.CPY (12), COUSR02.CPY (12) @ 7756d89
  * Source      : app/jcl/DUSRSECJ.jcl:L64-L66 (KEYS(8,0) RECORDSIZE(80,80) REUSE INDEXED) @ 7756d89
@@ -57,16 +57,12 @@
  *       self-delete guard described immediately below.</li>
  *   </ul>
  *
- * <p>Measured 4 August 2026, this package contains the four services above and no others, so the {@code CU}
+ * <p>This package contains the four services above and no others, so the {@code CU}
  * leaf is complete. <strong>All four are reachable over HTTP.</strong> {@code AdminController} is authored and
- * exposes four operations at {@code /api/admin/*}, one per service, restricted to the administrator role.
+ * exposes four operations at {@code /api/admin/*}, one per service, restricted to the administrator role, so
+ * neither it nor {@code UserDeleteServiceTest} is planned or absent.
  *
- * <p>This document previously stated in three places
- * that {@code AdminController} was planned and not yet authored, and in a fourth that
- * {@code UserDeleteService} had no test class - all four untrue once the controller and
- * {@code UserDeleteServiceTest} were written. The banner still described the delete boundary as absent while
- * the bullet list above described the service in detail, so the document contradicted itself. The lesson taken
- * is the one this correction applies: a document that records an absence must have every statement of that
+ * <p>A document that records an absence must have every statement of that
  * absence corrected in the same edit that ends it, because the statements are one claim written four times.
  *
  * <p>One property of the source survives in the delete path: <strong>{@code COUSR03C} has no self-delete

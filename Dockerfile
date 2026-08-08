@@ -88,15 +88,10 @@
 #
 #   ./mvnw --batch-mode --no-transfer-progress clean verify
 #
-# An earlier revision of this comment described a two-command model - a
-# `verify` carrying -Ddependency-check.skip=true plus a separate
-# dependency-check invocation in its own CI job - and that model is
-# withdrawn: no separate scan job exists in the workflow, and the single
-# `verify` above runs the scan itself. `-Ddependency-check.skip=true`
-# remains useful only as a LOCAL shortcut on a cold cache or an offline
-# host, and a run carrying it is not gate evidence.
-# A reader who believed the withdrawn text would treat a green verify as not
-# having scanned, and would go looking for evidence in a job that does not exist.
+# That single `verify` runs the vulnerability scan itself; the workflow
+# declares no separate scan job. `-Ddependency-check.skip=true` is a LOCAL
+# shortcut for a cold cache or an offline host, and a run carrying it is
+# NOT gate evidence.
 #
 # A successful image build must never be reported as a pass of that
 # gate.
@@ -140,8 +135,8 @@
 #     --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64m \
 #     carddemo:local
 #
-# Three of those lines were missing or wrong in an earlier revision of this
-# note, and each broke the command as written:
+# Three of those lines are load-bearing, and the command fails without each
+# of them exactly as written:
 #   * The network is carddemo_carddemo, NOT carddemo_default. Compose only
 #     creates a `default` network for services that declare no `networks:`
 #     key; every service here attaches explicitly to the one named network
@@ -173,13 +168,12 @@
 #
 # The container name carddemo-app is not cosmetic: observability/prometheus.yml
 # scrapes ONE job, carddemo-app, with ONE target - app:8080, the compose
-# service name resolved on the project network. An earlier revision of this
-# note claimed two targets, the second being host.docker.internal:8080; that
-# is a documented OPTION in that file's commentary for scraping a JVM started
-# on the host with `SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run`, and
-# it requires an extra_hosts entry. It is not configured, so a reader who
-# expected two targets would look for a scrape that does not exist. Note the
-# consequence for this run command: a container named carddemo-app is NOT
+# service name resolved on the project network. A second target,
+# host.docker.internal:8080, appears in that file's commentary as a documented
+# OPTION for scraping a JVM started on the host with
+# `SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run`; it needs an
+# extra_hosts entry and is NOT configured. The consequence for this run
+# command: a container named carddemo-app is NOT
 # scraped by the committed configuration unless it also answers to app on
 # that network - which is what `docker compose up` gives you and what a bare
 # `docker run` does not.
@@ -267,27 +261,108 @@
 #       /tmp was not mounted as a tmpfs alongside --read-only.
 #
 # ******************************************************************
+# * STAGE 0 of 2 - the compiling JDK, pinned to the RUNTIME's patch level
+# *
+# * This stage exists solely to be copied from, and it closes a real
+# * divergence rather than adding ceremony. The Maven base below is the
+# * only published image that carries Maven exactly 3.9.11, and it ships
+# * JDK 25.0.1+8 - two patch levels behind the 25.0.3+9 JRE the runtime
+# * stage runs. That mattered twice over. The bytecode and the in-image
+# * test run were produced and validated on a JVM whose published fixes
+# * between 25.0.1 and 25.0.3 were absent, so "the tests passed" was a
+# * statement about a JVM that never reaches production; and a toolchain
+# * two patches behind the deployed one is precisely the unpinned-
+# * transitive-component exposure that pinning the digest was meant to
+# * remove.
+# *
+# * The obvious fix - build directly on eclipse-temurin:25.0.3_9-jdk -
+# * does not work, and the reason is worth recording so it is not
+# * retried. Those images carry neither curl nor wget (verified by
+# * running the pinned digest), so mvnw cannot fetch the distribution it
+# * pins, and supplying one would mean an apt-get against a floating
+# * Ubuntu archive: a non-deterministic network dependency introduced to
+# * fix a determinism defect. Advancing the Maven tag does not work
+# * either - no maven:3.9.11 image exists on a later JDK, and the
+# * floating tag resolves to this same digest, so there is nothing newer
+# * to move to.
+# *
+# * So the JDK is REPLACED rather than the base changed: this stage
+# * supplies 25.0.3+9 and the build stage overwrites /opt/java/openjdk
+# * with it, keeping the Maven base's curl and its pinned Maven. The two
+# * images are both Ubuntu Noble builds of Temurin, so they share a libc
+# * and the substitution is a like-for-like swap of the same vendor's
+# * JDK at a higher patch level - which is also why the runtime stage's
+# * Noble base is deliberate rather than incidental.
+# *
+# * The digest is the OCI IMAGE INDEX digest, so all five published
+# * platforms still resolve. Verified by `docker buildx imagetools
+# * inspect` and by running it: reports Temurin-25.0.3+9 on Ubuntu
+# * 24.04.
+# ******************************************************************
+FROM eclipse-temurin:25.0.3_9-jdk-noble@sha256:735baf2edc6cd6485240144a84fa4db142b9a6f47b4eb4080f31058d200f9813 AS jdk
+
+# ******************************************************************
 # * STAGE 1 of 2 - build
 # *
 # * BASE IMAGE CHOICE, and why it is this one. The tag pins Maven
 # * exactly at 3.9.11, the version .mvn/wrapper/maven-wrapper.properties
-# * pins and .github/workflows/build.yml provisions, on a Temurin JDK 25
-# * over Ubuntu Noble - the same distribution family as the runtime
-# * stage, so the two stages share a libc. The digest is the OCI IMAGE
-# * INDEX digest, not a per platform manifest digest, so pinning it
-# * fixes the content exactly while still resolving on all five
-# * published platforms (linux/amd64, arm64/v8, ppc64le, riscv64,
-# * s390x); no architecture is assumed. Verified 2026-08-02 with
-# * `docker buildx imagetools inspect`.
+# * pins and .github/workflows/build.yml provisions, on Ubuntu Noble -
+# * the same distribution family as the runtime stage, so the two stages
+# * share a libc. The digest is the OCI IMAGE INDEX digest, not a per
+# * platform manifest digest, so pinning it fixes the content exactly
+# * while still resolving on all five published platforms (linux/amd64,
+# * arm64/v8, ppc64le, riscv64, s390x); no architecture is assumed.
+# * Verified 2026-08-02 with `docker buildx imagetools inspect`.
 # *
 # * It also ships /usr/bin/curl, which is what makes the wrapper usable
 # * with no package installation at all: eclipse-temurin JDK images
-# * carry neither curl nor wget, so using one would force an apt-get
-# * against a floating Ubuntu archive. unzip is absent here too, and
-# * that is fine - mvnw falls back to $JAVA_HOME/bin/jar to expand the
-# * checksum verified archive.
+# * carry neither curl nor wget, so using one alone would force an
+# * apt-get against a floating Ubuntu archive. unzip is absent here too,
+# * and that is fine - mvnw falls back to $JAVA_HOME/bin/jar to expand
+# * the checksum verified archive.
+# *
+# * What this image is NOT used for is its JDK. The JDK it ships is
+# * 25.0.1+8; stage 0 above supplies 25.0.3+9 and it is installed over
+# * the top immediately below, so nothing in this stage compiles or runs
+# * a test on the base's JDK.
 # ******************************************************************
 FROM maven:3.9.11-eclipse-temurin-25@sha256:407c4423cec0cf2981055bc2c6c0dc211d9605b6669279b95997f2d1c7e91e2c AS build
+
+# Install the runtime's own patch level over the base's, then ASSERT it.
+#
+# The removal is separate from and prior to the copy on purpose: COPY
+# merges into an existing directory rather than replacing it, so without
+# the rm the two JDKs would overlay and any file present in 25.0.1+8 but
+# absent from 25.0.3+9 would survive into a nominally 25.0.3+9 tree.
+#
+# JAVA_VERSION is restated because the base sets it to jdk-25.0.1+8 and
+# an environment variable is not corrected by replacing the files it
+# describes. Left alone it would be a false claim readable by anything
+# that inspects the image or the build environment - including a human
+# debugging exactly this kind of divergence.
+#
+# The assertion reads what the JVM reports rather than trusting the tag,
+# the digest or the variable, and it is the same discipline the runtime
+# stage applies to itself. It is what makes a future base bump, a stage
+# reorder or a dropped COPY fail here in a second, with the observed
+# version named, instead of silently reintroducing the divergence this
+# stage exists to close. java.runtime.version is the property compared
+# because it carries the build number: java.version is only "25.0.3" and
+# would accept any build of that patch.
+RUN rm -rf /opt/java/openjdk
+COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_VERSION=jdk-25.0.3+9
+RUN set -eu; \
+    observed="$(java -XshowSettings:properties -version 2>&1 \
+      | sed -n 's/^ *java\.runtime\.version = //p')"; \
+    if [ "${observed}" != '25.0.3+9-LTS' ]; then \
+      echo "FATAL: the build stage must compile on the runtime's JDK, 25.0.3+9-LTS," >&2; \
+      echo "       but this JVM reports '${observed}'. The COPY --from=jdk above did not" >&2; \
+      echo "       take effect, or a base image changed. Building on a different patch" >&2; \
+      echo "       level than the runtime is the divergence stage 0 exists to close." >&2; \
+      exit 1; \
+    fi; \
+    printf 'Build JDK asserted: %s (matches the runtime stage)\n' "${observed}"
 
 WORKDIR /workspace
 
@@ -422,12 +497,9 @@ COPY localstack-init/ localstack-init/
 # both least-privilege role passwords, GRAFANA_ADMIN_PASSWORD,
 # METRICS_SCRAPE_PASSWORD and NVD_API_KEY - with exactly two documented
 # exemptions, the LocalStack AWS pair, which the emulator does not
-# validate and which AwsConfig refuses to point at a real account. Two
-# earlier revisions of this comment were wrong in opposite directions:
-# one claimed every credential-bearing entry was empty when four were
-# not, and its correction then listed POSTGRES_PASSWORD and
-# GRAFANA_ADMIN_PASSWORD as populated demo values when both ship empty.
-# The assertion is the authority now. The file is confined to this stage,
+# validate and which AwsConfig refuses to point at a real account. That
+# assertion is the authority for which names ship empty, precisely because a
+# hand-maintained list in a comment cannot stay true. The file is confined to this stage,
 # so no template and no compose file reaches the runtime image.
 #
 # owasp-suppressions.xml is copied here rather than beside pom.xml one
@@ -490,8 +562,27 @@ COPY observability/ observability/
 # LESS than the host run without failing. Copying it makes the two runs
 # equivalent and removes a silent vacuity, which is the same reasoning
 # that copies the whole of app/ rather than four subdirectories.
-# All three are confined to this stage; none reaches the runtime image.
-COPY DECISION_LOG.md TRACEABILITY_MATRIX.md Dockerfile ./
+#
+# mkdocs.yml and README.md join them, and their absence was the same
+# defect one round later: the in-image suite could not pass at all while
+# the identical suite passed on the host. Established by running it -
+#   mkdocs.yml  DocumentationConsistencyTest.lines threw
+#               UncheckedIOException "Cannot read /workspace/mkdocs.yml"
+#               from everyRequiredNavEntryIsDeclared,
+#               noPublishableDocumentIsMissingFromTheNav and
+#               anOmittedPageFailsAStrictBuild - the three that hold the
+#               nav to the pages under docs/, which is load-bearing
+#               because catalog-info.yaml publishes TechDocs from that
+#               nav, so a page missing from it never appears
+#   README.md   InventoryCountGateTest.lines errored on
+#               noDocumentClaimsTheQueueListenerIsAbsent, which reads the
+#               README to prove no published page still denies a
+#               capability the code implements
+# Both are also already named in the scanned-file lists, so like the
+# Dockerfile their absence additionally made the image scan weaker than
+# the host scan rather than louder. All five are confined to this stage;
+# none reaches the runtime image.
+COPY DECISION_LOG.md TRACEABILITY_MATRIX.md Dockerfile mkdocs.yml README.md ./
 
 COPY src/ src/
 
@@ -706,19 +797,25 @@ EXPOSE 8080
 # container credentials or instance metadata. AAP 0.3.2 admits no such
 # path. Two changes closed it, neither of which depends on the operator
 # naming a profile:
-#   * application.yml, the BASE profile, now carries the three service
-#     endpoints - indirected through AWS_ENDPOINT_URL and defaulting to the
-#     emulator edge, a loopback address that cannot be an AWS host - and an
-#     inert static credential pair whose only function is to displace the
-#     SDK default provider chain.
+#   * application.yml, the BASE profile, now BINDS the three service
+#     endpoints and the credential pair - the endpoints all indirecting
+#     through AWS_ENDPOINT_URL - and gives NONE of them a literal default,
+#     so an unset variable aborts startup by name instead of letting the
+#     SDK resolve a live endpoint and a real credential chain. Fail-fast is
+#     the control; a default would be the hole. (An earlier revision of
+#     this note said the base profile defaulted the endpoints to the
+#     emulator edge and supplied an inert static credential pair. It does
+#     neither, and that description is withdrawn: only the `local` profile
+#     carries developer defaults.)
 #   * com.cardemo.config.AwsConfig validates those five values in its
 #     constructor, which necessarily runs before the S3, SQS and SNS
 #     templates it declares, and aborts the context refresh unless every
 #     endpoint is an absolute http/https URL with an explicit port, no user
 #     information and a host on its permitted emulator list, and both
 #     credentials are present without a real AWS key prefix.
-# So the worst outcome of a profile-less `docker run` is a connection
-# failure to a loopback port, never a live AWS call. Supplying
+# So a profile-less `docker run` that supplies nothing fails at startup
+# naming the missing variable, and one that supplies an endpoint is held to
+# the emulator allowlist - never a live AWS call either way. Supplying
 # SPRING_PROFILES_ACTIVE=local, as the run recipe above does, remains the
 # recommended way to get the developer defaults; it is no longer what makes
 # the run safe.

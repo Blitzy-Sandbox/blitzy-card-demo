@@ -91,7 +91,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <li>{@code app/cbl/COBIL00C.cbl:L249-L267} - the online timestamp, whose eleventh position is a space.</li>
  * <li>{@code app/cbl/COBIL00C.cbl:L472-L496} - the end-of-file path that makes the first identifier 1.</li>
  * <li>{@code app/cbl/CBACT04C.cbl:L613-L625} - the batch timestamp, three dashes and four literal zeros.</li>
- * <li>{@code app/cbl/CBACT04C.cbl:L473-L516} - the interest identifier, a date parameter and a suffix.</li>
+ * <li>{@code app/cbl/CBACT04C.cbl:L473-L515} - the interest identifier, a date parameter and a suffix.</li>
  * <li>{@code app/cbl/CBTRN02C.cbl:L149-L175} - the redefinition proving the timestamp is 26 characters.</li>
  * <li>{@code app/cpy/CVTRA05Y.cpy:L8-L10} - {@code TRAN-SOURCE X(10)} and {@code TRAN-AMT S9(09)V99}.</li>
  * <li>{@code app/cpy/COCOM01Y.cpy:L43-L44} - the COMMAREA fields that must have no counterpart here.</li>
@@ -527,8 +527,8 @@ final class TransactionAddRequestTest {
      * <p>The algorithm is inherently racy under concurrency, exactly as the browse was, and it is retained for
      * parity rather than replaced by a database sequence: a sequence would change the generated values and
      * break byte-exact comparison against the legacy baseline. A collision surfaces as a duplicate-key
-     * violation from the primary-key constraint. Owed an entry, as a deliberately preserved quirk,
-     * {@code DECISION_LOG.md}.
+     * violation from the primary-key constraint. Held, as a deliberately preserved quirk, at
+     * {@code DL-PP-04} in {@code DECISION_LOG.md}.
      *
      * <p>A pure function of the retrieved key alone; it holds no counter and no state.
      *
@@ -2181,16 +2181,12 @@ final class TransactionAddRequestTest {
     /**
      * The diagnostic rendering may not be turned into a forged log record.
      *
-     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
-     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
-     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
-     * caller liked, in the exact shape a reader trusts.
-     *
-     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
-     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
-     * which something renders the offending instance - so the rendering has to be safe on an instance that
-     * never passed validation. These tests therefore build hostile values directly, without validating them,
-     * which is the state the defect actually occurred in.
+     * <p>Every component {@code toString()} emits is declared {@code String} and arrives from a JSON request
+     * body, so a caller controls its bytes: concatenated straight in, a CR or LF forges as many further log
+     * lines as the caller likes, in the exact shape a reader trusts. {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is precisely the occasion
+     * on which something renders the offending instance, so these tests build hostile values directly and
+     * never validate them first.
      */
     @Nested
     @DisplayName("the diagnostic rendering cannot forge a log record")

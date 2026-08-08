@@ -183,7 +183,7 @@ class AwsConfigTest {
             "http://localhost.localstack.cloud.example.com:4566",
             "http://notlocalhost:4566",
             // A sub-domain of the emulator's loopback DNS name. It resolves to loopback, so admitting it
-            // would have been easy to justify on reachability grounds, and this list once did. It is refused
+            // would be easy to justify on reachability grounds. It is refused
             // because localstack-init/init-aws.sh refuses it and records why: the bare host is the only
             // endpoint this project documents, and the virtual-hosted form was probed and found to pass
             // readiness and then fail provisioning at the queue stage, a virtual-hosted object-storage name
@@ -308,7 +308,7 @@ class AwsConfigTest {
     /**
      * The one payload contract both ends of the queue share.
      *
-     * <p>Finding C-01, severity Critical. The library's default converter writes a payload type header on
+     * <p>Finding C-01, severity Blocker. The library's default converter writes a payload type header on
      * send and resolves it with {@code Class.forName} on receive, which broke this application's own contract
      * - a typed publish against a listener that binds text - and handed a caller control over which class was
      * loaded. The converter declared by {@code AwsConfig} neither writes nor reads that header, and because
@@ -415,9 +415,9 @@ class AwsConfigTest {
         @Test
         @DisplayName("no ApplicationRunner is declared here, so nothing in this class touches the network at startup")
         void noApplicationRunnerIsDeclared() {
-            // Finding CFG-001, severity High. This class used to declare cardDemoFifoQueueContractVerifier, an
-            // ApplicationRunner that resolved the queue and read its attributes straight after context refresh.
-            // Five tests exercised it and they were removed with it. What replaced them is this one assertion,
+            // Finding CFG-001, severity High. No cardDemoFifoQueueContractVerifier may be declared here - an
+            // ApplicationRunner that resolved the queue and read its attributes straight after context refresh
+            // would put startup network traffic in a configuration class. This one assertion is
             // stated as the property that actually matters: the configuration class performs NO startup network
             // traffic at all, so a bean here can never be broken by an emulator being down and no eager call
             // can precede the endpoint allow-list. The FIFO attributes are provisioned by

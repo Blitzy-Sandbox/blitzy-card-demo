@@ -190,7 +190,8 @@ import java.util.Optional;
  * the source terminates on.
  *
  * <p><strong>Site 2 - the disclosure group default rate fallback, and its inversion.</strong>
- * {@code app/cbl/CBACT04C.cbl:L415-L460}. {@code 1200-GET-INTEREST-RATE} (L415) reads the group
+ * {@code app/cbl/CBACT04C.cbl:L415-L440} and {@code :L443-L460}. {@code 1200-GET-INTEREST-RATE}
+ * ({@code :L415-L440}) reads the group
  * (L416) under an {@code INVALID KEY} arm (L417) that displays
  * {@code 'DISCLOSURE GROUP RECORD MISSING'} (L418) and {@code 'TRY WITH DEFAULT GROUP CODE'} (L419).
  * The guard accepts {@code IF DISCGRP-STATUS = '00' OR '23'} (L422); anything else displays

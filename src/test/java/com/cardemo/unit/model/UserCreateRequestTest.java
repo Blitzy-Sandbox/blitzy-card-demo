@@ -44,7 +44,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardemo.model.dto.UserCreateRequest;
 import com.cardemo.model.enums.UserType;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Constraint;

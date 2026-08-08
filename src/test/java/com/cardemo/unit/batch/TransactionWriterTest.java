@@ -13,10 +13,10 @@
  *               makes reachable, the step-scoped object key, and the
  *               write-failure path that DISPLAYs then abends.
  * Source      : app/cbl/CBTRN02C.cbl:L562-L579 (2900-WRITE-TRANSACTION-FILE)
- *               app/cbl/CBTRN02C.cbl:L714-L731 (9910-DISPLAY-IO-STATUS)
+ *               app/cbl/CBTRN02C.cbl:L714-L727 (9910-DISPLAY-IO-STATUS)
  *               app/cbl/CBTRN02C.cbl:L707-L712 (9999-ABEND-PROGRAM)
  *               app/cbl/COTRN02C.cbl:L444-L451 (descending-browse ID)
- *               app/cbl/CBACT04C.cbl:L473-L516 (global suffix counter)
+ *               app/cbl/CBACT04C.cbl:L473-L515 (global suffix counter)
  *               app/cpy/CVTRA05Y.cpy           (350-byte TRAN-RECORD)
  *               app/jcl/TRANFILE.jcl:L53-L54   (KEYS(16 0), RECORDSIZE(350 350))
  *               app/catlg/LISTCAT.txt:L351-L360 (TRANSACT AIX) @ 7756d89
@@ -123,8 +123,8 @@ import org.springframework.dao.DuplicateKeyException;
  * <li><b>Blocker.</b> A failure in group 5 means a duplicate identifier is no longer distinguished from a
  * plain constraint violation, or is being silently absorbed. The distinction is drawn on {@code SQLSTATE}
  * {@code 23505} through {@code FileStatusMapper.classifyStoreFailure} rather than on which exception subtype
- * the persistence layer chose. Catching {@code DuplicateKeyException} ahead of its supertype - which is what
- * the writer used to do - recognises a collision only when that subtype was chosen, and for a BATCHED flush it
+ * the persistence layer chose. Catching {@code DuplicateKeyException} ahead of its supertype
+ * recognises a collision only when that subtype was chosen, and for a BATCHED flush it
  * need not be: the driver reports the batch and links the exception carrying the state of the failing entry
  * beneath it. Both shapes are asserted in group 5 for exactly that reason.</li>
  * <li><b>High.</b> A failure in group 7 means a lost object write would be reported as a clean run.</li>
@@ -1125,7 +1125,7 @@ class TransactionWriterTest {
             // NO LOG RECORD NAMES THE BUCKET OR THE OBJECT KEY, and that is deliberate: a log line carrying
             // them is an inventory of this deployment's storage layout, written to wherever logs are shipped.
             // They are carried by the escalation reason instead, which an operator only ever sees while
-            // already inside the failure. This test once required the log line to quote the bucket.
+            // already inside the failure. Requiring the log line to quote the bucket would defeat that.
             //
             // The escalation reason is not reachable from THIS scenario, and that is worth stating rather than
             // asserting around: the status mapper raises on a '9x' status, so the typed FileAccessException it
@@ -1245,7 +1245,7 @@ class TransactionWriterTest {
     }
 
     // ==================================================================================================
-    // 9 - FINDING, severity Minor, RESOLVED. The indexed manifest used to grow with no bound of any kind,
+    // 9 - FINDING, severity Medium, RESOLVED. The indexed manifest used to grow with no bound of any kind,
     //     and the posting step commits once per record by parity contract, so Spring Batch re-serialised
     //     the whole job execution context once per record: the cost of the manifest was quadratic in the
     //     record count. A measured 300-record run published 262 indexed entries and a 36,664-byte context.
@@ -1253,7 +1253,7 @@ class TransactionWriterTest {
     // ==================================================================================================
 
     @Nested
-    @DisplayName("9. MINOR: the indexed manifest is bounded, and what stays exact when it is")
+    @DisplayName("9. MEDIUM: the indexed manifest is bounded, and what stays exact when it is")
     class IndexedManifestBound {
 
         @Test

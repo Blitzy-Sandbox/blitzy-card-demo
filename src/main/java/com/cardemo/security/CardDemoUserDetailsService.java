@@ -372,11 +372,10 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <h2>The encoder contract, now verified against code</h2>
  *
- * <p>An earlier revision of this section disclosed three unverified assertions on the ground that
- * {@code src/main/java/com/cardemo/config/SecurityConfig.java} did not exist and that the configuration
- * package held only {@code JpaConfig} and {@code WebConfig}. Both halves are false and the claim is
- * withdrawn: {@code SecurityConfig} is present and the package holds four classes. All three assertions are
- * now verified by reading it:
+ * <p>Three assertions about the encoder are verified by reading
+ * {@code src/main/java/com/cardemo/config/SecurityConfig.java}, which is present - the configuration package
+ * holds four classes rather than only {@code JpaConfig} and {@code WebConfig}, so none of the three needs to
+ * be disclosed as unverified:
  *
  * <ol>
  *   <li>a {@link PasswordEncoder} bean <em>is</em> published, by {@code SecurityConfig.passwordEncoder()};</li>

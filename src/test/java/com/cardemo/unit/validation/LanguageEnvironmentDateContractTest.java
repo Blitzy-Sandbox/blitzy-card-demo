@@ -168,7 +168,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * B is satisfied on its own wording - it prohibits artefacts <em>without owners or tracking
  * reference</em>. For the two preserved defects this file pins, the misnamed success token and the
  * {@code :L122} group move, <strong>these assertions are that tracking reference</strong>, alongside
- * the entries and rows they are owed in the {@code DECISION_LOG.md} and
+ * the entries that hold them in the {@code DECISION_LOG.md} - {@code DL-LD-08} for the misnamed
+ * success token and {@code DL-PP-13} for the group move - and their rows in
  * {@code TRACEABILITY_MATRIX.md}.
  * <strong>No downstream agent may change the production code to make a test here read more
  * sensibly.</strong> The reading is supposed to be uncomfortable; the source is.
@@ -323,7 +324,6 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 class LanguageEnvironmentDateContractTest {
 
-    // ------------------------------------------------------------------------------------------------
     // The eight-byte feedback token group, app/cbl/CSUTLDTC.cbl:L61-L79.
     //
     // The nine 88-level condition names of :L62-L70 are declared on FEEDBACK-TOKEN-VALUE at :L61, which
@@ -333,7 +333,6 @@ class LanguageEnvironmentDateContractTest {
     //   :L78  03 CASE-SEV-CTL    PIC X              -> byte  5
     //   :L79  03 FACILITY-ID     PIC XXX            -> bytes 6-8
     // Offsets below are zero-based for Java indexing; the comments name the one-based COBOL positions.
-    // ------------------------------------------------------------------------------------------------
 
     /** The declared width of {@code FEEDBACK-TOKEN-VALUE}, {@code app/cbl/CSUTLDTC.cbl:L61}. */
     private static final int TOKEN_GROUP_LENGTH = 8;
@@ -382,14 +381,12 @@ class LanguageEnvironmentDateContractTest {
      */
     private static final String FACILITY_IDENTIFIER = "CEE";
 
-    // ------------------------------------------------------------------------------------------------
     // The nine declared tokens, transcribed verbatim from app/cbl/CSUTLDTC.cbl:L62-L70.
     //
     // Each constant is named for what its token MEANS rather than for the COBOL condition name, whose
     // citation is carried in the documentation instead. That is a deliberate choice for the first one:
     // the source calls it FC-INVALID-DATE and it means the opposite, so a Java constant echoing that
     // name would propagate the trap into new code. The citation keeps the misnomer traceable.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * {@code 88 FC-INVALID-DATE VALUE X'0000000000000000'}, {@code app/cbl/CSUTLDTC.cbl:L62}.
@@ -468,7 +465,6 @@ class LanguageEnvironmentDateContractTest {
     private static final List<Integer> ABSENT_MESSAGE_NUMBERS =
             List.of(2510, 2511, 2512, 2514, 2515, 2516, 2519);
 
-    // ------------------------------------------------------------------------------------------------
     // The ten result literals of the EVALUATE arms, app/cbl/CSUTLDTC.cbl:L130-L148.
     //
     // WS-RESULT is PIC X(15) at :L49, and the source records that width itself in two comment lines at
@@ -476,7 +472,6 @@ class LanguageEnvironmentDateContractTest {
     // spaces to exactly fifteen characters; two are shorter and rely on COBOL's implicit right-padding
     // into the receiving field. All ten render as fifteen bytes. The trailing spaces below are
     // significant and are described in prose so that no formatter can eat the evidence.
-    // ------------------------------------------------------------------------------------------------
 
     /** The declared width of {@code WS-RESULT}, {@code app/cbl/CSUTLDTC.cbl:L49}. */
     private static final int RESULT_LITERAL_WIDTH = 15;
@@ -555,7 +550,6 @@ class LanguageEnvironmentDateContractTest {
             LITERAL_YEAR_IN_ERA_ZERO,
             LITERAL_WHEN_OTHER);
 
-    // ------------------------------------------------------------------------------------------------
     // The eighty-byte WS-MESSAGE, producer side, app/cbl/CSUTLDTC.cbl:L42-L57.
     //
     // Fifteen 02-level items are declared but only thirteen occupy storage: WS-SEVERITY-N at :L44 and
@@ -574,7 +568,6 @@ class LanguageEnvironmentDateContractTest {
     //   :L55 WS-DATE-FMT X(10)                  10
     //   :L56 FILLER      X(01) SPACE             1
     //   :L57 FILLER      X(03) SPACES            3
-    // ------------------------------------------------------------------------------------------------
 
     /** The declared width of {@code LS-RESULT}, {@code app/cbl/CSUTLDTC.cbl:L86}. */
     private static final int MESSAGE_AREA_LENGTH = 80;
@@ -641,7 +634,6 @@ class LanguageEnvironmentDateContractTest {
     /** The declared width of the four-character severity and message-number display fields. */
     private static final int DISPLAY_HALFWORD_WIDTH = 4;
 
-    // ------------------------------------------------------------------------------------------------
     // The same eighty bytes, caller side.
     //
     // app/cbl/CORPT00C.cbl:L129-L136 and app/cbl/COTRN02C.cbl:L62-L69 declare an identical parameter
@@ -654,7 +646,6 @@ class LanguageEnvironmentDateContractTest {
     //      10 FILLER                     PIC X(11)     11
     //      10 CSUTLDTC-RESULT-MSG-NUM    PIC X(04)      4
     //      10 CSUTLDTC-RESULT-MSG        PIC X(61)     61
-    // ------------------------------------------------------------------------------------------------
 
     /** The caller's four-field view of the result area, {@code app/cbl/CORPT00C.cbl:L133-L136}. */
     private static final List<Integer> CALLER_RESULT_FIELD_WIDTHS = List.of(4, 11, 4, 61);
@@ -691,13 +682,11 @@ class LanguageEnvironmentDateContractTest {
      */
     private static final String CALLER_TOLERATED_MESSAGE_NUMBER = "2513";
 
-    // ------------------------------------------------------------------------------------------------
     // The varying-length argument groups and the preserved group move.
     //
     // :L25-L31 declares WS-DATE-TO-TEST as a two-byte binary length prefix followed by up to 256 text
     // bytes; :L33-L39 declares WS-DATE-FORMAT identically. That two-byte prefix is the direct cause of
     // the defect at :L122.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code 02 Vstring-length PIC S9(4) BINARY}, {@code app/cbl/CSUTLDTC.cbl:L26} and {@code :L34}. */
     private static final int VSTRING_LENGTH_PREFIX_WIDTH = 2;
@@ -724,9 +713,7 @@ class LanguageEnvironmentDateContractTest {
     /** The low-order byte the binary length 10 contributes to the corrupted rendering. */
     private static final char LENGTH_PREFIX_LOW_ORDER_BYTE = '\n';
 
-    // ------------------------------------------------------------------------------------------------
     // The two picture masks and the argument widths that evidence the copybook path's overread.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code 10 WS-DATE-FORMAT PIC X(08) VALUE 'YYYYMMDD'}, {@code app/cpy/CSUTLDWY.cpy:L58-L59}. */
     private static final int UNDELIMITED_MASK_WIDTH = 8;
@@ -747,9 +734,7 @@ class LanguageEnvironmentDateContractTest {
     /** The declared width of {@code LS-DATE}, {@code app/cbl/CSUTLDTC.cbl:L84}. */
     private static final int LINKAGE_DATE_WIDTH = 10;
 
-    // ------------------------------------------------------------------------------------------------
     // Fixtures and helpers.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * A fixed instant. This class asserts a rendering contract and needs no clock of its own, but

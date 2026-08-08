@@ -9,7 +9,7 @@
  *               normalisation, the two byte-exact refusal literals, the
  *               five-character DUMMY guard, the defective coming-soon
  *               concatenation, and the one-to-one paragraph map.
- * Source      : app/cbl/COMEN01C.cbl (282 lines, 7 paragraphs)
+ * Source      : app/cbl/COMEN01C.cbl (282 lines, 7 own paragraph labels)
  *               app/cpy/COMEN02Y.cpy (the ten-slot option table)
  *               app/cpy/COCOM01Y.cpy (CDEMO-USER-TYPE identity)
  *               frozen at commit 7756d89
@@ -219,11 +219,9 @@ import org.slf4j.LoggerFactory;
 @DisplayName("MainMenuService: behavioural parity with app/cbl/COMEN01C.cbl and app/cpy/COMEN02Y.cpy")
 final class MainMenuServiceTest {
 
-    // ------------------------------------------------------------------
     // Literals transcribed from the corpus. None is imported from the
     // production class: an expectation taken from the code under test
     // would prove only that the code agrees with itself.
-    // ------------------------------------------------------------------
 
     /** {@code CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10} at {@code app/cpy/COMEN02Y.cpy:21}. */
     private static final int POPULATED_OPTION_COUNT = 10;
@@ -347,9 +345,7 @@ final class MainMenuServiceTest {
         this.appender.stop();
     }
 
-    // ==================================================================
     // 1 - BLOCKER. The bound is the COUNT field, never the OCCURS arity.
-    // ==================================================================
 
     /**
      * The {@code REDEFINES} over-arity of {@code app/cpy/COMEN02Y.cpy:87-92}.
@@ -470,9 +466,7 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 2 - JUST RIGHT and the space-to-zero substitution.
-    // ==================================================================
 
     /**
      * The normalisation chain of {@code app/cbl/COMEN01C.cbl:117-125}, in the source's own order.
@@ -590,9 +584,7 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 3 - The bounds check and the two byte-exact refusal literals.
-    // ==================================================================
 
     /**
      * The refusals of {@code app/cbl/COMEN01C.cbl:127-131} and {@code :136-140}.
@@ -710,10 +702,8 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 4 - HIGH. SEND-MENU-SCREEN has no EXEC CICS RETURN, so the source
     //     falls through into an unguarded subscript. LABELLED DEVIATION.
-    // ==================================================================
 
     /**
      * The fall-through hazard of {@code app/cbl/COMEN01C.cbl:127-140}, and the deviation that answers it.
@@ -740,8 +730,7 @@ final class MainMenuServiceTest {
      * cannot be reproduced. The implementation therefore refuses {@code option &gt; count} <em>before</em>
      * any table access. The observable outcome is unchanged, because in the source both paths perform
      * {@code SEND-MENU-SCREEN} - both redisplay the menu carrying a message - and the operator sees a
-     * refusal either way. This deviation is owed an entry in the {@code DECISION_LOG.md} under
-     * <em>bounds short-circuit</em>, and the tests below make it <strong>observable rather than
+     * refusal either way. This deviation is recorded as boundary (3) of {@code DL-DV-10} in the {@code DECISION_LOG.md}, and the tests below make it <strong>observable rather than
      * silent</strong>: they prove the refusal is the bounds refusal and not the gate's, that no
      * {@code IndexOutOfBoundsException} escapes, and - by the control case - that the gate is still
      * genuinely reached for an option that is in range.</p>
@@ -829,10 +818,8 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 5 - HIGH. EXEC CICS XCTL is a terminal transfer, so the
     //     coming-soon block is unreachable on the success path.
-    // ==================================================================
 
     /**
      * The placeholder guard of {@code app/cbl/COMEN01C.cbl:146} and the notice of {@code :157-164}.
@@ -1004,10 +991,8 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 6 - The shipped table triggers neither retained guard.
     //     INTENTIONAL NO-OP, retained for parity, never deleted.
-    // ==================================================================
 
     /**
      * What the frozen data actually contains, and why two live branches can never fire on it.
@@ -1166,9 +1151,7 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 7 - The seven paragraph labels map one to one.
-    // ==================================================================
 
     /**
      * The paragraph map of {@code app/cbl/COMEN01C.cbl}, which has 282 lines and exactly seven labels.
@@ -1259,9 +1242,7 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 8 - The header furniture, and the session state that does not exist.
-    // ==================================================================
 
     /**
      * {@code POPULATE-HEADER-INFO} of {@code app/cbl/COMEN01C.cbl:212-233}, and the state the request
@@ -1416,9 +1397,7 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // 9 - Nothing shared, nothing mutable, and one way in.
-    // ==================================================================
 
     /**
      * The immutability and construction contracts that replace {@code WORKING-STORAGE}.
@@ -1579,9 +1558,7 @@ final class MainMenuServiceTest {
         }
     }
 
-    // ==================================================================
     // Fixtures and shared assertions.
-    // ==================================================================
 
     /**
      * The construction seam, resolved once so that every helper below shares one lookup.

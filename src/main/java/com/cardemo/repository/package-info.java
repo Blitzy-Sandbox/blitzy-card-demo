@@ -352,9 +352,8 @@
  *   <li><strong>{@code jacoco-maven-plugin}</strong> enforces a <strong>0.80 LINE {@code COVEREDRATIO}
  *       floor</strong> at {@code verify}, with no exclusions and no getter-only padding. The pinned version is
  *       <strong>0.8.12</strong> - the version the migration requirement names - and it is <strong>not</strong>
- *       raised. An earlier revision of this entry said it had been raised to 0.8.13 because "JaCoCo 0.8.12
- *       cannot read the class files this project produces"; the symptom was real and the attribution was
- *       wrong, so the claim is withdrawn. Java 25 emits <strong>class file major version 69</strong>, and the
+ *       raised to 0.8.13. "JaCoCo 0.8.12 cannot read the class files this project produces" names a real
+ *       symptom and mis-attributes it: Java 25 emits <strong>class file major version 69</strong>, and the
  *       component that rejects it is <strong>ASM</strong>: the string
  *       {@code "Unsupported class file major version"} occurs on the plugin classpath only inside
  *       {@code org/objectweb/asm/ClassReader.class} and in no {@code org.jacoco} artefact at all. Because a
@@ -364,8 +363,8 @@
  *       are required: overriding {@code org.jacoco.core} and {@code org.jacoco.report} alone leaves ASM at 9.7
  *       and fails identically, which was measured rather than assumed. Classified <strong>Blocker</strong>
  *       without the override, since the alternative is a {@code verify} phase that can never exit zero. The
- *       divergence is <strong>owed an entry in {@code DECISION_LOG.md}</strong>, which is authored at
- *       the repository root; the measurement itself is recorded beside the property in {@code pom.xml}.</li>
+ *       divergence is <strong>held as {@code DL-CR-04} in {@code DECISION_LOG.md}</strong>, which is
+ *       authored at the repository root; the measurement itself is recorded beside the property in {@code pom.xml}.</li>
  *   <li><strong>{@code org.owasp:dependency-check-maven:12.1.0}</strong> supplies the vulnerability scan
  *       behind the security gate.</li>
  *   </ul>
@@ -637,15 +636,13 @@
  *
  * <p><strong>What makes one tracked is stated per artefact, at its own declaration</strong>, and nowhere else:
  * its COBOL locator, a proof of reachability, an explicit intentional-no-op marker, and an acknowledgement
- * that it is owed an entry in {@code DECISION_LOG.md}. Both
+ * a reference to {@code DL-CR-01} in {@code DECISION_LOG.md}. Both
  * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} are authored at the repository root, so a
- * present-tense claim about either is a true statement; two earlier revisions of this paragraph are withdrawn -
- * the first said each artefact was already cited in both files while neither file existed, the second said
- * neither file existed after both were authored.
- * That revision also enumerated the set as three specific artefacts, while {@code com.cardemo.exception} gave
- * the same set as five. Both tallies are withdrawn and neither is replaced with a corrected number: a census
- * kept by hand in several unrelated comments is a claim no build step maintains, which is precisely how the two
- * came to disagree. Severity of what that left in place: <strong>High</strong>.
+ * present-tense claim about either is a true statement.
+ * <strong>No global census of retained parity artefacts is kept here, and none may be added</strong> - not
+ * three, not five, and not a corrected figure. A census kept by hand in several unrelated comments is a claim
+ * no build step maintains, which is exactly how a figure here and a figure in {@code com.cardemo.exception}
+ * come to disagree.
  *
  * <p><strong>No declaration in {@code com.cardemo.repository} carries such a marker.</strong> This package
  * therefore has <strong>zero exemptions</strong> from Clause B, which is the point made under failure mode 14
@@ -743,19 +740,19 @@
  * <h2>Not available</h2>
  *
  * <p>Rule 1 Clause F requires that missing information be stated plainly rather than glossed over.
- * <strong>One</strong> item is genuinely {@code Not available}; two that earlier revisions of this section
- * listed have since been closed, and both are recorded here as withdrawn rather than quietly deleted, because
- * a disclosure that vanishes leaves no trail.
+ * <strong>One</strong> item is genuinely {@code Not available}. The two items below it are present and are
+ * stated positively, because a disclosure kept after its subject arrives is a disclosure that misleads;
+ * {@code DECISION_LOG.md} is where the change of state is recorded.
  *
  * <ul>
- *   <li><p><strong>Withdrawn: {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} are present.</strong>
- *       All three migrations exist under {@code src/main/resources/db/migration}. {@code V1__create_schema.sql}
+ *   <li><p><strong>All three migrations are present.</strong>
+ *       They live under {@code src/main/resources/db/migration}. {@code V1__create_schema.sql}
  *       creates exactly 11 tables, 10 foreign keys and 5 check constraints, and
  *       deliberately no index, since indexes belong to {@code V2}. {@code V2} declares exactly the three
  *       non-unique B-tree indexes enumerated above - {@code idx_card_acct_id},
  *       {@code idx_card_cross_reference_acct_id} and {@code idx_transaction_proc_ts} - and {@code V3} seeds the
  *       ten fixture-backed tables plus the ten BCrypt-hashed users.</p></li>
- *   <li><p><strong>Withdrawn: the four {@code src/main/resources/application*.yml} profile files are
+ *   <li><p><strong>All four {@code src/main/resources/application*.yml} profile files are
  *       present.</strong> {@code application.yml}, {@code application-local.yml},
  *       {@code application-test.yml} and {@code application-prod.yml} all exist and every one sets
  *       {@code spring.jpa.hibernate.ddl-auto: validate}, so each configuration key quoted under "Key configs
@@ -770,9 +767,8 @@
  *       {@code TransactionCategoryBalanceRepositoryTest}, {@code DisclosureGroupRepositoryTest},
  *       {@code TransactionTypeRepositoryTest}, {@code TransactionCategoryRepositoryTest} and
  *       {@code UserSecurityRepositoryTest} - plus {@code RepositorySchemaAndFinderIntegrationTest}, which
- *       proves the three alternate-index finders and the schema metadata against PostgreSQL 16. An earlier
- *       revision recorded that no concrete subclass extended the base and that no derived query had been
- *       proved against PostgreSQL; <strong>both claims are withdrawn</strong>. Structural coverage also
+ *       proves the three alternate-index finders and the schema metadata against PostgreSQL 16. Structural
+ *       coverage also
  *       exists, by reflection, in
  *       {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest}. What remains genuinely
  *       unavailable is only the <em>result</em> of a run on a host with no container runtime and no accessible

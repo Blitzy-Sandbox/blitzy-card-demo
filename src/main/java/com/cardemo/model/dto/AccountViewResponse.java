@@ -60,34 +60,47 @@ import java.util.Objects;
  * A 3270 terminal in a card-operations centre could display them; an HTTP response body is logged by proxies,
  * cached by clients and captured by browser tooling, so it may not.</p>
  *
- * <p>The withholding applies to the <b>display</b> components. A caller that legitimately needs those values
- * for some other purpose needs an operation designed for it, with its own authorisation, and none exists in
- * this scope.</p>
+ * <p>The withholding is total on this type: it applies to the display components, and it applies equally to
+ * the as-displayed snapshot below, which travels sealed precisely so that nine of those same values are not
+ * reinstated by another route. No component of this record carries a protected value, and none is derivable
+ * from one that does. A caller that legitimately needs those values for some other purpose needs an operation
+ * designed for it, with its own authorisation, and none exists in this scope.</p>
  *
- * <h2>The as-displayed group, carried verbatim</h2>
+ * <h2>The as-displayed snapshot, carried sealed</h2>
  *
- * <p>{@link #oldDetails} is the one place a protected value does appear, and it is there because
- * transformation Rule 7 requires it. {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669} lived in
+ * <p>{@link #snapshot} is how the update's comparison operand reaches the client, and it is
+ * <strong>opaque</strong>. {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669} lived in
  * {@code WS-THIS-PROGCOMMAREA} at {@code :652} between the two turns of the pseudo-conversation, and a
  * stateless server has nowhere to put it, so the matching {@code PUT} carries it in its request body and this
- * read is what supplies it. {@code 9700-CHECK-CHANGE-IN-REC} at {@code :4109-4193} compares all
- * twenty-nine of its values against the live record, so every one of them has to be here.</p>
+ * read is what supplies it. {@code 9700-CHECK-CHANGE-IN-REC} at {@code :4109-4193} compares all twenty-nine
+ * of its values against the live record, so every one of them has to travel - but none of them may travel
+ * readably, and two independent reasons say so.</p>
  *
- * <p>It is carried as the group itself rather than as flat components, and that is not a stylistic choice.
- * The comparison is representation-sensitive in ways a caller cannot be expected to reconstruct: the date of
- * birth is compared at live offsets {@code 1}, {@code 6} and {@code 9} against snapshot offsets {@code 1},
+ * <ul>
+ *   <li><strong>Confidentiality.</strong> Nine of the twenty-nine are the very values this type withholds as
+ *       display components. Returning them inside a group would reinstate on one member exactly the
+ *       disclosure the other twenty-two components exist to prevent, on an ordinary read, to every role the
+ *       route admits.</li>
+ *   <li><strong>Provenance.</strong> A group the caller can read is a group the caller can rewrite. Replacing
+ *       it with the live row makes the comparison unconditionally true, so the lost-update guarantee
+ *       {@code 9700-CHECK-CHANGE-IN-REC} provides would depend on the caller choosing not to defeat it. The
+ *       {@code @Version} column detects a concurrent write, but not a caller who edits the values being
+ *       compared, so it is not a substitute.</li>
+ * </ul>
+ *
+ * <p>{@code com.cardemo.security.SnapshotTokenService} therefore seals the group with AES-256-GCM, bound to
+ * the operation, the account identifier, the authenticated principal and an expiry, and this component is the
+ * resulting base64url string. A client echoes it back as the {@code snapshot} member of the {@code PUT} body
+ * without reading it; the update service opens it and compares the recovered group.</p>
+ *
+ * <p>Sealing also preserves the property that made the group - rather than flat fields - the right carrier in
+ * the first place. The comparison is representation-sensitive in ways a caller could not reconstruct: the date
+ * of birth is compared at live offsets {@code 1}, {@code 6} and {@code 9} against snapshot offsets {@code 1},
  * {@code 5} and {@code 7}, because the live record is dash-separated and the snapshot is not
  * ({@code :L4174-L4179}); the account group identifier is folded to lower case on both sides while the
- * customer name and address fields are folded to upper case and the remainder are not folded at all. A caller
- * that assembled the group from flat display fields would get the date of birth wrong on every request.
- * Echoing this component back unaltered is therefore the whole contract, and the type is the very type the
- * {@code PUT} binds, so there is no shape to translate.</p>
- *
- * <p>What that costs is stated rather than hidden: the group is personal data on an HTTP response. The
- * mitigations in force are the general ones - transport is the deployment's concern, the logging configuration
- * masks the social security number and credentials in every log event, and no handler in this scope reinstates
- * binding messages that could echo a submitted value. Encryption at rest for personally identifiable data is
- * recorded as deferred hardening rather than claimed.</p>
+ * customer name and address fields are folded to upper case and the remainder are not folded at all. What is
+ * sealed here and opened there is byte for byte what the read projected, so nothing is ever rebuilt and the
+ * date of birth cannot be got wrong.</p>
  *
  * <h2>Money is text, exactly as the source rendered it</h2>
  *
@@ -132,9 +145,11 @@ import java.util.Objects;
  *     enumerated counterpart, {@code ACSPFLGI PIC X(1)}
  * @param informationMessage {@code INFOMSGI PIC X(45)}, the byte-exact screen literal; may be null
  * @param errorMessage {@code ERRMSGI PIC X(78)}, on the same terms; may be null
- * @param oldDetails the {@code ACUP-OLD-DETAILS} group of {@code app/cbl/COACTUPC.cbl:669} exactly as the
- *     read projected it, to be echoed back unaltered as the {@code oldDetails} member of the matching
- *     update's request body. Never null on a successful read
+ * @param snapshot the sealed, opaque {@code ACUP-OLD-DETAILS} group of {@code app/cbl/COACTUPC.cbl:669}
+ *     exactly as the read projected it, to be echoed back unaltered as the {@code snapshot} member of the
+ *     matching update's request body. Authenticated and encrypted, bound to this operation, this account, the
+ *     requesting principal and an expiry, so it discloses nothing and cannot be altered, transferred or
+ *     replayed indefinitely. Never null on a successful read
  */
 public record AccountViewResponse(
         String accountId,
@@ -159,14 +174,16 @@ public record AccountViewResponse(
         String primaryCardHolderIndicator,
         String informationMessage,
         String errorMessage,
-        AccountUpdateRequest.OldDetails oldDetails) {
+        String snapshot) {
 
     /**
      * The names of the legacy projection's components that this type must never carry.
      *
      * <p>Published so the contract is machine-checkable rather than merely documented: a test asserts that no
      * component of this record bears any of these names, so adding one back would fail the build rather than
-     * quietly widen the response.</p>
+     * quietly widen the response. A companion test asserts the same list against the serialised JSON of a
+     * fully populated instance, which closes the route that previously reinstated all nine of them inside a
+     * readable as-displayed group.</p>
      */
     public static final List<String> WITHHELD_COMPONENTS = List.of(
             "customerSsn",
@@ -181,20 +198,20 @@ public record AccountViewResponse(
 
     /**
      * Projects a service-produced account onto its response form, withholding the nine protected display
-     * values and attaching the as-displayed group the matching update must echo.
+     * values and attaching the sealed as-displayed snapshot the matching update must echo.
      *
-     * <p>The group is relayed by reference and is neither copied nor rewritten, because the caller returns it
-     * unaltered and the comparison it feeds is byte-sensitive.</p>
+     * <p>The sealed value is relayed exactly as the update service produced it and is neither re-encoded nor
+     * re-wrapped, because it is an authentication tag over specific bytes and any alteration would make it
+     * fail to open.</p>
      *
      * @param projection the thirty-seven-field projection the account-view service produced; must not be null
-     * @param oldDetails the as-displayed group for a subsequent update; may be null only when the read could
-     *     not produce one, in which case the client will be unable to update and the reason belongs in the log
-     *     rather than in this body
+     * @param snapshot the sealed as-displayed snapshot for a subsequent update; may be null only when the read
+     *     could not produce one, in which case the client will be unable to update and the reason belongs in
+     *     the log rather than in this body
      * @return the response; never null
      * @throws NullPointerException if {@code projection} is null
      */
-    public static AccountViewResponse of(final AccountDto projection,
-                                         final AccountUpdateRequest.OldDetails oldDetails) {
+    public static AccountViewResponse of(final AccountDto projection, final String snapshot) {
         Objects.requireNonNull(projection, "projection must not be null");
         return new AccountViewResponse(
                 projection.accountId(),
@@ -219,6 +236,6 @@ public record AccountViewResponse(
                 projection.primaryCardHolderIndicator(),
                 projection.informationMessage(),
                 projection.errorMessage(),
-                oldDetails);
+                snapshot);
     }
 }

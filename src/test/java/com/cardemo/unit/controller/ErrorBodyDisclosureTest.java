@@ -14,7 +14,7 @@
  *               app/cbl/COACTUPC.cbl:L505-L512 (validation literals)
  *               app/cbl/COACTUPC.cbl:L654-L668 (ACUP-CHANGE-ACTION)
  *               app/cbl/CORPT00C.cbl:L531      (Unable to Write TDQ)
- *               app/cbl/CBTRN02C.cbl:L707-L710 (abend 999, RC 12) @ 7756d89
+ *               app/cbl/CBTRN02C.cbl:L707-L711 (abend 999, RC 12) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.

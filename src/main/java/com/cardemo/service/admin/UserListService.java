@@ -1,11 +1,11 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Component   : UserListService
  * Application : CardDemo
  * Type        : Spring @Service (admin, user list)
  * Function    : List all users from USRSEC file
- * Source      : app/cbl/COUSR00C.cbl (695 lines, 16 paragraphs) @ 7756d89
- * ****************************************************************************
+ * Source      : app/cbl/COUSR00C.cbl (695 lines, 16 own paragraph labels) @ 7756d89
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -20,7 +20,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.service.admin;
 
@@ -54,7 +54,7 @@ import com.cardemo.service.shared.FileStatusMapper;
 
 /**
  * The user-list screen: ten users per page, browsed forward and backward over the {@code USRSEC} security
- * file. This is the Java replacement for {@code app/cbl/COUSR00C.cbl} (695 lines, 16 paragraphs), the CICS
+ * file. This is the Java replacement for {@code app/cbl/COUSR00C.cbl} (695 lines, 16 own paragraph labels), the CICS
  * program behind transaction {@code CU00} - {@code DEFINE TRANSACTION(CU00) ... PROGRAM(COUSR00C)} in
  * {@code app/csd/CARDDEMO.CSD}, painting mapset {@code COUSR00} whose generated symbolic map is
  * {@code app/cpy-bms/COUSR00.CPY}.
@@ -65,8 +65,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * boundary conditions the source reports, with the source's exact message text; and it reports which row the
  * operator selected, together with the program the source would have transferred to, so that the caller can
  * navigate. It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*}, which is authored as of 4 August 2026; an earlier revision of this paragraph
- * recorded that controller as planned and this service as having no HTTP entry point.
+ * {@code /api/admin/*}, which is authored, so this service has an HTTP entry point rather than none.
  * {@code com.cardemo.config.SecurityConfig} restricts
  * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the
  * {@code 'A'} against {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at
@@ -79,9 +78,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to build and test</h2>
  *
- * <p>Java 25 ({@code maven.compiler.release} 25, no preview features) and Maven 3.9.11, under parent
- * {@code spring-boot-starter-parent:3.5.11}, with the toolchain floor asserted by
- * {@code maven-enforcer-plugin:3.5.0}.
+ * <p>The toolchain, the plugin versions and the zero-warning compiler settings are the project's, and
+ * are stated once in {@code pom.xml}; what follows is only what is specific to this file.
  *
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file. {@code maven-compiler-plugin:3.14.1} runs
@@ -235,12 +233,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(String, Pageable)} for the two directions, plus
  * {@code findAllByOrderBySecUsrIdAsc(Pageable)} for the start-of-file browse that has no key to anchor on.
  *
- * <p><strong>Finding H-08, severity High, RESOLVED.</strong> An earlier revision had only the paged finder and
- * positioned by an <em>ordinal</em> derived by arithmetic from the submitted page number, validating the echoed
- * key for existence but never positioning on it. Three behaviours followed that the source does not have: an
- * insert or a delete ahead of the browse shifted every later page, so one page number returned different rows
- * on successive requests; a caller whose echoed key and page number disagreed got the page number's rows; and
- * a large page number produced a correspondingly large {@code OFFSET} scan. <i>Remediation, applied:</i> the
+ * <p><strong>Finding H-08, severity High.</strong> Having only the paged finder and
+ * positioning by an <em>ordinal</em> derived by arithmetic from the submitted page number - validating the
+ * echoed key for existence but never positioning on it - produces three behaviours the source does not have:
+ * an insert or a delete ahead of the browse shifts every later page, so one page number returns different rows
+ * on successive requests; a caller whose echoed key and page number disagree gets the page number's rows; and
+ * a large page number produces a correspondingly large {@code OFFSET} scan. Instead the
  * echoed key is the position and the page number is display metadata. Ordinals survive only as offsets
  * relative to the anchor, which is what a {@code READNEXT} and a {@code READPREV} are, and are bounded by a
  * page plus two probe reads - so no read this service issues grows with the page number.
@@ -637,9 +635,7 @@ public class UserListService {
         this.pageSize = pageSize;
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Public surface. Three entry points, one per way the source can be reached.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Opens the list at its first page, optionally starting from a named user. Either way
@@ -734,11 +730,9 @@ public class UserListService {
                 new UserListRequest(0, false, null, null, null, List.of()));
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Source-mapped paragraphs. Sixteen labels, sixteen private methods, in source order.
     // Never consolidate: TRACEABILITY_MATRIX.md will be proved against this correspondence and Gate 7 reads
     // exactly it. Mapping fewer than sixteen is a Blocker.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * {@code app/cbl/COUSR00C.cbl:98 MAIN-PARA} - the entry paragraph. Initialises the four working-storage
@@ -757,7 +751,8 @@ public class UserListService {
      * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} immediately restores
      * {@code CDEMO-CU00-NEXT-PAGE-FLG} from the communication area. It survives only on the
      * {@code EIBCALEN = 0} path, which transfers away at once. Reproduced verbatim - assign, then overwrite
-     * from the request - rather than deleted, and owed an entry in the DECISION_LOG.md. Severity: Low.
+     * from the request - rather than deleted, and held as {@code DL-PP-13} in the DECISION_LOG.md.
+     * Severity: Low.
      *
      * @param commAreaPresent {@code false} models {@code EIBCALEN = 0} at {@code :110}
      * @param reenter         {@code false} models the first-display arm at {@code :115-119}, {@code true} the
@@ -852,12 +847,13 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> The {@code WHEN OTHER} arm at {@code :211-215} sets the
      * message and the cursor but <em>not</em> {@code WS-ERR-FLG}, so an invalid selector still falls through
      * to {@code PROCESS-PAGE-FORWARD} and the list is re-sent with the advisory attached. Preserved; do not
-     * add an early exit. Severity: Low. Owed an entry in the DECISION_LOG.md.
+     * add an early exit. Severity: Low. Held as DL-PP-13 in DECISION_LOG.md.
      *
      * <p><strong>Retained parity artefact.</strong> {@code IF NOT ERR-FLG-ON MOVE SPACE TO USRIDINO} at
      * {@code :231-233} runs <em>after</em> {@code PROCESS-PAGE-FORWARD} has already sent the screen at {@code :330},
      * and duplicates the clearing that {@code :328} performed before that send, so it has no observable effect.
-     * Reproduced as an explicit intentional no-op. Severity: Low. Owed an entry in the DECISION_LOG.md.
+     * Reproduced as an explicit intentional no-op. Severity: Low. Held as DL-CR-01 in DECISION_LOG.md,
+     * which is the entry for a construct retained because deleting it would break the paragraph map.
      *
      * @param work the per-invocation work area, mutated in place exactly as the source mutates
      *             working-storage and the shared map
@@ -994,7 +990,8 @@ public class UserListService {
      * {@code READNEXT} ends the file at once and the response carries
      * {@code 'You have reached the bottom of the page...'}. The combination is reachable only from a
      * malformed request, because the source sets {@code USRID-LAST} whenever a page fills and reports
-     * {@code NEXT-PAGE-NO} whenever it does not. Severity: Low; owed an entry in the DECISION_LOG.md.
+     * {@code NEXT-PAGE-NO} whenever it does not. Severity: Low; held as {@code DL-PP-13} in the
+     * DECISION_LOG.md.
      *
      * <p>The bottom-boundary response is distinguishable from {@code READNEXT}'s
      * {@code 'You have reached the bottom of the page...'} at {@code :637} by the absence of any read: this
@@ -1052,7 +1049,8 @@ public class UserListService {
      *
      * <p><strong>Retained parity artefact.</strong> {@code MOVE SPACE TO USRIDINO} at {@code :328} clears the
      * identifier field immediately before the send, which is why {@code PROCESS-ENTER-KEY}'s later clearing
-     * at {@code :231-233} is a no-op. Both are kept. Severity: Low; owed an entry in the DECISION_LOG.md.
+     * at {@code :231-233} is a no-op. Both are kept. Severity: Low; held as {@code DL-PP-13} in the
+     * DECISION_LOG.md.
      *
      * @param work the per-invocation work area; {@code work.startKey}, {@code work.startPastEnd} and
      *             {@code work.startOrdinal} must already describe the browse position
@@ -1134,7 +1132,7 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> Unlike the forward path there is no
      * {@code MOVE SPACE TO USRIDINO} before the send, so a backward page echoes the identifier field back
      * while a forward page blanks it. The asymmetry is the behaviour; do not normalise it. Severity: Low;
-     * owed an entry in the DECISION_LOG.md.
+     * held as {@code DL-PP-13} in the DECISION_LOG.md.
      *
      * <p><strong>Reachability note.</strong> If the backward loop reaches the front of the file before it
      * fills every slot, the low-numbered slots stay blank and the page displays with gaps at the top. That
@@ -1208,7 +1206,8 @@ public class UserListService {
      * modelling of an {@code OCCURS} table rather than a consolidation of distinct logic: every arm performs
      * the identical four moves, and the two index-specific extras are reproduced as explicit index tests.
      * The {@code WHEN OTHER CONTINUE} arm at {@code :439-440} is retained below as an intentional no-op and
-     * owed an entry in the DECISION_LOG.md; it is reachable only if {@code WS-IDX} leaves the table, which
+     * covered by {@code DL-CR-01} in the DECISION_LOG.md; it is reachable only if {@code WS-IDX} leaves
+     * the table, which
      * the loop bounds prevent. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.currentRecord} holds the record just read and
@@ -1255,7 +1254,7 @@ public class UserListService {
      * <p><strong>Mechanism substitution.</strong> As with {@code POPULATE-USER-DATA}, the ten-arm
      * {@code EVALUATE WS-IDX} addresses one {@code OCCURS} table and is modelled by index. The
      * {@code WHEN OTHER CONTINUE} arm at {@code :499-500} is retained below as an intentional no-op and
-     * owed an entry in the DECISION_LOG.md. Severity: Low.
+     * covered by {@code DL-CR-01} in the DECISION_LOG.md. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.idx} selects the row
      */
@@ -1285,7 +1284,8 @@ public class UserListService {
      * {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)} at {@code :514-517}.
      * Routing is URL-based in the target and nothing is retained across a request, so the four collapse into
      * recording that control was transferred and to where. The label is nonetheless mapped one-to-one, as an
-     * intentional no-op with respect to state, and is owed an entry in the DECISION_LOG.md. Severity: Low.
+     * intentional no-op with respect to state, and is held as {@code DL-MS-06} in the DECISION_LOG.md.
+     * Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.navigationTarget} already holds the caller's
      *             intended target, or is unset when the caller had none
@@ -1313,7 +1313,7 @@ public class UserListService {
      * {@code IF SEND-ERASE-YES} decision inert - so the choice is recorded on the response instead of being
      * discarded, which keeps the {@code SET SEND-ERASE-NO} assignments at {@code :253} and {@code :275}
      * observable and testable. The commented-out option is retained in place, not deleted. Severity: Low;
-     * owed an entry in the DECISION_LOG.md.
+     * held as {@code DL-PP-13} in the DECISION_LOG.md.
      *
      * <p>The source can send more than once in a single turn - the {@code NOTFND} arm of {@code STARTBR}
      * sends and then falls through to the page logic, which sends again. The send count is recorded so that
@@ -1346,7 +1346,8 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> The command captures {@code RESP(WS-RESP-CD)} and
      * {@code RESP2(WS-REAS-CD)} at {@code :554-555} and then <em>never examines either</em> - there is no
      * {@code EVALUATE} after this command, unlike every other I/O paragraph in the program. The capture is
-     * reproduced, unexamined, rather than dropped. Severity: Low; owed an entry in the DECISION_LOG.md.
+     * reproduced, unexamined, rather than dropped. Severity: Low; held as {@code DL-PP-13} in the
+     * DECISION_LOG.md.
      *
      * <p>Note that the submitted selection flags are stored but the submitted row data is stored too, because
      * {@code INITIALIZE-USER-DATA} clears the four data fields while deliberately leaving the selectors
@@ -1399,8 +1400,8 @@ public class UserListService {
      *
      * <p><strong>Citation correction.</strong> The plan's general note on the BMS layer records
      * {@code CURTIME} as {@code X(9)}. The symbolic map and {@code CSDAT01Y.cpy} both say {@code X(8)}, and
-     * the source governs, so this method emits eight characters. Severity: Low; owed an entry in the
-     * DECISION_LOG.md.
+     * the source governs, so this method emits eight characters. Severity: Low; registered as
+     * {@code CIT-CURTIME-WIDTH} under {@code DL-CR-09} in the DECISION_LOG.md.
      *
      * @param work the per-invocation work area to stamp
      */
@@ -1427,7 +1428,7 @@ public class UserListService {
      * enabled: a supplied key must name a record that exists, and a key that names nothing takes the
      * {@code NOTFND} arm. The two sentinel keys the callers supply are handled as the callers mean them -
      * {@code LOW-VALUES} positions before the first record, {@code HIGH-VALUES} positions past the last.
-     * Severity: Low; owed an entry in the DECISION_LOG.md.
+     * Severity: Low; held as {@code DL-PP-13} in the DECISION_LOG.md.
      *
      * <p><strong>Retained parity artefact.</strong> The {@code NOTFND} arm opens with a bare
      * {@code CONTINUE} at {@code :601} before its real body, which is a no-op the compiler discards. It is
@@ -1592,7 +1593,8 @@ public class UserListService {
      * browse to release: JPA pagination subsumes the whole command. The label is nonetheless mapped
      * one-to-one, and it is given the one job that remains - discarding the page window, so that a later
      * browse in the same request cannot serve a stale row and so that the rows become collectable as soon as
-     * the source would have released them. Owed an entry in the DECISION_LOG.md. Severity: Low.
+     * the source would have released them. Held as DL-MS-04 in DECISION_LOG.md, the entry for VSAM access
+     * verbs becoming repository operations. Severity: Low.
      *
      * @param work the per-invocation work area whose page window is released
      */
@@ -1600,10 +1602,8 @@ public class UserListService {
         work.resetBrowseWindow();                                     // :689-691 EXEC CICS ENDBR
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Browse internals. These are not paragraphs: they are the mechanism that stands in for the VSAM
     // browse, and they exist so that the sixteen source-mapped methods above read exactly like the source.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Resolves the requested browse position into an ordinal, and reports the outcome as the file status the
@@ -1716,10 +1716,10 @@ public class UserListService {
     /**
      * Loads the block of records covering one ordinal, positioning by key wherever the browse was keyed.
      *
-     * <p><strong>Finding H-08, severity High, RESOLVED.</strong> This used to compute a page index from the
-     * ordinal and read {@code findAllByOrderBySecUsrIdAsc(PageRequest.of(pageIndex, pageSize))}, which is an
-     * {@code OFFSET} scan whose cost grows with the page number, and which returns whatever rows now occupy
-     * that offset rather than the rows the caller's key identified. A keyed browse now reads from the key.
+     * <p><strong>Finding H-08, severity High.</strong> Computing a page index from the
+     * ordinal and reading {@code findAllByOrderBySecUsrIdAsc(PageRequest.of(pageIndex, pageSize))} is an
+     * {@code OFFSET} scan whose cost grows with the page number, and which returns whatever rows occupy
+     * that offset rather than the rows the caller's key identified. This reads from the key instead.
      *
      * <p><strong>Why the read is bounded whichever direction it runs.</strong> Ordinals are relative to the
      * anchor, and one invocation of this service reads at most a page plus its two probe reads, so the
@@ -1843,9 +1843,7 @@ public class UserListService {
         }
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Static helpers. Pure functions over the screen fields; no state, no clock, no repository.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Reproduces the source's {@code NOT = SPACES AND LOW-VALUES} test: a field counts as supplied only when
@@ -1944,7 +1942,7 @@ public class UserListService {
      * {@code ON SIZE ERROR}, so COBOL discards the high-order digit and eight nines become zero. The
      * truncation is reproduced rather than replaced by a cap or an exception, because inventing either would
      * invent a policy the source does not have. Reaching it requires a hundred million pages. Severity: Low;
-     * owed an entry in the DECISION_LOG.md.
+     * held as {@code DL-PP-13} in the DECISION_LOG.md.
      *
      * @param pageNumber the current page number
      * @return the incremented page number, wrapping to zero past eight digits
@@ -1980,10 +1978,8 @@ public class UserListService {
         return userType == null ? SPACES : String.valueOf(userType.getCode());
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Nested types. All of them live in this file, so the four-file budget of com.cardemo.service.admin
     // is unaffected.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * The attention identifier the terminal sent, standing in for {@code EIBAID} as the source evaluates it
@@ -2138,7 +2134,8 @@ public class UserListService {
      * <p><strong>Not modelled.</strong> {@code WS-REC-COUNT} at {@code app/cbl/COUSR00C.cbl:52} is declared and never
      * referenced anywhere in the program, and {@code WS-USER-DATA} at {@code :56-64} is a ten-occurrence work table
      * the program never reads or writes - {@code POPULATE-USER-DATA} projects straight onto the map instead. Both are
-     * dead in the source rather than dead here; they are owed entries in the DECISION_LOG.md instead of being
+     * dead in the source rather than dead here; they are held as {@code DL-PP-13} in the DECISION_LOG.md
+     * instead of being
      * carried as fields that nothing would touch, which would be dead code in the target. Severity: Low.
      */
     private static final class ScreenWorkArea {

@@ -14,7 +14,7 @@
  *               built with DELIMITED BY SPACE semantics from a field the
  *               clear does not touch, and the credential never stored in
  *               the clear, never returned and never named in a message
- * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 paragraphs) @ 7756d89
+ * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 own paragraph labels) @ 7756d89
  * Source      : app/cpy-bms/COUSR01.CPY (12 input fields) @ 7756d89
  * Source      : app/cpy/CSUSR01Y.cpy (80 byte record, KEYS(8,0)) @ 7756d89
  * Source      : app/cbl/COSGN00C.cbl (the upper-casing contrast) @ 7756d89
@@ -297,10 +297,8 @@ import jakarta.persistence.EntityManager;
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
 class UserAddServiceTest {
 
-    // ----------------------------------------------------------------------------------------------------
     // Synthetic credential material. Rule 1 Clause D names tests explicitly, so nothing here is or
     // resembles a real credential, and the seed value of app/jcl/DUSRSECJ.jcl is never reproduced.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The presented plaintext, standing in for {@code PASSWDI PIC X(8)} at
@@ -349,11 +347,9 @@ class UserAddServiceTest {
     /** The exact width of the credential column, from {@code UserSecurity}'s field contract. */
     private static final int DIGEST_WIDTH = 60;
 
-    // ----------------------------------------------------------------------------------------------------
     // The five ordered literals of PROCESS-ENTER-KEY, app/cbl/COUSR01C.cbl:117-151. Byte exact: capital
     // N, O and T in "can NOT", and every ellipsis exactly three periods. Each program owns its own
     // literals, so none of these is shared with the sibling update or delete suites.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/COUSR01C.cbl}:120, guard one. */
     private static final String FIRST_NAME_REQUIRED = "First Name can NOT be empty...";
@@ -410,9 +406,7 @@ class UserAddServiceTest {
     /** {@code MOVE DFHGREEN TO ERRMSGC} at {@code app/cbl/COUSR01C.cbl}:254 - set on the success arm only. */
     private static final String GREEN = "DFHGREEN";
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor markers. MOVE -1 TO <field>L, the stateless equivalent of EXEC CICS SEND ... CURSOR.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code FNAMEL} at {@code :86}, {@code :100}, {@code :122}, {@code :149}, {@code :272}, {@code :289}. */
     private static final String CURSOR_FIRST_NAME = "FNAME";
@@ -429,9 +423,7 @@ class UserAddServiceTest {
     /** {@code USRTYPEL} at {@code app/cbl/COUSR01C.cbl}:146. */
     private static final String CURSOR_USER_TYPE = "USRTYPE";
 
-    // ----------------------------------------------------------------------------------------------------
     // Reported field names, and the program's own identity literals.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Reported for {@code FNAMEI PIC X(20)}. */
     private static final String FIELD_FIRST_NAME = "firstName";
@@ -474,9 +466,7 @@ class UserAddServiceTest {
     /** {@code MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM} at {@code :79} and {@code :168}. */
     private static final String SIGN_ON_PROGRAM = "COSGN00C";
 
-    // ----------------------------------------------------------------------------------------------------
     // The 80 byte record of app/cpy/CSUSR01Y.cpy:17-23 and the KEYS(8,0) of app/jcl/DUSRSECJ.jcl:65-66.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code SEC-USR-ID PIC X(08)} - also the key length of {@code KEYS(8,0)}. */
     private static final int SEC_USR_ID_WIDTH = 8;
@@ -502,10 +492,8 @@ class UserAddServiceTest {
     /** {@code WS-MESSAGE PIC X(80)} at {@code app/cbl/COUSR01C.cbl}:38. */
     private static final int WS_MESSAGE_WIDTH = 80;
 
-    // ----------------------------------------------------------------------------------------------------
     // Fixture values. Upper case where the source's own seed data is upper case, and deliberately lower
     // case where a test is about the absence of case folding.
-    // ----------------------------------------------------------------------------------------------------
 
     /** An eight-character identifier outside the ten seeded rows of {@code app/jcl/DUSRSECJ.jcl}. */
     private static final String NEW_USER_ID = "USER0006";
@@ -603,9 +591,7 @@ class UserAddServiceTest {
                 this.entityManager, FIXED_CLOCK);
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // Helpers. Pure functions and thin arrangements; no shared mutable state of any kind.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * Assembles a BCrypt-shaped digest at run time from its parts, so that no prefix literal is ever written
@@ -636,7 +622,11 @@ class UserAddServiceTest {
     /** The {@code SQLSTATE} of a check-constraint violation, {@value}: class {@code 23} but not a duplicate. */
     private static final String SQLSTATE_CHECK_VIOLATION = "23514";
 
-    /** @return the digest the contract accepts: BCrypt at strength 10, 60 characters. */
+    /**
+     * Builds the digest the encoder is stubbed to return.
+     *
+     * @return the digest the contract accepts: BCrypt at strength 10, 60 characters.
+     */
     private static String contractualDigest() {
         return digestWithCost(CONTRACTUAL_COST_FACTOR);
     }
@@ -669,7 +659,11 @@ class UserAddServiceTest {
                 EXPECTED_HEADER_TIME, firstName, lastName, userId, PRESENTED_CREDENTIAL, userType, null);
     }
 
-    /** @return a request whose five operator fields are all populated and all within their widths. */
+    /**
+     * Builds the baseline screen every rejection case perturbs one field of.
+     *
+     * @return a request whose five operator fields are all populated and all within their widths.
+     */
     private static UserCreateRequest validRequest() {
         return request(FIRST_NAME, LAST_NAME, NEW_USER_ID, TYPE_USER);
     }
@@ -686,7 +680,11 @@ class UserAddServiceTest {
         when(this.encoder.encode(credential)).thenReturn(contractualDigest());
     }
 
-    /** @return the single record handed to {@code persist}. */
+    /**
+     * Captures what the write actually received, for the field-by-field assertions.
+     *
+     * @return the single record handed to {@code persist}.
+     */
     private UserSecurity captureSaved() {
         final ArgumentCaptor<UserSecurity> captor = ArgumentCaptor.forClass(UserSecurity.class);
         verify(this.entityManager).persist(captor.capture());

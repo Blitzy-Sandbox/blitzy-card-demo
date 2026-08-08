@@ -377,10 +377,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * either would manufacture a false oracle.
  *
  * <ol>
- *   <li><p><strong>The end-to-end boundary parity baseline is Not available.</strong> No captured legacy
- *       output exists anywhere in this repository; searches across expected, baseline, golden,
- *       {@code .out} and system-output name patterns, and across the reject, report, statement and HTML
- *       dataset names, return only dataset <em>definition</em> job-control members and no captured data.
+ *   <li><p><strong>The end-to-end boundary parity expectation exists; what is Not available is a captured z/OS run to
+ *       corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own output --
+ *       {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected}, {@code DALYREJS.expected}
+ *       and {@code CBTRN02C.sysout.expected} -- derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and
+ *       running it against the frozen fixtures, with the harness and the derivation recorded beside them in
+ *       {@code PROVENANCE.properties}.
  *       What would be needed to close it: a captured 430-byte reject dataset from a real posting run at a
  *       known input state, together with the resulting transaction, account and category-balance images.
  *       Until then this class creates <strong>zero</strong> baseline files and fabricates no expected
@@ -510,8 +512,6 @@ class DisclosureGroupRepositoryTest extends AbstractRepositoryIntegrationTest {
      * {@code V3__seed_data.sql}'s responsibility, and what the assertions here compare is that migration's
      * <em>result</em> against an independent decode of the same frozen bytes.
      *
-     * @param record one 50-character record exactly as stored, never trimmed or normalised
-     * @return the decoded rate at scale 2, sign included
      * <p>The offsets are local constants rather than fields because this class declares no {@code static}
      * member of any kind, and a per-instance field would suggest state that does not exist.
      *
@@ -1331,19 +1331,10 @@ class DisclosureGroupRepositoryTest extends AbstractRepositoryIntegrationTest {
     /**
      * The complete PostgreSQL metadata contract for the {@code disclosure_group} table.
      *
-     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
-     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
-     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
-     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
-     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
-     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
-     * a frozen picture clause, that was the gap that mattered most.
-     *
-     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
-     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
-     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
-     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
-     * with the authority.
+     * <p>Why this delegates rather than restating the facets, and why asserting whichever columns the
+     * behavioural tests happen to touch would state no contract at all, is recorded once on
+     * {@link SchemaMetadataMatrix}, which declares every facet and asserts the live catalogue against
+     * it by exact equality on ordered lists.
      *
      * <p>For {@code disclosure_group} that is four columns, the three-part composite key in copybook field order, the NUMERIC(6,2) interest rate that is narrower than every other money column, and fk10 onto the transaction category - every value measured from the schema the migrations
      * produce and checked against {@code app/cpy/CVTRA02Y.cpy}, never transcribed from prose.

@@ -1011,7 +1011,7 @@ public class Customer {
     /**
      * Returns the primary telephone number — {@code CUST-PHONE-NUM-1 PIC X(15)}.
      *
-     * @return the formatted telephone number as stored, for example {@code (908)119-8310} with trailing spaces
+     * @return the formatted telephone number as stored, in the shape {@code (NNN)NNN-NNNN} with trailing spaces
      */
     public String getPhoneNumber1() {
         return phoneNumber1;

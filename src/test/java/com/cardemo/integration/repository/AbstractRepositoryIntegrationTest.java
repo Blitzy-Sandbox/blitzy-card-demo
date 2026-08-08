@@ -172,9 +172,9 @@ import com.cardemo.unit.model.FixtureLoader;
  *   <li><strong>Connection injection by {@code @ServiceConnection}</strong>. Spring Boot derives the URL,
  *       user name and password from the running container, so no <em>datasource</em> property string and no
  *       literal appears here.
- *       <p><strong>An earlier revision of this paragraph claimed that no {@code @DynamicPropertySource}
- *       method was needed because "there is no property left for one to supply". That claim was wrong and
- *       is withdrawn.</strong> It reasoned only about the datasource, but {@code @SpringBootTest} loads the
+ *       <p><strong>A {@code @DynamicPropertySource} method is nevertheless required, and the reasoning that
+ *       "there is no property left for one to supply" is wrong.</strong> It reasons only about the datasource,
+ *       but {@code @SpringBootTest} loads the
  *       <em>whole</em> application context, and that context requires several properties the datasource
  *       injection knows nothing about. Measured, not assumed: the first concrete subclass failed context
  *       startup on an unresolvable token-signing-key placeholder, and the emulator binding guard in
@@ -275,12 +275,13 @@ import com.cardemo.unit.model.FixtureLoader;
  * either would manufacture a false oracle.
  *
  * <ol>
- *   <li><p><strong>The end-to-end boundary parity baseline is Not available.</strong> No captured legacy
- *       output exists anywhere in the repository: a search across expected, baseline, golden, {@code .out}
- *       and system-output name patterns, and across the reject, report, statement and HTML dataset names,
- *       returns only dataset <em>definition</em> members such as {@code app/jcl/DALYREJS.jcl},
- *       {@code app/jcl/TRANREPT.jcl} and {@code app/proc/TRANREPT.prc}, and a sweep for artefacts of the
- *       relevant record lengths returns nothing at all. What would be needed to close it is a captured
+ *   <li><p><strong>The end-to-end boundary parity expectation exists; what is Not available is a captured
+ *       z/OS run to corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen
+ *       program's own output - {@code TRANSACT.expected}, {@code ACCTDATA.expected},
+ *       {@code TCATBALF.expected}, {@code DALYREJS.expected} and {@code CBTRN02C.sysout.expected} -
+ *       derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and running it against the frozen
+ *       fixtures, with the harness and the derivation recorded beside them in
+ *       {@code PROVENANCE.properties}. What would still be needed to corroborate it is a captured
  *       430-byte reject dataset from a real posting run at a known input state, together with the
  *       resulting transaction, account and category-balance images. Until that exists: create no baseline
  *       file, fabricate no expected bytes, and do not generate a baseline by running this implementation
@@ -373,8 +374,8 @@ public abstract class AbstractRepositoryIntegrationTest {
      * {@code V3} to the fresh container, so the schema under test is the schema that ships.
      *
      * <p><strong>Why the image is pinned by digest, and why it is not the {@code alpine} variant.</strong>
-     * This field previously named {@code postgres:16.10-alpine}, on the reasoning that it matched the tag the
-     * compose topology uses for the developer database. Both halves of that were wrong for a tier whose
+     * Naming {@code postgres:16.10-alpine} here, on the reasoning that it matches the tag the
+     * compose topology uses for the developer database, is wrong in both halves for a tier whose
      * contract is reproducing behaviour exactly.
      *
      * <p>The variant matters because Alpine is built on musl and Debian on glibc, and <em>text collation
@@ -511,9 +512,9 @@ public abstract class AbstractRepositoryIntegrationTest {
      *
      * <p><strong>Why none of these values is a leak, and why the port is stated.</strong> The endpoint host
      * comes from {@link java.net.InetAddress#getLoopbackAddress()} rather than from a typed-in host name, so
-     * the class still names no routable address. An earlier revision supplied no port at all and reasoned
-     * that the guard constrained only the scheme and the host; that is no longer true and the reasoning is
-     * withdrawn. The guard now refuses an endpoint that relies on a scheme default, because an endpoint with
+     * the class still names no routable address. Supplying no port at all, on the reasoning
+     * that the guard constrains only the scheme and the host, no longer holds:
+     * the guard refuses an endpoint that relies on a scheme default, because an endpoint with
      * no port would not reach the emulator even when its host is correct, so the emulator's published port is
      * stated explicitly. The credentials are the emulator's own well-known placeholders. The bucket, queue
      * and topic names are the same logical names {@code localstack-init/init-aws.sh} provisions, and none is
@@ -616,27 +617,6 @@ public abstract class AbstractRepositoryIntegrationTest {
      */
     @PersistenceContext
     private EntityManager entityManager;
-
-    /**
-     * Sole constructor, invoked implicitly by every subclass.
-     *
-     * <p>It is declared explicitly, and declared {@code protected} rather than left implicit, for two
-     * reasons. The implicit default constructor of a public class is itself public, which would advertise
-     * this type as constructible by anything; narrowing it to {@code protected} states that only a subclass
-     * in this tier may construct it, which is the actual contract. And because this class exists purely to
-     * be extended, its inheritance entry point is part of its documented surface rather than an
-     * implementation detail.
-     *
-     * <p>There is deliberately nothing to do here. The container is {@code static} and is started by the
-     * Testcontainers extension before any instance exists; the clock and the persistence context are both
-     * injected by the Spring test framework after construction. A subclass therefore needs no constructor of
-     * its own, and must not attempt to obtain a repository, read the clock or query the database from one,
-     * because injection has not yet happened at that point.
-     */
-    protected AbstractRepositoryIntegrationTest() {
-        // Intentionally empty: see the Javadoc above. All state is supplied by field initialisation,
-        // by the Testcontainers extension, or by Spring test-context injection after construction.
-    }
 
     /**
      * Returns the tier's fixed clock, from which every subclass must obtain the current instant.
@@ -790,17 +770,6 @@ public abstract class AbstractRepositoryIntegrationTest {
      */
     @TestConfiguration(proxyBeanMethods = false)
     static class FixedClockTestConfiguration {
-
-        /**
-         * Creates the configuration.
-         *
-         * <p>Declared explicitly, and empty by design: the single bean below is stateless and there is
-         * nothing to initialise. Spring instantiates this type reflectively, so the constructor is
-         * package-private rather than public.
-         */
-        FixedClockTestConfiguration() {
-            // Intentionally empty; see the constructor documentation above.
-        }
 
         /**
          * The fixed UTC clock every time-dependent bean in this tier's context receives.

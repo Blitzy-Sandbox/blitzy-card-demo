@@ -472,9 +472,10 @@ public class AdminController {
      * last shown if some operation showed it, and {@code app/csd/CARDDEMO.CSD} defines no per-user read
      * transaction to be that operation - {@code CU00} lists, {@code CU01} adds, {@code CU02} updates and
      * {@code CU03} deletes. The account and card updates do carry a sealed as-displayed snapshot because their
-     * own CSD transactions {@code CAVW} and {@code CCDL} issue one. Adding an eighteenth route here to close
-     * that gap would exceed the declared endpoint set, so the gap is covered by the lock and disclosed
-     * instead.
+     * own CSD transactions {@code CAVW} and {@code CCDL} issue one: each read publishes an opaque
+     * {@code snapshot} string, and each write binds that same string as a declared member of its request body.
+     * Adding an eighteenth route here to close that gap would exceed the declared endpoint set, so the gap is
+     * covered by the lock and disclosed instead.
      */
     private static final UserUpdateService.UserSnapshot NO_CLIENT_SNAPSHOT = null;
 
@@ -565,12 +566,12 @@ public class AdminController {
     /**
      * The exact user-administration captions of the frozen source that may be returned to a caller verbatim.
      *
-     * <p><strong>Finding H-02, severity High, RESOLVED.</strong> The user-administration services raise their
+     * <p><strong>Finding H-02, severity High.</strong> The user-administration services raise their
      * typed failures carrying the source's own caption as the message - {@code UserUpdateService} and
-     * {@code UserDeleteService} both do - and the handlers below used to discard every message in favour of a
-     * fixed generic detail. The reasoning was sound as far as it went: these exception types are also composed
+     * {@code UserDeleteService} both do - and a handler that discarded every message in favour of a
+     * fixed generic detail would be sound as far as it went: these exception types are also composed
      * by {@code FileStatusMapper}, whose messages name the operation, the logical file and the
-     * {@code COBOL FILE STATUS}, none of which a caller may see. But applying the rule by <em>type</em> threw
+     * {@code COBOL FILE STATUS}, none of which a caller may see. But applying the rule by <em>type</em> throws
      * away the literal parity the migration is measured on, including the deliberately preserved wrong verb of
      * {@code app/cbl/COUSR02C.cbl:L386} and {@code app/cbl/COUSR03C.cbl:L332}, where a <em>delete</em> path
      * reports {@code 'Unable to Update User...'}.
@@ -969,7 +970,7 @@ public class AdminController {
     /**
      * Refuses a navigation that names a page past the first without carrying the cursor that addresses it.
      *
-     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * <p><strong>Finding, severity Medium - remediated here.</strong>
      * {@code GET /api/admin/users?action=PAGE_FORWARD&page=5} with no cursor answered {@code 200}
      * reporting {@code pageNumber=5} with an <strong>empty</strong> row list, and the backward spelling did
      * likewise. A response that reports a page it did not serve cannot be acted on: a client cannot
@@ -1214,8 +1215,8 @@ public class AdminController {
      * {@code :L360}. The service reproduces that with
      * {@code com.cardemo.repository.UserSecurityRepository#findByIdForUpdate(String)} inside one transaction, so
      * the read, the change detection and the rewrite are indivisible and a second administrator's update cannot
-     * interleave with this one. <strong>Finding, Medium severity, resolved:</strong> the read previously used the
-     * unlocked {@code findById}, and the sequence was an unguarded read-modify-write.
+     * interleave with this one. <strong>Finding, Medium severity:</strong> the
+     * unlocked {@code findById} would leave the sequence an unguarded read-modify-write.
      *
      * <p><strong>Labelled deviation, Medium severity: no as-displayed snapshot travels.</strong> The source
      * carried none, and the business-level comparison layer therefore stays unengaged on this resource. The
@@ -1223,9 +1224,29 @@ public class AdminController {
      * {@code app/csd/CARDDEMO.CSD} defines, so nothing can issue a sealed snapshot for a caller to return, and
      * adding an eighteenth route would exceed the declared endpoint set. What that leaves exposed is narrower
      * than before: not a lost update, which the lock now prevents, but a caller composing a submission from a
-     * view that has since moved. See {@link #NO_CLIENT_SNAPSHOT}. Remediation, if a per-user read is ever added:
-     * issue a sealed snapshot from it and require it on a conditional-request header, as the account and card
-     * update surfaces do.
+     * view that has since moved. See {@link #NO_CLIENT_SNAPSHOT}.
+     *
+     * <p><strong>Finding CODE-009, severity Medium, RESOLVED here.</strong> This paragraph previously named the
+     * wrong mechanism, describing the sibling surfaces as requiring their snapshot on a conditional-request
+     * header. They do not, and no {@code If-Match} or {@code If-Unmodified-Since} handling exists anywhere in
+     * this application. What the account and card updates actually do, and what a per-user read would have to
+     * do if one were ever added: the read publishes an opaque {@code snapshot} string -
+     * {@code com.cardemo.model.dto.AccountViewResponse#snapshot()} and
+     * {@code com.cardemo.model.dto.CardResponse#snapshot()} - sealed by
+     * {@code com.cardemo.security.SnapshotTokenService} and bound to the record it describes, the principal it
+     * was issued to and an expiry; the write binds that same string as a declared member of its request
+     * <em>body</em>. Presenting nothing where one is required is {@code 428}; presenting one that does not open
+     * - tampered, issued to another principal, issued for another record, or expired - is {@code 412}. The
+     * caller cannot read it, and cannot compose one.
+     *
+     * <p><strong>The identifier may be omitted from the body, but it may not be sent empty.</strong> Finding
+     * API-003. Omit the member and the path identity fills it, which is the documented shape. Send it naming a
+     * different user and the request is refused before the service is reached. Send it <em>empty</em> - as
+     * {@code ""}, as blanks, or as a run of NUL bytes - and it travels unchanged to the service, which refuses
+     * it with {@code 400} and {@code app/cbl/COUSR02C.cbl}'s own {@code 'User ID can NOT be empty...'} from
+     * {@code :L146-L151} and {@code :L179-L185}. The three states are distinguished because the source
+     * distinguishes them; an empty value used to be overwritten with the path identity, which made that
+     * rejection unreachable through this surface.
      *
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 400} when one of the five fields is empty
      * - the {@code BLANK} failure kind - when a field is wider than its screen field, or when the user type is
@@ -1787,11 +1808,9 @@ public class AdminController {
      * outcome, a rejected input, looked like two unrelated failures depending on which layer noticed it. A
      * review recorded that inconsistency as a High-severity finding against this class.
      *
-     * <p><strong>Why it is declared here rather than centrally.</strong> The envelope is per-controller by
-     * design: the title names the resource, so a single advice class could not produce it without being told
-     * which controller it was answering for. This package declares no {@code @ControllerAdvice} and no shared
-     * base class, and this method keeps that property - it carries {@code @ExceptionHandler} only and is
-     * scoped to this controller alone, exactly like the typed mappers above it.
+     * <p><strong>Why it is declared here rather than centrally.</strong> Stated for the whole package in
+     * {@code com.cardemo.controller}'s package documentation; this handler keeps that property, carrying
+     * {@code @ExceptionHandler} only and answering for this controller alone.
      *
      * <p><strong>What the body does not contain.</strong> No rejected value, no field name, no constraint
      * message, no exception class and no discriminator; {@link #BIND_FAILURE_PROBLEM_DETAIL} records why each
@@ -1827,18 +1846,11 @@ public class AdminController {
      * Maps a request body the framework could not read onto {@code 400 Bad Request} with this controller's
      * own envelope.
      *
-     * <p>Claims the one exception the framework folds three conditions into, all of which occur before the
-     * mapped method is entered: a body that is not well-formed JSON, a body carrying a property outside the
-     * schema, and a request with no body where {@code @RequestBody} requires one. Each was previously answered
-     * by the framework's default handling, in a shape no client-side handler written against this package's
-     * envelope could read - the second half of the same High-severity finding.
-     *
-     * <p>The status is {@code 400} rather than {@code 415} or {@code 422}: the caller addressed the right
-     * operation with the right media type and sent something this operation cannot accept, which is precisely
-     * a bad request. Answering it identically to a bean-validation refusal is deliberate, and the two are told
-     * apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line.
-     *
-     * <p>This method is not request-mapped and is none of the four operations.
+     * <p>Which three framework conditions fold into this one exception, why the status is {@code 400}
+     * rather than {@code 415} or {@code 422}, and why the handler is declared per controller rather than
+     * centrally are stated for the whole package in {@code com.cardemo.controller}'s package
+     * documentation. The two refusals are told apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than
+     * by the status line, and this method is not request-mapped, so it is none of the four operations.
      *
      * @param unreadable the framework's read failure, whose message and cause chain are deliberately kept out
      * of the body and emitted at {@code DEBUG} only
@@ -1980,10 +1992,14 @@ public class AdminController {
      * the pessimistic lock that covers it, are stated on {@link #updateUser} rather than hidden here.</p>
      *
      * @param userId the identifier from the path, which addresses the record.
-     * @param request the twelve declared fields of the update screen.
+     * @param request the twelve declared fields of the update screen. An absent identifier member is filled
+     * from the path; one that is present but empty is carried through unchanged, so that the service raises the
+     * source's own empty-identifier rejection rather than this class silently supplying a value - finding
+     * API-003.
      * @return the assembled screen, carrying either the source's updated message or its "please modify"
      * advisory, never null
-     * @throws ValidationException if the body names an identifier that disagrees with the path
+     * @throws ValidationException if the body names a user other than the one the path addresses, or - raised
+     * by the service rather than here - if the body names the identifier member emptily
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure, or returns nothing
      */
@@ -2065,7 +2081,7 @@ public class AdminController {
      * Supplies the addressed identifier to a body that did not name one, reproducing
      * {@code app/cbl/COUSR02C.cbl:L102-L103}.
      *
-     * <p><strong>Finding, severity Major - remediated here.</strong> The body was previously relayed
+     * <p><strong>Finding, severity High - remediated here.</strong> The body was previously relayed
      * unchanged, so a request carrying the documented shape - the identifier in the path only - was refused
      * with {@code 'User ID can NOT be empty...'} and the operation could be reached only by duplicating the
      * identifier inside the body, which nothing documents.
@@ -2078,11 +2094,32 @@ public class AdminController {
      * context is the path segment, which is why {@code USRIDINI} may be omitted from the body and why
      * {@link #requireIdentifiersAgree} still refuses a body that names a different user.
      *
-     * <p>What this does not weaken: {@code PROCESS-ENTER-KEY}'s empty-identifier rejection at
-     * {@code :L146-L151} is untouched and still reachable, because it fires whenever the identifier the
-     * service receives is blank - which, on the screen, was the case only when the commarea carried no
-     * selection either. A path segment cannot be blank and still match this route, so on this surface the
-     * condition it guards is the one the source guarded: nothing selected and nothing typed.
+     * <p><strong>FINDING API-003, severity HIGH, RESOLVED here: absent and empty are different states, and
+     * only the absent one is filled.</strong> The substitution previously fired for a blank body value as well
+     * as for an absent one, which let a caller walk straight past a validation branch the source enforces
+     * twice. {@code app/cbl/COUSR02C.cbl} rejects {@code USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES} with
+     * {@code 'User ID can NOT be empty...'} at {@code :L146-L151} and again at {@code :L179-L185}; a request
+     * naming {@code "userId": ""}, {@code "   "} or a run of NUL bytes reached neither, because the path value
+     * had already been written over it. It now travels exactly as sent and the service refuses it in the
+     * source's own words.
+     *
+     * <p>The distinction is the source's, not an invention. Substitution happens on ONE leg only: at
+     * {@code :L95-L104}, on first entry, and only when {@code CDEMO-CU02-USR-SELECTED NOT = SPACES AND
+     * LOW-VALUES} - so even there an empty selection was never moved onto the screen. On re-entry, the leg a
+     * write corresponds to, {@code :L106-L111} performs {@code RECEIVE-USRUPD-SCREEN} and validates what the
+     * terminal actually sent, with no back-fill from the commarea at all. Filling an explicitly empty member
+     * would therefore be substituting on a leg that never substituted, from a value the source's own guard
+     * excluded.
+     *
+     * <p>Emptiness is judged the way COBOL judged it, by
+     * {@link #namesNoIdentifier(String)}: blanks and control bytes both count, because
+     * {@code = SPACES OR LOW-VALUES} covers both fills and {@code String#isBlank()} covers only the first -
+     * a NUL-filled member used to escape the blank test entirely and be refused as a <em>mismatch</em>, which
+     * is the wrong branch and the wrong message.
+     *
+     * <p>What this does not weaken: a request that names no identifier at all - the documented shape, with the
+     * identifier in the path only - is still filled from the path and still reaches the operation. That is the
+     * case {@code :L102-L103} models, and it is the case the earlier remediation existed to admit.
      *
      * <p>Only the identifier is substituted. The other eleven declared members travel exactly as sent,
      * because {@code :L102-L103} is one MOVE into one field and touches nothing else - in particular it does
@@ -2091,19 +2128,53 @@ public class AdminController {
      *
      * @param request the twelve declared fields of the update screen, as submitted.
      * @param userId the identifier from the path, which addresses the record.
-     * @return the same request when it already names an identifier, otherwise a copy naming the addressed
-     * one, never null
+     * @return the same request whenever the body named the member at all, even emptily; a copy naming the
+     * addressed identifier only when the member was absent, never null
      */
     private static UserUpdateRequest withIdentityFrom(final UserUpdateRequest request,
             final String userId) {
 
-        if (request.userId() != null && !request.userId().isBlank()) {
+        if (request.userId() != null) {
             return request;
         }
         return new UserUpdateRequest(request.transactionName(), request.title01(), request.currentDate(),
                 request.programName(), request.title02(), request.currentTime(), userId,
                 request.firstName(), request.lastName(), request.password(), request.userType(),
                 request.errorMessage());
+    }
+
+    /**
+     * Reports whether a submitted identifier names no user, on the source's own terms.
+     *
+     * <p>Finding API-003. {@code app/cbl/COUSR02C.cbl:L146} and {@code :L180} both test
+     * {@code USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES}, so a field of blanks and a field of low values are
+     * equally empty. {@code String#isBlank()} reproduces only the first of those: {@code Character.isWhitespace}
+     * is false for {@code U+0000}, so a NUL-filled member is not blank to Java while being unambiguously empty
+     * to the source. Control bytes are therefore tested alongside whitespace, which is the same predicate
+     * {@code com.cardemo.service.admin.UserUpdateService} applies before raising
+     * {@code 'User ID can NOT be empty...'} - the two must agree, or this class would classify a value one way
+     * and the service another.
+     *
+     * <p>Note what this is <em>not</em> used for: it does not decide whether to fill the identifier from the
+     * path. {@link #withIdentityFrom} fills only an absent member, because absent and empty are different
+     * states and only one of them is silence. This predicate distinguishes the empty state from a genuine
+     * identifier, which is what {@link #requireIdentifiersAgree} needs to avoid reporting an empty value as a
+     * disagreement about which user is meant.
+     *
+     * @param identifier the value the body carried, possibly {@code null}
+     * @return {@code true} when the value is absent, empty, all whitespace or all control bytes
+     */
+    private static boolean namesNoIdentifier(final String identifier) {
+        if (identifier == null || identifier.isEmpty()) {
+            return true;
+        }
+        for (int index = 0; index < identifier.length(); index++) {
+            final char character = identifier.charAt(index);
+            if (!Character.isWhitespace(character) && !Character.isISOControl(character)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -2115,20 +2186,37 @@ public class AdminController {
      * {@code app/cbl/COUSR02C.cbl} folds neither on this transaction, and folding here would accept a pairing
      * the source would have treated as two different keys.</p>
      *
-     * <p>A body member that is null or blank is <em>not</em> a disagreement. It is the absent and the blank
-     * state of the three-state model, and it is admitted rather than refused - {@link #withIdentityFrom} then
-     * fills it from the path exactly as {@code app/cbl/COUSR02C.cbl:L102-L103} fills {@code USRIDINI} from
-     * the commarea selection. The source's own empty-identifier rejection at {@code :L146-L151} and
-     * {@code :L180-L185} is not pre-empted: it still fires whenever the identifier the service receives is
-     * blank, which on this surface means the same thing it meant on the screen.</p>
+     * <p><strong>Three states, and finding API-003 turns on the difference between two of them.</strong>
+     * Neither an absent member nor an empty one is a disagreement, but they are admitted here for different
+     * reasons and they end differently.</p>
+     *
+     * <ul>
+     *   <li><strong>Absent</strong> - the body never named the member. Admitted, and
+     *       {@link #withIdentityFrom} then fills it from the path exactly as
+     *       {@code app/cbl/COUSR02C.cbl:L102-L103} fills {@code USRIDINI} from the commarea selection. The
+     *       operation proceeds against the addressed record.</li>
+     *   <li><strong>Present but empty</strong> - blanks, or control bytes, per {@link #namesNoIdentifier}.
+     *       Admitted <em>here</em>, because an empty value makes no claim about <em>which</em> user is meant
+     *       and refusing it as a mismatch would report the wrong failure in the wrong words. It is not filled
+     *       from the path, and it reaches
+     *       {@code com.cardemo.service.admin.UserUpdateService}, which refuses it with the source's own
+     *       {@code 'User ID can NOT be empty...'} from {@code :L146-L151} and {@code :L179-L185}. Before
+     *       finding API-003 was resolved this state was indistinguishable from the absent one and the source's
+     *       guard was unreachable through this surface.</li>
+     *   <li><strong>Present and naming a user</strong> - must equal the path exactly, or the request is
+     *       refused here.</li>
+     * </ul>
      *
      * @param pathIdentifier the identifier from the path, which addresses the record.
-     * @param bodyIdentifier the identifier the body carried, possibly null or blank.
-     * @throws ValidationException if the body carried a non-blank identifier that differs from the path
+     * @param bodyIdentifier the identifier the body carried, possibly null, empty or blank.
+     * @throws ValidationException if the body named a user other than the one the path addresses
      */
     private static void requireIdentifiersAgree(final String pathIdentifier, final String bodyIdentifier) {
 
-        if (bodyIdentifier == null || bodyIdentifier.isBlank()) {
+        // Both non-naming states pass through, and the distinction between them belongs to withIdentityFrom:
+        // an absent member is filled from the path, an empty one is carried to the service to be refused in
+        // the source's own words.
+        if (namesNoIdentifier(bodyIdentifier)) {
             return;
         }
         if (!bodyIdentifier.equals(pathIdentifier)) {

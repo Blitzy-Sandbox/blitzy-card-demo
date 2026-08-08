@@ -213,8 +213,15 @@
  * subfolder. The folder holds <strong>exactly nine {@code .java} files</strong>: the eight controllers and
  * this document. HTTP status selection is contextual and performed by the controllers themselves, because the
  * nine {@code com.cardemo.exception} types carry no annotations at all and specifically no
- * {@code @ResponseStatus}. As authored, that choice is realised as sixty-two local {@code @ExceptionHandler}
- * methods across the eight classes, each returning a {@code ProblemDetail} body.
+ * {@code @ResponseStatus}. As authored, that choice is realised as <strong>sixty-seven</strong> local
+ * {@code @ExceptionHandler} methods across the eight classes, each returning a {@code ProblemDetail} body:
+ * ten on the account, admin, billing and transaction controllers, nine on the card controller, eight on the
+ * authentication controller, seven on the report controller and three on the menu controller.
+ * <strong>Finding CODE-007, severity Medium, resolved:</strong> this sentence said sixty-two, a figure that
+ * was correct when written and was not revised as handlers were added. It is a count of annotations in eight
+ * files and therefore has to be measured rather than remembered -
+ * {@code grep -c "@ExceptionHandler" src/main/java/com/cardemo/controller/*Controller.java} - which is the
+ * same discipline the dependency-version paragraph below already imposes on itself.
  *
  * <h3>Scope boundary of the presentation layer</h3>
  *
@@ -234,9 +241,9 @@
  * <strong>no URI-based API versioning</strong>, which is deferred hardening carried as residual risk. The
  * manual substitute is {@code docs/api-contracts.md}, and it <strong>is authored and published</strong> - it
  * carries the request and response field tables, the error-code vocabulary and the per-outcome status mapping,
- * and it is registered in the {@code mkdocs.yml} nav so it reaches readers. An earlier revision said it was
- * "not present in the repository as authored; until it exists, this document ... are the contract", and that
- * is withdrawn: it is the contract of record now, and this document plus the per-operation documentation on
+ * and it is registered in the {@code mkdocs.yml} nav so it reaches readers. It is the contract of record, so
+ * reading it as "not present in the repository as authored; until it exists, this document ... are the
+ * contract" understates what exists: this document plus the per-operation documentation on
  * the eight controllers are the in-code statement of the same contract rather than a stand-in for a missing
  * one. A controller change is a change to both.
  *
@@ -320,14 +327,14 @@
  * above what that parent manages, each declared as a version property in {@code pom.xml} and each closing a
  * published advisory: Spring Framework <strong>6.2.19</strong>, Spring Security <strong>6.5.11</strong>,
  * embedded Tomcat <strong>10.1.57</strong> on the {@code jakarta.servlet} namespace, and Jackson BOM
- * <strong>2.22.1</strong>; {@code jakarta.validation-api} stays at 3.0.2 as managed. An earlier revision
- * published the managed values - 6.2.16, 6.5.8, 10.1.52 and 2.19.4 - as though they were what resolves, and
- * that is withdrawn: read the versions from the effective POM
+ * <strong>2.22.1</strong>; {@code jakarta.validation-api} stays at 3.0.2 as managed. The managed values -
+ * 6.2.16, 6.5.8, 10.1.52 and 2.19.4 - are what the parent declares and not what resolves here, so read the
+ * versions from the effective POM
  * ({@code ./mvnw help:effective-pom}) or from the property block in {@code pom.xml}, never from prose.
- * Measured on 6 August 2026 in this environment: {@code java} reports Temurin 25.0.3+9, {@code ./mvnw} reports
- * Maven 3.9.11, a container runtime is available, and a full {@code clean verify} compiles
- * <strong>158</strong> main sources at release 25 with zero warnings. The earlier figure of 150 is withdrawn;
- * re-measure with {@code find src/main/java -name '*.java' | wc -l} rather than quoting it.
+ * Measured on 7 August 2026 in this environment: {@code java} reports Temurin 25.0.3+9, {@code ./mvnw} reports
+ * Maven 3.9.11, a container runtime is available, and a full {@code clean verify} compiles the whole main
+ * source set at release 25 with zero warnings. Re-measure the source count with
+ * {@code find src/main/java -name '*.java' | wc -l} rather than quoting it.
  *
  * <p><strong>Two gates make this file's formatting load-bearing.</strong>
  * {@code maven-compiler-plugin} 3.14.1 runs {@code -Xlint:all} with {@code failOnWarning}, so a warning is a
@@ -491,8 +498,9 @@
  * matter more than the rule. Status {@code '00'}, and {@code '04'} at the file-service call sites, means
  * continue. Status {@code '10'} is <strong>loop termination and not an error</strong>. Status {@code '23'} is
  * {@code RecordNotFoundException} <strong>except at three scoped-success sites</strong>: the
- * category-balance upsert at {@code app/cbl/CBTRN02C.cbl:L467-L500}, the disclosure-group default fallback at
- * {@code app/cbl/CBACT04C.cbl:L415-L460}, and the accepted secondary status at the {@code CBSTM03B} call
+ * category-balance upsert at {@code app/cbl/CBTRN02C.cbl:L467-L501}, the disclosure-group lookup at
+ * {@code app/cbl/CBACT04C.cbl:L415-L440} whose retry is {@code app/cbl/CBACT04C.cbl:L443-L460}, and the
+ * accepted secondary status at the {@code CBSTM03B} call
  * sites. Status {@code '22'} is {@code DuplicateRecordException}, {@code '35'} is
  * {@code FileUnavailableException}, and the {@code '9x'} family is {@code FileAccessException} carrying the
  * four-character expanded status. Anything else is {@code FatalProcessingException} with abend code
@@ -510,8 +518,8 @@
  * {@code CHANGES_NOT_CONFIRMED}. The first four literals are declared as condition names at
  * {@code app/cbl/COACTUPC.cbl:L517-L524} and the fifth marker sits among the state flags at
  * {@code :L659-L668}. <strong>Collapsing them into a single conflict status is classified High</strong>,
- * because it discards information the legacy screen displayed. An earlier revision of this document recorded
- * four outcomes; five is correct and is what the authored type provides.
+ * because it discards information the legacy screen displayed. There are <strong>five</strong> outcomes, not
+ * four, and five is what the authored type provides.
  *
  * <h3>A reproduced legacy false success, classified Blocker</h3>
  *
@@ -655,6 +663,37 @@
  *       package may treat them as temporals.</dd>
  *   </dl>
  *
+ * <h2>The unreadable-body handler, stated once for all eight controllers</h2>
+ *
+ * <p>Each controller claims {@code HttpMessageNotReadableException} itself. The framework folds three
+ * conditions into that one exception, all of which occur before the mapped method is entered: a body
+ * that is not well-formed JSON, a body carrying a property outside the schema, and a request with no
+ * body where {@code @RequestBody} requires one. The status is {@code 400} rather than {@code 415} or
+ * {@code 422}, because the caller addressed the right operation with the right media type and sent
+ * something the operation cannot accept. Answering it identically to a bean-validation refusal is
+ * deliberate: the two are told apart by the {@code ERROR_CODE_UNREADABLE_BODY} property rather than by
+ * the status line. None of the eight handlers is request-mapped, so none is one of the seventeen
+ * operations.
+ *
+ * <p>It is declared per controller rather than centrally because the envelope is per controller by
+ * design: the title names the resource, so one advice class could not produce it without being told
+ * which controller it was answering for.
+ *
+ * <h2>The error-body disclosure posture, stated once for all eight controllers</h2>
+ *
+ * <p>Every controller in this package stamps two properties onto every error body through its own
+ * {@code withPublicEnvelope} helper, and that stamping is the whole of the {@code CWE-209} posture.
+ * What a body carries is the status, the title, a detail that is either a legacy screen literal or a
+ * fixed sentence, the error code and the correlation identifier. What it does not carry is the
+ * relation, the constraint name, the logical file or dataset name, the input-output operation, the
+ * expanded file status, the record type, the abend code and the batch return code. Every one of those
+ * is still emitted - at {@code WARN} or {@code ERROR}, on a log stream the caller cannot read - so no
+ * diagnostic capability is lost and nothing is swallowed. The correlation identifier is the hinge:
+ * it is what lets a caller reporting a failure be joined to the log record that describes it.
+ *
+ * <p>The helper is per controller rather than shared because this package declares no
+ * {@code @ControllerAdvice} and no shared base class, so each controller answers only for itself.
+ *
  * <h2>Package level constraints</h2>
  *
  * <ul>
@@ -702,8 +741,11 @@
  *       all seventeen online programs, not four; the undercount comes from {@code EXEC CICS} and {@code XCTL}
  *       sitting on separate lines. No code changes, but the corrected figure belongs in the traceability
  *       material.</li>
- *   <li><strong>Low</strong> - the attention-identifier census. {@code EIBAID} occurs 44 times, not 16.
- *       {@code EIBTRNID} occurring zero times is the load-bearing fact and is unaffected.</li>
+ *   <li><strong>Low</strong> - the attention-identifier census. {@code EIBAID} occurs <strong>44</strong>
+ *       times under {@code app/} across 13 files: 16 in the twelve programs that test it and 28 in the
+ *       procedural copybook {@code app/cpy/CSSTRPFY.cpy} they copy into their procedure division. A figure
+ *       of 16 is the program-file count, not the corpus count, and every site in this tree now publishes
+ *       both. {@code EIBTRNID} occurring zero times is the load-bearing fact and is unaffected.</li>
  *   </ul>
  *
  * <h2>Rule 1, Build Verify, clause by clause</h2>
@@ -762,8 +804,7 @@
  *       target. What would be needed is a stated latency or throughput requirement from the business owner.</li>
  *   <li>A machine-readable OpenAPI document is <strong>Not available</strong>, and deliberately so: generated
  *       specification tooling is out of scope for this migration. {@code docs/api-contracts.md} is the manual
- *       substitute and it <strong>is authored and published</strong> - an earlier revision of this entry
- *       recorded it as not available and that record is withdrawn. It, this document and the per-operation
+ *       substitute and it <strong>is authored and published</strong>. It, this document and the per-operation
  *       documentation on the eight controllers are together the contract; what remains genuinely unavailable
  *       is only the generated artefact, which would need the specification plugin the plan excludes. The page is registered in the documentation navigation and is therefore published.</li>
  *   </ul>

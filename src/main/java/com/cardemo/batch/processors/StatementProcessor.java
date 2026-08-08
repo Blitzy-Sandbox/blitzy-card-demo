@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Batch ItemProcessor (Java 25 / Spring Boot 3.5.11)
  * Function    : Per-account statement aggregation and dual-format emission.
- * Source      : app/cbl/CBSTM03A.CBL (924 lines, 26 paragraphs) @ 7756d89
+ * Source      : app/cbl/CBSTM03A.CBL (924 lines, 25 own paragraph labels) @ 7756d89
  *               app/cbl/CBSTM03B.CBL (230 lines) - file access call contract
  *               app/cpy/COSTM01.CPY  - 350-byte statement record, 32-byte key
  *               app/jcl/CREASTMT.JCL - 5 steps, STEP010 sort + OUTREC projection
@@ -181,8 +181,7 @@ import com.cardemo.service.shared.FileService;
  * {@code javac} 25 publishes fails it. The tests for this class are authored at
  * {@code src/test/java/com/cardemo/unit/batch/StatementProcessorTest.java}, with the streaming and
  * output-sink behaviour split into {@code StatementProcessorStreamingTest} and
- * {@code StatementOutputSinkContractTest} alongside it; an earlier revision recorded the first of those as
- * not existing at this commit and that record is withdrawn. Between them they assert that: the projection
+ * {@code StatementOutputSinkContractTest} alongside it. Between them they assert that: the projection
  * yields a 24-character processing timestamp; every HTML line is exactly 100 characters and every text line
  * exactly 80; {@link #initialise()} performs its five steps in the documented order; a run of more than 510
  * transactions completes without loss; a card with no transactions still yields a complete
@@ -394,10 +393,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      */
     private static final Logger LOG = LoggerFactory.getLogger(StatementProcessor.class);
 
-    // ==========================================================================================
     // Record geometry. Every width is taken from StatementTransaction rather than restated, so
     // there is exactly one declaration of each per tree (Rule 1 Clause C3).
-    // ==========================================================================================
 
     /**
      * Width of one plain-text statement line, {@code 01 FD-STMTFILE-REC PIC X(80)} at
@@ -445,7 +442,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /** Trailing digits of a card number retained when one has to be named in a diagnostic. */
     private static final int MASKED_CARD_DIGITS = 4;
 
-    // ==========================================================================================
     // The 34 fixed markup fragments of 01 HTML-LINES, app/cbl/CBSTM03A.CBL:L148-L211.
     //
     // The source declares each fragment as an 88-level condition name over the single
@@ -458,7 +454,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     // the correspondence is mechanically checkable. Two fragments are continued literals in the
     // source, joined at column 72 with no padding: HTML_L08 (:L157-L158) and each of the nine
     // styled cell openers. The longest joined fragment is 85 characters, so all 34 fit X(100).
-    // ==========================================================================================
 
     /** {@code HTML-L01}, {@code app/cbl/CBSTM03A.CBL:L150}. */
     private static final String HTML_L01 = "<!DOCTYPE html>";
@@ -587,10 +582,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      */
     private static final Map<String, String> HTML_FRAGMENTS = buildHtmlFragmentTable();
 
-    // ==========================================================================================
     // The structured HTML groups, app/cbl/CBSTM03A.CBL:L212-L223. Unlike the 34 condition names
     // these carry interpolated data, so each is a prefix plus a fixed-width slot.
-    // ==========================================================================================
 
     /**
      * Prefix of {@code HTML-L11}, {@code FILLER PIC X(34)} at
@@ -645,7 +638,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      */
     private static final int HTML_LONGEST_ENTITY = 6;
 
-    // ==========================================================================================
     // 01 STATEMENT-LINES, app/cbl/CBSTM03A.CBL:L85-L146. Sixteen 80-byte group items. Every
     // FILLER width below was read from the source; each line's parts sum to exactly 80, which is
     // the invariant the fixed-width builders assert.
@@ -653,7 +645,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     // INITIALIZE STATEMENT-LINES at :L459 resets the named data fields to spaces and zeros but
     // leaves every FILLER VALUE clause intact, so the asterisk rules, dash rules and column
     // headings persist across accounts. That is why they are constants here rather than state.
-    // ==========================================================================================
 
     /** {@code ST-LINE0}, {@code app/cbl/CBSTM03A.CBL:L86-L89}: 31 asterisks, the banner, 31 asterisks. */
     private static final String ST_LINE0 = "*".repeat(31) + "START OF STATEMENT" + "*".repeat(31);
@@ -789,14 +780,12 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /** The single-space {@code DELIMITED BY} value of the two text {@code STRING}s, {@code :L462} and {@code :L472}. */
     private static final String SINGLE_SPACE = " ";
 
-    // ==========================================================================================
     // Markup escaping for the HTML sink. The 80-character text sink is byte-faithful to the legacy
     // layout and is deliberately untouched by any of this: it is not markup, so it interprets
     // nothing. These mirror the helpers in com.cardemo.batch.writers.StatementWriter rather than
     // being shared with them, for the reason that class already documents: the two statement sinks
     // own their emission independently and share no fixed-width codec. The mirroring is deliberate
     // and is why the escaping contract is asserted against BOTH classes by the same test.
-    // ==========================================================================================
 
     /**
      * The replacement for {@code &}, applied unconditionally so an already-escaped value is escaped again
@@ -841,12 +830,10 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /** Last code point of the C1 control block. */
     private static final char LAST_C1_CONTROL = 0x9F;
 
-    // ==========================================================================================
     // Geometry of the three companion records this program reads. Widths come from the copybooks
     // that app/cbl/CBSTM03A.CBL:L51-L57 COPYs, and are corroborated by the FD record descriptions
     // of app/cbl/CBSTM03B.CBL and by the catalogued average record lengths in
     // app/catlg/LISTCAT.txt.
-    // ==========================================================================================
 
     /**
      * {@code 01 CARD-XREF-RECORD}, {@code app/cpy/CVACT03Y.cpy}:
@@ -902,7 +889,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /** {@code ACCT-GROUP-ID PIC X(10)}, {@code app/cpy/CVACT01Y.cpy}. */
     private static final int ACCOUNT_GROUP_ID_WIDTH = 10;
 
-    // ==========================================================================================
     // Step-scoped state. Every item below is the counterpart of a WORKING-STORAGE field of
     // app/cbl/CBSTM03A.CBL. They are instance fields on a @StepScope bean, so their lifetime is
     // one step execution — the same lifetime the COBOL WORKING-STORAGE had, which was one run of
@@ -919,7 +905,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     // by #openAndPrimeTransactionFile() into the #pendingRecord lookahead, from which
     // #readNextCardGroup() takes the group's card number. Both paragraphs survive as their own
     // methods; the shared 16-byte save area narrows to one field with a single writer.
-    // ==========================================================================================
 
     /** The file-access collaborator standing in for {@code CALL 'CBSTM03B' USING WS-M03B-AREA}. */
     private final FileService fileService;
@@ -1010,11 +995,11 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /**
      * Memo of customer records already read through {@code 2000-CUSTFILE-GET} during this step.
      *
-     * <p><b>Finding, severity Medium, RESOLVED.</b> {@code process} is invoked once per cross-reference row
-     * and issued one {@code CUSTFILE} read and one {@code ACCTFILE} read every time, so a portfolio in which
+     * <p><b>Finding, severity Medium.</b> {@code process} is invoked once per cross-reference row, and issuing
+     * one {@code CUSTFILE} read and one {@code ACCTFILE} read every time makes a portfolio in which
      * several cards share an account - the normal shape, since {@code app/cpy/CVACT03Y.cpy} maps many card
-     * numbers onto one account and one customer - paid a query per card for records it had already read.
-     * <i>Remediation, applied:</i> a bounded, access-ordered memo per step. The <b>paragraph order is
+     * numbers onto one account and one customer - pay a query per card for records already read.
+     * This memo is bounded and access-ordered, per step. The <b>paragraph order is
      * unchanged</b>: {@code :L322} still reads the customer before {@code :L323} reads the account, for every
      * row, and a row whose record is absent still abends at exactly the same point with exactly the same
      * diagnostic, because a miss performs the identical read. Only a repeat is served from the memo.
@@ -1186,13 +1171,11 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         }
     }
 
-    // ==========================================================================================
     // Failure text. Reproduced verbatim from the DISPLAY statements of the guard sites so that log
     // output remains greppable against the legacy job log (Rule 1 Clause A4). The 'RETURN CODE: '
     // second line is NOT reproduced here: FileStatusMapper already emits it through
     // FILE_STATUS_RETURN_CODE text on the abend it raises, and duplicating it would put the same
     // string in two places.
-    // ==========================================================================================
 
     /**
      * {@code DISPLAY 'ERROR OPENING <DD>'} — {@code app/cbl/CBSTM03A.CBL:L737} for {@code TRNXFILE},
@@ -1219,9 +1202,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /** {@code DISPLAY 'ABENDING PROGRAM'}, {@code app/cbl/CBSTM03A.CBL:L922}. */
     private static final String ABENDING_PROGRAM = "ABENDING PROGRAM";
 
-    // ==========================================================================================
     // Initialisation. app/cbl/CBSTM03A.CBL:L293-L314 plus the five handlers it reaches.
-    // ==========================================================================================
 
     /**
      * Runs the ordered initialisation pipeline that replaces the {@code ALTER} dispatch, then leaves
@@ -1403,7 +1384,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         }
     }
 
-    // ==========================================================================================
     // The transaction stream. app/cbl/CBSTM03A.CBL:L818-L853. Step 2 of the pipeline.
     //
     // The source loaded every record into a fixed table before producing any statement. This class
@@ -1411,7 +1391,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     // statement run joins are both already ordered by card number - TRNXFILE by the sort of
     // app/jcl/CREASTMT.JCL:L53, XREFFILE by its XREF-CARD-NUM record key - so a forward merge join
     // sees exactly what the table lookup saw while holding one group instead of the whole run.
-    // ==========================================================================================
 
     /**
      * {@code 8500-READTRNX-READ} ({@code app/cbl/CBSTM03A.CBL:L818-L847}) together with its exit
@@ -1648,9 +1627,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         }
     }
 
-    // ==========================================================================================
     // 1000-MAINLINE, app/cbl/CBSTM03A.CBL:L316-L342, and the three reads it drives.
-    // ==========================================================================================
 
     /**
      * Produces one account's statement, reproducing the body of the {@code 1000-MAINLINE} loop at
@@ -1700,7 +1677,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         // PERFORM 5000-CREATE-STATEMENT.
         createStatement(customer, account, textLines, htmlLines);
 
-        // ------------------------------------------------------------------------------------
         // :L324 MOVE 1 TO CR-JMP.
         //
         // INTENTIONAL NO-OP, RETAINED FOR CONTROL-FLOW PARITY.
@@ -1709,7 +1685,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         // PERFORM VARYING at :L417-L418, which re-initialises it to 1 before its first test, so
         // the value written here is overwritten before it is ever observed.
         //
-        // It is retained rather than deleted because deleting it would break the paragraph-level correspondence
+        // It is kept because deleting it would break the paragraph-level correspondence
         // that the coverage gate verifies. Rule 1 Clause B1 forbids UNTRACKED dead code; this statement is cited
         // to its source line and marked here as one of the tree's retained-for-parity artefacts, so it is
         // tracked rather than abandoned.
@@ -1718,7 +1694,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         //
         // LOCATOR CORRECTION: the folder requirements place this statement at :L325. It is at :L324;
         // :L325 is MOVE ZERO TO WS-TOTAL-AMT, immediately below. The source wins.
-        // ------------------------------------------------------------------------------------
         crJmp = 1;
 
         // :L325 MOVE ZERO TO WS-TOTAL-AMT.
@@ -1833,9 +1808,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         }
     }
 
-    // ==========================================================================================
     // Statement body. app/cbl/CBSTM03A.CBL:L458-L723.
-    // ==========================================================================================
 
     /**
      * {@code 5000-CREATE-STATEMENT}, {@code app/cbl/CBSTM03A.CBL:L458-L504}. Emits the opening
@@ -2186,9 +2159,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         emitHtml(htmlLines, HTML_LTRE);
     }
 
-    // ==========================================================================================
     // Shutdown. app/cbl/CBSTM03A.CBL:L331-L342 and L856-L923.
-    // ==========================================================================================
 
     /**
      * Closes the four input datasets in the source's order, reproducing {@code :L331-L337} of
@@ -2332,9 +2303,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         return new FatalProcessingException(reason);
     }
 
-    // ==========================================================================================
     // app/jcl/CREASTMT.JCL STEP010. The sort and the record projection that produce TRNXFILE.
-    // ==========================================================================================
 
     /**
      * The comparator form of {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at
@@ -2465,9 +2434,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         return projectBaseRecord(record.toString());
     }
 
-    // ==========================================================================================
     // Read-only views.
-    // ==========================================================================================
 
     /**
      * The 34 fixed markup fragments of {@code 01 HTML-LINES},
@@ -2509,9 +2476,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         return cardGroupsRead;
     }
 
-    // ==========================================================================================
     // Record parsing. The Java counterpart of MOVE WS-M03B-FLDT TO <record>.
-    // ==========================================================================================
 
     /**
      * Narrows a 1000-character file-service payload to the projected transaction record and asserts
@@ -2751,13 +2716,11 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         }
     }
 
-    // ==========================================================================================
     // Fixed-width primitives. Every one of them is deterministic: Locale.ROOT everywhere, no
     // default locale, no default charset, no ambient time zone (Rule 1 Clause C2). Characters are
     // never converted to bytes in this class at all - the encoding boundary belongs to the writer -
     // so the fixed-width contract is expressed in characters and stays stable under any platform
     // default.
-    // ==========================================================================================
 
     /**
      * Extracts one fixed-width field, tolerating a record that ends early by padding the shortfall
@@ -3070,9 +3033,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         return delimiter < 0 ? value : value.substring(0, delimiter);
     }
 
-    // ==========================================================================================
     // Numeric rendering. Two distinct edited masks and one zoned-decimal codec.
-    // ==========================================================================================
 
     /**
      * {@code PIC 9(9).99-}, the mask of {@code ST-CURR-BAL} at {@code app/cbl/CBSTM03A.CBL:L113}.

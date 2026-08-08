@@ -18,7 +18,7 @@
  *               and read back through a real decoder, and exactly one
  *               authentication-attempt increment per call on a real
  *               meter registry
- * Source      : app/cbl/COSGN00C.cbl (260 lines, 6 paragraphs) @ 7756d89
+ * Source      : app/cbl/COSGN00C.cbl (260 lines, 6 own paragraph labels) @ 7756d89
  * Source      : app/cpy-bms/COSGN00.CPY (11 input fields) @ 7756d89
  * Source      : app/cpy/CSUSR01Y.cpy (80 byte record, KEYS(8,0)) @ 7756d89
  * Source      : app/cpy/COCOM01Y.cpy (CDEMO-USER-ID, CDEMO-USER-TYPE) @ 7756d89
@@ -309,10 +309,8 @@ import com.cardemo.service.auth.AuthenticationService;
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
 class AuthenticationServiceTest {
 
-    // ----------------------------------------------------------------------------------------------------
     // Synthetic credential material. Rule 1 Clause D names tests explicitly, so nothing here is or
     // resembles a real credential, and the seed value of app/jcl/DUSRSECJ.jcl is never reproduced.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The presented plaintext, standing in for {@code PASSWDI PIC X(8)} at
@@ -348,9 +346,7 @@ class AuthenticationServiceTest {
      */
     private static final String STORED_DIGEST = ENCODER.encode(PRESENTED_CREDENTIAL.toUpperCase(Locale.ROOT));
 
-    // ----------------------------------------------------------------------------------------------------
     // Identity. Presented in lower case, stored under the folded key, per app/cbl/COSGN00C.cbl:132-134.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The identifier as a caller presents it: deliberately lower case so that the fold is observable. */
     private static final String PRESENTED_USER_ID = "user0001";
@@ -364,12 +360,10 @@ class AuthenticationServiceTest {
     /** The same administrator identifier as the store holds it. */
     private static final String FOLDED_ADMIN_ID = "ADMIN001";
 
-    // ----------------------------------------------------------------------------------------------------
     // Locale hazard material. app/cbl/COSGN00C.cbl:132-136 folds with FUNCTION UPPER-CASE, whose COBOL
     // semantics are locale independent; Java's default overload is not. Turkish is the canonical
     // counter-example because it maps the dotted i to U+0130 rather than to U+0049, so a fold performed
     // under it produces a different record key and a different comparison operand.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The locale whose casing rules differ from the invariant ones. Explicit, never the platform default. */
     private static final Locale TURKISH = Locale.forLanguageTag("tr");
@@ -384,10 +378,8 @@ class AuthenticationServiceTest {
     /** A strength-10 digest of the {@link Locale#ROOT} fold of {@link #DOTTED_I_CREDENTIAL}. */
     private static final String DOTTED_I_DIGEST = ENCODER.encode(DOTTED_I_CREDENTIAL.toUpperCase(Locale.ROOT));
 
-    // ----------------------------------------------------------------------------------------------------
     // Hostile input exceeding the declared field widths. SEC-USR-ID and SEC-USR-PWD are both PIC X(08) -
     // app/cpy/CSUSR01Y.cpy:18 and :21 - and the cluster key is KEYS(8,0) at app/jcl/DUSRSECJ.jcl:65.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Nine characters, one past the declared {@code SEC-USR-ID PIC X(08)} width. */
     private static final String OVERLONG_USER_ID = "user0001x";
@@ -412,7 +404,6 @@ class AuthenticationServiceTest {
     /** Last name, within {@code SEC-USR-LNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy}:20. */
     private static final String LAST_NAME = "SUBJECT";
 
-    // ----------------------------------------------------------------------------------------------------
     // The five ordered literals of app/cbl/COSGN00C.cbl. Byte exact: one space before each ellipsis, every
     // ellipsis exactly three periods, an internal period after "Password" on the third, and no trailing
     // period on any of them.
@@ -427,7 +418,6 @@ class AuthenticationServiceTest {
     // search for exactly that token, so an identifier merely resembling the seed secret costs a reviewer a
     // false positive on every sweep. The literal VALUES below are untouched and stay byte exact; the
     // mixed-case "Password" inside a value is the source's own screen text and is not the seed credential.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/COSGN00C.cbl}:120 - the identifier is absent or blank. */
     private static final String MESSAGE_USER_ID_REQUIRED = "Please enter User ID ...";
@@ -444,10 +434,8 @@ class AuthenticationServiceTest {
     /** {@code app/cbl/COSGN00C.cbl}:254 - the {@code WHEN OTHER} arm. */
     private static final String MESSAGE_UNABLE_TO_VERIFY = "Unable to verify the User ...";
 
-    // ----------------------------------------------------------------------------------------------------
     // Screen header contract, app/cpy/COTTL01Y.cpy:18-22 and app/cbl/COSGN00C.cbl:177-204. Both titles are
     // reproduced at their full declared PIC X(40) width, because the padding is what centred them.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code CCDA-TITLE01 PIC X(40)}, forty characters including its leading and trailing padding. */
     private static final String SCREEN_TITLE_01 = "      AWS Mainframe Modernization       ";
@@ -489,9 +477,7 @@ class AuthenticationServiceTest {
      */
     private static final String NO_FILE_STATUS = " 032";
 
-    // ----------------------------------------------------------------------------------------------------
     // Time and token configuration.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The instant every seed fixture carries, and the one the header renderings below are read against. */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
@@ -514,9 +500,7 @@ class AuthenticationServiceTest {
     /** Bytes of signing-key material. Well above the thirty-two-byte HS256 floor. */
     private static final int SIGNING_KEY_BYTES = 48;
 
-    // ----------------------------------------------------------------------------------------------------
     // Doubles and collaborators.
-    // ----------------------------------------------------------------------------------------------------
 
     @Mock
     private CardDemoUserDetailsService cardDemoUserDetailsService;
@@ -582,9 +566,7 @@ class AuthenticationServiceTest {
         this.meterRegistry.close();
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Fixtures and helpers. Every helper is used; an unused one would be dead code under Rule 1 Clause B.
-    // -----------------------------------------------------------------------------------------------------
 
     /**
      * Generates signing-key material. Random per method so that no key literal is committed and no two
@@ -718,9 +700,7 @@ class AuthenticationServiceTest {
                 .isZero();
     }
 
-    // =====================================================================================================
     // 1. Construction
-    // =====================================================================================================
 
     /**
      * Constructor-injection only, with every collaborator refused when absent. There is no field injection,
@@ -792,9 +772,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 2. Paragraph correspondence
-    // =====================================================================================================
 
     /**
      * One private method per source paragraph, which is what makes paragraph-level correspondence provable
@@ -901,9 +879,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 3. The blank screening, app/cbl/COSGN00C.cbl:117-130
-    // =====================================================================================================
 
     /**
      * The two blank guards, in the source's order. The identifier is tested at :118 before the password at
@@ -1032,9 +1008,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 4. The fold is delegated, never repeated - app/cbl/COSGN00C.cbl:132-136
-    // =====================================================================================================
 
     /**
      * The source performs the two {@code MOVE FUNCTION UPPER-CASE} statements in
@@ -1128,9 +1102,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 5. Upper-casing of BOTH operands, proved end to end - app/cbl/COSGN00C.cbl:132-136 and :223
-    // =====================================================================================================
 
     /**
      * The single most easily-missed behaviour on this path, and the one the code review named. These tests
@@ -1266,9 +1238,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 6. The success arm - app/cbl/COSGN00C.cbl:222-240
-    // =====================================================================================================
 
     /**
      * Identity established, and the two moves of {@code :226-227} carried as token claims. A real provider
@@ -1374,9 +1344,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 7. The WHEN 13 arm - app/cbl/COSGN00C.cbl:247-251
-    // =====================================================================================================
 
     /**
      * Two distinct routes reach the missing-record outcome, and both must produce it: the verifier reporting
@@ -1450,9 +1418,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 8. The credential-rejected arm - app/cbl/COSGN00C.cbl:241-246
-    // =====================================================================================================
 
     /**
      * The row was found and the comparison at {@code :223} failed. Note that this arm sets no error flag,
@@ -1501,9 +1467,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 9. The WHEN OTHER arm, recoverable half - app/cbl/COSGN00C.cbl:252-256
-    // =====================================================================================================
 
     /**
      * The store itself could not be interrogated. The source repaints the screen, so a further attempt
@@ -1620,9 +1584,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 10. The WHEN OTHER arm, unrecoverable half - app/cbl/COSGN00C.cbl:252-256 through SEND-PLAIN-TEXT
-    // =====================================================================================================
 
     /**
      * The same arm, reached when the condition is not a store-access failure at all. The program carries no
@@ -1705,9 +1667,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 11. The authentication-attempt counter - new capability, no source counterpart
-    // =====================================================================================================
 
     /**
      * The source has no instrumentation of any kind: not one {@code DISPLAY} and not one counter. The
@@ -1849,9 +1809,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 12. POPULATE-HEADER-INFO - app/cbl/COSGN00C.cbl:177-204
-    // =====================================================================================================
 
     /**
      * Six header values in source order at their declared widths, over an injected clock read exactly once.
@@ -1941,9 +1899,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 13. Field widths and the alphanumeric MOVE - app/cbl/COSGN00C.cbl:149 and :166
-    // =====================================================================================================
 
     /**
      * Truncation on the right is observable and is reproduced; right-hand space padding is an artefact of the
@@ -2025,9 +1981,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 14. Data protection - Rule 1 Clause D
-    // =====================================================================================================
 
     /**
      * No credential, no digest and no issued token may reach a log record, an exception message or a
@@ -2101,9 +2055,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 15. Statelessness - Transformation Rule 7
-    // =====================================================================================================
 
     /**
      * {@code RETURN TRANSID ... COMMAREA} becomes stateless REST plus token claims, so nothing survives a
@@ -2160,9 +2112,7 @@ class AuthenticationServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 16. Locale.ROOT, least privilege and the PIC X(08) hostile boundary
-    // =====================================================================================================
 
     /**
      * Four concerns the preceding groups establish only indirectly, each of which fails silently if it is

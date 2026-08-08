@@ -487,23 +487,20 @@ public class TransactionController {
 
     /**
      * The problem-detail property carrying the correlation identifier of the failing request.
-     * <p>
-     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
-     * file-status values that used to be returned to the client are now written only to the log, and this
-     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
-     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
-     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
-     * attacker holding the response body cannot.
+     *
+     * <p>It is the hinge of the posture the package documentation states: the same value
+     * {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the withheld detail from the log
+     * while a caller holding only the response body cannot.
      */
     private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
     /**
      * The value substituted when no correlation identifier is in the diagnostic context.
-     * <p>
-     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
-     * handler here has passed through it, so this is unreachable in the server. It exists because a
-     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
-     * {@code null} member and make the body's shape depend on how it was produced.
+     *
+     * <p>Unreachable in the server, because {@code CorrelationIdFilter} runs at
+     * {@code HIGHEST_PRECEDENCE} ahead of every handler here. It exists so that a handler invoked
+     * directly by a unit test still produces a body of the same shape.
      */
     private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
@@ -1561,11 +1558,9 @@ public class TransactionController {
      * High-severity finding on this seam, and it is the same defect on every route in this package that binds a
      * body.
      *
-     * <p><strong>Why it is declared here rather than centrally.</strong> The envelope is per-controller by
-     * design: the title names the resource, so a single advice class could not produce it without being told
-     * which controller it was answering for. This package declares no {@code @ControllerAdvice} and no shared
-     * base class, and this method keeps that property - it carries {@code @ExceptionHandler} only and is
-     * scoped to this controller alone, exactly like the typed mappers above it.
+     * <p><strong>Why it is declared here rather than centrally.</strong> Stated for the whole package in
+     * {@code com.cardemo.controller}'s package documentation; this handler keeps that property, carrying
+     * {@code @ExceptionHandler} only and answering for this controller alone.
      *
      * <p><strong>What the body does not contain.</strong> No rejected value, no field name, no constraint
      * message, no exception class and no discriminator; {@link #BIND_FAILURE_PROBLEM_DETAIL} records why each
@@ -1601,18 +1596,11 @@ public class TransactionController {
      * Maps a request body the framework could not read onto {@code 400 Bad Request} with this controller's
      * own envelope.
      *
-     * <p>Claims the one exception the framework folds three conditions into, all of which occur before the
-     * mapped method is entered: a body that is not well-formed JSON, a body carrying a property outside the
-     * schema, and a request with no body where {@code @RequestBody} requires one. Each was previously answered
-     * by the framework's default handling, in a shape no client-side handler written against this package's
-     * envelope could read - the second half of the same High-severity finding.
-     *
-     * <p>The status is {@code 400} rather than {@code 415} or {@code 422}: the caller addressed the right
-     * operation with the right media type and sent something this operation cannot accept, which is precisely
-     * a bad request. Answering it identically to a bean-validation refusal is deliberate, and the two are told
-     * apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line.
-     *
-     * <p>This method is not request-mapped and is none of the three operations.
+     * <p>Which three framework conditions fold into this one exception, why the status is {@code 400}
+     * rather than {@code 415} or {@code 422}, and why the handler is declared per controller rather than
+     * centrally are stated for the whole package in {@code com.cardemo.controller}'s package
+     * documentation. The two refusals are told apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than
+     * by the status line, and this method is not request-mapped, so it is none of the three operations.
      *
      * @param unreadable the framework's read failure, whose message and cause chain are deliberately kept out
      *                   of the body and emitted at {@code DEBUG} only
@@ -1791,7 +1779,7 @@ public class TransactionController {
     /**
      * Refuses a navigation that names a page past the first without carrying the cursor that addresses it.
      *
-     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * <p><strong>Finding, severity Medium - remediated here.</strong>
      * {@code GET /api/transactions?action=PAGE_FORWARD&page=5} with no cursor answered {@code 200}
      * reporting {@code pageNumber=5} with an <strong>empty</strong> row list, and the same request at
      * {@code page=27} did likewise. A response that reports a page it did not serve cannot be acted on: a
@@ -1969,7 +1957,7 @@ public class TransactionController {
      *
      * <p><strong>Absent and whitespace-only are the same failure, and both are {@code BLANK}.</strong>
      *
-     * <p>FINDING, severity Informational - remediated here. A whitespace-only value used to be reported with
+     * <p>FINDING, severity Low - remediated here. A whitespace-only value used to be reported with
      * failure kind {@code INVALID} while an absent parameter was reported {@code BLANK}, which inverted the
      * meaning of the two kinds on this operation: the message both arms carry is
      * {@code 'Tran ID can NOT be empty...'}, so labelling one of them "invalid" told a client its value was
@@ -2101,18 +2089,11 @@ public class TransactionController {
     /**
      * Stamps the two properties every error body carries, and returns the same instance for chaining.
      *
-     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
-     * handler cannot omit the envelope by accident: the {@code return} statement reads
-     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
-     * into that shape.
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so the
+     * envelope cannot be omitted by accident.
      *
-     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
-     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
-     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
-     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
-     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
-     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
-     * nothing is swallowed.
+     * <p>What the envelope discloses and what it withholds is the {@code CWE-209} posture stated for the
+     * whole package in {@code com.cardemo.controller}'s package documentation.
      *
      * @param problem the body under construction; must not be null.
      * @param errorCode one of the {@code ERROR_CODE_*} constants.

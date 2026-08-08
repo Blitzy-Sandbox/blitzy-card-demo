@@ -1698,9 +1698,7 @@ class CardDtoTest {
         }
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // Frozen-corpus readers
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * Reads one frozen member in full, as an immutable snapshot.
@@ -1748,11 +1746,11 @@ class CardDtoTest {
         return sourceLine(catalogue, oneBasedLine);
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // Reflection helpers
-    // ----------------------------------------------------------------------------------------------------
 
     /**
+     * The declared surface of the payload, for the census assertions.
+     *
      * @return every method name the payload declares
      */
     private static List<String> accessorNames() {
@@ -1760,6 +1758,8 @@ class CardDtoTest {
     }
 
     /**
+     * The declared surface of one list row, for the census assertions.
+     *
      * @return every method name one list row declares
      */
     private static List<String> rowAccessorNames() {
@@ -1767,6 +1767,8 @@ class CardDtoTest {
     }
 
     /**
+     * The types the payload's surface exposes, so a leaked entity type fails the census.
+     *
      * @return every type name appearing on the payload's declared surface
      */
     private static List<String> surfaceTypeNames() {
@@ -1793,11 +1795,11 @@ class CardDtoTest {
         return false;
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // Payload fixtures. Every value is synthetic; none is a real account number.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
+     * One populated card-list row, addressed by its screen ordinal.
+     *
      * @param rowNumber the one-based row ordinal
      * @return a populated card-list row for that ordinal, with no selector type on row 1
      */
@@ -1808,6 +1810,8 @@ class CardDtoTest {
     }
 
     /**
+     * A full seven-row page, the page arity {@code app/cbl/COCRDLIC.cbl} declares.
+     *
      * @return a full seven-row page in screen order
      */
     private static List<CardDto.CardListRow> fullPage() {
@@ -1819,6 +1823,8 @@ class CardDtoTest {
     }
 
     /**
+     * Wraps rows into a list projection, so a page assertion supplies only the rows.
+     *
      * @param rows the rows to carry
      * @return a list projection carrying them
      */
@@ -1828,6 +1834,8 @@ class CardDtoTest {
     }
 
     /**
+     * A fully populated detail projection, the baseline the assertions vary from.
+     *
      * @return a fully populated detail projection
      */
     private static CardDto detail() {
@@ -1836,6 +1844,8 @@ class CardDtoTest {
     }
 
     /**
+     * A detail projection carrying one chosen information message.
+     *
      * @param informationMessage the information message to carry
      * @return a detail projection carrying it
      */
@@ -1845,6 +1855,8 @@ class CardDtoTest {
     }
 
     /**
+     * A list projection carrying one chosen information message.
+     *
      * @param informationMessage the information message to carry
      * @return a list projection carrying it
      */
@@ -1854,6 +1866,8 @@ class CardDtoTest {
     }
 
     /**
+     * A list projection carrying one chosen error message.
+     *
      * @param errorMessage the error message to carry
      * @return a list projection carrying it
      */
@@ -1863,6 +1877,8 @@ class CardDtoTest {
     }
 
     /**
+     * A detail projection carrying one chosen error message.
+     *
      * @param errorMessage the error message to carry
      * @return a detail projection carrying it
      */
@@ -1872,6 +1888,8 @@ class CardDtoTest {
     }
 
     /**
+     * A detail projection carrying one chosen cardholder name.
+     *
      * @param cardholderName the cardholder name to carry
      * @return a detail projection carrying it
      */
@@ -1881,6 +1899,8 @@ class CardDtoTest {
     }
 
     /**
+     * A detail projection carrying one chosen card number.
+     *
      * @param cardNumber the card number to carry
      * @return a detail projection carrying it
      */
@@ -1890,6 +1910,8 @@ class CardDtoTest {
     }
 
     /**
+     * A detail projection carrying one chosen account identifier.
+     *
      * @param accountId the account identifier to carry
      * @return a detail projection carrying it
      */
@@ -1899,6 +1921,8 @@ class CardDtoTest {
     }
 
     /**
+     * A detail projection carrying one chosen status code.
+     *
      * @param cardStatusCode the status code to carry
      * @return a detail projection carrying it
      */
@@ -1908,6 +1932,8 @@ class CardDtoTest {
     }
 
     /**
+     * A detail projection carrying one chosen expiry month.
+     *
      * @param expiryMonth the expiry month to carry
      * @return a detail projection carrying it
      */
@@ -1917,6 +1943,8 @@ class CardDtoTest {
     }
 
     /**
+     * A list projection carrying one chosen page number.
+     *
      * @param pageNumber the page number to carry
      * @return a list projection carrying it
      */

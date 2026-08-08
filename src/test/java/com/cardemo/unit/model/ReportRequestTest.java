@@ -791,6 +791,13 @@ class ReportRequestTest {
         return isEntirely(screenField, SPACE) || isEntirely(screenField, LOW_VALUE);
     }
 
+    /**
+     * Reports whether every character of a screen field is the one supplied.
+     *
+     * @param screenField the raw screen value; must not be {@code null}.
+     * @param character the character each position is compared against.
+     * @return {@code true} when the field is entirely that character, and for an empty field.
+     */
     private static boolean isEntirely(final String screenField, final char character) {
         for (int index = 0; index < screenField.length(); index++) {
             if (screenField.charAt(index) != character) {
@@ -1214,6 +1221,8 @@ class ReportRequestTest {
     }
 
     /**
+     * Derives the component names from the record itself rather than restating them.
+     *
      * @return the 17 component names, lower cased, for substring screening.
      */
     private static List<String> lowerCasedComponentNames() {

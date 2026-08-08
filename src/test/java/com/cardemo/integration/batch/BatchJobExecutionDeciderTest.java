@@ -319,9 +319,12 @@ import com.cardemo.repository.TransactionRepository;
  * <p>Two disclosures, both stated rather than papered over.
  *
  * <ul>
- *   <li><strong>The boundary-parity expected-output baseline is Not available.</strong> An exhaustive search
- *       for expected, baseline, golden, system-output, reject, report, statement and markup artefacts
- *       returns only dataset <em>definition</em> job control and zero captured data. What is needed is a
+ *   <li><strong>The boundary-parity expected-output expectation exists; what is Not available is a captured
+ *       z/OS run to corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen
+ *       program's own output, derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and running it
+ *       against the frozen fixtures, with the derivation recorded beside it in
+ *       {@code PROVENANCE.properties}; nothing there was produced by running this implementation. What is
+ *       still needed is a
  *       captured 430-byte reject dataset plus the resulting transaction, account and category-balance images
  *       from a real posting run at a known input state. No baseline file is created here, no expected bytes
  *       are fabricated, a baseline produced by running this implementation would be circular and is
@@ -347,11 +350,6 @@ import com.cardemo.repository.TransactionRepository;
  * What this class owns is the decider and exit-status contract that sits above all of them.
  */
 public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
-
-    /** JUnit instantiates this class per test method; declared explicitly so doclint has a comment to read. */
-    public BatchJobExecutionDeciderTest() {
-        super();
-    }
 
     /** The bean factory, used only to <em>enumerate</em> decider definitions and to resolve jobs and steps. */
     @Autowired
@@ -445,10 +443,8 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
      */
     private final Map<String, Integer> cicsAbendProgramLines = cicsAbendProgramCensus();
 
-    // =================================================================================================
     // The corpus census that fixes the four return codes. Read from the frozen sources, never restated
     // from prose, because every one of these claims is load bearing for the deciders below.
-    // =================================================================================================
 
     /**
      * The reject gate is the only numeric-literal return-code assignment in the corpus, and it is guarded by
@@ -660,9 +656,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
                 .doesNotContain(gatingCard);
     }
 
-    // =================================================================================================
     // How the subject is reached. Flow execution and the observed outcome, never the bean factory.
-    // =================================================================================================
 
     /**
      * No decider is registered in the container, and every job and step the topology names is.
@@ -707,9 +701,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Return code 0. app/jcl/CREASTMT.JCL:56, :66 and :79 - a zero condition code admits every gated step.
-    // =================================================================================================
 
     /**
      * A zero return code admits all three condition-code gated steps, so every gated successor runs.
@@ -766,9 +758,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Return code 12. app/cbl/CBTRN02C.cbl:707-711 and app/cpy/CSMSG02Y.cpy:12-20.
-    // =================================================================================================
 
     /**
      * An abend is reported as return code 12 and carries the complete abend work-area payload, with its root
@@ -868,9 +858,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(12);
     }
 
-    // =================================================================================================
     // Return code 8, and the suppressed half of the gating contract.
-    // =================================================================================================
 
     /**
      * A predecessor that ends unsuccessfully suppresses every gated step - none of them produces a step
@@ -1003,9 +991,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
                 .isNotEqualTo(abendExitCode);
     }
 
-    // =================================================================================================
     // Return code 4. app/cbl/CBTRN02C.cbl:228-231 - and it is not a failure.
-    // =================================================================================================
 
     /**
      * A positive reject count is the sole determinant of return code 4, which is a completed outcome rather
@@ -1032,9 +1018,9 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
      * accounting statement and not an identity.
      *
      * <p><strong>No exact reject count is asserted here, because this class is about the DECIDER rather than
-     * about the count.</strong> An earlier revision gave a different reason - that "two defensible models of
-     * the validation cascade over these exact fixtures disagree", so an exact count was "model-sensitive and
-     * therefore not an oracle". That reason was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+     * about the count.</strong> The reason is <em>not</em> that "two defensible models of
+     * the validation cascade over these exact fixtures disagree", making an exact count "model-sensitive and
+     * therefore not an oracle". That reasoning does not hold: {@code 2800-UPDATE-ACCOUNT-REC} ends in
      * {@code REWRITE FD-ACCTFILE-REC} at {@code app/cbl/CBTRN02C.cbl:561}, and a VSAM {@code REWRITE} replaces
      * the record in the cluster, so the stateless reading is a misreading rather than a second model. The exact
      * count is derivable, is derived by {@code com.cardemo.e2e.PostingParityOracle}, and IS asserted - in
@@ -1175,9 +1161,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(RejectCode.ACCOUNT_RECORD_NOT_FOUND.getDescription());
     }
 
-    // =================================================================================================
     // The scoped not-found leniency that feeds - and must not feed - return code 12.
-    // =================================================================================================
 
     /**
      * The scoped not-found leniency on the category-balance upsert is taken and does not abend the posting
@@ -1276,9 +1260,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
                 .isEmpty();
     }
 
-    // =================================================================================================
     // The observability counter-constraint. app/cbl/CBTRN02C.cbl:714-727.
-    // =================================================================================================
 
     /**
      * The four-character status rendering survives the configured logging pipeline byte for byte, on both
@@ -1343,9 +1325,7 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Rule 1 Clause D's named risky patterns, for the tier this class owns.
-    // =================================================================================================
 
     /**
      * A fully gated run spawns no external process and reaches its deciders without reflection.
@@ -1398,10 +1378,8 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
                 .isEmpty();
     }
 
-    // =================================================================================================
     // Helpers. Every one of them is an instance method over injected collaborators; no static state exists
     // in this class beyond the two census builders, which are pure functions over their own literals.
-    // =================================================================================================
 
     /**
      * Lists the process identifiers of this JVM's direct children.

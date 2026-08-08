@@ -413,7 +413,6 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     @Value("${carddemo.aws.s3.gdg-prefixes.transact-bkup:gdg/transact-bkup}")
     private String backupPrefix;
 
-    // =================================================================================================
     // Contract values. Every one is an immutable INSTANCE field rather than a static constant, because
     // the harness documents a hard limit of two static fields in this package and both of them are
     // containers. Nothing here widens that budget, and nothing here is mutable.
@@ -424,7 +423,6 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     // absent, so a rename in the orchestrator surfaces as a named failure here rather than as a quietly
     // defaulted zero. Where a constant IS reachable it is borrowed rather than retyped, so that the two
     // tiers cannot drift: see the reject geometry and the two posting counters below.
-    // =================================================================================================
 
     /** Bean name of the pipeline job - the stream of {@code app/jcl}'s five driving members. */
     private final String pipelineJobBeanName = "batchPipelineJob";
@@ -646,10 +644,8 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     /** Execution-context entry carrying the number of reject records stage 1 wrote. */
     private final String rejectRecordCountEntry = "carddemo.dalyrejs.record.count";
 
-    // =================================================================================================
     // 1 and 2: the composed topology, asserted on the flow objects themselves. No launch is needed for
     // either, because the structure exists as soon as the context has refreshed.
-    // =================================================================================================
 
     /**
      * The stream is three sequential launcher steps, then a split of exactly two named branches, with a gate
@@ -776,9 +772,7 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(4);
     }
 
-    // =================================================================================================
     // 3, 4 and 5: what one real run of the composed stream does.
-    // =================================================================================================
 
     /**
      * The stages run in source order, and a stage that rejected records carries the stream on rather than
@@ -980,13 +974,11 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * {@code SORTIN} from object storage. Inputs: the seeded state. Output: none. Side effects: the run
      * commits and is undone by the harness.
      *
-     * <p><b>This test previously asserted the opposite, and the change is the point.</b> It observed stage 3
-     * halting with return code 8, and documented the halt as the duplicate-key exposure the migration
-     * requires to surface: stage 1 committed its posted transactions, and stage 3's first leg re-read and
-     * re-loaded them, so the keyed relation refused the repeat. That halt was real, but its cause was a
-     * misconfiguration rather than a property of the stream -
-     * {@code carddemo.batch.combined-transaction-reader.source} defaulted to {@code repository}, so the
-     * first leg <em>was</em> the load target. Finding M-01. With the object-storage substrate declared and
+     * <p><b>Why stage 3 halting with return code 8 is not the expected outcome here.</b> Such a halt is real
+     * when {@code carddemo.batch.combined-transaction-reader.source} defaults to {@code repository}: stage 1
+     * commits its posted transactions, the first leg is then the load target, stage 3 re-reads and re-loads
+     * them, and the keyed relation refuses the repeat. But its cause is a misconfiguration rather than a
+     * property of the stream - finding M-01. With the object-storage substrate declared and
      * enforced, the first leg is a generation, nothing is re-read, and the stream runs to the end - which is
      * what {@code app/jcl/COMBTRAN.jcl:L23-L26} followed by {@code :L41-L48} describes.
      *
@@ -1014,13 +1006,13 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(returnCodeCompleted);
 
         // NO ROW-COUNT ASSERTION HERE, DELIBERATELY, and its absence is the point of this test rather than
-        // an omission from it. An earlier revision asserted that the relation still held exactly what stage 1
-        // posted - "the refused load committed nothing" - which was true only while
-        // carddemo.batch.combined-transaction-reader.source defaulted to `repository` and stage 3 therefore
-        // halted before loading anything. With the object-storage substrate declared and enforced the stage
+        // an omission from it. Asserting that the relation still holds exactly what stage 1
+        // posted - "the refused load committed nothing" - holds only while
+        // carddemo.batch.combined-transaction-reader.source defaults to `repository` and stage 3 therefore
+        // halts before loading anything. With the object-storage substrate declared and enforced the stage
         // COMPLETES and loads the interest generation into that same relation, so the relation legitimately
-        // holds stage 1's rows plus stage 2's, and asserting the old equality would require stage 3 to fail in
-        // order to pass. That is the assertion inverting the behaviour it is meant to observe.
+        // holds stage 1's rows plus stage 2's, and that equality would require stage 3 to fail in
+        // order to pass. That is an assertion inverting the behaviour it is meant to observe.
         //
         // Neither concern the old assertion carried is lost, and both are asserted where they are a property
         // of the thing under test rather than of a substrate choice. The duplicate-identifier exposure - that
@@ -1053,10 +1045,8 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(BatchStatus.COMPLETED);
     }
 
-    // =================================================================================================
     // 6 and 7: the two stage outcomes the stream as a whole depends on, read from the child executions
     // the orchestrator recorded rather than re-derived here.
-    // =================================================================================================
 
     /**
      * Every record of the daily file is accounted for, and every rejected one bears the over-limit code.
@@ -1066,10 +1056,10 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * Inputs: the 300 records of {@code app/data/ASCII/dailytran.txt}, consumed by classpath resource name and
      * never copied, trimmed or re-encoded. Output: none. Side effects: the run commits and is undone.
      *
-     * <p><strong>The exact reject count IS asserted, against a derived oracle.</strong> An earlier revision
-     * declined it, arguing that "two defensible models of the validation cascade over these exact fixtures
+     * <p><strong>The exact reject count IS asserted, against a derived oracle.</strong> Declining it, on the
+     * argument that "two defensible models of the validation cascade over these exact fixtures
      * disagree, because one reads the account once per pass and the other re-reads it per transaction with the
-     * cycle accumulators already mutated". That argument was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+     * cycle accumulators already mutated", does not hold: {@code 2800-UPDATE-ACCOUNT-REC} ends in
      * {@code REWRITE FD-ACCTFILE-REC} at {@code app/cbl/CBTRN02C.cbl:561}, and a VSAM {@code REWRITE} replaces
      * the record in the cluster, so the re-read at {@code :394} returns the mutated accumulators. The
      * once-per-pass reading is not a second defensible model - it is a misreading of what {@code REWRITE}
@@ -1276,11 +1266,9 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                 .isTrue();
     }
 
-    // =================================================================================================
     // 8 and 9: stage 4. Reached through the production split flow and the production branch step, because
     // the composed stream cannot pass stage 3 in one run over the seeded state - see the second High
     // finding. Nothing here rebuilds the topology: both objects are the beans the orchestrator published.
-    // =================================================================================================
 
     /**
      * Both branches of the split execute, and neither is bypassed because of the other.
@@ -1294,15 +1282,15 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * ordering between the branches, no interleaving and no elapsed time: none is guaranteed by a split and
      * asserting any of them would make this test flaky.
      *
-     * <p>An earlier revision also declined to assert <em>completion</em>, and gave a reason that has since been
-     * addressed rather than accommodated. It read: the create isolation for job executions is serialisable, so
-     * the two concurrent child launches conflict and the store cancels one as a pivot; across repeated measured
-     * runs the loser varied, so a completion assertion "would fail roughly two runs in three". That was a real
-     * defect in {@code BatchPipelineOrchestrator.launchStage}, not a property of the test.
-     * {@code launchStage} now retries a launch a bounded number of times when the creating transaction reports
-     * SQLSTATE {@code 40001} or {@code 40P01}, confined to the creation phase by construction: the launcher
-     * creates the execution row and only then hands off to the job, so a transient data-access failure escaping
-     * it cannot have come from a step and retrying it repeats no business work. The isolation level is
+     * <p><em>Completion</em> is also not asserted here, and the reason a probe-level completion assertion
+     * would be flaky is addressed rather than accommodated. The create isolation for job executions is
+     * serialisable, so two concurrent child launches conflict and the store cancels one as a pivot; across
+     * repeated measured runs the loser varied, so a completion assertion at this level "would fail roughly two
+     * runs in three". That was a defect in {@code BatchPipelineOrchestrator.launchStage}, not a property of
+     * this test. {@code launchStage} retries a launch a bounded number of times when the creating transaction
+     * reports SQLSTATE {@code 40001} or {@code 40P01}, confined to the creation phase by construction: the
+     * launcher creates the execution row and only then hands off to the job, so a transient data-access failure
+     * escaping it cannot have come from a step and retrying it repeats no business work. The isolation level is
      * unchanged and the branches are still parallel.
      *
      * <p>Branch completion is therefore now asserted - through the whole stream rather than through a probe -
@@ -1440,10 +1428,8 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                 .isEqualTo((int) lineCount);
     }
 
-    // =================================================================================================
     // 10, 11 and 12: the cross-cutting properties of the stream - the risky patterns it must not use,
     // the health surface it runs on, and the geometry it must preserve at every hand-off.
-    // =================================================================================================
 
     /**
      * No stage spawns an external process, terminates the process, deserialises untrusted input or builds SQL
@@ -1775,11 +1761,9 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Helpers. Every one is instance scoped and side-effect free apart from the three that launch, and
     // every reader fails loudly on an absent entry rather than returning a default, because a defaulted
     // zero would turn a renamed contract into a silently weaker assertion.
-    // =================================================================================================
 
     /**
      * How many readings a probe group is given before it is judged down.

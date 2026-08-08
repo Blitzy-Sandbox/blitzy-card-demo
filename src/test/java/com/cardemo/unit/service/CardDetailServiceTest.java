@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : CardDetailServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11 (Surefire tier)
@@ -23,7 +23,7 @@
  *               app/cbl/CBACT04C.cbl      (canonical banner form, L1-L21)
  *               CONTRIBUTING.md, NOTICE   (style and licence conventions)
  *                                                                  @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -38,7 +38,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -529,19 +529,19 @@ final class CardDetailServiceTest {
     /**
      * The repository root, located by structure rather than inherited from the working directory.
      *
-     * <p>An earlier revision of this class resolved the three paths below as bare relative paths and
-     * documented the reason as "Surefire runs with the project base directory as its working directory".
-     * That was true and it was the defect: the guarantee was a plugin default that nothing declared and
-     * nothing enforced, so running this class from an IDE module directory, from an aggregator build, or
-     * under any runner that forks elsewhere turned every read into a missing-file error far from its cause.
-     * A test that only passes from one directory is not deterministic.
+     * <p>Resolving the three paths below as bare relative paths, on the reason that "Surefire runs with the
+     * project base directory as its working directory", would be true and would be the defect: the guarantee
+     * is a plugin default that nothing declares and nothing enforces, so running this class from an IDE module
+     * directory, from an aggregator build, or under any runner that forks elsewhere would turn every read into
+     * a missing-file error far from its cause. A test that only passes from one directory is not
+     * deterministic.
      *
-     * <p>The remedy is to stop depending on the working directory at all. This walk starts wherever the
+     * <p>So this class does not depend on the working directory at all. The walk below starts wherever the
      * process happens to be and climbs until it finds the directory holding {@code pom.xml}, {@code src/}
      * and {@code app/} together - a triple no sub-directory of this repository satisfies - so the paths
      * below resolve identically from any starting point. {@code pom.xml} additionally pins the working
      * directory and {@code TestTierContractTest} asserts that pin, which protects the sibling classes that
-     * still resolve relatively; this class no longer needs either.
+     * still resolve relatively; this class needs neither.
      */
     private static final Path REPOSITORY_ROOT = locateRepositoryRoot();
 

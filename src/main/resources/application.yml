@@ -1,42 +1,42 @@
 # ******************************************************************
-# * File         : application.yml
-# * Application  : CardDemo
-# * Type         : Spring Boot base configuration profile (YAML)
-# * Function     : Declares the property namespace, the environment-variable
-# *                contract and every structural default for the CardDemo
-# *                modular monolith that replaces the z/OS runtime of the
-# *                frozen COBOL corpus in app/. This is the BASE profile: it
-# *                holds structure only. application-local.yml,
-# *                application-test.yml and application-prod.yml layer
-# *                environment deltas on top and never restate structure.
-# *                It carries NO secret, NO credential, NO endpoint and NO
-# *                hostname; every environment-specific value is indirected
-# *                through an environment variable, and the JWT signing key
-# *                has no default at all so an absent key fails startup.
-# * Source       : app/csd/CARDDEMO.CSD (17 sourced transactions, 8 online
-# *                files, DEFINE TDQUEUE(JOBS) at L499-505);
-# *                app/cpy/COCOM01Y.cpy (CDEMO-USER-ID, CDEMO-USER-TYPE,
-# *                CDEMO-PGM-CONTEXT at L25-L31);
-# *                app/catlg/LISTCAT.txt (10 clusters, 3 AIX, 3 PATH, 7 GDG
-# *                bases at L3938-L3946);
-# *                app/jcl/POSTTRAN.jcl (CBTRN02C, reject LRECL 430 at L36);
-# *                app/jcl/INTCALC.jcl (CBACT04C, PARM='2022071800' at L22);
-# *                app/jcl/TRANREPT.jcl (CBTRN03C, report LRECL 133 at L78);
-# *                app/jcl/COMBTRAN.jcl (SORT + IDCAMS REPRO, no COBOL);
-# *                app/jcl/CREASTMT.JCL (5 steps, KEYS(32 0) at L30,
-# *                STMTFILE LRECL 80 at L89, HTMLFILE LRECL 100 at L94);
-# *                app/jcl/DEFGDGB.jcl, app/jcl/DALYREJS.jcl,
-# *                app/jcl/REPTFILE.jcl (the 7 GDG bases and the TRANREPT
-# *                LIMIT(5) versus LIMIT(10) retention conflict);
-# *                app/jcl/OPENFIL.jcl, app/jcl/CLOSEFIL.jcl (the five CEMT
-# *                SET FIL members at L26-L30, now composite health);
-# *                app/proc/TRANREPT.prc (SYMNAMES and INCLUDE COND at
-# *                L39-L46);
-# *                app/cbl/CBTRN02C.cbl (end-of-run counters at L227-L228,
-# *                RETURN-CODE 4 at L229-L231);
-# *                app/cbl/COCRDLIC.cbl:177, app/cbl/COTRN00C.cbl:290,
-# *                app/cbl/COUSR00C.cbl:57, app/cbl/CBTRN03C.cbl:131
-# *                (the four legacy page sizes) - all @ 7756d89
+# * Program     : application.yml
+# * Application : CardDemo
+# * Type        : Spring Boot base configuration profile (YAML)
+# * Function    : Declares the property namespace, the environment-variable
+# *               contract and every structural default for the CardDemo
+# *               modular monolith that replaces the z/OS runtime of the
+# *               frozen COBOL corpus in app/. This is the BASE profile: it
+# *               holds structure only. application-local.yml,
+# *               application-test.yml and application-prod.yml layer
+# *               environment deltas on top and never restate structure.
+# *               It carries NO secret, NO credential, NO endpoint and NO
+# *               hostname; every environment-specific value is indirected
+# *               through an environment variable, and the JWT signing key
+# *               has no default at all so an absent key fails startup.
+# * Source      : app/csd/CARDDEMO.CSD (17 sourced transactions, 8 online
+# *               files, DEFINE TDQUEUE(JOBS) at L499-505);
+# *               app/cpy/COCOM01Y.cpy (CDEMO-USER-ID, CDEMO-USER-TYPE,
+# *               CDEMO-PGM-CONTEXT at L25-L31);
+# *               app/catlg/LISTCAT.txt (10 clusters, 3 AIX, 3 PATH, 7 GDG
+# *               bases at L3938-L3946);
+# *               app/jcl/POSTTRAN.jcl (CBTRN02C, reject LRECL 430 at L36);
+# *               app/jcl/INTCALC.jcl (CBACT04C, PARM='2022071800' at L22);
+# *               app/jcl/TRANREPT.jcl (CBTRN03C, report LRECL 133 at L78);
+# *               app/jcl/COMBTRAN.jcl (SORT + IDCAMS REPRO, no COBOL);
+# *               app/jcl/CREASTMT.JCL (5 steps, KEYS(32 0) at L30,
+# *               STMTFILE LRECL 80 at L89, HTMLFILE LRECL 100 at L94);
+# *               app/jcl/DEFGDGB.jcl, app/jcl/DALYREJS.jcl,
+# *               app/jcl/REPTFILE.jcl (the 7 GDG bases and the TRANREPT
+# *               LIMIT(5) versus LIMIT(10) retention conflict);
+# *               app/jcl/OPENFIL.jcl, app/jcl/CLOSEFIL.jcl (the five CEMT
+# *               SET FIL members at L26-L30, now composite health);
+# *               app/proc/TRANREPT.prc (SYMNAMES and INCLUDE COND at
+# *               L39-L46);
+# *               app/cbl/CBTRN02C.cbl (end-of-run counters at L227-L228,
+# *               RETURN-CODE 4 at L229-L231);
+# *               app/cbl/COCRDLIC.cbl:177, app/cbl/COTRN00C.cbl:290,
+# *               app/cbl/COUSR00C.cbl:57, app/cbl/CBTRN03C.cbl:131
+# *               (the four legacy page sizes) - all @ 7756d89
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -186,14 +186,14 @@
 #     supplies no literal default for it, deliberately, so an unset variable
 #     fails placeholder resolution instead of being hidden; the local and test
 #     profiles carry developer defaults.
-#     An earlier revision of this comment said the opposite - that the base
-#     profile declared no override "by design" and that the local or test
-#     profile should be activated to reach the emulator. That reasoning was
-#     wrong and is withdrawn here rather than left to be rediscovered: with no
-#     override the SDK DERIVES a real regional endpoint from the region and
-#     walks its default credential chain, so silence is not a refusal to call
-#     live infrastructure but a silent election to. See the AWS block below,
-#     which states the same policy at the keys that implement it.
+#     DECLARING NO OVERRIDE AT ALL IS THE WEAKER GUARANTEE, NOT THE STRONGER
+#     ONE, and reaching the emulator by activating the local or test profile is
+#     not a substitute: with no override the SDK DERIVES a real regional
+#     endpoint from the region and walks its default credential chain, so
+#     silence is not a refusal to call live infrastructure but a silent
+#     election to. That is why the key is declared here with no default rather
+#     than omitted. See the AWS block below, which states the same policy at
+#     the keys that implement it.
 #     Do not export AWS_ENDPOINT_URL globally on a developer machine: the SDK
 #     honours it and would redirect Testcontainers clients onto the shared
 #     LocalStack instance instead of the per-test container.
@@ -292,14 +292,14 @@
 #     existing; the neutrality requirement is unaffected. Remediation: set
 #     SPRING_PROFILES_ACTIVE on the command line, in .env, or on the
 #     application service when one is added to compose.
-#   - RESOLVED - the composed contract and the names this file reads are now
-#     one spelling. An earlier revision of .env.example shipped
-#     SPRING_DATASOURCE_URL and MANAGEMENT_OTLP_TRACING_ENDPOINT and shipped
-#     neither POSTGRES_HOST nor OTEL_EXPORTER_OTLP_ENDPOINT. Those two composed
-#     names supersede spring.datasource.url and management.otlp.tracing.endpoint
-#     outright, by relaxed binding at a higher precedence than any profile file,
-#     so the placeholders beneath them were never evaluated. Measured at the
-#     time: a boot with that template alone and POSTGRES_HOST and
+#   - THE COMPOSED CONTRACT AND THE NAMES THIS FILE READS ARE ONE SPELLING,
+#     and they must stay one spelling. Shipping SPRING_DATASOURCE_URL or
+#     MANAGEMENT_OTLP_TRACING_ENDPOINT in .env.example in place of
+#     POSTGRES_HOST and OTEL_EXPORTER_OTLP_ENDPOINT is the failure mode: those
+#     two composed names supersede spring.datasource.url and
+#     management.otlp.tracing.endpoint outright, by relaxed binding at a higher
+#     precedence than any profile file, so the placeholders beneath them are
+#     never evaluated. Measured: a boot with that spelling alone and POSTGRES_HOST and
 #     OTEL_EXPORTER_OTLP_ENDPOINT deliberately unset started with exit 0, zero
 #     ERROR lines and Flyway at v1 - the template worked while documenting a
 #     contract this file does not have, which is the worst of the two failure
@@ -545,9 +545,8 @@ spring:
   # The 17 BMS symbolic maps of app/cpy-bms contribute 441 field contracts, and
   # every DTO field length and type derives from them. Serialisation must
   # therefore be predictable rather than convenient.
-  # THE COUNT IS 441. An earlier revision of this comment said 460, repeating
-  # the figure in AAP 0.2.1.4; the claim is withdrawn. Counting the data field
-  # of every generated quintuple across app/cpy-bms yields 441: COACTUP 54,
+  # THE COUNT IS 441, NOT THE 460 THAT AAP 0.2.1.4 PUBLISHES. Counting the data
+  # field of every generated quintuple across app/cpy-bms yields 441: COACTUP 54,
   # COACTVW 37, COADM01 20, COBIL00 10, COCRDLI 45, COCRDSL 15, COCRDUP 17,
   # COMEN01 20, CORPT00 17, COSGN00 11, COTRN00 59, COTRN01 21, COTRN02 21,
   # COUSR00 59, COUSR01 12, COUSR02 12, COUSR03 11. COACTVW is the one the two
@@ -624,13 +623,13 @@ spring:
     # the only principal that may reshape the schema is the one that migrates
     # it. docker-compose.yml provisions both, read only and idempotently.
     #
-    # REQUIRED, WITH NO FALLBACK. An earlier revision read
-    # ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}} as a transition aid so that a
-    # volume created before these roles existed kept working. The cost of that
-    # courtesy was the finding itself: with the variable absent - which is the
-    # default state of any deployment that has not been told about it - the
-    # runtime silently reconnected as the cluster BOOTSTRAP role, and nothing
-    # reported it, because falling back is indistinguishable from succeeding.
+    # REQUIRED, WITH NO FALLBACK. A form such as
+    # ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}} would be a transition aid for a
+    # volume created before these roles existed, and it is forbidden here: with
+    # the variable absent - the default state of any deployment that has not
+    # been told about it - the runtime silently reconnects as the cluster
+    # BOOTSTRAP role, and nothing reports it, because falling back is
+    # indistinguishable from succeeding.
     #
     # Both names are now bound bare, exactly as application-prod.yml has always
     # bound them, so every profile that binds a role at all binds the dedicated
@@ -858,12 +857,12 @@ spring:
       #      the name runs every job, so it is effectively required. The three
       #      dates travel as name=value job parameters, which is the form the
       #      JCL parameter cards arrive in.
-      #      An earlier revision documented an AUTHORED runner here, gated on
-      #      carddemo.batch.launch. It launched a job from inside
-      #      SpringApplication.run, which is a boot-time launch however
-      #      narrowly the bean was gated, so both the runner and the property
-      #      were removed; nothing is lost, because every parameter is
-      #      validated by the job that owns it rather than by the launcher.
+      #      NO IN-PROCESS RUNNER BEAN EXISTS, AND NONE MAY BE ADDED - not even
+      #      one gated on a property. A bean that launches a job from inside
+      #      SpringApplication.run is a boot-time launch however narrowly it is
+      #      gated, which contradicts spring.batch.job.enabled=false above.
+      #      Nothing is lost by its absence, because every parameter is
+      #      validated by the job that owns it rather than by a launcher.
       #      web-application-type=none is equally required: it is what makes
       #      the process END when the job ends, as a submitted job freed its
       #      initiator. Omit it and the run finishes correctly but the embedded
@@ -935,10 +934,9 @@ spring:
   # AWS - S3, SQS FIFO and SNS via Spring Cloud AWS 3.3.0
   # --------------------------------------------------------------------------
   # EVERY profile - this base profile included - must point the application at
-  # the local emulator. An earlier revision of this file left the endpoint and
-  # the credentials out here on the reasoning that a base profile naming no
-  # endpoint cannot reach a real service. That reasoning is wrong, and it is
-  # worth stating why so it is not re-introduced: with no endpoint override
+  # the local emulator. LEAVING THE ENDPOINT AND THE CREDENTIALS OUT HERE, on
+  # the reasoning that a base profile naming no endpoint cannot reach a real
+  # service, is the mistake this comment exists to prevent: with no endpoint override
   # the SDK DERIVES a real regional endpoint from the region above, and with no
   # credentials it walks its default provider chain - environment variables,
   # the shared profile file, then container and instance metadata. Silence is
@@ -1122,7 +1120,7 @@ server:
 # Observability - capability the COBOL corpus does not have at all
 # ============================================================================
 # The entire legacy instrumentation is DISPLAY to SYSOUT plus the four-character
-# renderer 9910-DISPLAY-IO-STATUS at app/cbl/CBTRN02C.cbl:L714-L731. Everything
+# renderer 9910-DISPLAY-IO-STATUS at app/cbl/CBTRN02C.cbl:L714-L727. Everything
 # in this section is therefore new capability rather than a translation.
 management:
   endpoints:
@@ -1403,22 +1401,32 @@ carddemo:
       # DECISION_LOG.md, not a tunable.
       strength: 10
 
-    # HOW LONG AN ACCOUNT-UPDATE SNAPSHOT STAYS USABLE, in seconds. Declared
-    # because it is read at runtime and appeared in no profile, and the value is
-    # exactly SnapshotTokenService.DEFAULT_LIFETIME_SECONDS, so declaring it
-    # changes no behaviour.
+    # HOW LONG A SEALED REFERENCE STAYS USABLE, in seconds. It bounds every value
+    # SnapshotTokenService seals: the as-displayed snapshot the account and card
+    # reads publish as the opaque body member `snapshot`, the card row reference,
+    # and the list browse cursors. No endpoint emits an ETag and none reads
+    # If-Match - the snapshot is a request-body member, per finding F-018 and
+    # AAP section 0.5.1.4. Declared because it is read at runtime and appeared in
+    # no profile,
+    # and the value is exactly SnapshotTokenService.DEFAULT_LIFETIME_SECONDS, so
+    # declaring it changes no behaviour.
     #
     # It exists because the target is STATELESS. app/cbl/COACTUPC.cbl:L669-L756
     # compares the live record field by field against a snapshot captured when
     # the screen was first displayed, and CICS held that snapshot in the COMMAREA
     # between the two pseudo-conversational turns. With no server-side session
     # (AAP transformation rule 7) the snapshot travels with the request instead,
-    # so it needs a lifetime of its own: without one, a snapshot minted at any
-    # point in the past would still authorise a write. Fifteen minutes is the
-    # order of a human review of one account screen and is NOT a security
-    # boundary on its own - the field-by-field comparison of
-    # 9700-CHECK-CHANGE-IN-REC and the JPA @Version column are both still
-    # enforced, and AAP section 0.7.1.5 requires both layers because neither
+    # so its seal needs a lifetime of its own: without one, a seal minted at any
+    # point in the past would still authenticate a write. Fifteen minutes is the
+    # order of a human review of one account screen.
+    #
+    # The lifetime is NOT the lost-update guard and is not an authorisation
+    # boundary on its own. Three separate controls are enforced and none
+    # substitutes for another: the seal establishes that the compared snapshot is
+    # the one this server issued to this subject for this record, the
+    # field-by-field comparison of 9700-CHECK-CHANGE-IN-REC decides whether
+    # anything changed, and the JPA @Version column detects a concurrent write.
+    # AAP section 0.7.1.5 requires the last two explicitly, because neither
     # substitutes for the other.
     #
     # This value carries no secret, which is why it has a documented default at
@@ -1451,9 +1459,8 @@ carddemo:
       # lexicographically greatest existing prefix. RECORD LENGTH IS PRESERVED
       # BYTE-EXACTLY AT THE S3 BOUNDARY - see carddemo.batch.record-length
       # below.
-      # VERSIONING IS APPLIED TO THE OUTPUT BUCKET ALONE. An earlier revision
-      # of this comment said the batch-output bucket AND the statements bucket
-      # are versioned; that is wrong and the claim is withdrawn.
+      # VERSIONING IS APPLIED TO THE OUTPUT BUCKET ALONE - not to the statements
+      # bucket, and not to the input bucket.
       # localstack-init/init-aws.sh calls enable_and_verify_versioning only for
       # the output bucket, at :1542, and merely READS the other two back
       # without changing them, at :1544 and :1546; its versioning-policy note
@@ -1589,8 +1596,8 @@ carddemo:
       # into the job parameters as an identifying value, so a FIFO redelivery
       # resolves to the same job instance and is refused rather than launching
       # the report twice.
-      # THE COUNT IS SEVENTEEN, NOT EIGHTEEN. An earlier revision of this
-      # comment said eighteen, and the claim is withdrawn. JOB-DATA-1 spans
+      # THE COUNT IS SEVENTEEN, NOT EIGHTEEN, and the arithmetic below is the
+      # proof rather than the assertion. JOB-DATA-1 spans
       # app/cbl/CORPT00C.cbl:L82-L125 and holds fourteen
       # 05 FILLER PIC X(80) VALUE literals - :L83, :L85, :L87, :L89, :L91,
       # :L93, :L95, :L97, :L99, :L101, :L113, :L115, :L122, :L124 - plus three
@@ -1718,10 +1725,11 @@ carddemo:
     # A JOB'S NAME lives under carddemo.batch.jobs.<id>.name, because it is
     # registry metadata; A JOB'S TUNING lives under carddemo.batch.<id>.*,
     # because it is an operational knob. Every one of the five jobs obeys both
-    # halves. TransactionReportJob previously read carddemo.batch.tranrept.name
-    # for its name, so the registry entry below was declared and bound nothing
-    # while the key it actually read appeared nowhere - one drift with two
-    # symptoms. It now binds carddemo.batch.jobs.tranrept.name like the others.
+    # halves. The failure mode to watch for is a job reading a name key from
+    # outside the registry - carddemo.batch.<id>.name rather than
+    # carddemo.batch.jobs.<id>.name - which leaves the registry entry below
+    # declared and binding nothing while the key actually read appears nowhere:
+    # one drift with two symptoms. All five bind the registry spelling.
     posttran:
       # com.cardemo.batch.jobs.DailyTransactionPostingJob.DEFAULT_CHUNK_SIZE.
       # Independent of POSTING_COMMIT_INTERVAL, which is a parity contract
@@ -1742,11 +1750,11 @@ carddemo:
       # place the value lives, and REMOVED when it cannot govern the value. This
       # one cannot. It was read by
       # com.cardemo.batch.jobs.CombineTransactionsJob.DEFAULT_MAX_RECORDS_PER_RUN,
-      # which no longer exists: the ceiling only ever guarded an earlier revision
-      # that accumulated the whole generation in a StringBuilder, a String and a
-      # byte[] at once, and the sort now writes each 350-byte image straight
-      # through to a staging file, so the resident set does not grow with the
-      # record count and there is nothing left to bound. Evidence retained:
+      # which does not exist: a ceiling of that kind only guards an
+      # implementation that accumulates the whole generation in a StringBuilder,
+      # a String and a byte[] at once, and the sort writes each 350-byte image
+      # straight through to a staging file, so the resident set does not grow
+      # with the record count and there is nothing left to bound. Evidence retained:
       # app/jcl/COMBTRAN.jcl:L22 sorts a concatenated SORTIN and :L33-L37
       # allocates SORTOUT on UNIT=SYSDA with SPACE=(CYL,(1,1),RLSE), which is a
       # space allocation and not a record limit - the member declares no record
@@ -1841,7 +1849,7 @@ carddemo:
     # app/data/ASCII/dailytran.txt spells the word in full, and the fixture's own
     # name is what the key must carry.
     #
-    # FINDING M-11, severity Major, RESOLVED - AND A PREREQUISITE OF THE
+    # FINDING M-11, severity High, RESOLVED - AND A PREREQUISITE OF THE
     # object-storage PATH. Selecting object-storage here makes the DALYTRAN object
     # an EXTERNAL, UNTRUSTED input: the bucket lives in an emulator whose
     # community edition was measured to enforce no authorisation at all (the
@@ -1868,14 +1876,12 @@ carddemo:
       page-size: 100
       object-key: dalytran/dailytran.txt
 
-    # TransactionBackupReader HAS NO KEYS HERE, DELIBERATELY. An earlier revision
-    # declared transaction-backup-reader.source and .page-size and bound them with
-    # @Value on that reader's constructor, but its only owner -
-    # com.cardemo.batch.jobs.TransactionReportJob - always passed its own literals
-    # instead, so both keys were read by nothing on every production path. That is
-    # finding F-008, and removing them is the resolution rather than declaring
-    # values nothing consumes (Rule 1 Clause B forbids both dead code and dead
-    # configuration).
+    # TransactionBackupReader HAS NO KEYS HERE, DELIBERATELY, and none may be
+    # added. Declaring transaction-backup-reader.source and .page-size and
+    # binding them with @Value on that reader's constructor would leave both keys
+    # read by nothing on every production path, because its only owner -
+    # com.cardemo.batch.jobs.TransactionReportJob - passes its own literals.
+    # Rule 1 Clause B forbids dead configuration exactly as it forbids dead code.
     #
     # Neither key can be revived, because neither names a decision an operator
     # gets to make. The SUBSTRATE is fixed by the DD the calling step reproduces:
@@ -2173,12 +2179,12 @@ carddemo:
   # --------------------------------------------------------------------------
   # Metrics contract - OWNED BY MetricsConfig, NOT DECLARED HERE
   # --------------------------------------------------------------------------
-  # This section previously carried a `metrics:` block naming the four counters
-  # and the reject-code tag. It was headed "consumed by MetricsConfig" and was
-  # consumed by nothing: com.cardemo.observability.MetricsConfig declares all
-  # five strings as static final constants and binds no property, which its own
-  # specification requires of it. The block was therefore executable YAML that
-  # looked like the contract and was not it.
+  # NO `metrics:` BLOCK IS DECLARED HERE, and none may be added to name the four
+  # counters or the reject-code tag. Such a block would be consumed by nothing:
+  # com.cardemo.observability.MetricsConfig declares all five strings as static
+  # final constants and binds no property, which its own specification requires
+  # of it. It would be executable YAML that looked like the contract without
+  # being it.
   #
   # That is not a tidiness point, and the proof is in the one value that had
   # already drifted: the block declared the tag key as `reject-code` while the
@@ -2264,9 +2270,9 @@ carddemo:
 # (Rule 1 Clause C, avoid duplication). That file owns JSON encoding, the
 # traceId, spanId and correlationId MDC fields, and the masking backstop.
 #
-# MASKING IS A BACKSTOP AND NOT THE CONTROL. An earlier revision of this header
-# described it as "the masking of credentials, password hashes and social
-# security numbers", which reads as complete exclusion; the claim is withdrawn.
+# MASKING IS A BACKSTOP AND NOT THE CONTROL. Describing it as "the masking of
+# credentials, password hashes and social security numbers" reads as complete
+# exclusion, and it is not that.
 # The primary control is that sensitive values are NEVER EMITTED - withheld at
 # the point of rendering rather than caught downstream. The decorator holds 311
 # <paths> field-name entries and 17 <valueMask> regex rules, and 7 of those 17
@@ -2313,8 +2319,8 @@ logging:
     org.hibernate.SQL: WARN
     org.hibernate.orm.jdbc.bind: WARN
     # ------------------------------------------------------------------------
-    # Finding F-6, severity Major (PCI), now closed. OFF, and it must stay OFF
-    # in every profile.
+    # OFF, and it must stay OFF in every profile. This is a PCI-relevant
+    # control, not a verbosity preference.
     # ------------------------------------------------------------------------
     # This logger is the one place a WARN floor was not enough. Hibernate's
     # SqlExceptionHelper writes the DRIVER'S OWN MESSAGE at ERROR on every
@@ -2323,9 +2329,12 @@ logging:
     # evidence, from a refused transaction insert:
     #
     #   Batch entry 0 insert into transaction (tran_amt,tran_card_num,...) values
-    #   (('2.34'::numeric),('7427684863423209'),...) was aborted: ERROR: duplicate
+    #   (('2.34'::numeric),('################'),...) was aborted: ERROR: duplicate
     #   key value violates unique constraint "pk_transaction"
     #
+    # The sixteen digits shown above as # are, in the real record, the cleartext
+    # primary account number; they are masked here so this comment cannot itself
+    # become the disclosure it exists to prevent.
     # The sixteen digits are CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5 in
     # cleartext, and the same shape on app/cpy/CVCUS01Y.cpy carries CUST-SSN
     # PIC 9(09) and the address lines. ERROR cannot be excluded by a level
@@ -2356,7 +2365,7 @@ logging:
     # ------------------------------------------------------------------------
     # The parity-output tree. OFF, and it must stay OFF in every profile.
     # ------------------------------------------------------------------------
-    # Finding, Medium severity, now closed. Three translated programs reproduce
+    # Three translated programs reproduce
     # a COBOL DISPLAY that carries customer financial data, because the source
     # wrote it to SYSOUT:
     #   - app/cbl/CBACT01C.cbl:L78 and :L119-L129 - the whole 300-byte account

@@ -425,13 +425,14 @@ class BatchLogHygieneTest {
             final String logged = capturedLogText();
             assertThat(logged).as("the reader does emit, so these absence assertions are not vacuous")
                     .isNotEmpty();
-            // The five MONETARY fields are what may not appear. An earlier revision also required the account
-            // key and the group identifier to be absent; both are deliberately retained, and retaining them is
-            // the documented design: AccountReader:1026 states that each present monetary value is replaced by
-            // a same-width stand-in "so the label, the field order, the field count and the column geometry
-            // are all still those of the source while the value itself never reaches a log event". The key is
-            // what makes the remaining diagnostic useful, and SensitiveDataRedactionTest asserts its presence
-            // for the same reason, so requiring its absence here contradicted both the reader and that suite.
+            // The five MONETARY fields are what may not appear. Requiring the account
+            // key and the group identifier to be absent as well would contradict the documented design: both
+            // are deliberately retained, and AccountReader:1026 states that each present monetary value is
+            // replaced by a same-width stand-in "so the label, the field order, the field count and the column
+            // geometry are all still those of the source while the value itself never reaches a log event". The
+            // key is what makes the remaining diagnostic useful, and SensitiveDataRedactionTest asserts its
+            // presence for the same reason, so requiring its absence here would contradict both the reader and
+            // that suite.
             assertThat(logged)
                     .doesNotContain(CURRENT_BALANCE)
                     .doesNotContain(CREDIT_LIMIT)

@@ -73,10 +73,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * seventeen-byte {@code TCATBALF} key at all.
  *
  * <p><strong>What this class deliberately does not assert.</strong> At the commit under test the
- * migration directory holds all three planned migrations. An earlier revision of this paragraph said
- * it holds {@code V1__create_schema.sql} and nothing else, and that {@code V2__create_indexes.sql} and
- * {@code V3__seed_data.sql} have not been authored yet; that is no longer true and the claim is
- * withdrawn. This class nonetheless makes <em>no</em> assertion about either of those two files, because
+ * migration directory holds all three migrations: {@code V1__create_schema.sql},
+ * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} are each authored and present.
+ * This class nonetheless makes <em>no</em> assertion about either of the latter two, because
  * its subject is the baseline schema and because a structural claim about a sibling migration belongs
  * with that migration. It does assert that {@code V1} itself creates no index, which is true and is not
  * a gap: index creation lands in {@code V2__create_indexes.sql}, where the AAP places it, and that file
@@ -212,14 +211,31 @@ final class SchemaStructureTest {
     private static final List<String> VERSIONED_TABLES =
             List.of("account", "card", "customer", "transaction");
 
-    /** A parsed column declaration. A null width means the type carries none, as BIGINT does. */
+    /**
+     * A parsed column declaration. A null width means the type carries none, as BIGINT does.
+     * @param name the column name.
+     * @param type its declared SQL type.
+     * @param width its declared width, null when the type carries none.
+     * @param scale its declared scale, null when the type carries none.
+     * @param notNull whether it is declared {@code NOT NULL}.
+     */
     private record Column(String name, String type, Integer width, Integer scale, boolean notNull) { }
 
-    /** A parsed table body. */
+    /**
+     * A parsed table body.
+     * @param name the table name.
+     * @param columns its column declarations, in order.
+     * @param primaryKey its primary-key column names, in key order.
+     * @param checkConstraints its check-constraint expressions.
+     * @param foreignKeyConstraints its foreign-key clauses.
+     */
     private record Table(String name, List<Column> columns, List<String> primaryKey,
             List<String> checkConstraints, List<String> foreignKeyConstraints) { }
 
-    /** Every table in declaration order, parsed once per test class use. */
+    /**
+     * Every table in declaration order, parsed once per test class use.
+     * @return every parsed table, keyed by name, in declaration order.
+     */
     private static Map<String, Table> parseMigration() {
         final List<String> lines;
         try {
@@ -325,6 +341,8 @@ final class SchemaStructureTest {
      * without a sound. No such column exists in the migration today - all 76 distinct column
      * names were checked - but the boundary makes the misreading impossible rather than
      * merely absent, so the column census cannot be quietly understated by a future rename.
+     * @param line one table-body line.
+     * @return whether it opens a constraint rather than a column.
      */
     private static boolean startsWithConstraintKeyword(final String line) {
         final String upper = line.toUpperCase(java.util.Locale.ROOT);
@@ -343,7 +361,12 @@ final class SchemaStructureTest {
         return false;
     }
 
-    /** The COBOL field a column maps to: the override if one exists, else the mechanical form. */
+    /**
+     * The COBOL field a column maps to: the override if one exists, else the mechanical form.
+     * @param table the table name.
+     * @param column the column name.
+     * @return the COBOL field the column maps to.
+     */
     private static String cobolFieldOf(final String table, final String column) {
         final String override = KEY_FIELD_OF.get(table + "." + column);
         if (override != null) {
@@ -782,7 +805,11 @@ final class SchemaStructureTest {
         }
     }
 
-    /** Removes line comments so a keyword mentioned in prose cannot fail a structural assertion. */
+    /**
+     * Removes line comments so a keyword mentioned in prose cannot fail a structural assertion.
+     * @param sql the migration text.
+     * @return the same text with line comments removed.
+     */
     private static String stripComments(final String sql) {
         final StringBuilder code = new StringBuilder();
         for (final String line : sql.split("\n")) {

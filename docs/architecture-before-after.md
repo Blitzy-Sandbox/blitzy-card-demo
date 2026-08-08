@@ -1,39 +1,40 @@
 <!--
-================================================================================
-  Document    : architecture-before-after.md
-  Application : CardDemo
-  Type        : Documentation - side-by-side architectural comparison
-  Function    : Publishes the "before" and "after" architectures of the AWS
-                CardDemo credit-card management application: the frozen z/OS
-                system of record - CICS, VSAM, JCL, BMS, 3270 - beside the
-                Java 25 / Spring Boot 3.5.11 modular monolith that replaces its
-                execution substrate. 100% behavioural parity is the ACCEPTANCE
-                CONTRACT and the design target of that replacement, not a result
-                this page asserts: no retained side-by-side comparison against
-                the legacy baseline exists yet, and section 1.5 and the register
-                in section 7.2 say so plainly. Every layer, every mechanism
-                substitution, every deliberate deviation and every preserved
-                legacy quirk is named, diagrammed and cited.
-  Derived from: app/csd/CARDDEMO.CSD, app/catlg/LISTCAT.txt, app/cbl/**,
-                app/cpy/**, app/cpy-bms/**, app/bms/**, app/jcl/**,
-                app/proc/REPROC.prc, app/proc/TRANREPT.prc,
-                app/ctl/REPROCT.ctl, app/data/ASCII/**, diagrams/**,
-                README.md, mkdocs.yml
-================================================================================
-  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-
-  Licensed under the Apache License, Version 2.0 (the "License").
-  You may not use this file except in compliance with the License.
-  You may obtain a copy of the License at
-
-     http://www.apache.org/licenses/LICENSE-2.0
-
-  Unless required by applicable law or agreed to in writing, software
-  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-  License for the specific language governing permissions and limitations
-  under the License.
-================================================================================
+  ******************************************************************
+  * Program     : architecture-before-after.md
+  * Application : CardDemo
+  * Type        : Documentation - side-by-side architectural comparison
+  * Function    : Publishes the "before" and "after" architectures of the AWS
+  *               CardDemo credit-card management application: the frozen z/OS
+  *               system of record - CICS, VSAM, JCL, BMS, 3270 - beside the
+  *               Java 25 / Spring Boot 3.5.11 modular monolith that replaces
+  *               its execution substrate. 100% behavioural parity is the
+  *               ACCEPTANCE CONTRACT and the design target of that
+  *               replacement, and section 1.5 with the register in section 7.2
+  *               states exactly which corroboration the retained comparison
+  *               does and does not carry. Every layer, every mechanism
+  *               substitution, every deliberate deviation and every preserved
+  *               legacy quirk is named, diagrammed and cited.
+  * Source      : app/csd/CARDDEMO.CSD, app/catlg/LISTCAT.txt, app/cbl/**,
+  *               app/cpy/**, app/cpy-bms/**, app/bms/**, app/jcl/**,
+  *               app/proc/REPROC.prc, app/proc/TRANREPT.prc,
+  *               app/ctl/REPROCT.ctl, app/data/ASCII/**, diagrams/**,
+  *               README.md, mkdocs.yml @ 7756d89
+  ******************************************************************
+  * Copyright Amazon.com, Inc. or its affiliates.
+  * All Rights Reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License").
+  * You may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+  *    http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing,
+  * software distributed under the License is distributed on an
+  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  * either express or implied. See the License for the specific
+  * language governing permissions and limitations under the License
+  ******************************************************************
 -->
 
 # Architecture Before and After
@@ -155,11 +156,10 @@ the renderer or tool that produced it, because "the diagrams are valid" means no
 naming what validated them.
 
 * **`mkdocs build --strict` completed with exit code 0**, against the **real `docs/` tree** —
-  no scratch copy and no placeholder stubs. An earlier revision of this note disclosed that its
-  build had been run against a scratch copy carrying stubs for sibling documents that did not
-  yet exist; `docs/onboarding-guide.md` and `docs/executive-presentation.html` have since been
-  authored, every page is registered in the `mkdocs.yml` nav, and the strict build therefore
-  now passes on the tree as committed. The scratch-copy caveat is withdrawn as obsolete.
+  no scratch copy and no placeholder stubs. That distinction is load-bearing: a strict build run
+  against a scratch copy carrying stubs for sibling documents proves nothing about the tree as
+  committed. Every page, `docs/onboarding-guide.md` and `docs/executive-presentation.html`
+  included, is on disk and registered in the `mkdocs.yml` nav.
 * **The built page emits nine `<pre class="mermaid">` blocks and 33 rendered tables**, counted
   on the generated HTML, and **every one of the 484 same-page anchor links on this page's
   sibling `api-contracts.md` and on this page resolves to a generated heading identifier** — a
@@ -173,9 +173,8 @@ naming what validated them.
   `er`) — with **zero Mermaid parse or syntax errors**, zero `.error-icon` elements, zero
   unrendered source blocks and no unhandled promise rejection.
 
-**One claim in the earlier revision of this note was wrong, and the browser run is what
-exposed it.** It said the diagrams were validated "under the mermaid 10.x line that the
-`mermaid2` plugin loads at render time". That is withdrawn. The served page contains **no
+**The diagrams are not validated under any mermaid 10.x line, and the browser run is what
+establishes that.** The served page contains **no
 Mermaid `<script>` tag at all** and makes **no request for mermaid 10.x**: the `mermaid2`
 plugin logs a `10.4.0` library at build time but injects no loader into this build. What
 actually executes is **Material for MkDocs' own bundled Mermaid integration**, which requests
@@ -222,9 +221,9 @@ page was authored no run existed, and every place a result would go read *"Not a
 implementation/evidence not yet generated"*. Those runs have since happened: the topology described
 here **has** been stood up against a real containerised database and cloud-service emulator, the
 suites pass, and coverage and the performance baseline are measured. So the results are no longer
-absent; they are simply **not this page's to publish**. How far that standing-up reached — and in
-particular that the six-service compose topology itself was not brought up by the recorded run — is
-stated by the ledger, not summarised here.
+absent; they are simply **not this page's to publish**. How far that standing-up reached — including
+the six-service compose topology, which has since been brought up as a unit in this working tree at
+the commit the ledger names — is stated by the ledger, not summarised here.
 
 The one thing this page **does** report about itself is its own render and link integrity,
 because that is a property of this page rather than of the implementation:
@@ -232,11 +231,10 @@ because that is a property of this page rather than of the implementation:
 executed, under which tool and version, and on what date.
 
 Where something genuinely is unavailable, it is named individually with its prerequisite in
-[§7.2](#72-not-available-register) rather than covered by a blanket phrase. An earlier revision
-of this paragraph said every such place reads *"Not available — implementation/evidence not yet
-generated"*; that blanket wording is withdrawn, because it swept together two different things —
-evidence that did not exist anywhere and evidence that exists in another document — and reported
-both as missing.
+[§7.2](#72-not-available-register) rather than covered by a blanket phrase. A blanket
+*"Not available — implementation/evidence not yet generated"* is forbidden here, because it sweeps
+together two different things — evidence that exists nowhere and evidence that exists in another
+document — and reports both as missing.
 
 One caveat deserves emphasis because it is easy to trip over. `docs/project-guide.md` is
 retained **unchanged** as prior-run evidence, and its completion claims, test counts,
@@ -608,9 +606,9 @@ a batch job.
 * **File-access indirection.** `CALL 'CBSTM03B' USING WS-M03B-AREA`, a shared area of a DD
   name, a one-character operation, a two-character return code, a key, a key length and a
   thousand-byte payload. Both `'00'` and `'04'` count as success — but **only at the nine
-  `CBSTM03B` call sites inside `CBSTM03A`, and nowhere else in the corpus.** An earlier revision
-  of this sentence read "at every call site", which reads as a corpus-wide rule and is
-  withdrawn. `grep -rn "'04'" app/cbl/` returns exactly nine hits, all in
+  `CBSTM03B` call sites inside `CBSTM03A`, and nowhere else in the corpus.** Reading it as a
+  corpus-wide rule is the mistake to avoid.
+  `grep -rn "'04'" app/cbl/` returns exactly nine hits, all in
   `app/cbl/CBSTM03A.CBL` [`:736`, `:748`, `:771`, `:789`, `:807`, `:862`, `:879`, `:895`,
   `:911`], each of the form `IF WS-M03B-RC = '00' OR '04'`. Every other I/O guard in the
   corpus — the universal `FILE STATUS` idiom described in [§6](#6-error-taxonomy-configuration-and-failure-modes) —
@@ -779,9 +777,9 @@ exceptions rather than swallowing a failure, and the exception layer renders a
 
 Report submission publishes to an SQS FIFO queue. A listener on that queue,
 `BatchConfig.ReportJobQueueListener`, stands in for the JES2 internal reader — but **it launches
-exactly one job, `transactionReportJob`, and never the orchestrator.** An earlier revision of
-this diagram drew the queue edge into `BatchPipelineOrchestrator`, which overstated the blast
-radius of a single report submission by four jobs and is withdrawn. The listener's constructor
+exactly one job, `transactionReportJob`, and never the orchestrator.** Drawing the queue edge
+into `BatchPipelineOrchestrator` would overstate the blast radius of a single report submission
+by four jobs. The listener's constructor
 takes one `Job`, the report job; it builds job parameters from the report name, the two dates
 and the SQS deduplication identifier, and calls `JobLauncher.run` with that job. This is the
 faithful reading of the source: the legacy deck the listener replaces contains the single card
@@ -841,8 +839,8 @@ annotates an invariant that spans the components it covers. `autonumber` numbers
 they can be referenced.
 
 **This is the success path of one operation, not a generalisation over all seventeen.** Two
-claims an earlier revision of this diagram made are corrected here, because both were true of
-some operations and published as true of every one.
+properties of it are true of some operations and not of all, so both are stated explicitly rather
+than left to be read off the diagram.
 
 * **The success status is not always `200`.** Thirteen of the seventeen operations answer
   `200 OK`. **Three answer `201 Created`** — add user [`AdminController.java:1140`], bill
@@ -1247,9 +1245,13 @@ The card number at 263 and the processing date at 305 are exactly where the repo
   deduplication switched off. An SQS listener replaces the JES2 internal reader, mapping the
   message body onto job parameters that reproduce the 80-byte parameter record.
 * **Exactly three S3 buckets** — `carddemo-batch-input`, `carddemo-batch-output` and
-  `carddemo-statements` — plus the notification topic `carddemo-notifications`, all
-  provisioned **idempotently** by `localstack-init/init-aws.sh` so that repeated stack cycles
-  converge instead of failing on already-existing resources.
+  `carddemo-statements` — plus the notification topic `carddemo-notifications` and **its one
+  subscriber**, the standard queue `carddemo-notifications-inbox`, all provisioned
+  **idempotently** by `localstack-init/init-aws.sh` so that repeated stack cycles converge
+  instead of failing on already-existing resources. The subscriber is not optional garnish:
+  SNS accepts a publish to a subscriberless topic and discards it, reporting success, so
+  without the inbox the operator-notification path would be inert while appearing to work.
+  That is why the provisioning script treats a subscription count of **zero** as fatal.
 * **All AWS interaction targets LocalStack.** There are **zero live credentials anywhere in
   the repository**, and no code path may reach a real AWS endpoint. This is a design
   constraint, not a development convenience.
@@ -1280,7 +1282,7 @@ declared cluster key length.
 | `CDEMO-USER-TYPE` `'A'` / `'U'` 88-levels | JWT **role** claim driving `UserType`-based authorisation |
 | Admin transactions reachable by program logic | `/api/admin/*` restricted to **ADMIN** in the filter chain |
 | Pseudo-conversational session with COMMAREA carry-over | **stateless** session policy; no server-side session state exists |
-| Plaintext `SEC-USR-PWD` comparison | **BCrypt with strength 10**; the seeded users are stored only as hashes |
+| Plaintext `SEC-USR-PWD` comparison | **BCrypt with strength 10**; the seeded users' passwords are STORED only as hashes. This protects the stored representation, not the credential a caller presents: the documented demo password still authenticates, which is why those accounts exist only under the `local` and `test` profiles |
 | Sign-on identifier folding | **both** the identifier and the password are upper-cased before comparison, exactly as the legacy program does |
 
 **The signing key is resolved from an environment variable in every one of the four profiles,
@@ -1288,8 +1290,17 @@ with no default and no fallback, and the application context refuses to start wh
 absent.** The property is `carddemo.security.jwt.signing-key`, it reads `${JWT_SIGNING_KEY}`,
 the HS256 algorithm requires at least 32 bytes of key material, and the token lifetime is 30
 minutes. `.env.example` carries the variable name with a deliberately empty value so that a
-developer sees what is required without a credential ever entering version control. **No key,
-token, password value or live endpoint appears anywhere in this repository.**
+developer sees what is required without a credential ever entering version control. **No
+signing key, no issued token and no live provider endpoint appears anywhere in this
+repository.**
+
+One exception is stated precisely rather than glossed, because the unqualified form of that
+sentence is false. A **password value does** appear: the frozen corpus carries the legacy demo
+password inline at [`app/jcl/DUSRSECJ.jcl`], and `README.md` documents it for the legacy
+sign-on. It is a **public demo-only credential** on a frozen reference tree that must not be
+edited, it is stored only as a BCrypt cost-10 hash, and the accounts that use it are seeded
+**only** under the `local` and `test` profiles &mdash; never under `application.yml` or
+`application-prod.yml`. Hashing is not what makes it safe; profile isolation is.
 
 Token validation uses the **parent-managed Spring Boot OAuth2 resource-server starter**
 rather than a separately pinned third-party JWT library, so it introduces no unmanaged
@@ -1427,11 +1438,11 @@ container probes.
 | `app/jcl/OPENFIL.jcl` and `app/jcl/CLOSEFIL.jcl` driving `CEMT SET FIL` | composite health endpoint over the database, object storage and queue, with separate liveness and readiness groups |
 
 **`EIBTRNID` is not the legacy construct this replaces, because the corpus does not contain
-it.** An earlier revision of the table above listed `EIBTRNID` as "the only per-request
-identity" being replaced. That row is withdrawn. `grep -rn EIBTRNID app/` returns **zero
+it**, and no row above claims it is. `grep -rn EIBTRNID app/` returns **zero
 matches** across all 19,254 lines: the field belongs to the CICS EXEC Interface Block and is
 supplied by the transaction monitor, not by application source. What the corpus does reference
-is `EIBCALEN` (49 sites) and `EIBAID` (16 sites), and neither is an identity — the first is a
+is `EIBCALEN` (49 sites) and `EIBAID` (44 sites — 16 in the twelve programs that test it, 28 in the
+procedural copybook they copy in), and neither is an identity — the first is a
 COMMAREA length and the second an attention-identifier byte. So correlation identity is
 **capability this migration adds**, with no legacy construct to cite as its origin, and it is
 listed as such rather than given a provenance it does not have. The analogy remains a useful
@@ -1656,10 +1667,9 @@ sub-packages, four `model` sub-packages, and `config`, `controller`, `exception`
 `observability`, `repository` and `security` — 1 + 2 + 9 + 4 + 4 + 6 = 26. Functional modularity
 is the architectural unit; the physical tree is its realisation.
 
-**An earlier revision of this paragraph said `service` splits into eight sub-packages, omitting
-`shared`. That is withdrawn rather than quietly corrected**, because the omission understated two
-things at once: `service.shared` holds four classes, so leaving it out understates both the leaf
-count and the 21-service total that depends on it. `shared` is also the reason the arithmetic above
+**`service` splits into nine sub-packages, and `shared` is the one most easily left out of that
+list.** Omitting it understates two things at once: `service.shared` holds four classes, so it
+carries both a leaf and part of the 21-service total. It is also the reason the arithmetic above
 reaches 26 rather than 25.
 
 ### 4.5 Diagram 8: Package graph and dependency direction
@@ -1785,14 +1795,13 @@ granularity of the diagram:
 grep -rhn '^import \(static \)\?com\.cardemo\.' src/main/java
 ```
 
-An earlier revision of this diagram omitted fourteen real edges — every
+Fourteen edges in that graph are easy to omit and all fourteen are drawn above: every
 `batch.* → repository` edge, `security → repository`, `security → model.entity`,
-`controller → model.enums`, `service → model.entity`, and the `→ model.enums` edges from
-`exception`, `observability` and `model.dto` — and it also omitted the `exception` edges into
-the batch packages. All are restored above.
+`controller → model.enums`, `service → model.entity`, the `→ model.enums` edges from
+`exception`, `observability` and `model.dto`, and the `exception` edges into the batch packages.
 
-**There is one package-level cycle, and it is stated rather than hidden.** An earlier revision
-claimed "no cycle anywhere in the graph". At *package* granularity that is false:
+**There is one package-level cycle, and it is stated rather than hidden.** At *package*
+granularity a claim of "no cycle anywhere in the graph" would be false:
 `config → service` and `service → config` both exist, drawn above as the two labelled dashed
 edges. The whole of it is three imports. `config.BatchConfig` imports
 `service.report.ReportSubmissionService.JobSubmissionMessage` and `service.shared.FileService`
@@ -1911,9 +1920,9 @@ reproduced in code, each is cited in `../TRACEABILITY_MATRIX.md` and justified i
 | **Identifier generation is deliberately racy** | Two programs generate identifiers by moving high values into the key, starting a browse, reading the previous record, ending the browse and adding one. The empty-file path yields a first identifier of 1. In Java this becomes a top-one descending query; the race is **kept**, and a collision surfaces as a duplicate-record exception rather than being replaced by a database sequence, which would change generated values and break baseline comparison | `app/cbl/COTRN02C.cbl`, `app/cbl/COBIL00C.cbl` |
 | **Case handling in the account snapshot comparison is asymmetric** | The account group identifier is compared through `FUNCTION LOWER-CASE` on both sides [`:L4139-L4140`]; customer first, middle and last name, the three address lines, state, country and government-issued identifier are compared through `FUNCTION UPPER-CASE` [`:L4152-L4173`]; postal code, both telephone numbers, the social security number, the electronic-funds account identifier, the primary-holder indicator and the credit score are compared with **no case function at all** [`:L4168-L4171`, `:L4181-L4186`]. Normalising in either direction changes which updates are accepted | paragraph `9700-CHECK-CHANGE-IN-REC` at [`app/cbl/COACTUPC.cbl:L4109-L4193`], snapshot groups `ACUP-OLD-DETAILS` at [`:L669`] and `ACUP-NEW-DETAILS` at [`:L757`] |
 | **Dates are compared component-wise, with different offsets on each side** | Open, expiry and reissue dates are each compared as three substrings at offsets `(1:4)`, `(6:2)` and `(9:2)` against discrete snapshot fields [`:L4127-L4137`]. The date of birth is worse: the live record holds a dash-separated date so its components sit at 1, 6 and 9, while the snapshot holds the same date **without separators** so its components sit at 1, 5 and 7 — and the source compares 1 against 1, 6 against 5, and 9 against 7 [`:L4174-L4179`]. **A naive whole-string comparison would report a change on every single request**, making the endpoint permanently unusable | [`app/cbl/COACTUPC.cbl:L4127-L4179`] |
-| **Two `FILE STATUS` not-found values are success, not errors** | The category-balance upsert accepts **either** `'00'` **or** `'23'` [`app/cbl/CBTRN02C.cbl:L481`] before dispatching to its create or rewrite branch, and the interest rate lookup accepts either [`app/cbl/CBACT04C.cbl:L422`] before substituting the literal `DEFAULT` group and retrying [`:L437-L438`] — and the retry accepts only `'00'` [`:L446`], so **a missing default row abends the job**. Everywhere else `'23'` is an error. A blanket not-found-to-exception rule would abend both paths | upsert at [`app/cbl/CBTRN02C.cbl:L467-L500`], rate lookup at [`app/cbl/CBACT04C.cbl:L415-L460`] |
+| **Two `FILE STATUS` not-found values are success, not errors** | The category-balance upsert accepts **either** `'00'` **or** `'23'` [`app/cbl/CBTRN02C.cbl:L481`] before dispatching to its create or rewrite branch, and the interest rate lookup accepts either [`app/cbl/CBACT04C.cbl:L422`] before substituting the literal `DEFAULT` group and retrying [`:L437-L438`] — and the retry accepts only `'00'` [`:L446`], so **a missing default row abends the job**. Everywhere else `'23'` is an error. A blanket not-found-to-exception rule would abend both paths | upsert at [`app/cbl/CBTRN02C.cbl:L467-L501`], rate lookup at [`app/cbl/CBACT04C.cbl:L415-L440`] with its retry at [`app/cbl/CBACT04C.cbl:L443-L460`] |
 | **A third accepted secondary status exists at the file-service layer** | All **nine** `CBSTM03B` open and read call sites accept **either** `'00'` **or** `'04'` as success, treating `'10'` as end of file and anything else as an abend. The acceptance is local to these nine sites; no other program in the corpus admits `'04'` | `app/cbl/CBSTM03A.CBL:736`, `:748`, `:771`, `:789`, `:807`, `:862`, `:879`, `:895`, `:911` |
-| **The generated timestamp carries hundredths of a second and then four literal zeros** | The 26-character value is `yyyy-MM-dd-HH.mm.ss.SS0000`. The fraction is **two digits, not three**: the generator moves `COB-MIL PIC X(02)` into `DB2-MIL PIC 9(002)` and then moves the literal `'0000'` into `DB2-REST PIC X(04)`, so the fractional field is six characters of which the first two are hundredths and the last four are always zero. An earlier revision of this row said "millisecond precision plus four zeros" — that is **withdrawn**, because three digits plus four zeros is seven characters and would make the value 27 characters, one wider than the declared `PIC X(26)`. Java must format to hundredths and append `0000`, and must not use nanosecond precision either, or every generated timestamp differs from the baseline | layout at [`app/cbl/CBTRN02C.cbl:L159-L174`] — note `DB2-MIL PIC 9(002)` at [`:L173`] and `DB2-REST PIC X(04)` at [`:L174`]; generator at [`:L692-L705`], the four zeros at [`:L701`], invoked from [`:L437-L438`] |
+| **The generated timestamp carries hundredths of a second and then four literal zeros** | The 26-character value is `yyyy-MM-dd-HH.mm.ss.SS0000`. The fraction is **two digits, not three**: the generator moves `COB-MIL PIC X(02)` into `DB2-MIL PIC 9(002)` and then moves the literal `'0000'` into `DB2-REST PIC X(04)`, so the fractional field is six characters of which the first two are hundredths and the last four are always zero. "Millisecond precision plus four zeros" is the wrong reading, because three digits plus four zeros is seven characters and would make the value 27 characters, one wider than the declared `PIC X(26)`. Java must format to hundredths and append `0000`, and must not use nanosecond precision either, or every generated timestamp differs from the baseline | layout at [`app/cbl/CBTRN02C.cbl:L159-L174`] — note `DB2-MIL PIC 9(002)` at [`:L173`] and `DB2-REST PIC X(04)` at [`:L174`]; generator at [`:L692-L705`], the four zeros at [`:L701`], invoked from [`:L437-L438`] |
 | **The interest job resets both cycle counters** | The account update adds accumulated interest to the current balance [`:L352`] and then **zeroes both cycle counters** [`:L353-L354`] before rewriting [`:L356`]. Omitting that reset breaks the over-limit arithmetic on the *following* posting cycle — a defect that would not surface until a second batch run | [`app/cbl/CBACT04C.cbl:L350-L370`] |
 | **A negative amount is added to the debit accumulator** | The account update adds the transaction amount to the current balance, then adds it to the current-cycle **credit** when it is non-negative and to the current-cycle **debit** otherwise — so the debit accumulator legitimately holds negative values, which is exactly why the over-limit formula subtracts it | [`app/cbl/CBTRN02C.cbl:L547-L552`] |
 
@@ -2173,10 +2182,10 @@ a blanket "not yet generated".
 
 | Item | Status | What is needed |
 |---|---|---|
-| **End-to-end parity against a captured run of the real legacy runtime (Gate 1)** | **Partly available — and the earlier row on this line is withdrawn.** It read *"the legacy baseline does not exist in this repository"*, which is no longer true: the posting run is now diffed against **two independent expectations** held in the tree — the frozen program's own output, compiled and executed unmodified, under `src/test/resources/parity/gate1`, and a source-derived expectation under `src/test/resources/expected/posttran`. What is still absent is a capture from the **real runtime** | A recorded run of the original system on z/OS or a licensed emulator at a known input state. It would **corroborate** both expectations rather than replace either; nothing in this corpus can supply it |
-| **Measured throughput, per-endpoint latency and peak heap (Gate 3)** | **Now available as a measured baseline, and owned elsewhere.** The earlier *not measured* reading is withdrawn. The legacy system publishes **no** service-level objective anywhere in the corpus, so this gate records a **measured baseline, not an improvement target**, and no threshold is applied to any of its figures | Read the figures and their run-to-run variance in [validation-gates.md](validation-gates.md), which owns them. A stakeholder-agreed objective would be needed before any of them could become a pass-or-fail threshold |
-| Remaining validation-gate outcomes — zero-warning build, fixture validation, API contract verification, security audit, scope coverage, integration sign-off | **Owned elsewhere, not absent.** An earlier revision of this row said all eight gate outcomes were "not yet generated", which is no longer true and is withdrawn: all eight have been executed. This page describes topology, not results, and does not restate gate outcomes | Read them in [validation-gates.md](validation-gates.md), which owns gate definitions, evidence and residual risk |
-| Test counts, line coverage and pass rates | **Owned elsewhere, not absent.** An earlier revision said these were "not yet generated"; that is withdrawn. This page deliberately publishes none, so that one document owns them | Read them in [validation-gates.md](validation-gates.md). Note that `docs/project-guide.md` reports figures for a **previous attempt** and is not evidence for the current implementation |
+| **End-to-end parity against a captured run of the real legacy runtime (Gate 1)** | **Partly available.** *"The legacy baseline does not exist in this repository"* is not the current state: the posting run is diffed against **two independent expectations** held in the tree — the frozen program's own output, compiled and executed unmodified, under `src/test/resources/parity/gate1`, and a source-derived expectation under `src/test/resources/expected/posttran`. What is still absent is a capture from the **real runtime** | A recorded run of the original system on z/OS or a licensed emulator at a known input state. It would **corroborate** both expectations rather than replace either; nothing in this corpus can supply it |
+| **Measured throughput, per-endpoint latency and peak heap (Gate 3)** | **Available as a measured baseline, and owned elsewhere.** The legacy system publishes **no** service-level objective anywhere in the corpus, so this gate records a **measured baseline, not an improvement target**, and no threshold is applied to any of its figures | Read the figures and their run-to-run variance in [validation-gates.md](validation-gates.md), which owns them. A stakeholder-agreed objective would be needed before any of them could become a pass-or-fail threshold |
+| Remaining validation-gate outcomes — zero-warning build, fixture validation, API contract verification, security audit, scope coverage, integration sign-off | **Owned elsewhere, not absent.** All eight gate outcomes have been executed. This page describes topology, not results, and does not restate them | Read them in [validation-gates.md](validation-gates.md), which owns gate definitions, evidence and residual risk |
+| Test counts, line coverage and pass rates | **Owned elsewhere, not absent.** This page deliberately publishes none, so that one document owns them | Read them in [validation-gates.md](validation-gates.md). Note that `docs/project-guide.md` reports figures for a **previous attempt** and is not evidence for the current implementation |
 | **Mermaid 10.x render behaviour for this page's nine diagrams** | **Not available — no 10.x code was ever executed.** All nine were validated under mermaid-cli **11.16.0** and, in a real browser, under **mermaid 11.16.1**, which is what Material for MkDocs actually loads ([§1.4](#14-authoring-host-environment-and-what-was-actually-executed)) | Pinning the `mermaid2` plugin so that it injects its own loader, or overriding Material's CDN URL, and re-running the browser check. Not required for this build, since nothing on the served site runs 10.x |
 | The **published** Backstage TechDocs rendering of this page | **Not available — no published site was observed.** A local `mkdocs build --strict` **was** run and passed against the real tree, and the built page was served and exercised in a browser ([§1.4](#14-authoring-host-environment-and-what-was-actually-executed)), but neither is the same artefact as the TechDocs-served page | A Backstage instance with TechDocs configured against `backstage.io/techdocs-ref: dir:.` [`catalog-info.yaml:L22`]. The `mkdocs.yml` nav entry `Architecture Before and After: architecture-before-after.md` **now exists**, so the omission that would previously have prevented publication is closed |
 | RACF profile definitions for the legacy authorisation model | **Not available — no RACF definition exists in this repository.** Only CSD transaction security and program-enforced role logic can be evidenced, and that is all [§2.11](#211-authorisation) asserts | The originating installation's external-security-manager configuration, which is not part of this corpus |
@@ -2210,8 +2219,8 @@ prose. The commands are given so any reader can repeat them.
 | Legacy illustrations | 6 | `ls diagrams` |
 | z/OS build samples | 8 | `find samples -type f` — out of scope |
 | REST operations | 17 | counted request-mapping annotations across `src/main/java/com/cardemo/controller/` |
-| Controllers / services / repositories / entities / composite keys / enums / DTOs / exceptions | 8 / 21 / 11 / **11** / 3 / 4 / 29 / 9 | `ls` per package, excluding `package-info.java`. An earlier revision of this row listed eight labels against **seven** values, so the entity count silently went missing and every figure after it read against the wrong label |
-| Service sub-packages | 9 | `ls -d src/main/java/com/cardemo/service/*/` — `auth`, `account`, `card`, `transaction`, `billing`, `report`, `admin`, `menu`, `shared`. An earlier revision said eight, omitting `shared` |
+| Controllers / services / repositories / entities / composite keys / enums / DTOs / exceptions | 8 / 21 / 11 / **11** / 3 / 4 / 29 / 9 | `ls` per package, excluding `package-info.java`. Count the labels against the values before reading this row: eight labels and eight figures, so a row of seven values would silently drop the entity count and shift every figure after it onto the wrong label |
+| Service sub-packages | 9 | `ls -d src/main/java/com/cardemo/service/*/` — `auth`, `account`, `card`, `transaction`, `billing`, `report`, `admin`, `menu`, `shared`; `shared` is the one most often left out of that list |
 | Packages carrying `package-info.java` | 26 | `find src/main/java -name package-info.java \| wc -l` |
 | `security` / `observability` members | 4 / 4 | `ls` per package, excluding `package-info.java`. Both were published without a count in [§4.5](#45-diagram-8-package-graph-and-dependency-direction) |
 | Batch jobs / processors / readers / writers | 6 / 5 / 7 / 3 | `ls` per package, excluding `package-info.java` |
@@ -2245,7 +2254,7 @@ neither figure is mistaken for the other:
 | Package | Planned | Implemented | Explanation |
 |---|--:|--:|---|
 | `model.dto` | 16 named DTO types | 29 classes | request and response types are separated per operation, and row, page and masking helper types are split out |
-| `security` | 3 | 4 | a snapshot-token service supports the stateless account-update snapshot contract |
+| `security` | 3 | 4 | a snapshot-token service seals the stateless account-update and card-update snapshots, the list cursors and the card row references |
 | `observability` | 3 | 4 | a templated-URI observation convention keeps metric cardinality bounded |
 | packages carrying `package-info.java` | 14 functional | 26 physical | `service` splits into **nine** sub-packages — eight domain plus `shared` — and `batch` into four, and both `service` and `batch` additionally carry an aggregator document of their own; see [§4.4](#44-modularity-is-still-achieved-at-the-package-level) |
 

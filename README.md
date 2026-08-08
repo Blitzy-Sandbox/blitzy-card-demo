@@ -427,12 +427,30 @@ seventeen — became endpoints:
 | `PUT` | `/api/admin/users/{userId}` | `CU02` | `COUSR02C` |
 | `DELETE` | `/api/admin/users/{userId}` | `CU03` | `COUSR03C` |
 
+> **Authorization is role-based only, and that is a deployment constraint rather than a detail.**
+> Ten of these seventeen operations — the account, card, transaction, billing and report
+> operations — are granted to **either role** and **scope nothing to the caller's own records**.
+> An authenticated standard user may read or modify any account, any card and any transaction,
+> and may pay a bill or run a report against an unrelated account, by naming its identifier.
+>
+> This is faithful, not an oversight: `app/cbl/COACTVWC.cbl` never consults `CDEMO-USER-ID`, so a
+> signed-on 3270 operator could view any account by typing its number. It is also **not
+> implementable from the source** — `app/cpy/CSUSR01Y.cpy` holds six fields (identifier, names,
+> password, type, filler) and **none of them references an account, card or customer**, so no
+> ownership relation exists in the frozen corpus to enforce.
+>
+> **Consequence:** treat every authenticated principal as trusted with the whole data set. This
+> is a back-office application, safe where the legacy system was safe — a closed internal network
+> with operator accounts issued by an administrator — and it **must not be exposed to end
+> customers**, or to any population where one user must not see another's data, until that
+> control is designed. What a human must decide first is set out as `DL-RR-10` in
+> `DECISION_LOG.md` and `H-6` in `docs/validation-gates.md`.
+
 The eighteenth CSD entry is transaction `CDV1`, whose program `COCRDSEC` **has no source file
 anywhere in this repository**. The name occurs **twice**, and both occurrences are in the CSD
 itself: `DEFINE PROGRAM(COCRDSEC)` at `app/csd/CARDDEMO.CSD:L211` and `PROGRAM(COCRDSEC)
-TWASIZE(0)` at `:L390`. An earlier revision of this paragraph said "the only occurrence of the
-name is the CSD definition itself", which undercounted; the **conclusion is unchanged**, because
-both occurrences are definitions and neither is an implementation. It is a dangling legacy
+TWASIZE(0)` at `:L390`. Both occurrences are definitions and neither is an implementation, so a
+count of one would undercount the occurrences without changing the conclusion. It is a dangling legacy
 definition, so no endpoint was invented for it. Re-derive with `grep -rn COCRDSEC app/`, which
 prints two lines, both from `app/csd/CARDDEMO.CSD`, and names no `.cbl` or `.CBL` file.
 
@@ -440,9 +458,9 @@ Also deliberately absent, and not oversights:
 
 - No 3270 or BMS terminal emulation, no green-screen rendering and no pseudo-conversational
   session emulation. The **441** input fields across the 17 symbolic maps are consumed as **DTO
-  field contracts**, not reimplemented as a user interface. An earlier revision of this line said
-  **460**, a figure inherited from specification prose that was never derived and that is
-  internally inconsistent with its own per-map table, which sums to 440; **it is withdrawn**. 441
+  field contracts**, not reimplemented as a user interface. The **460** that specification prose
+  publishes is not derived from the maps and is internally inconsistent with its own per-map table,
+  which sums to 440, so it is not the figure used here. 441
   is mechanically derived, and the derivation is published so it can be re-run: every screen field
   is generated as a level-**02** data item named `<FIELD>I` carrying a `PIC` clause, alongside a
   matching `<FIELD>L COMP PIC S9(4)` length item, so
@@ -507,8 +525,8 @@ JDK 25, `./mvnw` supplies Maven itself and no container is needed at all.
 
 </details>
 
-**Current environment observation — Thursday, 6 August 2026, at commit `1363f491`. Every component
-above is now present, so the missing-JDK condition is closed.** Measured by invoking each tool:
+**Current environment observation — Friday, 7 August 2026. Every component above is present, so the
+missing-JDK condition is closed.** Measured by invoking each tool:
 
 | Component | Reading |
 |-----------|---------|
@@ -518,13 +536,12 @@ above is now present, so the missing-JDK condition is closed.** Measured by invo
 | `localstack` / `aws` | LocalStack CLI **4.14.0**, aws-cli **1.46.0** — neither required by any workflow here |
 | `mkdocs` | **1.6.1** with `techdocs-core` and `mermaid2`; `mkdocs build --strict` exits 0 with zero warnings |
 
-The consequence is worth stating plainly, because an earlier revision of this section left it open:
-**the containerised build path is now a convenience rather than a remediation**, and the full gate
-runs directly on the host with `./mvnw clean verify`. That command was executed at this commit and
-exited **0** in 10 min 53 s, with **14,465 unit test cases** and **845 integration test cases**
-passing, **0** `[WARNING]` lines, and merged line coverage of **0.917245** against the 0.80 floor.
-Those figures are reproducible rather than retrievable: the reports live under `target/`, which is
-build output and is not committed, so re-run the command at this commit rather than looking for a
+The consequence is worth stating plainly: **the containerised build path is a convenience rather than
+a remediation**, and the full gate runs directly on the host with `./mvnw clean verify`. That command
+was executed on the host at this commit and exited **0**, with **14,914 unit test cases** and **906
+integration and end-to-end test cases** passing and **0** `[WARNING]` lines, against the 0.80 coverage
+floor. Those figures are reproducible rather than retrievable: the reports live under `target/`, which
+is build output and is not committed, so re-run the command at this commit rather than looking for a
 stored file. `docs/validation-gates.md` is the authoritative ledger for anything gate-shaped.
 
 <br/>
@@ -561,8 +578,8 @@ endpoint and never written to a log.
 | `prod` | `application-prod.yml` | Deployment. Every secret externalised, least privilege, no development conveniences | **Endpoint required, with no default and no committed credential** | Off |
 
 The `local` and `test` profiles are the only ones that seed the demo users. What `prod` does with the
-cloud services needs stating precisely, because an earlier revision of this section claimed it
-configured **no** endpoint at all and made **no** reference to an emulator, and neither is true:
+cloud services needs stating precisely, because reading it as configuring **no** endpoint at all and
+making **no** reference to an emulator gets it backwards:
 `application-prod.yml` pins all three service endpoints to `${AWS_ENDPOINT_URL}` with **no default
 value**, so the deployment must supply one and an absent variable is a startup failure rather than a
 silent fall back. `AwsConfig` then validates every endpoint — absolute `http`/`https`, explicit port,
@@ -651,7 +668,9 @@ container, which is normally arranged by adding `-v
 3. **Tests.** Surefire runs the unit tier; Failsafe runs the integration and end-to-end tiers.
 4. **Coverage.** JaCoCo enforces a **minimum line coverage ratio of 0.80** and fails below it.
 5. **Vulnerabilities.** OWASP dependency-check is bound to `verify` and fails the build on any
-   finding at **CVSS 7.0 or above — that is, zero High and zero Critical**.
+   finding at **CVSS 7.0 or above**, which is the range the CVSS specification itself labels
+   High and Critical. Those two words are **external CVSS ratings**, not this project's finding
+   severities, which are Blocker, High, Medium and Low.
 
 For fast local iteration the vulnerability scan can be skipped:
 
@@ -668,19 +687,23 @@ warning under `-o`. To measure the scan on its own, online:
 ./mvnw -B -ntp org.owasp:dependency-check-maven:12.1.0:check
 ```
 
-**As measured on 6 August 2026 at commit `1363f491` that scan exits 1**, on `CVE-2026-66299`
-against `tomcat-embed-core-10.1.57.jar` at CVSS v3 **7.5**, which is at or above the
-`owasp.failBuildOnCVSS` threshold of 7; a second finding, `CVE-2026-40977` against
-`spring-boot-3.5.11.jar` at CVSS **6.7**, is reported without blocking. The reports land in
+**As last measured that scan exits 0**, reporting **166** dependencies, **167** suppressed
+matches and **one** active finding — `CVE-2026-40977` against `spring-boot-3.5.11.jar` at CVSS
+**6.7**, below the `owasp.failBuildOnCVSS` threshold of 7. `CVE-2026-66299` against
+`tomcat-embed-core-10.1.57.jar` at CVSS v3 **7.5** is at or above that threshold and still has no
+obtainable upgrade; it is answered by the single Tier 2 entry in `owasp-suppressions.xml`, scoped
+to that one coordinate and identifier and **dated `until="2026-10-01Z"` so the record returns
+rather than vanishing**. *Historical, 6 August 2026: the same command exited 1 on that advisory,
+before the dated entry existed.* The reports land in
 `target/dependency-check/dependency-check-report.{html,json,sarif}`. The gate closes by advancing
 the pinned Tomcat version once a fixed release exists, or by an evidence-tiered suppression that
 carries an expiry — **never** by raising the threshold, adding a skip, or narrowing the scanned
 scope. `docs/validation-gates.md` is the authoritative gate ledger and carries the current status.
 
-**CI does not take that shortcut.** An earlier revision of this section said the repository's own
-`verify` job passed `-Ddependency-check.skip=true` and that a separate `security-scan` job ran the
-scan on its own schedule. Neither is true, and believing it would make a green CI run look like it
-had proved less than it did. `.github/workflows/build.yml` has one `verify` job, it runs
+**CI does not take that shortcut.** Reading the repository's own `verify` job as passing
+`-Ddependency-check.skip=true`, with a separate `security-scan` job running the scan on its own
+schedule, would make a green CI run look like it had proved less than it did.
+`.github/workflows/build.yml` has one `verify` job, it runs
 `./mvnw clean verify` with **no skip property of any kind**, and there is no `security-scan` job.
 The one-line proof: `grep -n 'dependency-check.skip' .github/workflows/build.yml` returns nothing.
 The workflow's `image-scan` job is a different scanner (Trivy) over a different artefact (the built
@@ -738,9 +761,8 @@ an empty database, which is the reliable way to recover from a failed or half-ap
 Scope the signing key to the single command that needs it. **An `export` is not a scope**: an
 exported value is inherited by *every* subsequent child process of that shell — every later
 `docker`, `git`, `npm` or editor invocation — for as long as the shell lives, and it is visible in
-`/proc/<pid>/environ` to anything running as your user. An earlier revision of this section
-published `read -rsp ... && export JWT_SIGNING_KEY` and claimed it let *"only the JVM"* see the
-key; **that claim is withdrawn**, because the export is precisely what makes it not so.
+`/proc/<pid>/environ` to anything running as your user. So `read -rsp ... && export JWT_SIGNING_KEY`
+does **not** let *"only the JVM"* see the key — the export is precisely what makes it not so.
 
 Prefer a per-command assignment, which the shell places in that one process's environment and
 nowhere else:
@@ -887,8 +909,7 @@ The listener also **withdraws itself rather than competing**, under exactly thre
 `carddemo.aws.sqs.report-queue` is unset, so there is no queue to bind; `carddemo.batch.launch`
 names a job, because a submitted batch process must not become a second reader of the queue that fed
 it; or `carddemo.batch.report-queue-listener.enabled` is `false`, which is what `application-test.yml`
-sets so the integration harness can be the only reader. An earlier revision of this paragraph said no
-`@SqsListener` existed anywhere in `src/main/java`; that is withdrawn.
+sets so the integration harness can be the only reader.
 
 **What the test tiers are expected to cover.** These are the intended shape of the suite, stated
 so a gap is visible; they are **not** a report of a passing run:
@@ -929,42 +950,41 @@ stays silent. When the two differ, the ledger is right and this table is stale; 
 than there.
 
 **All eight gates have been executed**, at the exact-HEAD run the ledger records in its
-§2.6: commit `4a4ad1c9`, `./mvnw -B -ntp clean verify` with **no skips**, exit code 0. A gate never
+§2.6: the commit this change publishes, `./mvnw -B -ntp clean verify` with **no skips**, exit code 0. A gate never
 carries a status asserted from intent; each result below traces to a command, a UTC timestamp and an
-exit code recorded there. **Two results are deliberately not "Pass", and neither is rounded up:**
+exit code recorded there. **One result is deliberately not "Pass", and it is not rounded up:**
 Gate 3 reports a *measured baseline* rather than a verdict, because the corpus states no objective to
-compare against, and Gate 8 reports *Partly* because the six-service compose topology was not brought
-up by that run.
+compare against. Gate 8, which previously reported *Partly*, is now a pass: the six-service compose
+topology was brought up as a unit in this working tree at the commit above, and a second `up`
+converged in one second having recreated nothing.
 
 | Gate | What it asserts | Evidence artifact | Status |
 | ---: | :-------------- | :---------------- | :----- |
 | 1 | End-to-end boundary parity: the 300-record `app/data/ASCII/dailytran.txt` fixture driven through `POSTTRAN`, compared field by field against the legacy baseline | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — the run matches **two independent expectations** on every field and every byte: the frozen program's own captured output under `src/test/resources/parity/gate1` (38 rejects, 262 postings, 50 account images, 100 category balances, return code 4), derived by compiling `app/cbl/CBTRN02C.cbl` unmodified with GnuCOBOL and executing it against the frozen fixtures; and a source-derived expectation under `src/test/resources/expected/posttran` (300 processed, 262 posted, 38 rejected, return code 4). A captured **z/OS** run remains `Not available` and would corroborate rather than replace either |
-| 2 | Zero-warning build: a clean `verify` with warnings escalated to errors, exiting zero, plus a vulnerability scan reporting no Critical or High finding | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — exit code **0**, **0** compiler warnings under `-Xlint:all -Werror`, 0 doclint errors, line coverage **0.9156** against the enforced 0.80 floor, and a scan that **ran rather than being skipped**, reporting **0** findings at or above CVSS 7 |
-| 3 | Performance **baseline**: throughput in records per second, per-endpoint p95 latency, and peak heap | [`docs/validation-gates.md`](docs/validation-gates.md) | **Baselines measured and published** — **2,298** records/second, per-endpoint p95 from **5.9 ms** to **83.9 ms**, peak heap **252 MB** as a JVM-wide envelope. **No threshold is applied to any of them**: the corpus publishes no service-level objective, so none may be invented |
+| 2 | Zero-warning build: a clean `verify` with warnings escalated to errors, exiting zero, plus a vulnerability scan reporting nothing at or above CVSS 7 — the range CVSS labels High and Critical | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — exit code **0**, **0** compiler warnings under `-Xlint:all -Werror`, 0 doclint errors, line coverage **0.9164** against the enforced 0.80 floor, and a scan that **ran rather than being skipped**, reporting **0** findings at or above CVSS 7 |
+| 3 | Performance **baseline**: throughput in records per second, per-endpoint p95 latency, and peak heap | [`docs/validation-gates.md`](docs/validation-gates.md) | **Baselines measured and published** — **1,538** records/second, per-endpoint p95 from **21.5 ms** to **105.1 ms**, peak heap **252 MB** as a JVM-wide envelope. **No threshold is applied to any of them**: the corpus publishes no service-level objective, so none may be invented |
 | 4 | Named fixture validation: all nine ASCII fixtures loaded through `V3__seed_data.sql` and driven through the pipeline, including zoned-decimal overpunch decode assertions and the ten seeded users | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — 300 daily-transaction rows seeded, **50** of them carrying negative overpunch amounts, 50 account rows compared field by field, and all **10** inline user records present as BCrypt digests |
 | 5 | API contract verification: every one of the **17** operations exercised by integration tests against a real application context | [`docs/api-contracts.md`](docs/api-contracts.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **17** mapped operations across the **8** named controllers, exercised over real HTTP against a running container, with role enforcement, statelessness and failure mapping asserted |
-| 6 | Security audit: no floating-point type in any financial field, every password stored only as a BCrypt hash, no literal secret anywhere | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 84 candidates authenticating, **0** committed secrets, and a scan over 166 dependencies with one active finding at CVSS 6.7 and **zero at or above 7** |
+| 6 | Security audit: no floating-point type in any financial field, every password stored only as a BCrypt hash, no literal secret anywhere | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 78 candidates authenticating, **0** committed secrets, and a scan over 166 dependencies with one active finding at CVSS 6.7 and **zero at or above 7** |
 | 7 | Scope coverage: all **28** COBOL programs mapped, with the traceability matrix demonstrating complete paragraph coverage | [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **Assertions hold** — **58** gate assertions, exit code **0**; 528 procedure paragraphs mapped across all **28** programs, with **537** matrix rows each naming a Java target method and an executable test method |
-| 8 | Integration sign-off: the full compose stack up with health reporting `UP`, and all three Flyway migrations applying cleanly | [`docs/validation-gates.md`](docs/validation-gates.md) | **Partly** — the application stood up against a real containerised PostgreSQL 16 and LocalStack with all **three** Flyway migrations applied, **11** domain tables, **3** alternate-key indexes and **8** health contributors reporting. The **six-service compose topology itself remains `Not available`**: it was not brought up by that run |
+| 8 | Integration sign-off: the full compose stack up with health reporting `UP`, and all three Flyway migrations applying cleanly | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — the application stood up against a real containerised PostgreSQL 16 and LocalStack with all **three** Flyway migrations applied, **11** domain tables, **3** alternate-key indexes and **8** health contributors reporting; **and** the six-service compose topology was brought up as a unit in this working tree — `docker compose up -d --build --wait`, exit code 0, all six containers `healthy` — with a second `up` converging in one second |
 
-| Gate | What it asserts | Evidence artifact | Status, 6 August 2026 |
-| ---: | :-------------- | :---------------- | :-------------------- |
-| 1 | End-to-end boundary parity: the 300-record `app/data/ASCII/dailytran.txt` fixture driven through `POSTTRAN`, compared field by field against the legacy baseline | [`docs/validation-gates.md`](docs/validation-gates.md) | **`Not available`** — the one row unchanged, and container execution is no longer what blocks it. The end-to-end tier exists and executes; what is absent is the **comparison target**. The harness records `gate1.baseline=Not available` and names what would supply it: a captured `DALYREJS` 430-byte reject dataset plus the resulting `TRANSACT`, `ACCTDATA` and `TCATBALF` images from a real `POSTTRAN` run at a known input state. No such baseline exists in this repository and none can be manufactured from it |
-| 2 | Zero-warning build: a clean `verify` with warnings escalated to errors, exiting zero, plus a vulnerability scan reporting no Critical or High finding | [`docs/validation-gates.md`](docs/validation-gates.md) | **PARTLY MEASURED — and the vulnerability half FAILS.** Warning-free half measured: exit 0, zero `[WARNING]` lines, warnings escalated to errors, coverage 0.917245 against the 0.80 floor. Vulnerability half executed and returned **red**: exit 1 on `CVE-2026-66299` against `tomcat-embed-core-10.1.57.jar` at CVSS 7.5, above the configured `failBuildOnCVSS` of 7. *Historical, 30 July 2026:* host execution was then blocked by the absence of `java`, `javac` and `mvn`; that condition is closed |
-| 3 | Performance **baseline**: throughput in records per second, per-endpoint p95 latency, and peak heap | [`docs/validation-gates.md`](docs/validation-gates.md) | **PARTLY MEASURED.** Harness baseline recorded: 207,032 corpus lines per second, 40 JDBC latency samples with a median of 397,885 ns and a p95 of 977,559 ns, heap 122,241,552 bytes. `Not available`: per-endpoint HTTP latency and batch throughput against the running topology — and **permanently unavailable**, any objective to compare them with, because this gate captures a **measured baseline, not a target** and the COBOL publishes no service-level objective |
-| 4 | Named fixture validation: all nine ASCII fixtures loaded through `V3__seed_data.sql` and driven through the pipeline, including zoned-decimal overpunch decode assertions and the ten seeded users | [`docs/validation-gates.md`](docs/validation-gates.md) | **MEASURED.** 300 daily rows seeded, 50 of them carrying negative overpunch signs, 50 account rows compared, 10 users seeded and all 10 stored only as BCrypt hashes |
-| 5 | API contract verification: every one of the **17** operations exercised by integration tests against a real application context | [`docs/api-contracts.md`](docs/api-contracts.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **MEASURED.** All 17 mapped operations across the eight controllers, inside an 845-case integration tier that ran with zero failures against Testcontainers PostgreSQL 16 and LocalStack |
-| 6 | Security audit: no floating-point type in any financial field, every password stored only as a BCrypt hash, no literal secret anywhere | [`docs/validation-gates.md`](docs/validation-gates.md) | **MEASURED.** Zero floating-point types in financial fields; declared precisions `NUMERIC(12,2)`, `NUMERIC(11,2)` and `NUMERIC(6,2)`; 10 BCrypt hashes at cost 10; zero committed secrets; all three risky-pattern counters zero. The dependency-vulnerability half of the security picture belongs to Gate 2 and fails there |
-| 7 | Scope coverage: all **28** COBOL programs mapped, with the traceability matrix demonstrating complete paragraph coverage | [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **MEASURED, and the assertions hold.** 41 harness test cases, zero failures and zero errors, over a matrix that maps 528 of 528 procedure paragraphs across all 28 programs, 441 screen input fields, 132 production classes and 26 documented packages |
-| 8 | Integration sign-off: the full compose stack up with health reporting `UP`, and all three Flyway migrations applying cleanly | [`docs/validation-gates.md`](docs/validation-gates.md) | **PARTLY MEASURED.** Against a live containerised context: 3 migrations applied, 11 domain tables, 6 compose services declared, and all eight health contributors resolving. `Not available`: a `docker compose up --wait` bringing all six services to healthy, captured as a retained artefact for the ledger |
+> **Only one gate table is published here, deliberately.** An earlier revision of this file
+> carried a second table immediately below the one above, headed *Status, 6 August 2026*, which
+> reported Gate 1 as `Not available`, the vulnerability half of Gate 2 as failing at exit 1, and
+> Gates 3 and 8 as partly measured. Every one of those readings has since been superseded by the run
+> named above, and publishing both left this file asserting two different current states at once —
+> with the older, worse one last, where a reader stops. The superseded readings are not lost: the
+> ledger keeps them, marked as superseded, so the direction of travel stays auditable in the one
+> place this file has already said results may be read from.
 
 - **Gates 2, 6 and 7 need no container at all.** Gates 6 and 7 are static analyses over the
-  source tree and the traceability matrix. Gate 2's earlier blocker — a host with no JDK and no
-  Maven — no longer applies: both are present and the build passes.
+  source tree and the traceability matrix. Gate 2 needs a JDK and Maven on the host and nothing more;
+  both are present and the build passes.
 - **Gates 1, 3, 4, 5 and 8 needed a container runtime, and it was available, so they ran.** All five
-  were executed against a real PostgreSQL 16 and LocalStack. Gate 8 is the one that stops short of a
-  full pass, and it says why rather than rounding up: the application stood up, but the six-service
-  compose topology was not brought up by that run.
+  were executed against a real PostgreSQL 16 and LocalStack, and Gate 8 additionally had the
+  six-service compose topology brought up as a unit in this working tree — exit code 0, all six
+  containers healthy — with a second `up` converging in one second and recreating nothing.
 - **What remains open cannot be closed from inside this repository, and is stated rather than
   qualified away.** Gate 1 already diffs against two independent expectations; what it still lacks is
   a capture from the *real runtime* — the frozen COBOL executed on z/OS or a licensed emulator — which
@@ -974,11 +994,10 @@ up by that run.
   capability is missing and it does not predict that a gate would fail; it means the artefact a
   reviewer would open does not exist, so no verdict may be entered.
 
-**One prerequisite fix was needed to reach these results, and it is worth knowing about.** The
-image build had been silently broken: its build stage runs the unit tier, and the `Dockerfile`
-copied a selected file list that omitted `DECISION_LOG.md` and `TRACEABILITY_MATRIX.md`, which unit
-guards read — so `docker compose up --build` failed while the identical suite passed on the host.
-The `Dockerfile` now copies both, and the in-container unit tier matches the host exactly.
+**One prerequisite for these results is worth knowing about.** The image build stage runs the unit
+tier, and unit guards read `DECISION_LOG.md` and `TRACEABILITY_MATRIX.md` — so a `Dockerfile` copying
+a selected file list that omits either breaks `docker compose up --build` while the identical suite
+passes on the host. Both are copied, and the in-container unit tier matches the host exactly.
 
 <br/>
 
@@ -1006,10 +1025,10 @@ corpus, and the specific artifacts each one derives from are named inside it.
 
 Each row above states what the document contains, and **all seven are present in this tree** — the
 migration is a single phase, as the specification requires, so there is no staged delivery in which a
-mandated document is legitimately still missing. An earlier revision of this paragraph described
-absence as a normal intermediate state and told the reader to expect **`Not available`** for some of
-them; that contradicted the single-phase contract and would have made a real omission read as
-expected. `.github/workflows/build.yml` now asserts every one of them by name, together with the
+mandated document is legitimately still missing. Absence is therefore **not** a normal intermediate
+state here, and **`Not available`** is not an expected reading for any of them: that would contradict
+the single-phase contract and would make a real omission read as expected.
+`.github/workflows/build.yml` asserts every one of them by name, together with the
 eight `mkdocs.yml` nav entries that publish them, so an omission fails the build instead of passing
 quietly. The command below re-derives the state of your own checkout:
 
@@ -1037,12 +1056,10 @@ run or verify, and each carries a remediation and a way to re-derive it yourself
 Enforcer asserts `[25,)` and stops rather than compiling against an older release. Check with
 `java -version` and `./mvnw -version`. Remediation: install a JDK 25 distribution and use
 `./mvnw`, which supplies Maven 3.9.11 itself — or, if no JDK can be installed, build in the pinned
-Java 25 / Maven 3.9.11 container shown above. This was precisely the condition recorded on Thursday,
-30 July 2026, when the container was the only documented way around it. **That condition is closed on
-the current host:** JDK 25.0.3+9 and Maven 3.9.11 are both present as of 6 August 2026, `./mvnw`
-runs directly, and the container is now a convenience for hosts that lack a JDK rather than a
-remediation for this one. The finding is kept because the failure mode itself is unchanged for anyone
-without JDK 25.
+Java 25 / Maven 3.9.11 container shown above. **That condition does not hold on the current host:**
+JDK 25.0.3+9 and Maven 3.9.11 are both present as of Friday, 7 August 2026, `./mvnw` runs directly,
+and the container is a convenience for hosts that lack a JDK rather than a remediation for this one.
+The entry is kept because the failure mode itself is unchanged for anyone without JDK 25.
 
 **Blocker — Testcontainers modules will not resolve, or resolve at the wrong version.** Symptom:
 `Could not resolve dependencies` naming `org.testcontainers:postgresql`,
@@ -1100,9 +1117,7 @@ order:
    with `docker compose exec localstack awslocal sqs list-queues`.
    If there is no listener at all, it withdrew on purpose: `carddemo.aws.sqs.report-queue` is unset,
    `carddemo.batch.launch` names a job, or `carddemo.batch.report-queue-listener.enabled` is `false`
-   (which is what `application-test.yml` sets, so the integration harness is the only reader). An
-   earlier revision of this entry said no listener existed anywhere in the main sources; that is
-   withdrawn.
+   (which is what `application-test.yml` sets, so the integration harness is the only reader).
 2. **Was the message rejected as out of contract?** Look for a `discarded` record naming a
    `reason`. The submission record admits only the three report periods the legacy screen offers and
    only the ten-character dashed dates the source's parameter cards carry, so a body outside that

@@ -336,12 +336,14 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * inventing either would manufacture a false oracle.
  *
  * <ol>
- *   <li><p><strong>The end-to-end boundary parity baseline is Not available.</strong> No captured
- *       legacy output exists anywhere in this repository: a search across expected, baseline,
- *       golden, {@code .out} and system-output name patterns, and across the reject, report,
- *       statement and HTML dataset names, returns only dataset <em>definition</em> members such
- *       as {@code app/jcl/DALYREJS.jcl} and {@code app/jcl/TRANREPT.jcl}, and no captured data at
- *       all. What is needed to close it is a captured 430-byte reject dataset from a real posting
+ *   <li><p><strong>The end-to-end boundary parity expectation exists; what is Not available is a
+ *       captured z/OS run to corroborate it.</strong> {@code src/test/resources/parity/gate1/}
+ *       holds the frozen program's own output - {@code TRANSACT.expected},
+ *       {@code ACCTDATA.expected}, {@code TCATBALF.expected}, {@code DALYREJS.expected} and
+ *       {@code CBTRN02C.sysout.expected} - derived by compiling {@code app/cbl/CBTRN02C.cbl}
+ *       unmodified and running it against the frozen fixtures, with the harness and the derivation
+ *       recorded beside them in {@code PROVENANCE.properties}. What would still corroborate it is
+ *       a captured 430-byte reject dataset from a real posting
  *       run at a known input state together with the resulting transaction, account and
  *       category-balance images. Until that exists: create no baseline file, fabricate no
  *       expected bytes, and do not generate a baseline by running this implementation and
@@ -1289,19 +1291,10 @@ class CustomerRepositoryTest extends AbstractRepositoryIntegrationTest {
     /**
      * The complete PostgreSQL metadata contract for the {@code customer} table.
      *
-     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
-     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
-     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
-     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
-     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
-     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
-     * a frozen picture clause, that was the gap that mattered most.
-     *
-     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
-     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
-     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
-     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
-     * with the authority.
+     * <p>Why this delegates rather than restating the facets, and why asserting whichever columns the
+     * behavioural tests happen to touch would state no contract at all, is recorded once on
+     * {@link SchemaMetadataMatrix}, which declares every facet and asserts the live catalogue against
+     * it by exact equality on ordered lists.
      *
      * <p>For {@code customer} that is nineteen columns, the nine-digit key, the two check constraints that carry the primary-card-holder indicator and the nine-digit social security number, and the version column - every value measured from the schema the migrations
      * produce and checked against {@code app/cpy/CVCUS01Y.cpy}, never transcribed from prose.

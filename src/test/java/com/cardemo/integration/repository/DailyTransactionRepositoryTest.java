@@ -125,11 +125,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * so that a single reject bearing 103 is written, the expiry comparison being a string comparison against
  * the first ten characters of the <em>originating</em> timestamp through the misspelled
  * {@code ACCT-EXPIRAION-DATE} field whose misspelling is part of the contract, the posting order at
- * {@code :L424-L465}, the sign branch at {@code :L545-L560}, reject code 109 at {@code :L556} which is
+ * {@code :L424-L444}, the sign branch at {@code :L545-L560}, reject code 109 at {@code :L556} which is
  * assigned on the account-rewrite failure path inside the already-validated posting routine and so is never
  * consumed as a reject outcome, the rule that return code 4 is set if and only if the reject count exceeds
  * zero at {@code :L229-L231}, the abend contract at {@code :L707-L711} with abend code 999, and the
- * four-character status renderer at {@code :L714-L731} all belong to the batch tiers. So does the read-only
+ * four-character status renderer at {@code :L714-L727} all belong to the batch tiers. So does the read-only
  * pre-flight derived from {@code app/cbl/CBTRN01C.cbl:L29-L58}, whose verb inventory over six
  * {@code SELECT} statements is {@code OPEN}, {@code READ}, {@code CLOSE} and {@code DISPLAY} with zero
  * {@code WRITE}, {@code REWRITE} and {@code DELETE}. They are cited here because they are why the schema
@@ -311,19 +311,22 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <h2>Two disclosures, per Rule 1 Clause F</h2>
  *
- * <p><strong>First: the boundary-parity baseline is Not available.</strong> No captured mainframe output is
- * held anywhere in this repository; a sweep for expected, baseline and golden artefacts, for {@code .out}
- * and system-output captures, and for the reject, report and statement datasets by name returns only
- * dataset <em>definition</em> members and zero captured data. What would be needed is a captured 430-byte
- * reject dataset together with the resulting transaction, account and category-balance images from a real
- * posting run at a known input state, and it would corroborate the source-derived expectation rather than
- * replace it.
+ * <p><strong>First: the boundary-parity expectation exists; what is Not available is a captured z/OS run to
+ * corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own output -
+ * {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected},
+ * {@code DALYREJS.expected} and {@code CBTRN02C.sysout.expected} - derived by compiling
+ * {@code app/cbl/CBTRN02C.cbl} unmodified and running it against the frozen fixtures, with the harness and
+ * the derivation recorded beside them in {@code PROVENANCE.properties}. What would still be needed is a
+ * captured 430-byte reject dataset together with the resulting transaction, account and category-balance
+ * images from a real posting run at a known input state, and it would corroborate the source-derived
+ * expectation rather than replace it.
  *
  * <p>This class still creates no baseline artefact, fabricates no expected bytes and asserts
- * <strong>no reject count and no posted count</strong> - but for a narrower reason than an earlier revision
- * gave. That revision held that "a hand-simulated one is not an oracle: a stateless model over these fixtures
+ * <strong>no reject count and no posted count</strong> - but for a narrow reason of scope, and <em>not</em>
+ * because "a hand-simulated one is not an oracle: a stateless model over these fixtures
  * yields a different reject total from a stateful one, which proves the number is model-sensitive rather than
- * authoritative". That is withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in {@code REWRITE FD-ACCTFILE-REC}
+ * authoritative". That reasoning does not hold: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+ * {@code REWRITE FD-ACCTFILE-REC}
  * at {@code app/cbl/CBTRN02C.cbl:561} and a VSAM {@code REWRITE} replaces the record in the cluster, so the
  * stateless reading is a misreading rather than a second model. The expectation IS derivable and is derived,
  * by {@code com.cardemo.e2e.PostingParityOracle} into {@code src/test/resources/expected/posttran}. The reason
@@ -356,17 +359,6 @@ class DailyTransactionRepositoryTest extends AbstractRepositoryIntegrationTest {
      */
     @Autowired
     private JdbcTemplate jdbcTemplate;
-
-    /**
-     * Sole constructor, invoked by the test framework.
-     *
-     * <p>Declared explicitly so the class advertises no wider construction surface than it needs. There is
-     * nothing to do here: the repository and the template are injected after construction, and the
-     * container is started by the harness before any instance exists.
-     */
-    DailyTransactionRepositoryTest() {
-        super();
-    }
 
     /**
      * Returns an ingestion ordinal that no seeded row occupies.

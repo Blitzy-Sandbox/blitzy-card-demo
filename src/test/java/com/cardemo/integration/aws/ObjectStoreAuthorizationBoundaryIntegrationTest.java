@@ -356,7 +356,7 @@ class ObjectStoreAuthorizationBoundaryIntegrationTest extends AbstractAwsIntegra
     }
 
     /**
-     * Finding M-11, severity Major: what the emulator does not refuse, the application refuses.
+     * Finding M-11, severity High: what the emulator does not refuse, the application refuses.
      *
      * <p>The group above measures the gap - a principal with an arbitrary key can write into the batch input
      * bucket, which is where {@code app/jcl/POSTTRAN.jcl} reads {@code DALYTRAN} from. This group is the

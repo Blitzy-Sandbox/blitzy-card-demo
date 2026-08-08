@@ -62,7 +62,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  * fourteen widths</strong>, differing only in the {@code TRAN-} versus {@code DALYTRAN-} prefix. They are
  * tested together because their being twins is itself the contract: the daily posting job reads a
  * {@code DALYTRAN} record and moves thirteen fields into a {@code TRAN} record
- * ({@code app/cbl/CBTRN02C.cbl:L424-L465}), which only works if the two layouts correspond exactly. Testing
+ * ({@code app/cbl/CBTRN02C.cbl:L424-L444}), which only works if the two layouts correspond exactly. Testing
  * them apart would let the two drift while both test classes still passed.
  *
  * <h3>The offset map, and why it is load-bearing</h3>
@@ -181,7 +181,7 @@ class TransactionTwinLayoutTest {
                     .as("CVTRA05Y and CVTRA06Y differ only in the TRAN- versus DALYTRAN- prefix, so the "
                             + "Java property names are identical - which is precisely what lets the "
                             + "posting job move thirteen fields across at "
-                            + "app/cbl/CBTRN02C.cbl:L424-L465")
+                            + "app/cbl/CBTRN02C.cbl:L424-L444")
                     .containsAll(SHARED_FIELDS);
             assertThat(fromDaily).containsAll(SHARED_FIELDS);
         }
@@ -256,7 +256,7 @@ class TransactionTwinLayoutTest {
             assertThat(posted.getMerchantZip()).isEqualTo(input.getMerchantZip());
             assertThat(posted.getCardNumber()).isEqualTo(input.getCardNumber());
             assertThat(posted.getOrigTs())
-                    .as("app/cbl/CBTRN02C.cbl:L424-L465 copies the ORIGINATING timestamp across verbatim "
+                    .as("app/cbl/CBTRN02C.cbl:L424-L444 copies the ORIGINATING timestamp across verbatim "
                             + "and then generates a fresh processing timestamp; the originating value is "
                             + "never regenerated")
                     .isEqualTo(input.getOrigTs());

@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : UserListServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
@@ -15,7 +15,7 @@
  *               one and ten alone, the exact key browse start left by the
  *               commented out GTEQ at :592, and the five distinct edge of
  *               data literals.
- * Source      : app/cbl/COUSR00C.cbl    (695 lines, 16 paragraphs)
+ * Source      : app/cbl/COUSR00C.cbl    (695 lines, 16 own paragraph labels)
  *               app/cpy/CSUSR01Y.cpy    (SEC-USER-DATA, 80 bytes, key 8)
  *               app/cpy/COCOM01Y.cpy    (CARDDEMO-COMMAREA, no paging fields)
  *               app/cpy/CSMSG01Y.cpy    (CCDA-MSG-INVALID-KEY)
@@ -24,7 +24,7 @@
  *               app/cbl/CBACT04C.cbl    (the canonical banner form, L1-L21)
  *               app/jcl/DUSRSECJ.jcl    (KEYS(8,0) RECORDSIZE(80,80))
  *               app/csd/CARDDEMO.CSD    (CU00 -> COUSR00C) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -39,7 +39,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -401,11 +401,9 @@ class UserListServiceTest {
         this.pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
     }
 
-    // ------------------------------------------------------------------------
     // Fixtures and helpers. Every one of these is deterministic: no clock is
     // consulted, no randomness is drawn and no map iteration order is relied
     // upon, which is what clause A demands of a paging test in particular.
-    // ------------------------------------------------------------------------
 
     /**
      * Builds the bean with a chosen page size, so that the constructor floor can be probed without
@@ -729,9 +727,7 @@ class UserListServiceTest {
         return List.copyOf(keys);
     }
 
-    // ========================================================================
     // Phase 1 - the page arity of ten, and where the pagination state lives.
-    // ========================================================================
 
     /**
      * The ten row page and the eight digit counter, both taken straight from the source's declarations.
@@ -895,10 +891,8 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 2 - the four hundred and eighty bytes of dead work storage, and the
     // field contract the live path uses instead.
-    // ========================================================================
 
     /**
      * {@code 01 WS-USER-DATA} with its {@code 02 USER-REC OCCURS 10 TIMES} at
@@ -1014,16 +1008,15 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 3 - POPULATE-USER-DATA is a ten branch unrolled EVALUATE, and two of
     // the ten branches are asymmetric.
-    // ========================================================================
 
     /**
      * {@code POPULATE-USER-DATA} at {@code app/cbl/COUSR00C.cbl:384-:437} moves four fields per row -
      * identifier, first name, last name and type - as four separate screen fields, fully unrolled across ten
      * {@code WHEN} branches for forty {@code MOVE} statements. The Java collapses that into one loop, a
-     * mechanism substitution owed an entry in the {@code DECISION_LOG.md}, with both asymmetries kept explicit.
+     * mechanism substitution held as {@code DL-MS-05} in the {@code DECISION_LOG.md}, with both
+     * asymmetries kept explicit.
      *
      * <p><strong>Correction to the written plan.</strong> The plan states that {@code WHEN 1} alone captures
      * a boundary key and that no other branch captures anything. Inspection of {@code :433-:435} shows
@@ -1130,10 +1123,8 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 4 - the conditional pre-read, the guarded clear, the eleventh
     // look-ahead probe and the asymmetric page-number increment.
-    // ========================================================================
 
     /**
      * The four load bearing behaviours of {@code PROCESS-PAGE-FORWARD} at
@@ -1396,9 +1387,7 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 5 - selection: the first non-blank selector wins, silently.
-    // ========================================================================
 
     /**
      * {@code PROCESS-ENTER-KEY} at {@code app/cbl/COUSR00C.cbl:149-:235}.
@@ -1668,10 +1657,8 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 6 - the browse start: a commented-out option and a CONTINUE that
     // continues.
-    // ========================================================================
 
     /**
      * {@code STARTBR-USER-SEC-FILE} at {@code app/cbl/COUSR00C.cbl:586-:614}, with its three verified
@@ -1884,9 +1871,7 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 7 - the message vocabulary, byte for byte.
-    // ========================================================================
 
     /**
      * Five distinct edge of data sentences plus one lookup failure sentence repeated at three sites.
@@ -2081,9 +2066,7 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 8 - field contracts and the sixteen-way paragraph correspondence.
-    // ========================================================================
 
     /**
      * The field contract and the paragraph map.
@@ -2263,10 +2246,8 @@ class UserListServiceTest {
         }
     }
 
-    // ========================================================================
     // Phase 9 - hostile input, and the clauses of Rule 1 that this bean can
     // actually be held to.
-    // ========================================================================
 
     /**
      * Untrusted input and the standards of Rule 1, clause by clause, asserted where this bean is the thing

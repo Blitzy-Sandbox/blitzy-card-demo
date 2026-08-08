@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : UserSecurityRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -10,7 +10,7 @@
  *               (app/catlg/LISTCAT.txt:L3883 DATA-component attribute line;
  *               app/jcl/DUSRSECJ.jcl:L65-L66 KEYS(8,0) RECORDSIZE(80,80));
  *               record layout app/cpy/CSUSR01Y.cpy:L17-L23 @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -25,7 +25,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 
@@ -475,13 +475,13 @@ public interface UserSecurityRepository extends JpaRepository<UserSecurity, Stri
     /**
      * Reads forward from a user identifier, inclusive, in ascending key order.
      *
-     * <p>This interface used to publish only the
-     * page-indexed finder above, so {@code UserListService} could check that an echoed key existed but could
-     * not position on it, and positioned by an ordinal derived from the submitted page number instead. Three
-     * consequences followed, all of them behaviour the source does not have: an insert or a delete ahead of
-     * the browse shifted every later page, so the same page number returned different rows; a caller that
-     * echoed a key inconsistent with its page number got the page number's rows and not the key's; and a
-     * large page number produced a correspondingly large {@code OFFSET} scan, because that is how a page
+     * <p>Publishing only the
+     * page-indexed finder above leaves {@code UserListService} able to check that an echoed key exists but not
+     * to position on it, so it positions by an ordinal derived from the submitted page number instead. Three
+     * consequences follow, all of them behaviour the source does not have: an insert or a delete ahead of
+     * the browse shifts every later page, so the same page number returns different rows; a caller that
+     * echoes a key inconsistent with its page number gets the page number's rows and not the key's; and a
+     * large page number produces a correspondingly large {@code OFFSET} scan, because that is how a page
      * index is executed.
      *
      * <p>This finder is the forward half of the remedy and reproduces {@code EXEC CICS STARTBR} followed by

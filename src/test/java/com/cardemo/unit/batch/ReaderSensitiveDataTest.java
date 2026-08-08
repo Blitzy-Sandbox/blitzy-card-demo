@@ -169,10 +169,10 @@ class ReaderSensitiveDataTest {
     /** {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}. */
     private static final BigDecimal CREDIT_LIMIT = new BigDecimal("2020.00");
 
-    /** {@code ACCT-ADDR-ZIP PIC X(10)}: geographic data the record image used to publish. */
+    /** {@code ACCT-ADDR-ZIP PIC X(10)}: geographic data no record image may publish. */
     private static final String ADDRESS_ZIP = "0000091234";
 
-    /** {@code ACCT-GROUP-ID PIC X(10)}: the disclosure-group key the record image used to publish. */
+    /** {@code ACCT-GROUP-ID PIC X(10)}: the disclosure-group key no record image may publish. */
     private static final String GROUP_ID = "DEFAULT   ";
 
     /** Page size for every reader under test; one row per page exercises the page-turn path too. */
@@ -673,8 +673,8 @@ class ReaderSensitiveDataTest {
         @DisplayName("neither the card number nor XREF-ACCT-ID is logged, and the event is still useful")
         void neitherIdentifierIsLogged() {
             assertThat(capturedText()).doesNotContain(CARD_NUMBER);
-            // An earlier revision asserted XREF-ACCT-ID was still reported, on the grounds that an 11-digit
-            // account identifier is not cardholder data. That reasoning was withdrawn in the reader itself:
+            // Reporting XREF-ACCT-ID, on the grounds that an 11-digit
+            // account identifier is not cardholder data, is refused by the reader itself:
             // CardCrossReferenceReader:270 and :802 record that naming the account instead is "narrower but
             // still not narrow enough", because this relation is nothing BUT the association between a card
             // number and an account, so the account identifier identifies the cardholder by construction.
@@ -791,10 +791,9 @@ class ReaderSensitiveDataTest {
         @Test
         @DisplayName("the event still carries its file and ordinal, so minimisation did not empty it")
         void theEventIsMinimisedButNotEmptied() {
-            // An earlier revision asserted that CUST-ID and its nine digits were still reported. Both were
-            // withdrawn from the emission: CustomerReader:688 and :841 now render the logical file and the
-            // row ordinal and no field of the record at all. The intent of the original assertion - that
-            // minimisation must not leave a useless event behind - is what is kept here, restated against
+            // CUST-ID and its nine digits are not reported: CustomerReader:688 and :841 render the logical
+            // file and the row ordinal and no field of the record at all. What is kept here is the property
+            // that minimisation must not leave a useless event behind, stated against
             // what the reader actually emits.
             assertThat(capturedText()).contains("CUSTFILE");
             assertThat(capturedText()).contains("sequence=");

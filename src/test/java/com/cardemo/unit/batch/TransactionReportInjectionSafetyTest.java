@@ -89,7 +89,7 @@ import org.springframework.batch.item.ExecutionContext;
  *
  * <h2>What this proves, and why the record stays well formed either way</h2>
  *
- * <p><strong>Finding M-09, severity Major.</strong> {@code TransactionReportProcessor.fixedWidth} padded and
+ * <p><strong>Finding M-09, severity High.</strong> {@code TransactionReportProcessor.fixedWidth} padded and
  * truncated but validated nothing, and {@code TransactionReportJob}'s step writer admitted every code point
  * through {@code 0xFF}. Between them, a carriage return, a line feed, a NUL or any other control byte reaching
  * either from a database column travelled straight into the report.

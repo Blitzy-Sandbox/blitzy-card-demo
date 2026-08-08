@@ -6,7 +6,7 @@
  * Function    : Statement generation - five-step projection, sort, load
  *               and dual-format emission at 80 and 100 bytes.
  * Source      : app/jcl/CREASTMT.JCL (97 lines, 5 steps) +
- *               app/cbl/CBSTM03A.CBL (924 lines, 26 paragraphs) +
+ *               app/cbl/CBSTM03A.CBL (924 lines, 25 own paragraph labels) +
  *               app/cbl/CBSTM03B.CBL (230 lines, 14 procedure
  *               paragraphs) @ 7756d89
  * ******************************************************************
@@ -163,14 +163,14 @@ import io.awspring.cloud.s3.S3Resource;
  *       generation - see {@code StatementWriter.KEY_STATEMENT_SEGMENT}, finding F-01.</li>
  *   <li>Execution-context entries recording the concrete object key each step created, so a later step
  *       re-reads <b>that key</b> rather than re-resolving "the latest object". See <i>Object storage</i>.</li>
- *   <li><strong>No application counter at all.</strong> Finding H-09, severity High, RESOLVED: an earlier
- *       revision advanced the records-processed counter twice per run, once with the number of transaction rows
- *       the projection read and once with the number of statements the emit step wrote, and
- *       {@link com.cardemo.batch.writers.StatementWriter} advanced it a third time, once per statement. That
- *       counter is the {@code WS-TRANSACTION-COUNT} analogue of {@code app/cbl/CBTRN02C.cbl:L206} and its unit
- *       is daily transaction records: a statement is not one, the projected rows had already been counted when
- *       they were posted, and the two statement-side figures double-counted each other - so a single metric
- *       carried three incompatible units and its value meant nothing. None of the four counters
+ *   <li><strong>No application counter at all.</strong> Advancing the records-processed counter here would
+ *       give one metric three incompatible units: with the number of transaction rows the projection reads,
+ *       with the number of statements the emit step writes, and once per statement inside
+ *       {@link com.cardemo.batch.writers.StatementWriter}. That counter is the {@code WS-TRANSACTION-COUNT}
+ *       analogue of {@code app/cbl/CBTRN02C.cbl:L206} and its unit is daily transaction records: a statement
+ *       is not one, the projected rows were already counted when they were posted, and the two
+ *       statement-side figures would double-count each other, so the value would mean nothing. None of the
+ *       four counters
  *       {@link com.cardemo.observability.MetricsConfig MetricsConfig} owns has this job's unit, so this job
  *       advances none of them, registers no meter
  *       of its own and adds no tag. What it publishes instead are its own execution-context entries -
@@ -264,8 +264,8 @@ import io.awspring.cloud.s3.S3Resource;
  * {@link StatementTransaction} and
  * {@link com.cardemo.model.entity.Transaction} already do. The batch producer's rendering is
  * {@code yyyy-MM-dd-HH.mm.ss.SS0000} - <b>two digits of hundredths of a second, that is centiseconds,
- * followed by four literal zeros</b>. An earlier revision of this sentence called that millisecond precision;
- * it is withdrawn, because millisecond precision is three fraction digits and would make the value
+ * followed by four literal zeros</b>. It is not millisecond precision: millisecond precision is three
+ * fraction digits and would make the value
  * twenty-seven characters rather than twenty-six. The frozen source is unambiguous: {@code COB-MIL} is
  * {@code PIC X(02)} over the sub-second field of {@code FUNCTION CURRENT-DATE}, which is hundredths
  * ({@code app/cbl/CBTRN02C.cbl:L157}); it is moved into {@code DB2-MIL PIC 9(002)} ({@code :L173}) at
@@ -364,9 +364,9 @@ import io.awspring.cloud.s3.S3Resource;
  *       is untrusted and is validated before it is parsed, which is why this surfaces as a typed abend
  *       rather than a mis-parse.</li>
  *   <li><b>A run is larger than expected but does not abend.</b> That is correct, and it is finding BAT-002.
- *       An earlier revision refused any run above a configured five million work records; the corpus has no
- *       such rule - {@code app/jcl/CREASTMT.JCL} sizes nothing by record count - so the refusal was an
- *       invented business ceiling and has been removed. Both directions of this pipeline stream one record at
+ *       Refusing any run above a configured ceiling - five million work records, say - would be an invented
+ *       business rule: the corpus has none, and {@code app/jcl/CREASTMT.JCL} sizes nothing by record count.
+ *       Both directions of this pipeline stream one record at
  *       a time, so run size is bounded by the input and by object storage, not by an authored constant.
  *       Watch {@code STEP010}'s projected record count and the object's size if a run's duration matters.</li>
  *   <li><b>The emit step abends on an open.</b> One of the four datasets has no binding, or reported a
@@ -464,12 +464,10 @@ public class StatementGenerationJob {
     /** Diagnostic logger. No full card number and no personal data ever reaches it. */
     private static final Logger LOG = LoggerFactory.getLogger(StatementGenerationJob.class);
 
-    // =================================================================================================
     // Bean names. Every one carries the statementGeneration prefix so that this class contributes no name
     // another configuration class could plausibly want. This folder may contribute only Job, Step and
     // Flow beans; no infrastructure bean is declared anywhere below - the JobRepository, the transaction
     // manager and the object-storage client are all injected.
-    // =================================================================================================
 
     /** {@code DELDEF01}, {@code app/jcl/CREASTMT.JCL:L22}. */
     static final String DEFINE_STEP_BEAN_NAME = "statementGenerationDefineStep";
@@ -492,9 +490,7 @@ public class StatementGenerationJob {
     /** The job itself, the whole of {@code app/jcl/CREASTMT.JCL}. */
     static final String JOB_BEAN_NAME = "statementGenerationJob";
 
-    // =================================================================================================
     // Configuration defaults.
-    // =================================================================================================
 
     /** The JCL job name at {@code app/jcl/CREASTMT.JCL:L1}. */
     static final String DEFAULT_JOB_NAME = "CREASTMT";
@@ -508,14 +504,12 @@ public class StatementGenerationJob {
     /** The number of steps {@code app/jcl/CREASTMT.JCL} declares, and that this job registers. */
     static final int STEP_COUNT = 5;
 
-    // =================================================================================================
     // Work-cluster geometry, from DEFINE CLUSTER at app/jcl/CREASTMT.JCL:L29-L39. The cluster is an
     // IN-JOB projection and sort target and is NEVER persisted: there is no table, no entity, no
     // repository and no migration for it. V1__create_schema.sql creates exactly eleven tables and a
     // validation gate asserts that count, so a twelfth for TRXFL would fail the gate. It is also absent
     // from app/catlg/LISTCAT.txt, whose summary counts ten clusters at :L3940 - the work cluster is
     // created and deleted inside this one job and was never catalogued.
-    // =================================================================================================
 
     /** {@code KEYS(32 0)}, {@code app/jcl/CREASTMT.JCL:L30}, corroborating {@code app/cpy/COSTM01.CPY:L21}. */
     static final int WORK_CLUSTER_KEY_LENGTH = StatementTransaction.KEY_LENGTH;
@@ -544,9 +538,7 @@ public class StatementGenerationJob {
     /** {@code DCB=(LRECL=350,BLKSIZE=3500,RECFM=FB)} on {@code SORTOUT}, {@code app/jcl/CREASTMT.JCL:L50}. */
     private static final int WORK_SEQUENTIAL_BLOCK_SIZE = 3500;
 
-    // =================================================================================================
     // Output geometry. Two streams, two widths, both preserved byte-exactly.
-    // =================================================================================================
 
     /** {@code LRECL=80} on {@code STMTFILE}, {@code app/jcl/CREASTMT.JCL:L89}; {@code CBSTM03A.CBL:L45}. */
     static final int TEXT_RECORD_LENGTH = StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH;
@@ -622,11 +614,9 @@ public class StatementGenerationJob {
     /** Key path separator. */
     private static final String KEY_SEPARATOR = "/";
 
-    // =================================================================================================
     // Execution-context entries. A (+1) written by an earlier step is re-read by a later one, so every
     // step publishes the CONCRETE key it created and every reader takes that key. "The latest object" is
     // never re-resolved mid-job: a concurrent run would otherwise hand a step the wrong generation.
-    // =================================================================================================
 
     /**
      * The key {@code STEP010} created, read back by {@code STEP020} and by the {@code TRNXFILE} binding that
@@ -694,9 +684,7 @@ public class StatementGenerationJob {
     private static final String INHERITED_CORRELATION_ID_CONTEXT_ENTRY =
             "carddemo.creastmt.mdc.inheritedCorrelationId";
 
-    // =================================================================================================
     // Flow vocabulary. Exit codes first, then the two gate outcomes that model COND=(0,NE).
-    // =================================================================================================
 
     /** Return code 0. */
     private static final String EXIT_CODE_COMPLETED = ExitStatus.COMPLETED.getExitCode();
@@ -731,9 +719,7 @@ public class StatementGenerationJob {
     /** Legacy return code 12, {@value FatalProcessingException#BATCH_RETURN_CODE}. */
     private static final int RETURN_CODE_ABEND = FatalProcessingException.BATCH_RETURN_CODE;
 
-    // =================================================================================================
     // Diagnostics, mirroring the source's DISPLAY text where the source has any.
-    // =================================================================================================
 
     /** The program the abend is attributed to, {@code app/cbl/CBSTM03A.CBL:L2}. */
     private static final String ABEND_CULPRIT = "CBSTM03A";
@@ -778,9 +764,7 @@ public class StatementGenerationJob {
     /** {@code '00'}, the only status that continues without qualification. */
     private static final String SUCCESS_STATUS = FileStatus.SUCCESS.code().orElseThrow();
 
-    // =================================================================================================
     // The two translated control cards, both unmodifiable constants.
-    // =================================================================================================
 
     /**
      * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)}, {@code app/jcl/CREASTMT.JCL:L53}.
@@ -813,10 +797,8 @@ public class StatementGenerationJob {
     private static final Map<String, String> HTML_FRAGMENTS =
             Map.copyOf(StatementProcessor.htmlFragments());
 
-    // =================================================================================================
     // Injected collaborators. Constructor injection only; every field final; no static mutable state
     // anywhere in this class, which is what makes two concurrent job executions independent.
-    // =================================================================================================
 
     /** The framework's job repository. Injected, never declared. */
     private final JobRepository jobRepository;
@@ -971,7 +953,7 @@ public class StatementGenerationJob {
     /**
      * Validates the configured work-cluster key prefix against the one shared grammar.
      *
-     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to trim a prefix to a
+     * <p><strong>Finding m-02, severity Medium, RESOLVED.</strong> This method used to trim a prefix to a
      * canonical form - stripping both a leading and a trailing separator - so that {@code work/trxfl},
      * {@code /work/trxfl} and {@code work/trxfl/} all produced identical object keys. It was the most
      * permissive of the six divergent validators the review found, and permissiveness was the defect: three
@@ -989,9 +971,7 @@ public class StatementGenerationJob {
                 prefix, "carddemo.aws.s3.work-prefixes.trxfl");
     }
 
-    // =================================================================================================
     // The five steps, in the order app/jcl/CREASTMT.JCL declares them.
-    // =================================================================================================
 
     /**
      * Step 1 of 5: {@code DELDEF01}, {@code app/jcl/CREASTMT.JCL:L22}, {@code EXEC PGM=IDCAMS},
@@ -1194,9 +1174,7 @@ public class StatementGenerationJob {
                 .build();
     }
 
-    // =================================================================================================
     // Step 1 - DELDEF01, app/jcl/CREASTMT.JCL:L22-L39. One private method per control card.
-    // =================================================================================================
 
     /**
      * The body of {@code DELDEF01}: two deletes, the condition-code reset, then the define.
@@ -1332,22 +1310,19 @@ public class StatementGenerationJob {
         LOG.info("DELDEF01 defined the TRXFL work cluster: {}", geometry);
     }
 
-    // =================================================================================================
     // Step 2 - STEP010, app/jcl/CREASTMT.JCL:L44-L54: the sort and the projection.
-    // =================================================================================================
 
     /**
      * The body of {@code STEP010}: read {@code SORTIN} in sorted order, project every record, write one
      * {@code SORTOUT} object.
      *
-     * <p><strong>Finding H-01, severity High, RESOLVED. Nothing is materialised.</strong> An earlier revision
-     * collected the whole projection into a {@code List<String>}, concatenated it into a {@code StringBuilder}
-     * and then encoded that into a {@code byte[]} - three copies of the entire transaction cluster resident at
-     * once, on a step whose input size is bounded by nothing this code chooses. Records are now written
-     * straight through to the object as each keyset window is read: peak memory is one window plus the
-     * object-store client's own part buffer, and the run is never held in the heap. The legacy step did
-     * materialise to DASD at {@code :L48}, and the object is still one object; what has changed is that the
-     * process no longer holds a second copy of it.
+     * <p><strong>Nothing is materialised.</strong> Collecting the whole projection into a
+     * {@code List<String>}, concatenating it into a {@code StringBuilder} and then encoding that into a
+     * {@code byte[]} would hold three copies of the entire transaction cluster at once, on a step whose input
+     * size is bounded by nothing this code chooses. Records are written straight through to the object as each
+     * keyset window is read: peak memory is one window plus the object-store client's own part buffer, and the
+     * run is never held in the heap. The legacy step did materialise to DASD at {@code :L48}, and the object is
+     * still one object; what this avoids is a second copy of it inside the process.
      *
      * <p>The count and the digest come back from the streaming write rather than from a collection's
      * {@code size()}, which is what lets the count be published without retaining the records it counted.
@@ -1632,9 +1607,7 @@ public class StatementGenerationJob {
         }
     }
 
-    // =================================================================================================
     // Step 3 - STEP020, app/jcl/CREASTMT.JCL:L56-L61: REPRO into the work cluster.
-    // =================================================================================================
 
     /**
      * The body of {@code STEP020}, gated by {@code COND=(0,NE)} at {@code app/jcl/CREASTMT.JCL:L56}.
@@ -1683,12 +1656,12 @@ public class StatementGenerationJob {
      * its size. Object-storage content is treated as untrusted input there: the geometry of each record is
      * validated before anything is interpreted, and no deserialization of any kind is performed on it.
      *
-     * <p><strong>The object is verified as a stream, one record at a time.</strong> An earlier revision read
-     * it whole with {@code readAllBytes()} and then decoded the whole array into a {@code String} - two more
-     * copies of a relation-sized image, on the read side of a pipeline whose write side had already made
-     * three. The verification needs no more than one record and its key at a time, so that is all it holds -
-     * which is why finding BAT-002 could remove the authored record ceiling without putting the heap at risk:
-     * peak memory here is one record whatever the object's size.
+     * <p><strong>The object is verified as a stream, one record at a time.</strong> Reading it whole with
+     * {@code readAllBytes()} and then decoding the whole array into a {@code String} would add two more
+     * copies of a relation-sized image, on the read side of a pipeline whose write side would otherwise have
+     * made three. The verification needs no more than one record and its key at a time, so that is all it
+     * holds - which is why finding BAT-002 could remove the authored record ceiling without putting the heap
+     * at risk: peak memory here is one record whatever the object's size.
      *
      * @param key the concrete key {@code STEP010} published, never {@code null}
      * @param jobContext the job execution context, consulted for the producer's record count
@@ -1723,11 +1696,10 @@ public class StatementGenerationJob {
      * Reads back the projected object one record at a time, {@code INFILE} at
      * {@code app/jcl/CREASTMT.JCL:L58}, validating geometry and key order as it goes.
      *
-     * <p><strong>Finding H-01, severity High, RESOLVED.</strong> An earlier revision read the object with
-     * {@code readAllBytes} and then decoded the whole image into a {@code String} - two more copies of the entire
-     * cluster resident at once, on the step whose only job is to prove the object is loadable. The object is now
-     * consumed as a stream in exactly {@value #WORK_CLUSTER_RECORD_LENGTH}-byte records, so peak memory is one
-     * record.
+     * <p><strong>The object is consumed as a stream.</strong> Reading it with {@code readAllBytes} and then
+     * decoding the whole image into a {@code String} would hold two more copies of the entire cluster at once,
+     * on the step whose only job is to prove the object is loadable. It is consumed in exactly
+     * {@value #WORK_CLUSTER_RECORD_LENGTH}-byte records, so peak memory is one record.
      *
      * <p>Object-storage content is treated as untrusted input: a short final record is a truncated object and is
      * refused, and no record is parsed before its full width has been read.
@@ -1851,9 +1823,7 @@ public class StatementGenerationJob {
         }
     }
 
-    // =================================================================================================
     // Step 4 - STEP030, app/jcl/CREASTMT.JCL:L66-L75: IEFBR14 and its two DD side effects.
-    // =================================================================================================
 
     /**
      * The body of {@code STEP030}, gated by {@code COND=(0,NE)} at {@code app/jcl/CREASTMT.JCL:L66}.
@@ -1917,12 +1887,12 @@ public class StatementGenerationJob {
      * end: {@code :L97} is {@code //*} and there is no terminating {@code //} card, which JES2 tolerates and
      * which likewise has no counterpart.
      *
-     * <p><b>Finding, severity High, RESOLVED. Why the delete enumerates the prefix rather than the execution
-     * context.</b> An earlier revision deleted only the keys recorded in the <em>current</em> job execution
-     * context. That context starts empty on every fresh execution, so on any run that was not a retry the
-     * step deleted nothing at all, and because the writer composes a monotonically increasing generation
-     * segment into each key, every previous run's objects survived under their own generation - indefinitely,
-     * and carrying customer statement data. That is the opposite of what this step is for. {@code IEFBR14}
+     * <p><b>Why the delete enumerates the prefix rather than the execution context.</b> Deleting only the
+     * keys recorded in the <em>current</em> job execution context deletes nothing at all on any run that is
+     * not a retry, because that context starts empty on every fresh execution - and because the writer
+     * composes a monotonically increasing generation segment into each key, every previous run's objects would
+     * survive under their own generation, indefinitely, carrying customer statement data. That is the opposite
+     * of what this step is for. {@code IEFBR14}
      * with {@code DISP=(MOD,DELETE,DELETE)} at {@code :L67} and {@code :L74} deletes the statement output
      * unconditionally, and {@code STEP040} then allocates it new at {@code :L84} and {@code :L86}; the legacy
      * job kept no history, because it named one {@code STMTFILE} and one {@code HTMLFILE}, not a family.
@@ -2094,7 +2064,6 @@ public class StatementGenerationJob {
         jobContext.remove(StatementWriter.CONTEXT_KEY_HTML_OBJECT);
     }
 
-    // =================================================================================================
     // Step 5 - STEP040, app/jcl/CREASTMT.JCL:L79-L96, which runs app/cbl/CBSTM03A.CBL
     //
     // Paragraph correspondence. The program has 26 labels: 25 in the PROCEDURE DIVISION plus FILE-CONTROL
@@ -2140,11 +2109,11 @@ public class StatementGenerationJob {
     // open, close and one read form per dataset; write and rewrite appear nowhere in the subprogram - and the
     // '00' or '04' leniency of the nine call sites. FILE-CONTROL at :L30 is a fifteenth Area-A label and is
     // NOT one of the fourteen: it sits in the ENVIRONMENT DIVISION at :L28 and is not a paragraph-to-method
-    // target, so 14 is the label figure and 15 is only the Area-A total. An earlier revision of this comment
-    // published 15 as the label count. The labels are cited here and implemented there:
+    // target, so 14 is the label figure and 15 is only the Area-A total - publishing 15 as the label count
+    // would count an ENVIRONMENT DIVISION entry as a paragraph. The labels are cited here and implemented
+    // there:
     // PROCEDURE DIVISION USING at :L114, 0000-START at :L116, EVALUATE LK-M03B-DD at :L118, WHEN OTHER at
     // :L127 and GO TO 9999-GOBACK at :L128.
-    // =================================================================================================
 
     /**
      * {@code 1000-XREFFILE-GET-NEXT}, {@code app/cbl/CBSTM03A.CBL:L345}-{@code :L366}: the driving read of
@@ -2300,9 +2269,7 @@ public class StatementGenerationJob {
                 Integer.valueOf(HTML_RECORD_LENGTH));
     }
 
-    // =================================================================================================
     // Object-key derivation and the step-to-step handoff.
-    // =================================================================================================
 
     /**
      * Reserves, or re-reads, the generation ordinal of this run's work object - the {@code (+1)} of a
@@ -2376,9 +2343,7 @@ public class StatementGenerationJob {
         return key;
     }
 
-    // =================================================================================================
     // Guards and diagnostics.
-    // =================================================================================================
 
     /**
      * Routes an object-storage outcome through {@link FileStatusMapper}, so the boundary that replaced VSAM
@@ -2404,7 +2369,7 @@ public class StatementGenerationJob {
         // FileStatusMapper.displayIoStatus already returns the whole rendered line INCLUDING
         // FileStatus.DISPLAY_MESSAGE_PREFIX, so prefixing it a second time produced
         // "FILE STATUS IS: NNNNFILE STATUS IS: NNNN9048" - the four-character rendering that
-        // app/cbl/CBTRN02C.cbl:L714-L731 fixes as a contract, with the label doubled in front of it. The
+        // app/cbl/CBTRN02C.cbl:L714-L727 fixes as a contract, with the label doubled in front of it. The
         // mapper owns the format; this call site only places it.
         //
         // The cause is deliberately NOT logged as a throwable here: an object-store failure carries the
@@ -2413,7 +2378,7 @@ public class StatementGenerationJob {
         // preserved as the cause of the exception raised immediately below - so nothing is swallowed and the
         // root cause still reaches whoever handles the failure.
         //
-        // Finding m-03, severity Minor. Withholding it from THIS logger was only half the control: the
+        // Finding m-03, severity Medium. Withholding it from THIS logger was only half the control: the
         // exception raised below leaves this class, and both the framework's own step-failure logging and the
         // rendered stack Spring Batch stores in BATCH_STEP_EXECUTION.EXIT_MESSAGE render whatever cause it
         // carries. StatementWriter owns the key shape, so it owns the sanitiser too - one definition, used
@@ -2726,11 +2691,9 @@ public class StatementGenerationJob {
         return false;
     }
 
-    // =================================================================================================
     // Nested collaborators. All four are plain objects, never beans: this folder contributes only the Job,
     // Step and Flow beans above, and declaring a decider or a listener as a bean would both add a container
     // singleton and risk colliding with one that com.cardemo.config.BatchConfig may declare.
-    // =================================================================================================
 
     /**
      * Brackets the emit step with the initialisation and the closes of {@code app/cbl/CBSTM03A.CBL}.

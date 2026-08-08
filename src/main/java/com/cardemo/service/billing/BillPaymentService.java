@@ -5,7 +5,7 @@
  * Type        : Spring @Service (online bill payment)
  * Function    : Bill Payment - pay the account balance in full and
  *               record the transaction
- * Source      : app/cbl/COBIL00C.cbl (572 lines, 16 paragraphs) @ 7756d89
+ * Source      : app/cbl/COBIL00C.cbl (572 lines, 16 own paragraph labels) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -190,7 +190,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><strong>Low - the double space in the success message is tidied.</strong> Remedy: restore it; the
  *       {@code STRING} at {@code :527}-{@code :531} concatenates a trailing and a leading blank.</li>
  *   <li><strong>Low - a retained parity artefact is deleted to please a linter.</strong> Remedy: restore
- *       it; the four are listed in section 6 and each is owed an entry in the {@code DECISION_LOG.md}.</li>
+ *       it; the four are listed in section 6 and each is covered by {@code DL-CR-01} in the
+ *       {@code DECISION_LOG.md}.</li>
  *   <li><strong>Low - {@code PIC X(26)} timestamps are converted to a temporal type.</strong> Remedy: keep
  *       them as text; three mutually incompatible producers write those columns and the fixture's
  *       {@code TRAN-PROC-TS} is twenty-six blanks, which no format parses.</li>
@@ -921,8 +922,8 @@ public class BillPaymentService {
      *       no-op.</strong> {@code WS-USR-MODIFIED} and its two condition names at {@code :48}-{@code :50}
      *       are written here and tested nowhere in the program's 572 lines. The assignment is reproduced
      *       because deleting it would break the statement-level correspondence that
-     *       {@code TRACEABILITY_MATRIX.md} proves; it is owed an entry in the {@code DECISION_LOG.md} and is
-     *       classified Low.</li>
+     *       {@code TRACEABILITY_MATRIX.md} proves; it is covered by {@code DL-CR-01} in the
+     *       {@code DECISION_LOG.md} and is classified Low.</li>
      *   <li>{@code :104}-{@code :105} blank {@code WS-MESSAGE} and the screen message field.</li>
      *   <li>{@code :107} the no-context test. {@code EIBCALEN = 0} means the program was reached with no
      *       communication area, so there is no caller identity and nothing to work with; {@code :108} points
@@ -951,7 +952,7 @@ public class BillPaymentService {
      * that communication-area field is populated. A stateless invocation carries no communication area, so the field
      * is blank and the {@code :130} arm is the one that runs - exactly as it would for a CICS caller that transferred
      * in with a zero-filled area. Both arms are implemented so the resolution logic is complete and provable;
-     * classified Low and owed an entry in the {@code DECISION_LOG.md}.</p>
+     * classified Low and held as {@code DL-MS-06} in the {@code DECISION_LOG.md}.</p>
      *
      * @param context the per-invocation working storage, mutated in place
      */
@@ -1299,7 +1300,7 @@ public class BillPaymentService {
      * input area is left holding whatever it held. That absent guard is preserved as absent: a {@code null} request
      * leaves the buffer untouched rather than raising, and the blank account field it presents then takes the
      * empty-identifier guard of {@code :159} and yields {@code Acct ID can NOT be empty...} - which is precisely the
-     * legacy outcome. Classified Low and owed an entry in the {@code DECISION_LOG.md}.</p>
+     * legacy outcome. Classified Low and held as {@code DL-PP-13} in the {@code DECISION_LOG.md}.</p>
      *
      * <p>Only the three input-bearing members are bound. The six header members and the message member of
      * {@code app/cpy-bms/COBIL00.CPY} are output fields that the map round-trips; {@code :291} overwrites
@@ -1603,7 +1604,7 @@ public class BillPaymentService {
      * any would be a behaviour change, because a failing {@code ENDBR} in the source is silently ignored and
      * the flow continues into identifier generation.</p>
      *
-     * <p>Classified Low and owed an entry in the {@code DECISION_LOG.md}. The single statement closes the
+     * <p>Classified Low and held as {@code DL-PP-13} in the {@code DECISION_LOG.md}. The single statement closes the
      * browse state that {@link #startbrTransactFile} opened, which is the whole of the operation's observable
      * effect.</p>
      *
@@ -3178,8 +3179,8 @@ public class BillPaymentService {
         /**
          * {@code WS-USR-MODIFIED} at {@code :48}-{@code :50}.
          *
-         * <p><strong>Parity artefact P1, classified Low - an intentional no-op, owed an entry in the
-         * {@code DECISION_LOG.md}.</strong> {@code :102} assigns it and no statement anywhere in the five hundred and
+         * <p><strong>Parity artefact P1, classified Low - an intentional no-op, covered by
+         * {@code DL-CR-01} in the {@code DECISION_LOG.md}.</strong> {@code :102} assigns it and no statement anywhere in the five hundred and
          * seventy-two lines ever tests it. It is retained because deleting the assignment would break the one-to-one
          * paragraph correspondence that the scope-coverage gate reads, and because Rule 1 Clause B forbids
          * <em>untracked</em> dead code rather than a cited, justified parity artefact. Never read here either -
@@ -3305,8 +3306,8 @@ public class BillPaymentService {
         /**
          * {@code WS-TRAN-AMT PIC +99999999.99} at {@code app/cbl/COBIL00C.cbl:55}.
          *
-         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, owed an entry in the
-         * {@code DECISION_LOG.md}.</strong> The item is declared in working storage and referenced by no statement in
+         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, covered by
+         * {@code DL-CR-01} in the {@code DECISION_LOG.md}.</strong> The item is declared in working storage and referenced by no statement in
          * the procedure division; the amount echo the program actually performs goes through {@code WS-CURR-BAL}.
          * Retained, seeded and never read, for the reason given on {@link #userModified}. Deleting it would
          * misrepresent the data division that the traceability matrix cites.</p>
@@ -3316,8 +3317,8 @@ public class BillPaymentService {
         /**
          * {@code WS-TRAN-DATE PIC X(08) VALUE '00/00/00'} at {@code app/cbl/COBIL00C.cbl:58}.
          *
-         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, owed an entry in the
-         * {@code DECISION_LOG.md}.</strong> Declared with an initial value and referenced by no statement; the dates
+         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, covered by
+         * {@code DL-CR-01} in the {@code DECISION_LOG.md}.</strong> Declared with an initial value and referenced by no statement; the dates
          * the program actually renders come from {@code app/cpy/CSDAT01Y.cpy}. Retained, seeded with its declared
          * {@code VALUE} and never read.</p>
          */

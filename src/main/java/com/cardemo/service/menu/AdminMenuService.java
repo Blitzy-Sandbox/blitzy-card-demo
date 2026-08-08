@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Service (migrated from CICS COBOL Program)
  * Function    : Admin Menu for Admin users
- * Source      : app/cbl/COADM01C.cbl (268 lines, 7 paragraphs)
+ * Source      : app/cbl/COADM01C.cbl (268 lines, 7 own paragraph labels)
  *               + app/cpy/COADM02Y.cpy @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -458,7 +458,7 @@ public class AdminMenuService {
             // ---- THE XCTL FALL-THROUGH GUARD. Under CICS, XCTL never returns, so :L147-L154 is
             // unreachable from here. In Java the call would return, so returning now is what preserves
             // the source's behaviour; falling through would announce "coming soon" for every valid
-            // selection. Owed an entry in the DECISION_LOG.md as a mechanism substitution.
+            // selection. Held as DL-MS-06 in DECISION_LOG.md, the mechanism substitution for COMMAREA and XCTL.
             return new AdminMenuSelection(optionNumber, selectedOption.optionName(), targetProgram,
                     NO_MESSAGE, false);
         }

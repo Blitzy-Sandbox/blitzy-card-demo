@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionAddServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
@@ -15,13 +15,13 @@
  *               default behind the descending browse of :444-:449, the eight
  *               versus nine integer digit display mask asymmetry of :58 / :59
  *               observed through :481, and every exact screen literal.
- * Source      : app/cbl/COTRN02C.cbl (783 lines, 18 paragraphs)
+ * Source      : app/cbl/COTRN02C.cbl (783 lines, 18 own paragraph labels)
  *               app/cpy-bms/COTRN02.CPY  (21 input fields)
  *               app/cpy/CVTRA05Y.cpy     (TRAN-AMT S9(09)V99, TS X(26))
  *               app/cpy/CVACT03Y.cpy     (XREF 16 + 9 + 11 = 36 bytes)
  *               app/cbl/CSUTLDTC.cbl     (CSUTLDTC-RESULT-SEV-CD X(04))
  *               app/cbl/CBACT04C.cbl:1-21 (the banner convention) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -36,7 +36,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -280,11 +280,9 @@ import org.springframework.transaction.annotation.Transactional;
 @DisplayName("TransactionAddService - COTRN02C / transaction CT02")
 final class TransactionAddServiceTest {
 
-    // ------------------------------------------------------------------------------------------------
     // Symbolic map field values, each filled to its declared width in app/cpy-bms/COTRN02.CPY, because
     // app/bms/COTRN02.bms declares no ATTRB=NUM and a 3270 therefore transmits a short field
     // space-padded, which the COBOL numeric class test rejects.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code ACTIDINI PIC X(11)}, {@code app/cpy-bms/COTRN02.CPY:60}. */
     private static final String ACCOUNT_ID_TEXT = "00000000011";
@@ -384,10 +382,8 @@ final class TransactionAddServiceTest {
     /** {@code WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'}, {@code app/cbl/COTRN02C.cbl:60}. */
     private static final String DATE_FORMAT = TransactionAddRequest.DATE_VALIDATION_FORMAT;
 
-    // ------------------------------------------------------------------------------------------------
     // Byte-exact screen literals. Every one is compared character for character, because the parity gates
     // compare them against the legacy baseline and a reworded, retrimmed or recased variant is a diff.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/COTRN02C.cbl:199-200}. */
     private static final String MSG_ACCOUNT_ID_NOT_NUMERIC = "Account ID must be Numeric...";
@@ -499,10 +495,8 @@ final class TransactionAddServiceTest {
     /** {@code app/cpy/CSMSG01Y.cpy:20-21}, used at {@code app/cbl/COTRN02C.cbl:150}. */
     private static final String MSG_INVALID_KEY = "Invalid key pressed. Please see below...";
 
-    // ------------------------------------------------------------------------------------------------
     // Cursor targets: the symbolic map length field the source drives to -1 so the terminal places the
     // cursor there. Each is asserted alongside its message, because the pair is the observable outcome.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code ACTIDINL}, driven at {@code app/cbl/COTRN02C.cbl:201}, {@code :228} and {@code :595}. */
     private static final String CURSOR_ACCOUNT_ID = "ACTIDINL";
@@ -537,10 +531,8 @@ final class TransactionAddServiceTest {
     /** {@code CONFIRML}, driven at {@code app/cbl/COTRN02C.cbl:180} and {@code :186}. */
     private static final String CURSOR_CONFIRMATION = "CONFIRML";
 
-    // ------------------------------------------------------------------------------------------------
     // The CSUTLDTC parameter block of app/cbl/COTRN02C.cbl:62-69, whose eighty bytes decompose as
     // SEV-CD X(04) + FILLER X(11) + MSG-NUM X(04) + MSG X(61). Only the first four bytes gate acceptance.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code CSUTLDTC-RESULT} is eighty characters, {@code app/cbl/COTRN02C.cbl:65-69}. */
     private static final int RESULT_LENGTH = 80;
@@ -566,10 +558,8 @@ final class TransactionAddServiceTest {
     /** A neutral message number for an accepted outcome. */
     private static final String MESSAGE_NUMBER_NONE = "0000";
 
-    // ------------------------------------------------------------------------------------------------
     // Fixed-width record geometry of app/cpy/CVTRA05Y.cpy, used to build stored rows and to assert the
     // widening moves of ADD-TRANSACTION.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code TRAN-ID PIC X(16)}, record bytes 1-16. */
     private static final int TRANSACTION_ID_WIDTH = 16;
@@ -643,9 +633,7 @@ final class TransactionAddServiceTest {
                 webConfig.editedAmountPrinter());
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Fixture construction
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * A mutable stand-in for the twenty-one field symbolic map, so that a test varies exactly the one field
@@ -678,87 +666,190 @@ final class TransactionAddServiceTest {
         private String confirmation = CONFIRM_YES;
         private String errorMessage = "";
 
+        /**
+         * Sets {@code ACTIDINI}, {@code PIC X(11)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder accountId(final String value) {
             this.accountId = value;
             return this;
         }
 
+        /**
+         * Sets {@code CARDNINI}, {@code PIC X(16)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder cardNumber(final String value) {
             this.cardNumber = value;
             return this;
         }
 
+        /**
+         * Sets {@code TTYPCDI}, {@code PIC X(2)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder typeCode(final String value) {
             this.typeCode = value;
             return this;
         }
 
+        /**
+         * Sets {@code TCATCDI}, {@code PIC X(4)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder categoryCode(final String value) {
             this.categoryCode = value;
             return this;
         }
 
+        /**
+         * Sets {@code TRNSRCI}, {@code PIC X(10)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder source(final String value) {
             this.source = value;
             return this;
         }
 
+        /**
+         * Sets {@code TDESCI}, {@code PIC X(60)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder description(final String value) {
             this.description = value;
             return this;
         }
 
+        /**
+         * Sets {@code TRNAMTI}, {@code PIC X(12)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder amount(final String value) {
             this.amount = value;
             return this;
         }
 
+        /**
+         * Sets {@code TORIGDTI}, {@code PIC X(10)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder originatingDate(final String value) {
             this.originatingDate = value;
             return this;
         }
 
+        /**
+         * Sets {@code TPROCDTI}, {@code PIC X(10)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder processingDate(final String value) {
             this.processingDate = value;
             return this;
         }
 
+        /**
+         * Sets {@code MIDI}, {@code PIC X(9)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder merchantId(final String value) {
             this.merchantId = value;
             return this;
         }
 
+        /**
+         * Sets {@code MNAMEI}, {@code PIC X(30)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder merchantName(final String value) {
             this.merchantName = value;
             return this;
         }
 
+        /**
+         * Sets {@code MCITYI}, {@code PIC X(25)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder merchantCity(final String value) {
             this.merchantCity = value;
             return this;
         }
 
+        /**
+         * Sets {@code MZIPI}, {@code PIC X(10)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder merchantZip(final String value) {
             this.merchantZip = value;
             return this;
         }
 
+        /**
+         * Sets {@code CONFIRMI}, {@code PIC X(1)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder confirmation(final String value) {
             this.confirmation = value;
             return this;
         }
 
+        /**
+         * Sets the two header components the date-and-time header carries, {@code CURDATEI} and
+         * {@code CURTIMEI} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param date the value {@code CURDATEI} carried.
+         * @param time the value {@code CURTIMEI} carried.
+         * @return this builder.
+         */
         private RequestBuilder header(final String date, final String time) {
             this.currentDate = date;
             this.currentTime = time;
             return this;
         }
 
+        /**
+         * Sets {@code PGMNAMEI}, {@code PIC X(8)} of {@code app/cpy-bms/COTRN02.CPY}.
+         *
+         * @param value the value the terminal sent.
+         * @return this builder.
+         */
         private RequestBuilder programName(final String value) {
             this.programName = value;
             return this;
         }
 
+        /**
+         * Freezes the twenty-one components into the payload the service receives.
+         *
+         * @return the request.
+         */
         private TransactionAddRequest build() {
             return new TransactionAddRequest(this.transactionName, this.title01, this.currentDate,
                     this.programName, this.title02, this.currentTime, this.accountId, this.cardNumber,
@@ -769,6 +860,8 @@ final class TransactionAddServiceTest {
     }
 
     /**
+     * Opens a fluent builder, so each case states only the field it is about.
+     *
      * @return a builder seeded with a request that passes every validation stage of
      *         {@code VALIDATE-INPUT-KEY-FIELDS} and {@code VALIDATE-INPUT-DATA-FIELDS}
      */
@@ -817,6 +910,8 @@ final class TransactionAddServiceTest {
     }
 
     /**
+     * Composes the accept verdict both stubbed date calls return.
+     *
      * @return the verdict that satisfies {@code IF CSUTLDTC-RESULT-SEV-CD = '0000'}
      */
     private static DateValidationService.DateValidationResult acceptedDate() {
@@ -824,6 +919,8 @@ final class TransactionAddServiceTest {
     }
 
     /**
+     * Composes the reject verdict the two escapes are measured against.
+     *
      * @return a verdict whose severity is not the accept token and whose message number is not the tolerated
      *         one, so both the {@code :397} and the {@code :399} escapes fail
      */
@@ -992,9 +1089,7 @@ final class TransactionAddServiceTest {
                 request().confirmation(CONFIRM_BLANK).build(), ORIGIN_PROGRAM);
     }
 
-    // ================================================================================================
     // Phase 1. Two numeric intrinsics, used deliberately.
-    // ================================================================================================
 
     /**
      * {@code FUNCTION NUMVAL} guards and parses the identifiers at {@code app/cbl/COTRN02C.cbl:204} and
@@ -1183,9 +1278,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 2. The display mask truncation hazard.
-    // ================================================================================================
 
     /**
      * {@code WS-TRAN-AMT-N PIC S9(9)V99} at {@code app/cbl/COTRN02C.cbl:58} holds nine integer digits;
@@ -1291,9 +1384,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 3. Explicit positional date guards precede every date service call.
-    // ================================================================================================
 
     /**
      * {@code app/cbl/COTRN02C.cbl:353-366} and {@code :368-381} each run an {@code EVALUATE TRUE} of five
@@ -1582,9 +1673,7 @@ final class TransactionAddServiceTest {
         return (String) constant.get(null);
     }
 
-    // ================================================================================================
     // Phase 4. Pass-through timestamps: raw screen text, no formatting at all.
-    // ================================================================================================
 
     /**
      * {@code app/cbl/COTRN02C.cbl:464-465} moves {@code TORIGDTI} and {@code TPROCDTI}, each
@@ -1749,9 +1838,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 5. Identifier generation: the descending browse, its race, and the first identifier.
-    // ================================================================================================
 
     /**
      * {@code app/cbl/COTRN02C.cbl:444-449} moves {@code HIGH-VALUES} into {@code TRAN-ID}, opens a browse,
@@ -2077,9 +2164,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 6. The remaining validation cascade and its exact literals.
-    // ================================================================================================
 
     /**
      * Every screen literal the program can emit, compared character for character, and the order in which the
@@ -2459,9 +2544,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 7. Field contracts and precision.
-    // ================================================================================================
 
     /**
      * The request shape comes from {@code app/cpy-bms/COTRN02.CPY}, which declares twenty-one input fields;
@@ -2625,9 +2708,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 8. Paragraph correspondence.
-    // ================================================================================================
 
     /**
      * {@code app/cbl/COTRN02C.cbl} is seven hundred and eighty three lines carrying eighteen paragraph
@@ -2787,9 +2868,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 9. Hostile input, treated as untrusted at every boundary.
-    // ================================================================================================
 
     /**
      * Every input is untrusted. The boundaries asserted here are the source's own: the field widths of
@@ -3010,9 +3089,7 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ================================================================================================
     // Phase 9 continued. Observability and secret hygiene.
-    // ================================================================================================
 
     /**
      * The measurable behaviour the legacy program has no equivalent for, and the disclosure boundary the
@@ -3133,12 +3210,10 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ====================================================================================================
     // Phase 8 continued, and clause B of the project rule: "Document public APIs: purpose, inputs/outputs,
     // side effects, error modes." A documented entry point that no test ever calls is documented, not
     // verified, so all four public entry points and every arm of MAIN-PARA's EVALUATE EIBAID are exercised
     // here. Source: app/cbl/COTRN02C.cbl MAIN-PARA (:107-159).
-    // ====================================================================================================
 
     @Nested
     @DisplayName("Phase 8 - the four public entry points and every EVALUATE EIBAID arm, :107-159")

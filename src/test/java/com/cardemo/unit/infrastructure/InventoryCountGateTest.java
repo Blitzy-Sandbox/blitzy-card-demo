@@ -73,7 +73,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 /**
  * Three counts that the review corrected, held as gates rather than as sentences.
  *
- * <p>Each of the three was previously asserted only in prose - in a migration header, a
+ * <p>Each of the three is also stated in prose - in a migration header, a
  * {@code package-info} docstring and a specification table respectively. A number written in prose is
  * correct exactly until the thing it counts changes, and nothing reports the moment it stops being correct.
  * These assertions are the report.
@@ -591,7 +591,7 @@ final class InventoryCountGateTest {
      * <p>{@code package-info.java} is excluded because it declares no type. Every remaining source file in
      * that package is a controller by construction: the package documentation states that the package holds
      * only {@code @RestController} classes, and {@link ControllerInventory#everyControllerIsEnumerated()}
-     * would fail if that ever stopped being true.
+     * fails if that ever ceases to hold.
      *
      * @return the controller simple names, sorted so the comparison is order-independent
      */
@@ -664,8 +664,8 @@ final class InventoryCountGateTest {
         @DisplayName("the controller layer really is the 8 controllers and 17 operations both documents claim")
         void theControllerLayerMatchesItsDocumentedShape() {
             assertThat(typesIn("src/main/java/com/cardemo/controller"))
-                    .as("both CardDemoApplication and the root package document state 8; an earlier revision "
-                            + "of each said 6 of 8 after all eight had been authored")
+                    .as("both CardDemoApplication and the root package document state 8, and all eight are "
+                            + "authored, so neither may publish a partial figure such as 6 of 8")
                     .isEqualTo(8L);
 
             long operations = 0L;
@@ -696,10 +696,9 @@ final class InventoryCountGateTest {
         @DisplayName("the batch leaves really are 6 jobs, 5 processors, 7 readers and 3 writers")
         void theBatchLeavesMatchTheirDocumentedShape() {
             // Stated as present/target in both documents, so the PRESENT figure is what disk must agree with.
-            // RE-MEASURED: the jobs leaf was 5 against a six-job target while BatchPipelineOrchestrator
-            // remained to be authored. It is authored now, so the leaf is complete at 6 - the five concrete
-            // jobs plus the orchestrator that composes them - and the earlier figure of 5 is withdrawn rather
-            // than deleted, so the correction is visible to the next reader. CombinedTransactionReader is the
+            // MEASURED: the jobs leaf is complete at 6 - the five concrete jobs plus the
+            // BatchPipelineOrchestrator that composes them - so a figure of 5 against a six-job target does
+            // not describe this tree. CombinedTransactionReader is the
             // seventh and final reader, so the readers leaf is likewise complete at 7.
             assertThat(typesIn("src/main/java/com/cardemo/batch/jobs")).isEqualTo(6L);
             assertThat(typesIn("src/main/java/com/cardemo/batch/processors")).isEqualTo(5L);
@@ -713,8 +712,8 @@ final class InventoryCountGateTest {
             // The remedy for a figure that cannot be kept correct is to stop quoting it. A total changes with
             // every file added anywhere in the tree, so it went stale faster than anything else in either
             // document. Both now name the command instead.
-            // Matched on the CLAIM form, not on the digits: both documents legitimately recount the figures
-            // they used to publish, in the finding notes that record why they stopped. What must not reappear
+            // Matched on the CLAIM form, not on the digits: a document may legitimately quote a figure it
+            // does not assert, in a note explaining why no total is published. What must not appear
             // is a total asserted in the present tense as the state of the tree.
             assertThat(lines("src/main/java/com/cardemo/CardDemoApplication.java"))
                     .noneMatch(line -> line.contains("the tree holds")
@@ -900,7 +899,7 @@ final class InventoryCountGateTest {
                         .contains(producer[1]);
             }
             assertThat(PRODUCERS)
-                    .as("the census is five; an earlier revision published three, and the two it missed are "
+                    .as("the census is five, not three: the two most easily missed are "
                             + "the second copy of the DB2 idiom and the CICS clock in the bill-payment program")
                     .hasSize(5);
         }
@@ -1265,6 +1264,567 @@ final class InventoryCountGateTest {
             assertThat(SANCTIONED_ADDITIONS.keySet())
                     .as("the allowance table must cover the plan's areas exactly, so no area escapes it")
                     .containsExactlyInAnyOrderElementsOf(SCHEMA_AREAS.keySet());
+        }
+    }
+
+    /**
+     * A {@code ### DL-…} entry heading in the register, capturing the identifier.
+     *
+     * <p>The heading is what scopes an entry. Every field count in
+     * {@link DecisionLogSelfChecks} is taken between one of these and the next, which is the property an
+     * earlier revision of the register's own §12.1 lacked: it counted bolded labels across the whole file, so
+     * a label in a narrative paragraph inflated the total and the published field counts disagreed with the
+     * published entry count. Scoping removes the class of error rather than correcting one instance of it.
+     */
+    private static final Pattern REGISTER_ENTRY_HEADING = Pattern.compile("^###\\s+(DL-[A-Z]+-\\d+)\\b");
+
+    /** A bolded field label opening a table row inside a register entry, such as {@code | **Severity** |}. */
+    private static final Pattern REGISTER_FIELD_LABEL = Pattern.compile("^\\|\\s*\\*\\*(.+?)\\*\\*\\s*\\|");
+
+    /** The three fields the register's §1.8 declares to be on every entry without exception. */
+    private static final List<String> MANDATORY_REGISTER_FIELDS =
+            List.of("Classification", "Severity", "Verification");
+
+    /**
+     * The fields §1.8 licenses in the varying slot, in place of {@code Source evidence}.
+     *
+     * <p>{@code The two requirements} is the conflict-resolution substitute; the other three are the
+     * residual-risk substitutes. {@code Source evidence} itself is deliberately absent from this set and
+     * handled separately, because it is the default rather than a substitute.
+     */
+    private static final List<String> LICENSED_VARYING_FIELDS =
+            List.of("The two requirements", "Decision", "Statement", "Status of the concern",
+                    "Evidence, and its provenance");
+
+    /**
+     * The forward-reference convention, matched after comment continuations have been joined.
+     *
+     * <p>The convention is Javadoc prose, and Javadoc wraps, so an occurrence is routinely split across two
+     * physical lines. A line-oriented match therefore under-counts it badly - which is exactly how the
+     * register came to publish a census of 75 beside a single-line {@code grep} that returns 3. The four
+     * spellings the tree uses are covered by the two optional groups: the {@code the planned} qualifier that
+     * a mechanical pass dropped from all but three sites, and the {@code @code} braces.
+     */
+    private static final Pattern FORWARD_REFERENCE = Pattern.compile(
+            "owed\\s+an\\s+entry\\s+in\\s+(?:the\\s+planned\\s+)?"
+                    + "(?:\\{@code\\s+)?(?:DECISION_LOG|TRACEABILITY_MATRIX)\\.md",
+            Pattern.CASE_INSENSITIVE);
+
+    /** Collapses a Javadoc or line-comment continuation into a single space, so a wrapped phrase matches. */
+    private static final Pattern COMMENT_CONTINUATION = Pattern.compile("\\n\\s*(?:\\*|//)\\s?");
+
+    /**
+     * The register's own counted claims, re-derived from the register rather than trusted.
+     *
+     * <p><strong>Why this group exists.</strong> {@code DECISION_LOG.md} §12.1 publishes a table of checks it
+     * claims to have run on itself, each with a count. Five of those counts had gone stale and one row
+     * contradicted itself inside a single cell - "all 99 tables" in its command against "74 tables
+     * well-formed" in its result. A register that asserts its own correctness with a number no published
+     * command reproduces is asking to be believed rather than verified, which is the opposite of what an
+     * evidence artefact is for.
+     *
+     * <p><strong>What it asserts, and why in this form.</strong> Nothing here hard-codes an expected total.
+     * Each test derives the figure from the tree with the same parser the register publishes, then reads the
+     * figure the register states and asserts the two agree. That direction matters: adding a register entry
+     * or a forward reference does not require a test edit, it requires the register's own numbers to be
+     * brought up to date - and until they are, this group fails and names the discrepancy. The counts and the
+     * document can therefore never drift apart silently, which is the only property that makes publishing a
+     * number worthwhile at all.
+     */
+    @Nested
+    @DisplayName("the register's self-check counts are derived from it, not remembered about it")
+    final class DecisionLogSelfChecks {
+
+        /** The register, relative to the repository root. */
+        private static final String REGISTER = "DECISION_LOG.md";
+
+        @Test
+        @DisplayName("every entry carries all three mandatory fields, and §12.1 states the count it has")
+        void everyEntryCarriesTheThreeMandatoryFieldsAndTheRegisterSaysSo() {
+            final List<String> register = lines(REGISTER);
+            final Map<String, List<String>> entries = parseRegisterEntries(register);
+
+            final List<String> gaps = new ArrayList<>();
+            for (final Map.Entry<String, List<String>> entry : entries.entrySet()) {
+                for (final String field : MANDATORY_REGISTER_FIELDS) {
+                    if (!entry.getValue().contains(field)) {
+                        gaps.add(entry.getKey() + " is missing " + field);
+                    }
+                }
+            }
+            assertThat(gaps)
+                    .as("§1.8 declares Classification, Severity and Verification to be on every entry "
+                            + "without exception, so any gap here is a template violation")
+                    .isEmpty();
+
+            final String row = registerRow(register, "V-10b");
+            final int published = singleInt(row, "\\*\\*(\\d+) entries\\*\\*");
+            assertThat(Integer.valueOf(published))
+                    .as("V-10b publishes %d entries; the entry-scoped parser finds %d. Update the row from "
+                            + "Parser 1's output rather than editing this test", Integer.valueOf(published),
+                            Integer.valueOf(entries.size()))
+                    .isEqualTo(Integer.valueOf(entries.size()));
+
+            for (final String field : MANDATORY_REGISTER_FIELDS) {
+                final int[] pair = intPair(row, "\\*" + Pattern.quote(field) + "\\* \\*\\*(\\d+) / (\\d+)\\*\\*");
+                assertThat(Integer.valueOf(pair[0]))
+                        .as("V-10b publishes %d of %d entries carrying %s; the parser finds all %d do",
+                                Integer.valueOf(pair[0]), Integer.valueOf(pair[1]), field,
+                                Integer.valueOf(entries.size()))
+                        .isEqualTo(Integer.valueOf(entries.size()));
+                assertThat(Integer.valueOf(pair[1]))
+                        .as("the denominator V-10b publishes for %s must be the entry count", field)
+                        .isEqualTo(Integer.valueOf(entries.size()));
+            }
+        }
+
+        @Test
+        @DisplayName("the varying field varies only as §1.8 licenses, and §12.1 states the split it has")
+        void theVaryingFieldVariesOnlyAsTheTemplateDeclares() {
+            final List<String> register = lines(REGISTER);
+            final Map<String, List<String>> entries = parseRegisterEntries(register);
+
+            final List<String> violations = new ArrayList<>();
+            int sourceEvidence = 0;
+            for (final Map.Entry<String, List<String>> entry : entries.entrySet()) {
+                final String varying = varyingField(entry.getValue());
+                if ("Source evidence".equals(varying)) {
+                    sourceEvidence++;
+                } else if (!LICENSED_VARYING_FIELDS.contains(varying)) {
+                    violations.add(entry.getKey() + " opens with '" + varying + "'");
+                } else if (entry.getKey().startsWith("DL-CR-") && !"The two requirements".equals(varying)) {
+                    violations.add(entry.getKey() + " is a conflict resolution but opens with '" + varying + "'");
+                }
+            }
+            assertThat(violations)
+                    .as("§1.8 licenses %s in the varying slot, plus 'Source evidence' as the default, and "
+                            + "requires every conflict resolution to open with 'The two requirements'",
+                            LICENSED_VARYING_FIELDS)
+                    .isEmpty();
+
+            final String row = registerRow(register, "V-10b");
+            final int publishedSourceEvidence =
+                    singleInt(row, "\\*\\*(\\d+)\\*\\* open with \\*Source evidence\\*");
+            assertThat(Integer.valueOf(publishedSourceEvidence))
+                    .as("V-10b publishes %d entries opening with Source evidence; the parser finds %d",
+                            Integer.valueOf(publishedSourceEvidence), Integer.valueOf(sourceEvidence))
+                    .isEqualTo(Integer.valueOf(sourceEvidence));
+
+            final int publishedSubstituted = singleInt(row, "The \\*\\*(\\d+)\\*\\* that do not");
+            assertThat(Integer.valueOf(publishedSubstituted))
+                    .as("V-10b publishes %d entries using a substitute; the parser finds %d. The two "
+                            + "published figures must also sum to the entry count",
+                            Integer.valueOf(publishedSubstituted),
+                            Integer.valueOf(entries.size() - sourceEvidence))
+                    .isEqualTo(Integer.valueOf(entries.size() - sourceEvidence));
+            assertThat(Integer.valueOf(publishedSourceEvidence + publishedSubstituted))
+                    .as("the split V-10b publishes must account for every entry, with none double-counted")
+                    .isEqualTo(Integer.valueOf(entries.size()));
+        }
+
+        @Test
+        @DisplayName("DL-RR-08's forward-reference census is what a continuation-joining pass finds")
+        void theForwardReferenceCensusMatchesTheTree() {
+            final Map<String, Integer> census = forwardReferenceCensus();
+            final int occurrences = census.values().stream().mapToInt(Integer::intValue).sum();
+            final long mainFiles = census.keySet().stream().filter(key -> key.startsWith("src/main")).count();
+            final long testFiles = census.keySet().stream().filter(key -> key.startsWith("src/test")).count();
+            final int mainOccurrences = census.entrySet().stream()
+                    .filter(entry -> entry.getKey().startsWith("src/main"))
+                    .mapToInt(entry -> entry.getValue().intValue())
+                    .sum();
+
+            final String entry = registerEntryText(lines(REGISTER), "DL-RR-08");
+            final int[] headline =
+                    intPair(entry, "occupies (\\d+) occurrences across (\\d+) files");
+            assertThat(Integer.valueOf(headline[0]))
+                    .as("DL-RR-08 publishes %d occurrences; Parser 2 finds %d across %s",
+                            Integer.valueOf(headline[0]), Integer.valueOf(occurrences), census.keySet())
+                    .isEqualTo(Integer.valueOf(occurrences));
+            assertThat(Integer.valueOf(headline[1]))
+                    .as("DL-RR-08 publishes %d files; Parser 2 finds %d",
+                            Integer.valueOf(headline[1]), Integer.valueOf(census.size()))
+                    .isEqualTo(Integer.valueOf(census.size()));
+
+            final int[] main = intPair(entry, "(\\d+) occurrences in (\\d+) files under `src/main`");
+            assertThat(Integer.valueOf(main[0]))
+                    .as("DL-RR-08's src/main occurrence figure must be Parser 2's")
+                    .isEqualTo(Integer.valueOf(mainOccurrences));
+            assertThat(Integer.valueOf(main[1]))
+                    .as("DL-RR-08's src/main file figure must be Parser 2's")
+                    .isEqualTo(Integer.valueOf((int) mainFiles));
+
+            final int[] test = intPair(entry, "(\\d+) in (\\d+) files under `src/test`");
+            assertThat(Integer.valueOf(test[0]))
+                    .as("DL-RR-08's src/test occurrence figure must be Parser 2's")
+                    .isEqualTo(Integer.valueOf(occurrences - mainOccurrences));
+            assertThat(Integer.valueOf(test[1]))
+                    .as("DL-RR-08's src/test file figure must be Parser 2's")
+                    .isEqualTo(Integer.valueOf((int) testFiles));
+        }
+
+        @Test
+        @DisplayName("§12.1's remaining structural counts are the tree's, so none can go stale unnoticed")
+        void theRemainingStructuralCountsMatchTheDocument() {
+            final List<String> register = lines(REGISTER);
+            final String text = String.join("\n", register);
+
+            final List<String> appPaths = captures(text, "\\bapp/[A-Za-z0-9_./-]+").stream()
+                    .map(path -> path.replaceAll("[.,:)]+$", ""))
+                    .distinct()
+                    .toList();
+            assertThat(Integer.valueOf(singleInt(registerRow(register, "V-1"), "\\*\\*(\\d+)\\*\\* distinct paths")))
+                    .as("V-1's distinct frozen-corpus path count must be the one the file cites: %s", appPaths)
+                    .isEqualTo(Integer.valueOf(appPaths.size()));
+            assertThat(appPaths.stream().filter(path -> !Files.exists(ROOT.resolve(path))).toList())
+                    .as("V-1 claims 0 missing, so every cited frozen-corpus path must resolve with its case")
+                    .isEmpty();
+
+            assertThat(Integer.valueOf(singleInt(registerRow(register, "V-2"),
+                            "Of \\*\\*(\\d+)\\*\\* markdown link targets")))
+                    .as("V-2's markdown-link-target total must be the file's")
+                    .isEqualTo(Integer.valueOf(captures(text, "\\]\\(([^)]+)\\)").size()));
+
+            final String anchorRow = registerRow(register, "V-3");
+            final List<String> defined = captures(text, "<a id=\"([a-z0-9-]+)\"></a>");
+            final List<String> linked = captures(text, "\\]\\(#([a-z0-9-]+)\\)").stream().distinct().toList();
+            assertThat(Integer.valueOf(singleInt(anchorRow, "\\*\\*(\\d+)\\*\\* anchors defined")))
+                    .as("V-3's defined-anchor count must be the file's")
+                    .isEqualTo(Integer.valueOf(defined.stream().distinct().toList().size()));
+            assertThat(Integer.valueOf(singleInt(anchorRow, "\\*\\*(\\d+)\\*\\* distinct anchors linked")))
+                    .as("V-3's linked-anchor count must be the file's")
+                    .isEqualTo(Integer.valueOf(linked.size()));
+            assertThat(linked.stream().filter(anchor -> !defined.contains(anchor)).toList())
+                    .as("V-3 claims 0 unresolved, so every internal link must reach a defined anchor")
+                    .isEmpty();
+            assertThat(defined.stream()
+                            .filter(anchor -> defined.indexOf(anchor) != defined.lastIndexOf(anchor))
+                            .distinct()
+                            .toList())
+                    .as("V-5 claims no duplicates, so no anchor may be defined twice")
+                    .isEmpty();
+
+            final long placeholderLines = register.stream()
+                    .filter(line -> Pattern.compile("\\b(TBD|TODO|FIXME|XXX)\\b").matcher(line).find())
+                    .count();
+            assertThat(Long.valueOf(placeholderLines))
+                    .as("V-6 publishes its hit count as the word 'Seven' and then enumerates all seven, "
+                            + "every one prose about the prohibition rather than an instance of it. A new "
+                            + "line here is either a real placeholder, which clause B forbids, or a mention "
+                            + "the row does not list - and either way the row needs rewriting, not this "
+                            + "assertion relaxing")
+                    .isEqualTo(Long.valueOf(7L));
+            assertThat(registerRow(register, "V-6"))
+                    .as("V-6 states its count in words, so the word and the measured 7 must agree; if the "
+                            + "row moves to a numeral, change this assertion with it")
+                    .contains("**Seven** hits");
+
+            assertThat(Integer.valueOf(singleInt(registerRow(register, "V-11"), "\\*\\*(\\d+) tables")))
+                    .as("V-11's table count must be the file's, counted with escaped pipes and inline code "
+                            + "spans excluded - the reading whose absence produced the 99-against-74 "
+                            + "contradiction this row withdrew")
+                    .isEqualTo(Integer.valueOf(countTables(register)));
+        }
+
+        @Test
+        @DisplayName("both parsers stay published, so no count in §12.1 can outlive its reproduction command")
+        void bothParsersRemainPublishedBesideTheCountsTheyProduce() {
+            final String register = String.join("\n", lines(REGISTER));
+            assertThat(register)
+                    .as("the anchor V-10b and DL-RR-08 both cite must exist, or their reproduction "
+                            + "instructions become dangling references")
+                    .contains("<a id=\"selfcheck-parser\"></a>");
+            assertThat(register)
+                    .as("Parser 1 must remain published as a runnable block; a count whose parser has been "
+                            + "deleted is the exact defect this group closes")
+                    .contains("Parser 1 — the entry-scoped structural pass")
+                    .contains("hdr = re.compile(r'^###\\s+(DL-[A-Z]+-\\d+)\\b')");
+            assertThat(register)
+                    .as("Parser 2 must remain published, including the continuation-joining substitution "
+                            + "that is the whole reason a single-line grep cannot count the convention")
+                    .contains("Parser 2 — the forward-reference census")
+                    .contains("s/\\n\\s*(?:\\*|\\/\\/)\\s?/ /g");
+            assertThat(register)
+                    .as("the withdrawn figures must stay withdrawn in writing, so the correction is "
+                            + "auditable rather than a silent overwrite")
+                    .contains("all four figures are withdrawn")
+                    .contains("both are withdrawn");
+        }
+
+        /**
+         * Applies Parser 1: scopes each entry from its heading to the next and lists its field labels.
+         *
+         * @param register the register's lines, in order; must not be {@code null}
+         * @return field labels per entry identifier, in document order
+         */
+        private Map<String, List<String>> parseRegisterEntries(final List<String> register) {
+            final List<Integer> starts = new ArrayList<>();
+            final List<String> names = new ArrayList<>();
+            for (int index = 0; index < register.size(); index++) {
+                final Matcher heading = REGISTER_ENTRY_HEADING.matcher(register.get(index));
+                if (heading.find()) {
+                    starts.add(Integer.valueOf(index));
+                    names.add(heading.group(1));
+                }
+            }
+            final Map<String, List<String>> entries = new LinkedHashMap<>();
+            for (int slot = 0; slot < starts.size(); slot++) {
+                final int from = starts.get(slot).intValue();
+                final int to = slot + 1 < starts.size() ? starts.get(slot + 1).intValue() : register.size();
+                final List<String> labels = new ArrayList<>();
+                for (final String line : register.subList(from, to)) {
+                    final Matcher label = REGISTER_FIELD_LABEL.matcher(line);
+                    if (label.find()) {
+                        labels.add(label.group(1));
+                    }
+                }
+                entries.put(names.get(slot), labels);
+            }
+            return entries;
+        }
+
+        /**
+         * Returns the field occupying the varying slot: the first label that is neither of the two fixed
+         * openers.
+         *
+         * @param labels one entry's field labels, in document order
+         * @return the varying field's label, or {@code "<none>"} when the entry declares no field at all
+         */
+        private String varyingField(final List<String> labels) {
+            return labels.stream()
+                    .filter(label -> !"Classification".equals(label) && !"Severity".equals(label))
+                    .findFirst()
+                    .orElse("<none>");
+        }
+
+        /**
+         * Applies Parser 2: counts the forward-reference convention per Java file, joining comment
+         * continuations first so a wrapped occurrence is seen.
+         *
+         * @return occurrence count per repository-relative path, for the files that hold at least one
+         */
+        private Map<String, Integer> forwardReferenceCensus() {
+            final Map<String, Integer> census = new LinkedHashMap<>();
+            for (final String tree : List.of("src/main", "src/test")) {
+                try (Stream<Path> walk = Files.walk(ROOT.resolve(tree))) {
+                    walk.filter(path -> path.toString().endsWith(".java"))
+                            .sorted()
+                            .forEach(path -> {
+                                final String joined = COMMENT_CONTINUATION
+                                        .matcher(readUtf8(path))
+                                        .replaceAll(" ");
+                                final long hits = FORWARD_REFERENCE.matcher(joined).results().count();
+                                if (hits > 0L) {
+                                    census.put(
+                                            ROOT.relativize(path).toString().replace('\\', '/'),
+                                            Integer.valueOf((int) hits));
+                                }
+                            });
+                } catch (final IOException cause) {
+                    throw new UncheckedIOException("Cannot walk " + tree, cause);
+                }
+            }
+            return census;
+        }
+
+        /**
+         * Reads a file as UTF-8 text.
+         *
+         * @param path the file to read
+         * @return its whole content
+         */
+        private String readUtf8(final Path path) {
+            try {
+                return Files.readString(path, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + path, cause);
+            }
+        }
+
+        /**
+         * Returns the whole of one {@code | V-… |} row from §12.1.
+         *
+         * @param register the register's lines
+         * @param check    the check identifier, such as {@code V-10b}
+         * @return the row's text
+         */
+        private String registerRow(final List<String> register, final String check) {
+            return register.stream()
+                    .filter(line -> line.startsWith("| " + check + " |"))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "DECISION_LOG.md §12.1 no longer publishes a " + check + " row. If the check was "
+                                    + "renamed, rename it here too; if it was withdrawn, this assertion "
+                                    + "should be withdrawn with it rather than left to fail."));
+        }
+
+        /**
+         * Returns the text of one register entry, from its heading to the next heading.
+         *
+         * @param register the register's lines
+         * @param entryId  the entry identifier, such as {@code DL-RR-08}
+         * @return the entry's text, newline-joined
+         */
+        private String registerEntryText(final List<String> register, final String entryId) {
+            int from = -1;
+            for (int index = 0; index < register.size(); index++) {
+                final Matcher heading = REGISTER_ENTRY_HEADING.matcher(register.get(index));
+                if (heading.find() && entryId.equals(heading.group(1))) {
+                    from = index;
+                    break;
+                }
+            }
+            if (from < 0) {
+                throw new IllegalStateException("DECISION_LOG.md holds no " + entryId + " entry.");
+            }
+            int to = register.size();
+            for (int index = from + 1; index < register.size(); index++) {
+                if (REGISTER_ENTRY_HEADING.matcher(register.get(index)).find()) {
+                    to = index;
+                    break;
+                }
+            }
+            return String.join("\n", register.subList(from, to));
+        }
+
+        /**
+         * Collects every match of a pattern, in document order and with duplicates retained.
+         *
+         * @param text  the text to scan
+         * @param regex a pattern; its first capturing group is collected, or the whole match when it has none
+         * @return the collected strings, in order
+         */
+        private List<String> captures(final String text, final String regex) {
+            final Matcher matcher = Pattern.compile(regex).matcher(text);
+            final List<String> found = new ArrayList<>();
+            while (matcher.find()) {
+                found.add(matcher.groupCount() >= 1 ? matcher.group(1) : matcher.group());
+            }
+            return found;
+        }
+
+        /**
+         * Counts well-formed markdown tables, and fails the caller if any row's column count differs from its
+         * header's.
+         *
+         * <p>A table is a row followed by a separator row. Two readings matter and both were absent from the
+         * pass that produced §12.1's withdrawn 99-against-74 contradiction: a pipe escaped as {@code \|} is
+         * cell content, and so is a pipe inside an inline code span. Counting raw pipes reports spurious
+         * mismatches on precisely the rows that quote a shell pipeline, which this register does often.
+         *
+         * @param register the register's lines, in order
+         * @return the number of tables, all of which are asserted well-formed
+         */
+        private int countTables(final List<String> register) {
+            final Pattern separator = Pattern.compile("^\\s*\\|[\\s:|-]+\\|\\s*$");
+            final List<String> malformed = new ArrayList<>();
+            int tables = 0;
+            boolean inFence = false;
+            int index = 0;
+            while (index < register.size()) {
+                final String line = register.get(index);
+                if (line.strip().startsWith("```")) {
+                    inFence = !inFence;
+                    index++;
+                    continue;
+                }
+                final boolean opensTable = !inFence
+                        && line.stripLeading().startsWith("|")
+                        && index + 1 < register.size()
+                        && separator.matcher(register.get(index + 1)).matches();
+                if (!opensTable) {
+                    index++;
+                    continue;
+                }
+                tables++;
+                final int columns = columnCount(line);
+                int row = index + 2;
+                while (row < register.size() && register.get(row).stripLeading().startsWith("|")) {
+                    if (columnCount(register.get(row)) != columns) {
+                        malformed.add("line " + (row + 1) + " has " + columnCount(register.get(row))
+                                + " columns against the header's " + columns);
+                    }
+                    row++;
+                }
+                index = row;
+            }
+            assertThat(malformed)
+                    .as("V-11 claims every table is well-formed with consistent column counts")
+                    .isEmpty();
+            assertThat(Boolean.valueOf(inFence))
+                    .as("V-11 claims code fences are balanced, so no fence may be left open")
+                    .isEqualTo(Boolean.FALSE);
+            return tables;
+        }
+
+        /**
+         * Counts a markdown row's cells, treating an escaped pipe and a pipe inside an inline code span as
+         * content rather than as a separator.
+         *
+         * @param row one markdown table row
+         * @return the number of cells between the leading and trailing separators
+         */
+        private int columnCount(final String row) {
+            final List<String> cells = new ArrayList<>();
+            final StringBuilder cell = new StringBuilder();
+            boolean inCode = false;
+            for (int position = 0; position < row.length(); position++) {
+                final char character = row.charAt(position);
+                if (character == '\\' && position + 1 < row.length()) {
+                    cell.append(character).append(row.charAt(position + 1));
+                    position++;
+                } else if (character == '`') {
+                    inCode = !inCode;
+                    cell.append(character);
+                } else if (character == '|' && !inCode) {
+                    cells.add(cell.toString());
+                    cell.setLength(0);
+                } else {
+                    cell.append(character);
+                }
+            }
+            cells.add(cell.toString());
+            if (!cells.isEmpty() && cells.get(0).isBlank()) {
+                cells.remove(0);
+            }
+            if (!cells.isEmpty() && cells.get(cells.size() - 1).isBlank()) {
+                cells.remove(cells.size() - 1);
+            }
+            return cells.size();
+        }
+
+        /**
+         * Extracts one integer a document publishes.
+         *
+         * @param text  the text to search
+         * @param regex a pattern with exactly one capturing group holding digits
+         * @return the captured integer
+         */
+        private int singleInt(final String text, final String regex) {
+            final Matcher matcher = Pattern.compile(regex).matcher(text);
+            if (!matcher.find()) {
+                throw new IllegalStateException(
+                        "DECISION_LOG.md no longer publishes a figure matching /" + regex + "/. The wording "
+                                + "and this assertion must be changed together, so that a count and its "
+                                + "check cannot part company.");
+            }
+            return Integer.parseInt(matcher.group(1));
+        }
+
+        /**
+         * Extracts a pair of integers a document publishes together.
+         *
+         * @param text  the text to search
+         * @param regex a pattern with exactly two capturing groups holding digits
+         * @return the two captured integers, in order
+         */
+        private int[] intPair(final String text, final String regex) {
+            final Matcher matcher = Pattern.compile(regex).matcher(text);
+            if (!matcher.find()) {
+                throw new IllegalStateException(
+                        "DECISION_LOG.md no longer publishes a pair matching /" + regex + "/.");
+            }
+            return new int[] {Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))};
         }
     }
 }

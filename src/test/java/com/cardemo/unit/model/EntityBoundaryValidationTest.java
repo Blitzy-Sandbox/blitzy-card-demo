@@ -28,7 +28,7 @@
  *               app/cpy/CVTRA06Y.cpy          (DALYTRAN-RECORD)
  *               app/cpy/CSUSR01Y.cpy:L18-L22  (SEC-USER-DATA)
  *               app/cbl/CBTRN02C.cbl:L547-L552 (negative to cycle debit)
- *               app/cbl/CBACT04C.cbl:L214,L473-L516 (zero rate, zero
+ *               app/cbl/CBACT04C.cbl:L214,L473-L515 (zero rate, zero
  *               merchant id) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -372,8 +372,9 @@ class EntityBoundaryValidationTest {
         @DisplayName("the width guard names the correct table, not a column of it")
         void theNullMessageNamesTheTable() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .as("an earlier revision named tran_type - which is a column - where the table is "
-                            + "transaction_type, so the message pointed at the wrong object")
+                    .as("tran_type is a column and the table is "
+                            + "transaction_type, so naming the column here would point the message at the "
+                            + "wrong object")
                     .isThrownBy(() -> new TransactionType(null, "A DESCRIPTION"))
                     .withMessageContaining("transaction_type");
         }
@@ -393,7 +394,7 @@ class EntityBoundaryValidationTest {
         void unsignedFieldsRefuseNegativesAndAcceptZero() {
             assertThatNoException()
                     .as("zero is an ordinary member of an unsigned domain and is not a sentinel: "
-                            + "app/cbl/CBACT04C.cbl:L473-L516 builds its synthetic interest "
+                            + "app/cbl/CBACT04C.cbl:L473-L515 builds its synthetic interest "
                             + "transactions with a merchant identifier of exactly zero")
                     .isThrownBy(() -> transaction().setMerchantId(0L));
 

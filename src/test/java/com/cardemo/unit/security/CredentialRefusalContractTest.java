@@ -99,9 +99,9 @@ class CredentialRefusalContractTest {
      * The credential the stub row verifies against, generated per run rather than written down.
      *
      * <p>This class stubs its own store, so the value only has to be a credential this run's digest accepts -
-     * it never has to be the one {@code app/jcl/DUSRSECJ.jcl} seeds. An earlier revision named that shared
-     * plaintext anyway, which put a working credential for the shipped demo seed into a tracked file and
-     * falsified the security gate's own "no plaintext anywhere" claim. Rule 1 clause D admits no sample
+     * it never has to be the one {@code app/jcl/DUSRSECJ.jcl} seeds. Naming that shared
+     * plaintext would put a working credential for the shipped demo seed into a tracked file and
+     * falsify the security gate's own "no plaintext anywhere" claim. Rule 1 clause D admits no sample
      * exception, so the value is generated: eight upper-case letters, matching
      * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy} and the character set the source's
      * {@code FUNCTION UPPER-CASE} normalisation yields.

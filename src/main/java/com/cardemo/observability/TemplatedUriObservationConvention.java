@@ -12,7 +12,7 @@
  * Capability  : NEW - additive trace hygiene, not a translation. The
  *               frozen corpus exports no spans at all: its entire
  *               instrumentation is DISPLAY to SYSOUT plus the status
- *               renderer at app/cbl/CBTRN02C.cbl:L714-L731, so there is
+ *               renderer at app/cbl/CBTRN02C.cbl:L714-L727, so there is
  *               no COBOL paragraph to cite for this behaviour. Mandated
  *               by Rule 1 Clause D, principle of least privilege, and by
  *               Clause A's requirement for security-conscious defaults.

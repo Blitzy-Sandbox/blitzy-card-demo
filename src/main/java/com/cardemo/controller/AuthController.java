@@ -885,11 +885,9 @@ public class AuthController {
      * input, looked like two unrelated failures depending on which layer noticed it. A review recorded that
      * inconsistency as a High-severity finding against this class.
      *
-     * <p><strong>Why it is declared here rather than centrally.</strong> The envelope is per-controller by
-     * design: the title names the resource, so a single advice class could not produce it without being told
-     * which controller it was answering for. This package declares no {@code @ControllerAdvice} and no shared
-     * base class, and this method keeps that property - it carries {@code @ExceptionHandler} only and is
-     * scoped to this controller alone, exactly like the typed mappers above it.
+     * <p><strong>Why it is declared here rather than centrally.</strong> Stated for the whole package in
+     * {@code com.cardemo.controller}'s package documentation; this handler keeps that property, carrying
+     * {@code @ExceptionHandler} only and answering for this controller alone.
      *
      * <p><strong>What the body does not contain.</strong> No rejected value, no field name, no constraint
      * message, no exception class and no discriminator; {@link #BIND_FAILURE_PROBLEM_DETAIL} records why each
@@ -925,18 +923,11 @@ public class AuthController {
      * Maps a request body the framework could not read onto {@code 400 Bad Request} with this controller's
      * own envelope.
      *
-     * <p>Claims the one exception the framework folds three conditions into, all of which occur before the
-     * mapped method is entered: a body that is not well-formed JSON, a body carrying a property outside the
-     * schema, and a request with no body where {@code @RequestBody} requires one. Each was previously answered
-     * by the framework's default handling, in a shape no client-side handler written against this package's
-     * envelope could read - the second half of the same High-severity finding.
-     *
-     * <p>The status is {@code 400} rather than {@code 415} or {@code 422}: the caller addressed the right
-     * operation with the right media type and sent something this operation cannot accept, which is precisely
-     * a bad request. Answering it identically to a bean-validation refusal is deliberate, and the two are told
-     * apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line.
-     *
-     * <p>This method is not request-mapped and is not one of the seventeen operations.
+     * <p>Which three framework conditions fold into this one exception, why the status is {@code 400}, and
+     * why the handler is declared per controller rather than centrally are stated for the whole package in
+     * {@code com.cardemo.controller}'s package documentation. The two refusals are told apart by
+     * {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line, and this method is not
+     * request-mapped, so it is not one of the seventeen operations.
      *
      * @param unreadable the framework's read failure, whose message and cause chain are deliberately kept out
      *                   of the body and emitted at {@code DEBUG} only

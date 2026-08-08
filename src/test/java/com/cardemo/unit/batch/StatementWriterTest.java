@@ -509,10 +509,10 @@ class StatementWriterTest {
 
             writer.write(new Chunk<>(List.of(statement())));
 
-            // Finding H-09, severity High, RESOLVED: the two statement objects were emitted (asserted by the
-            // key and geometry groups below) and the counter still reports the one real record. Before the
-            // fix this read 2.0, conflating a rendering of already-counted transactions with the records
-            // themselves and inflating sum(carddemo_batch_records_processed_total) on every statement run.
+            // Finding H-09, severity High: the two statement objects are emitted (asserted by the
+            // key and geometry groups below) and the counter still reports the one real record. Reading 2.0
+            // here would conflate a rendering of already-counted transactions with the records
+            // themselves and inflate sum(carddemo_batch_records_processed_total) on every statement run.
             assertThat(processedCount()).isEqualTo(1.0d);
             assertThat(uploadedKeys()).hasSize(2);
         }

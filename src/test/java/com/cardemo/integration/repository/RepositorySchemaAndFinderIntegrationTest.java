@@ -801,13 +801,13 @@ class RepositorySchemaAndFinderIntegrationTest extends AbstractRepositoryIntegra
     /**
      * The authoritative metadata contract for the whole schema, driven table by table.
      *
-     * <p><strong>Finding, severity High, RESOLVED.</strong> This class previously asserted three metadata
+     * <p>Asserting only three metadata
      * facts - that the eleven tables exist, that exactly three non-unique alternate indexes exist, and that
-     * exactly four tables carry a version column - and each of those is true and none of them is a contract.
-     * None could detect type-compatible drift: a widened {@code CHAR}, a lost decimal scale, a reordered
-     * composite key, a retargeted foreign key or a dropped check constraint would all have left this class,
-     * and the whole tier, green. For a migration whose contract is that every width comes from a frozen
-     * picture clause, that was the tier's largest blind spot.
+     * exactly four tables carry a version column - states no contract: each of those is true and none of them
+     * is a contract. None can detect type-compatible drift: a widened {@code CHAR}, a lost decimal scale, a
+     * reordered composite key, a retargeted foreign key or a dropped check constraint would each leave this
+     * class, and the whole tier, green. For a migration whose contract is that every width comes from a frozen
+     * picture clause, that is the tier's largest available blind spot.
      *
      * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet of every column,
      * key, index and constraint once, and the parameterized test below drives it across all eleven tables.

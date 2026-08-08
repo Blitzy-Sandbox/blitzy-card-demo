@@ -176,14 +176,15 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * rather than transcribed:
  *
  * <ul>
- *   <li><strong>High, RESOLVED.</strong> {@code card_cvv_cd} <em>is</em> modelled, and an earlier revision of
- *       this file asserted the opposite. The plan described a seventh mapped property {@code cvvCode} over a
+ *   <li><strong>High.</strong> {@code card_cvv_cd} <em>is</em> modelled, and asserting the opposite would
+ *       institutionalise a field-contract break. The plan describes a seventh mapped property {@code cvvCode}
+ *       over a
  *       {@code CHAR(3)} column with a round-trip assertion on the seeded value, and that is what the system
- *       now has: {@code V1__create_schema.sql} declares {@code card_cvv_cd CHAR(3) NOT NULL},
+ *       has: {@code V1__create_schema.sql} declares {@code card_cvv_cd CHAR(3) NOT NULL},
  *       {@code V3__seed_data.sql} loads bytes 28-30 of all fifty fixture rows, and {@link Card} maps a
- *       private field for it behind a six-argument constructor. The earlier omission was a field-contract
+ *       private field for it behind a six-argument constructor. Omitting the column would be a field-contract
  *       break rather than a hardening measure - {@code app/cpy/CVACT02Y.cpy:L7} declares the field inside the
- *       authoritative 150-byte record - and asserting its absence institutionalised the break. What is
+ *       authoritative 150-byte record. What is
  *       withheld is the read path, not the storage: the entity publishes no accessor that returns the value,
  *       only {@code matchesVerificationValue(String)}, so this file proves the round trip through that
  *       comparison and additionally proves the leading zero survived the load on exactly eight of the fifty
@@ -211,10 +212,12 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * <p><strong>Two disclosures, per Clause F's requirement to say plainly when information is missing.</strong>
  *
  * <ul>
- *   <li><strong>The end-to-end parity baseline is Not available.</strong> No captured mainframe output
- *       exists anywhere in this repository - searching for expected, baseline, golden, {@code .out},
- *       sysout, {@code DALYREJS}, {@code TRANREPT}, {@code STMTFILE} and {@code HTMLFILE} artefacts returns
- *       only dataset-<em>definition</em> job-control members and no captured data. What would be needed is a
+ *   <li><strong>The end-to-end boundary parity expectation exists; what is Not available is a captured z/OS run to
+ *       corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own output --
+ *       {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected}, {@code DALYREJS.expected}
+ *       and {@code CBTRN02C.sysout.expected} -- derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and
+ *       running it against the frozen fixtures, with the harness and the derivation recorded beside them in
+ *       {@code PROVENANCE.properties}. What would be needed is a
  *       captured 430-byte {@code DALYREJS} reject data set together with the resulting {@code TRANSACT},
  *       {@code ACCTDATA} and {@code TCATBALF} images from a real {@code POSTTRAN} run at a known input
  *       state. This file therefore creates no baseline file, fabricates no expected bytes, and derives no

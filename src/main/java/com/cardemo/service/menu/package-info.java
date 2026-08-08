@@ -10,8 +10,8 @@
  *               it - replacing EXEC CICS XCTL with URL navigation. The
  *               admin menu additionally guards a placeholder program
  *               entry, which is preserved.
- * Source      : app/cbl/COMEN01C.cbl (282 lines, 7 paragraphs; main menu dispatch) @ 7756d89
- * Source      : app/cbl/COADM01C.cbl (268 lines, 7 paragraphs; admin menu dispatch) @ 7756d89
+ * Source      : app/cbl/COMEN01C.cbl (282 lines, 7 own paragraph labels; main menu dispatch) @ 7756d89
+ * Source      : app/cbl/COADM01C.cbl (268 lines, 7 own paragraph labels; admin menu dispatch) @ 7756d89
  * Source      : app/cbl/COMEN01C.cbl:L149-L150 (identity MOVEs commented out), :L152-L155 (XCTL with COMMAREA) @
  *               7756d89
  * Source      : app/cpy/COMEN02Y.cpy (10 populated menu slots, bounded by its own count field) @ 7756d89

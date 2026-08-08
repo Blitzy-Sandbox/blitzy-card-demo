@@ -9,8 +9,9 @@
  *               default-message substitution.
  * Source      : app/cbl/CBTRN02C.cbl:L714-L727 @ 7756d89 - 9910-DISPLAY-IO-STATUS, the four character
  *               status render that always precedes the abend.
- * Source      : app/cbl/CBACT04C.cbl:L415-L460 @ 7756d89 - the disclosure group retry whose missing
- *               DEFAULT row abends instead of reporting a not found record.
+ * Source      : app/cbl/CBACT04C.cbl:L443-L460 @ 7756d89 - 1200-A-GET-DEFAULT-INT-RATE, the
+ *               disclosure group retry whose missing DEFAULT row abends instead of
+ *               reporting a not found record.
  * Source      : app/cbl/CBSTM03A.CBL:L71-L80,L736-L911 @ 7756d89 - the file service call contract whose
  *               secondary success status must never reach this type.
  * ******************************************************************

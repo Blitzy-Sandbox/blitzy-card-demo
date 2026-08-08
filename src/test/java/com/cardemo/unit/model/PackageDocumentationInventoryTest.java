@@ -11,16 +11,15 @@
  *               that contains no type may carry one - bar the
  *               intermediate packages named in DOCUMENTED_CONTAINERS,
  *               which are documented on purpose and whose entries this
- *               test also keeps honest. The previous
- *               arrangement stated a fixed census in prose - "132 .java
- *               files, of which exactly 14 are package-info.java", with
- *               a per-package breakdown and an assertion that the nine
- *               service leaves were "documented by their parent" - and
- *               every part of that had drifted: the parent packages
- *               contain no types and carried no documentation, so the
- *               leaves were documented by nothing at all. A census in a
- *               comment is a claim no build step maintains. This test
- *               is the build step.
+ *               test also keeps honest. A fixed census in prose - "132
+ *               .java files, of which exactly 14 are package-info.java",
+ *               with a per-package breakdown and an assertion that the
+ *               nine service leaves are "documented by their parent" -
+ *               cannot stay true: the parent packages contain no types
+ *               and carry no documentation, so such leaves would be
+ *               documented by nothing at all. A census in a comment is a
+ *               claim no build step maintains. This test is the build
+ *               step.
  * Source      : CONTRIBUTING.md:L33-L34 (focus the change; ensure local
  *               tests pass) @ 7756d89
  * Source      : app/cbl/CBACT04C.cbl:L1-L21 (the universal Apache-2.0
@@ -63,12 +62,12 @@ import org.junit.jupiter.api.Test;
  * Asserts that package documentation exists for exactly the packages that need it, and that each such document
  * carries the content Rule 1 Clause E requires.
  *
- * <p><strong>Why this is a test rather than a paragraph.</strong> The tree previously described its own shape with
+ * <p><strong>Why this is a test rather than a paragraph.</strong> Describing the tree's own shape with
  * hard-coded counts in {@code CardDemoApplication} and in the root {@code package-info.java}, including the claim
- * that a fixed number of documentation files existed "at exactly these locations, and nowhere else". Nothing
- * maintained those figures, so they drifted, and the drift was invisible: adding a package produced no error and
- * no warning. The counts have been withdrawn in favour of an invariant, and this class is what holds the
- * invariant true. The <em>counts</em> are free to change; the <em>equality</em> is not.
+ * that a fixed number of documentation files exists "at exactly these locations, and nowhere else", is a figure
+ * nothing maintains, so it drifts, and the drift is invisible: adding a package produces no error and
+ * no warning. This class holds an invariant instead. The <em>counts</em> are free to change; the
+ * <em>equality</em> is not.
  *
  * <p><strong>What is checked, and deliberately not checked.</strong> Existence and the presence of each mandated
  * section heading are checked, because both are mechanically decidable. The <em>accuracy</em> of a document's
@@ -128,10 +127,9 @@ class PackageDocumentationInventoryTest {
      * scheme over seven GDG bases, and one set of preserved source quirks - so stating them per leaf would be
      * the duplication Rule 1 Clause C forbids and stating them nowhere would fail Clause E for the layer.
      *
-     * <p><strong>An earlier revision of this list named {@code com/cardemo/batch} alongside
-     * {@code com/cardemo/model} as deliberately absent, and that claim is withdrawn.</strong> It was written
-     * when the batch root carried no document; the layer document now exists, so the reason that applied to
-     * {@code model} - a summary with nothing to summarise - no longer describes {@code batch}. The exemption
+     * <p><strong>{@code com/cardemo/batch} does not belong on this list.</strong> The reason that applies to
+     * {@code model} - a summary with nothing to summarise - does not describe the batch root, which carries
+     * both a layer document and a type. The exemption
      * stays honest either way, because the two assertions below still require every entry here to be
      * genuinely type-less and genuinely documented.
      */

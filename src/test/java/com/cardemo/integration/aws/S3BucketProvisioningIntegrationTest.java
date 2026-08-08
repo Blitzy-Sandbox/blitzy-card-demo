@@ -321,10 +321,11 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * invention. Three things are missing here, and each is disclosed with what would close it.
  *
  * <ol>
- *   <li><strong>The boundary-parity expected-output baseline is Not available.</strong> A search across
- *       expected, baseline, golden, system-output and per-dataset name patterns returned only dataset
- *       <em>definition</em> job control and zero captured data, and a byte-size sweep for 430-byte and
- *       133-byte artefacts returned nothing. <em>What is needed:</em> a captured 430-byte {@code DALYREJS}
+ *   <li><strong>The boundary-parity expected-output expectation <em>exists</em>; what is Not available is a captured
+ *       z/OS run to corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen
+ *       program's own output, derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and running it
+ *       against the frozen fixtures, with the derivation recorded beside it in {@code PROVENANCE.properties};
+ *       nothing there was produced by running this implementation. <em>What is still needed:</em> a captured 430-byte {@code DALYREJS}
  *       reject dataset together with the resulting {@code TRANSACT}, {@code ACCTDATA} and {@code TCATBALF}
  *       images from a real {@code POSTTRAN} execution at a known input state. Until those exist <strong>this
  *       class creates no baseline file and fabricates no expected bytes</strong>, and a baseline produced by
@@ -398,22 +399,6 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
     /** The context's own environment, used to resolve property keys and to read the active profile. */
     @Autowired
     private Environment environment;
-
-    /**
-     * Sole constructor, used by the test framework.
-     *
-     * <p>Declared and empty rather than left implicit, for two reasons. It follows the precedent the harness
-     * and every nested group in this file already set, so the whole package reads the same way. And it keeps
-     * the class clean under the strictest documentation lint, which reports an undocumented default
-     * constructor as a warning - a warning that would become a build failure the moment the doclint gate is
-     * widened, since the build compiles with warnings escalated to errors.
-     *
-     * <p>It stays empty deliberately: every collaborator is injected by the framework after construction, and
-     * a constructor that touched an injected field would read it before it was populated.
-     */
-    S3BucketProvisioningIntegrationTest() {
-        // Intentionally empty; all state is injected by the framework or created per test.
-    }
 
     /**
      * One legacy generation data group base, paired with the configuration key that carries its object-store
@@ -599,11 +584,6 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
     @DisplayName("the three logical buckets replacing the seven GDG bases")
     class LogicalBuckets {
 
-        /** Sole constructor, used by the test framework. */
-        LogicalBuckets() {
-            // Intentionally empty; this group holds no state of its own.
-        }
-
         /**
          * A blank or duplicated bucket name is a real misconfiguration, so it is refused explicitly.
          *
@@ -760,11 +740,6 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
     @DisplayName("object versioning as the substitute for a relative generation reference")
     class GenerationVersioning {
 
-        /** Sole constructor, used by the test framework. */
-        GenerationVersioning() {
-            // Intentionally empty; this group holds no state of its own.
-        }
-
         /**
          * Two writes of one key leave two distinct versions, and the second is the current one.
          *
@@ -887,11 +862,6 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
     @DisplayName("removing a versioned bucket that still holds versions")
     class VersionedBucketDeletion {
 
-        /** Sole constructor, used by the test framework. */
-        VersionedBucketDeletion() {
-            // Intentionally empty; this group holds no state of its own.
-        }
-
         /**
          * A plain bucket delete is refused while versions remain, and the version-aware delete succeeds.
          *
@@ -982,11 +952,6 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
     @Nested
     @DisplayName("seven generation bases, and the resolved TRANREPT retention conflict")
     class GenerationBaseAccounting {
-
-        /** Sole constructor, used by the test framework. */
-        GenerationBaseAccounting() {
-            // Intentionally empty; this group holds no state of its own.
-        }
 
         /**
          * There are seven generation bases, not six, and each has a distinct configured prefix.
@@ -1128,11 +1093,6 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
     @DisplayName("least privilege - no live AWS endpoint or credential is reachable")
     class LeastPrivilegeBinding {
 
-        /** Sole constructor, used by the test framework. */
-        LeastPrivilegeBinding() {
-            // Intentionally empty; this group holds no state of its own.
-        }
-
         /**
          * The client the application configured is pointed at the container, not at a real region.
          *
@@ -1204,11 +1164,6 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
     @Nested
     @DisplayName("untrusted object keys are stored verbatim and never escape the bucket")
     class UntrustedObjectKeys {
-
-        /** Sole constructor, used by the test framework. */
-        UntrustedObjectKeys() {
-            // Intentionally empty; this group holds no state of its own.
-        }
 
         /**
          * A key carrying traversal sequences and a very long segment is stored exactly as supplied.

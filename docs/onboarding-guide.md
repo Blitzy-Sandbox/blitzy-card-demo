@@ -1,27 +1,33 @@
 <!--
-  Application : CardDemo
-  Type        : Documentation - developer onboarding and continued-development guide
-  Function    : Orient a new contributor to the frozen COBOL corpus in app/ and the
-                Java 25 / Spring Boot 3.5.11 implementation in src/, and teach the
-                fidelity rules that govern every change to either half.
-  Derived from: CONTRIBUTING.md, README.md, app/csd/CARDDEMO.CSD, app/catlg/LISTCAT.txt,
-                app/cbl/**, app/cpy/**, app/cpy-bms/**, app/jcl/**, app/proc/**,
-                app/data/ASCII/**
-  Anchor      : 7756d895ffeb65f7ea72aaa609e356d9899afcec (7756d89)
-
-  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-
-  Licensed under the Apache License, Version 2.0 (the "License").
-  You may not use this file except in compliance with the License.
-  You may obtain a copy of the License at
-
-     http://www.apache.org/licenses/LICENSE-2.0
-
-  Unless required by applicable law or agreed to in writing, software
-  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-  License for the specific language governing permissions and limitations
-  under the License.
+  ******************************************************************
+  * Program     : onboarding-guide.md
+  * Application : CardDemo
+  * Type        : Documentation - developer onboarding and
+  *               continued-development guide
+  * Function    : Orient a new contributor to the frozen COBOL corpus in app/
+  *               and the Java 25 / Spring Boot 3.5.11 implementation in src/,
+  *               and teach the fidelity rules that govern every change to
+  *               either half.
+  * Source      : CONTRIBUTING.md, README.md, app/csd/CARDDEMO.CSD,
+  *               app/catlg/LISTCAT.txt, app/cbl/**, app/cpy/**,
+  *               app/cpy-bms/**, app/jcl/**, app/proc/**, app/data/ASCII/**
+  *               @ 7756d89 (7756d895ffeb65f7ea72aaa609e356d9899afcec)
+  ******************************************************************
+  * Copyright Amazon.com, Inc. or its affiliates.
+  * All Rights Reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License").
+  * You may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+  *    http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing,
+  * software distributed under the License is distributed on an
+  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  * either express or implied. See the License for the specific
+  * language governing permissions and limitations under the License
+  ******************************************************************
 -->
 
 # Onboarding Guide
@@ -244,54 +250,43 @@ depends on is validated against the 3.9 line, so **3.9.11 is pinned deliberately
 precisely so that the build cannot silently run on a wrong toolchain and produce a result
 nobody can reproduce.
 
-### 3.2 Two dated readings of the authoring host
+### 3.2 A dated reading of the authoring host
 
-Host state decides which workflows are runnable, so it is published as **dated
-measurements** rather than as a property of the project. Two readings exist. The second
-supersedes the first where they differ, and the differences are stated rather than quietly
-folded away. This mirrors the convention already established in
+Host state decides which workflows are runnable, so it is published as a **dated
+measurement** rather than as a property of the project. This mirrors the convention
+established in
 [validation-gates.md §2](validation-gates.md#env-first), which is the authoritative ledger
 for host evidence.
 
-**First reading &mdash; Thursday, 30 July 2026 at 06:56 UTC.**
+**Reading &mdash; Friday, 7 August 2026 at 20:08 UTC**, taken by invoking each tool and copying
+its own output.
 
 | Tool | Result |
 |---|---|
-| `docker --version` | **Docker version 29.6.2, build dfc4efb** |
-| `docker compose version` | **Docker Compose version v5.3.1** |
-| `docker info --format '{{.ServerVersion}}'` | **29.6.2** &mdash; daemon reachable |
-| `java`, `javac`, `mvn` | **NOT FOUND** |
-| `localstack`, `aws` | **NOT FOUND** |
-| `mkdocs` | **NOT FOUND** |
+| `docker --version` | Docker version 29.7.0, build c1eba93 |
+| `docker compose version` | Docker Compose version v5.3.1 |
+| `docker info --format '{{.ServerVersion}}'` | 29.7.0 &mdash; daemon reachable |
+| `java -version` | openjdk 25.0.3 2026-04-21 LTS, Temurin-25.0.3+9 |
+| `javac -version` | javac 25.0.3 |
+| `mvn -v` | Apache Maven 3.9.11 |
+| `localstack --version` | LocalStack CLI 4.14.0 &mdash; required by nothing |
+| `aws --version` | aws-cli 1.46.0 &mdash; required by nothing |
+| `mkdocs --version` | mkdocs 1.6.1 (Python 3.13) |
+| `psql --version` | **NOT FOUND** &mdash; required by nothing; the database runs as a compose service |
 
-**What that reading meant.** **A container runtime was available**, so the compose topology
-could be brought up and the container-dependent test tiers were feasible. What was missing
-was the **host JDK and Maven**, so a host-native `./mvnw` could not run at all; the
-documented remediation was &mdash; and remains &mdash; the **pinned-container build** in
-[§5.2](#52-building-when-the-host-has-no-jdk). Note carefully which component was *not* the
-gap: Docker Engine and `docker compose` were the parts that worked.
+**What that reading means.** A container runtime is available, so the compose topology can be
+brought up and the container-dependent test tiers are feasible; and the host JDK and Maven are
+present, so a host-native `./mvnw` runs too. Where a host lacks the JDK and Maven, the
+documented remediation is the **pinned-container build** in
+[§5.2](#52-building-when-the-host-has-no-jdk).
 
 > **Any statement that Docker or a container runtime is unavailable for this project is
-> false.** The claim appears in an earlier generation of
-> [technical-specifications.md](technical-specifications.md) and is withdrawn. It must not be
-> repeated, and no gate may be marked blocked on that basis.
+> false.** It must not be written, and no gate may be marked blocked on that basis.
 
-**Second reading &mdash; Thursday, 6 August 2026 at 14:50 UTC**, taken while authoring this
-page, by invoking each tool and copying its own output.
-
-| Tool | Result | Change since 30 July |
-|---|---|---|
-| `docker --version` | Docker version 29.7.0, build c1eba93 | patch release |
-| `docker compose version` | Docker Compose version v5.3.1 | unchanged |
-| `java -version` | openjdk 25.0.3 2026-04-21 LTS, Temurin-25.0.3+9 | **has since been provisioned** |
-| `javac -version` | javac 25.0.3 | **has since been provisioned** |
-| `mvn -v` | Apache Maven 3.9.11 | **has since been provisioned** |
-| `localstack --version` | LocalStack CLI 4.14.0 | **has since been provisioned**; required by nothing |
-| `aws --version` | aws-cli 1.46.0 | **has since been provisioned**; required by nothing |
-| `mkdocs --version` | mkdocs 1.6.1 | **has since been provisioned** |
-
-**What the second reading means, and what it does not.** The host-native path is now
-available as well as the container path, and documentation rendering can now be verified
+**What the reading does not mean.** It is not evidence that anything passed.
+Provisioning a toolchain and running a gate are different acts, and only the second produces
+an artefact. Gate results live in [validation-gates.md](validation-gates.md) and nowhere
+else. Documentation rendering is verifiable on this host
 &mdash; [§7.5](#75-documentation-rendering) records what an actual `mkdocs build --strict`
 run reported, including its failure. **Neither reading is evidence that anything passed.**
 Provisioning a toolchain and running a gate are different acts, and only the second produces
@@ -343,7 +338,7 @@ it, and it is tracked as finding `H-1` in
 | **prod** | `application-prod.yml` | A **least-privilege production profile with every secret externalised.** It exists specifically to satisfy Rule 1 clause D; its absence was a **High**-severity gap in the prior implementation [`docs/project-guide.md:L51`], tracked as `H-2`. |
 
 Demo users are seeded **only** under the `local` and `test` profiles &mdash; see
-[§7.3](#73-the-user-records-and-why-you-cannot-sign-in-with-a-plaintext-password). For the
+[§7.3](#73-the-user-records-and-what-the-demo-credential-can-and-cannot-do). For the
 full profile-by-profile breakdown read
 [architecture-before-after.md §6.2](architecture-before-after.md#62-configuration-four-profiles-and-what-differs);
 it is not duplicated here.
@@ -388,7 +383,7 @@ wrong is a different thing and is acceptable.
 
 ### 5.2 Building when the host has no JDK
 
-This is the remediation for the first reading in [§3.2](#32-two-dated-readings-of-the-authoring-host), and it needs only a
+This is the remediation for a host without a JDK ([§3.2](#32-a-dated-reading-of-the-authoring-host)), and it needs only a
 container runtime. The image is the same one the `Dockerfile` build stage pins &mdash; by tag
 **and** digest, so it is a verifiable reference rather than a floating one:
 
@@ -427,10 +422,31 @@ That starts **six services**. Every image is pinned to a tag **and** a digest.
 
 `localstack-init/init-aws.sh` provisions **exactly three S3 buckets** &mdash;
 `carddemo-batch-input`, `carddemo-batch-output` (**versioning enabled on the output bucket
-only**) and `carddemo-statements` &mdash; the FIFO queue **`carddemo-report-jobs`** (created
-as `carddemo-report-jobs.fifo`, since the suffix is mandatory for a FIFO queue) and **one**
-SNS topic, `carddemo-notifications`. An earlier revision also created an alerts topic; it was
-removed because least privilege forbids provisioning a delivery surface with no consumer.
+only**) and `carddemo-statements` &mdash; **two SQS queues**, **one** SNS topic and **one**
+SNS subscription:
+
+| Resource | Name | Why it exists |
+|---|---|---|
+| FIFO queue | `carddemo-report-jobs` (created as `carddemo-report-jobs.fifo`, since the suffix is mandatory for a FIFO queue) | Carries report-job submissions in the order the operator made them |
+| Standard queue | `carddemo-notifications-inbox` | The topic's **only** subscriber, holding each notice until an operator reads it |
+| Topic | `carddemo-notifications` | Operator notification, replacing the mainframe `NOTIFY` path |
+| Subscription | the inbox queue, protocol `sqs`, `RawMessageDelivery=true` | Turns an accepted publish into a **delivered** notice |
+
+Two of those need their history stated, because in both cases an earlier revision did the
+opposite and the reasoning is easy to get backwards.
+
+An earlier revision also created an `alerts` topic. It was removed, because least privilege
+forbids provisioning a delivery surface with no consumer.
+
+An earlier revision also created **no subscription at all**, and asserted that emptiness as
+the contract, on the same least-privilege reasoning. That was wrong, and it is the one place
+where the two conclusions diverge: a topic with **no** subscriber accepts every publish and
+**silently discards it**, so the notification capability reported success while delivering
+nothing — and a publisher cannot detect the difference, because acceptance is not delivery.
+Least privilege constrains what a provisioned resource may *reach*; it does not license a
+topic whose every message is thrown away. So the count the script enforces is **at least
+one**, and zero is fatal. `sns list-subscriptions` returning an empty list is a **failure**,
+not a clean stack.
 
 **The script is idempotent**, so repeated `docker compose up` cycles **converge** rather than
 failing on resources that already exist. If you see a bucket-already-exists error, that is a
@@ -471,7 +487,7 @@ aliases you may see in prose are harmless &mdash; recorded as finding `M-2`.
 `V3__seed_data.sql` carries two obligations worth knowing before you touch it: it decodes
 zoned-decimal overpunch signs **position-aware from the PIC clauses**
 ([§8.4](#84-zoned-decimal-overpunch-signs)) and it stores the seeded user passwords **only**
-as BCrypt hashes ([§7.3](#73-the-user-records-and-why-you-cannot-sign-in-with-a-plaintext-password)).
+as BCrypt hashes ([§7.3](#73-the-user-records-and-what-the-demo-credential-can-and-cannot-do)).
 
 ### 5.5 Running a batch job
 
@@ -545,8 +561,9 @@ the same orientation this section gives, in code, next to the thing being descri
 Three of those counts exceed the originally planned figure, and the reason is recorded rather
 than left as an apparent inconsistency: `model.dto` was planned as 16 **named DTO types** and
 is delivered as 29 classes because request and response types are separated per operation;
-`security` gained a snapshot-token service that supports the stateless account-update
-snapshot contract ([§8.9](#89-the-date-of-birth-offset-asymmetry)); and `observability`
+`security` gained a snapshot-token service that seals the stateless account-update and
+card-update snapshots, and the list cursors and card row references
+([§8.9](#89-the-date-of-birth-offset-asymmetry)); and `observability`
 gained the templated-URI convention that keeps metric cardinality bounded. The full ledger is
 [architecture-before-after.md §8.1](architecture-before-after.md#81-figure-verification-ledger).
 
@@ -628,10 +645,14 @@ implementation rather than deferred:
 * **Structured JSON logging** with `traceId`, `spanId` and `correlationId` carried in MDC,
   plus the **job-instance identifier** in batch steps &mdash; which is what makes per-run
   object prefixes and per-run logs correlatable.
-* **`CorrelationIdFilter`** as the replacement thread of identity for the CICS `EIBTRNID`,
-  which was the only per-request identity the legacy system had. It generates or accepts a
-  correlation identifier, places it in the logging context, attaches it to spans and
-  propagates it on outbound cloud-service calls.
+* **`CorrelationIdFilter`** as a per-request thread of identity, which the legacy system
+  has none of — the technical specification motivates it by analogy with the CICS
+  `EIBTRNID`, but that field occurs **zero times** anywhere in this repository, so nothing
+  is being replaced. The complete exec-interface-block inventory under `app/` is `EIBCALEN`
+  (49 occurrences, a COMMAREA length) and `EIBAID` (44 occurrences, an attention key), and
+  neither is an identity. The filter generates or accepts a correlation identifier, places
+  it in the logging context, attaches it to spans and propagates it on outbound
+  cloud-service calls. The decision is `DL-MS-16` in `../DECISION_LOG.md`.
 * **Masking** of credentials, password hashes and social security numbers in log output.
   Not optional: the customer layout carries a nine-digit government identifier and the user
   layout carries a password field.
@@ -682,7 +703,7 @@ the `}` overpunch characters &mdash; so it exercises the cycle-debit branch of t
 logic. **It must not be normalised.** See [§8.4](#84-zoned-decimal-overpunch-signs) and
 [§8.5](#85-sign-semantics-no-absolute-value-ever).
 
-### 7.3 The user records, and why you cannot sign in with a plaintext password
+### 7.3 The user records, and what the demo credential can and cannot do
 
 **There is no standalone ASCII fixture for the user records.** They exist only as inline
 `SYSUT1 DD *` data fed through IEBGENER at [`app/jcl/DUSRSECJ.jcl:L34-L45`], in the
@@ -690,14 +711,29 @@ logic. **It must not be normalised.** See [§8.4](#84-zoned-decimal-overpunch-si
 FILLER`. Ten records: **five administrators of type `A` and five standard users of type `U`.**
 
 The source records carry a **literal plaintext password**, and **`V3__seed_data.sql` stores
-those passwords only as BCrypt strength-10 hashes.** The plaintext value is never persisted,
-never logged and **is deliberately not reproduced anywhere on this page** &mdash; if you need
-it, read the locator above. Demo users are seeded only under the `local` and `test` profiles.
+those passwords only as BCrypt strength-10 hashes.** The plaintext value is never persisted and
+never logged, and **it is deliberately not reproduced on this page** &mdash; if you need it,
+read the locator above, or `README.md`, which documents it for the legacy system.
 
-The consequence for testing: **sign-on verifies a BCrypt hash, so do not write a test or a
-fixture that expects a plaintext comparison.** Note also that sign-on **upper-cases both the
-identifier and the password** before comparison, exactly as `COSGN00C` does &mdash; not just
-the identifier.
+**Be precise about what the hashing does and does not do, because it is easy to overstate.**
+BCrypt protects the STORED REPRESENTATION. It does not change the credential a caller
+presents, and it does not make that credential unusable: `POST /api/auth/signon` with the
+documented demo identifier and that documented plaintext password **succeeds and returns a
+token**, exactly as it must for the demo to be demonstrable. So these are best understood as
+**public demo-only credentials**: published in the frozen corpus and in `README.md`, therefore
+to be treated as known to everyone.
+
+What contains them is the PROFILE, not the hashing. Demo users are seeded only when the Flyway
+placeholder `seeddemousers` is true, which is the case in `application-local.yml` and
+`application-test.yml` and **false in `application.yml` and `application-prod.yml`** &mdash; so
+no deployment carrying the production profile has these accounts at all. **A demo credential
+must never be seeded outside an isolated local or test environment**, and the profile default
+is what enforces that rather than a convention anyone has to remember.
+
+The consequence for testing is unchanged: **sign-on verifies a BCrypt hash, so do not write a
+test or a fixture that expects a plaintext comparison of the stored value.** Note also that
+sign-on **upper-cases both the identifier and the password** before comparison, exactly as
+`COSGN00C` does &mdash; not just the identifier.
 
 ### 7.4 The Testcontainers 2.0.3 blocker
 
@@ -735,9 +771,8 @@ from the `nav` block.**
 
 **A page omitted from that `nav` never appears in the published site, and nothing reports a
 problem.** The build succeeds, the file sits in the repository, and the reader who needs it
-cannot reach it. Worse, and measured rather than assumed: **`mkdocs build --strict` does not
-catch it either**, because MkDocs defaults `validation.nav.omitted_files` to `info` and
-`mkdocs.yml` declares no `validation` block that would raise it. Making it detectable takes an
+cannot reach it. MkDocs defaults `validation.nav.omitted_files` to `info`, so on a default
+configuration **`mkdocs build --strict` does not catch it either**. Making it detectable takes an
 explicit setting:
 
 ```yaml
@@ -746,8 +781,11 @@ validation:
     omitted_files: warn
 ```
 
-Until that is set, **the only reliable detection is a human reading the `nav`.** This is
-tracked as High finding `H-5`. **Add the `nav` entry in the same change that adds the page.**
+**`mkdocs.yml` declares that block** &mdash; `validation.nav.omitted_files: warn` at
+[`mkdocs.yml:L98`] &mdash; so a strict build fails on an omitted page rather than reporting it at
+INFO level. That closes High finding `H-5`; the setting must not be removed, because without it
+the only reliable detection is a human reading the `nav`. **Add the `nav` entry in the same
+change that adds the page.**
 This page's own entry is `Onboarding Guide: onboarding-guide.md`, and its filename is fixed by
 that entry &mdash; **it must not be changed.**
 
@@ -772,17 +810,18 @@ documentation rendering is **not** one of the eight gates.
 **[validation-gates.md](validation-gates.md) is the authoritative ledger and the only place a
 gate result may be read. The ledger is not duplicated here, and no result is asserted here.**
 
-Two things about the current position matter to a newcomer, and both are easy to get wrong in
-either direction:
+Two things about the position recorded there matter to a newcomer, and both are easy to get
+wrong in either direction:
 
-* **Seven of the eight results currently read "Not available"**, each naming the specific
-  artefact it lacks. **Gate 7 is the exception**: it records an executed harness &mdash; 41
-  assertions, exit code 0, against `../TRACEABILITY_MATRIX.md`. So
-  it is wrong to say every gate is unexecuted, and equally wrong to read any of the other
-  seven as passing.
-* **Gates 1, 4, 5 and 8 are pending implementation and execution &mdash; they are not
-  container-blocked**, because a container runtime is available
-  ([§3.2](#32-two-dated-readings-of-the-authoring-host)). "Not available" is a statement about
+* **The ledger reads as follows at the commit it names**: gates 1, 2, 4, 5 and 6 **Pass**;
+  gate 3 records **measured baselines** with no threshold applied, because no service level
+  exists in the source to apply one against; gate 7 records an executed harness &mdash; 58 gate
+  assertions, exit code 0, against `../TRACEABILITY_MATRIX.md`; and gate 8 is **Partly**, the
+  application having stood up against a real containerised database and emulator while the
+  six-service compose topology itself remains Not available. So it is wrong to read every gate
+  as unexecuted, and equally wrong to read gate 8 as complete.
+* **No gate is container-blocked**, because a container runtime is available
+  ([§3.2](#32-a-dated-reading-of-the-authoring-host)). "Not available" is a statement about
   published evidence, not a claim that a gate would fail. An absence is closed by producing
   the evidence, never by softening the sentence.
 
@@ -1173,11 +1212,11 @@ you will hit them.
 | Build fails resolving `org.testcontainers:localstack`, `:postgresql` or `:junit-jupiter` | Those artefacts **do not exist at 2.0.3** &mdash; the 2.x line renamed every module coordinate | Apply **both** remedies from [§7.4](#74-the-testcontainers-203-blocker): the version property set to `2.0.3` with **no** competing bill-of-materials import, **and** only the prefixed coordinates. Either alone still fails |
 | Build resolves an unexpected Testcontainers **1.x** version | The parent's own bill of materials won the resolution ordering | **Set the version property**; do not import a second bill of materials to try to outrank it |
 | `./mvnw` fails with a toolchain error | The Enforcer floor rejected the JDK or Maven version &mdash; it asserts Java `[25,)` and Maven `[3.9.11,)` | Provision **JDK 25** and let the wrapper supply Maven 3.9.11, or use the pinned-container path in [§5.2](#52-building-when-the-host-has-no-jdk). **Do not lower the floor** |
-| `java` or `mvn` **not found** | Expected on a host in the state of the first reading of 30 July 2026 ([§3.2](#32-two-dated-readings-of-the-authoring-host)) | Use the **pinned-container build path** ([§5.2](#52-building-when-the-host-has-no-jdk)); it needs only the container runtime, which is available |
+| `java` or `mvn` **not found** | A host without a provisioned JDK and Maven; both are present on the host of [§3.2](#32-a-dated-reading-of-the-authoring-host) | Use the **pinned-container build path** ([§5.2](#52-building-when-the-host-has-no-jdk)); it needs only the container runtime, which is available |
 | Compilation fails on a **warning** | `-Xlint:all -Werror` is configured in `maven-compiler-plugin` 3.14.1 [`pom.xml:L1232-L1233`] &mdash; this is intentional | **Fix the cause.** Do not add a blanket suppression at class or package scope; a narrowly scoped one with a justifying comment is acceptable |
 | Build fails on **Javadoc** | The `doclint` gate runs at `all` with `failOnWarnings`, so undocumented public surface fails | Document the public member: purpose, parameters, return, side effects and error modes |
 | **Coverage gate** fails | JaCoCo's minimum is **0.80 LINE** | Open **`target/site/jacoco/index.html`**, find the uncovered branches and test them. Do not lower the threshold |
-| **OWASP scan** reports HIGH or CRITICAL | dependency-check fails at CVSS 7.0 or above | Open **`target/dependency-check-report.html`**. **Do not suppress silently** &mdash; record the finding with its severity and remediation, and treat a suppression as a decision needing an entry in `../DECISION_LOG.md` |
+| **OWASP scan** reports a finding at CVSS 7.0 or above &mdash; the range CVSS labels HIGH and CRITICAL, which are external ratings rather than this project's Blocker / High / Medium / Low bands | dependency-check fails at CVSS 7.0 or above | Open **`target/dependency-check-report.html`**. **Do not suppress silently** &mdash; record the finding with its severity and remediation, and treat a suppression as a decision needing an entry in `../DECISION_LOG.md` |
 
 ### Startup and runtime
 
@@ -1196,7 +1235,7 @@ you will hit them.
 | **Account update returns a conflict on every request** | The date-of-birth snapshot was sent **dash-separated**. The comparison uses different offsets on each side, so a whole-string comparison always reports a change | Send the snapshot date in **compact `YYYYMMDD`** form and compare components ([§8.9](#89-the-date-of-birth-offset-asymmetry)) |
 | **Amounts are off by a rounding unit** | Either a `double` crept into the path, or the interest formula was algebraically rewritten | Use `BigDecimal` with `HALF_EVEN` throughout, and transcribe the formula as `(balance * rate) / 1200` ([§8.3](#83-pic-clauses-bigdecimal-and-three-precisions-that-differ), [§8.6](#86-formula-shape-not-just-value)) |
 | A `BigDecimal` assertion fails even though the values look identical | `equals()` compares scale as well as value | Compare with **`compareTo()`** |
-| **Seeded users cannot sign in** | The seed stores **BCrypt hashes only** | Do not expect a plaintext comparison. Note also that both identifier and password are upper-cased before comparison ([§7.3](#73-the-user-records-and-why-you-cannot-sign-in-with-a-plaintext-password)) |
+| **A seeded user will not authenticate** | Either the profile does not seed demo users, or a test is comparing the STORED value as plaintext | Check that `seeddemousers` is true for the active profile - it is false in `application.yml` and `application-prod.yml` by design. The stored value is a **BCrypt hash**, so do not expect a plaintext comparison of it; the presented password is still the documented plaintext one. Both identifier and password are upper-cased before comparison ([§7.3](#73-the-user-records-and-what-the-demo-credential-can-and-cannot-do)) |
 | A debit total is positive when the baseline shows it negative | An `Math.abs()` or a sign normalisation was introduced | Remove it &mdash; the debit accumulator legitimately holds negative values ([§8.5](#85-sign-semantics-no-absolute-value-ever)) |
 | Statement output differs from the baseline in the processing timestamp | The two-byte projection truncation was "fixed" | Reproduce the truncation exactly ([§8.2](#82-the-statement-projection-truncates-two-bytes-reproduce-it-do-not-fix-it)) |
 | The last account's interest is missing from a run | The end-of-data final flush was omitted | Restore it ([§8.12](#812-boundary-paths-that-are-easy-to-omit)) |
@@ -1453,7 +1492,7 @@ consumer was removed rather than left provisioned.
 
 **This page contains no secret, no key, no token, no password value and no live endpoint.** The
 legacy plaintext password is referred to **only by locator**
-([§7.3](#73-the-user-records-and-why-you-cannot-sign-in-with-a-plaintext-password)).
+([§7.3](#73-the-user-records-and-what-the-demo-credential-can-and-cannot-do)).
 
 ### 12.5 Clause E &mdash; Documentation standards
 
@@ -1505,8 +1544,8 @@ register &mdash; **it is referenced here, not duplicated.**
 | `H-2` | No production profile existed in a prior implementation | [`docs/project-guide.md:L51`] | **Closed by this work** &mdash; `application-prod.yml`, every secret externalised |
 | `H-3` | No continuous-integration workflow existed in a prior implementation | [`docs/project-guide.md:L49`] | **Closed by this work** &mdash; `.github/workflows/`, pinned to the enforced toolchain |
 | `H-4` | The vulnerability scan was never executed in a prior implementation | [`docs/project-guide.md:L50`] | **Closed by this work** &mdash; bound to `verify`, with a skip reported honestly when taken |
-| `H-5` | A page omitted from the `mkdocs.yml` `nav` silently never publishes, and **a strict build does not catch it either**, because the omission is reported at INFO level by default | `mkdocs.yml` `nav` and its absent `validation` block; [`catalog-info.yaml:L22`] | Add the `nav` entry in the same change as the page, **and** set `validation.nav.omitted_files: warn` so a strict build can fail on it ([§7.5](#75-documentation-rendering)) |
-| `H-6` | **Absent host JDK and Maven** on a host in the state of the first reading, which blocks a host-native `./mvnw` entirely | [§3.2](#32-two-dated-readings-of-the-authoring-host), first reading | Provision JDK 25 and let the wrapper supply Maven 3.9.11, **or** use the pinned-container build path, which needs only the container runtime. **Remediated on the second reading**, where both are present |
+| `H-5` | A page omitted from the `mkdocs.yml` `nav` silently never publishes, and on a default configuration **a strict build does not catch it either**, because the omission is reported at INFO level | `mkdocs.yml` `nav`; [`catalog-info.yaml:L22`] | **Closed by this work** &mdash; `validation.nav.omitted_files: warn` at [`mkdocs.yml:L98`] makes a strict build fail on it; still add the `nav` entry in the same change as the page ([§7.5](#75-documentation-rendering)) |
+| `H-6` | **Absent host JDK and Maven** blocks a host-native `./mvnw` entirely | [§3.2](#32-a-dated-reading-of-the-authoring-host) | Provision JDK 25 and let the wrapper supply Maven 3.9.11, **or** use the pinned-container build path, which needs only the container runtime. **Both are present on the host of that reading** |
 
 ### Medium
 
@@ -1563,7 +1602,7 @@ profile [`:L51`], and the hardcoded JWT secret [`:L52`], [`:L215`].
 
 | Check | Result |
 |---|---|
-| Host tooling | Verified by invocation on **6 August 2026 at 14:50 UTC** &mdash; see the second reading in [§3.2](#32-two-dated-readings-of-the-authoring-host) |
+| Host tooling | Verified by invocation on **7 August 2026 at 20:08 UTC** &mdash; see the reading in [§3.2](#32-a-dated-reading-of-the-authoring-host) |
 | Corpus counts, field census and every source locator cited here | Verified by machine at the anchor commit; the corrected line ranges match `../TRACEABILITY_MATRIX.md` §15.1 |
 | `mkdocs build --strict` | Run on this host. The outcome, including its exit status and the reason for it, is recorded in [§14.3](#143-documentation-build-outcome) |
 | Files created or modified by this page's authoring | **Exactly one**: `docs/onboarding-guide.md`. [`docs/index.md`](index.md) and [`docs/project-guide.md`](project-guide.md) are byte-for-byte unchanged |

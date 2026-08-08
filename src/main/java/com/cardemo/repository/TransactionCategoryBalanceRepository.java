@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionCategoryBalanceRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -14,7 +14,7 @@
  *               app/cbl/CBTRN02C.cbl:L467-L542 (2700-UPDATE-TCATBAL and its two
  *               branches); key-ordered browse app/cbl/CBACT04C.cbl:L186-L224;
  *               ABSENT from app/csd/CARDDEMO.CSD (batch-only proof) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -29,7 +29,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 
@@ -361,7 +361,7 @@ import org.springframework.stereotype.Repository;
  * {@code 'ERROR REWRITING TRANSACTION BALANCE FILE'} and abends through
  * {@code 9999-ABEND-PROGRAM}. A persistence failure here is consequently <b>fatal</b> and must surface
  * as {@code com.cardemo.exception.FatalProcessingException} carrying abend code 999 and process return
- * code 12, exactly as {@code app/cbl/CBTRN02C.cbl:L707-L710} specifies. If the
+ * code 12, exactly as {@code app/cbl/CBTRN02C.cbl:L707-L711} specifies. If the
  * read guard's leniency is generalised to the writes, a tolerated failed write loses money silently,
  * which is the worst possible failure mode for an accumulator and the one hardest to detect after the
  * fact.
@@ -471,9 +471,9 @@ import org.springframework.stereotype.Repository;
  *       <b>The consequence is that the last account of every run is never updated</b> - its accumulated
  *       interest is never added to {@code ACCT-CURR-BAL} and its two cycle counters are never reset - and
  *       that is the behaviour of the system of record, reproduced exactly.
- *       <p>An earlier revision of this item instructed the Java implementation to perform the flush anyway,
- *       triggered by the end-of-data condition rather than by translating the dead {@code ELSE}. <b>That
- *       instruction is withdrawn</b>, because it contradicts both the parity mandate and the troubleshooting
+ *       <p>Performing the flush anyway,
+ *       triggered by the end-of-data condition rather than by translating the dead {@code ELSE}, is
+ *       <b>forbidden here</b>, because it contradicts both the parity mandate and the troubleshooting
  *       entry further down this document, and following it would silently add interest the frozen system
  *       never posts. {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} retains the branch as a
  *       marked, unreachable no-op so the paragraph map stays provable, and calls it from nowhere.</p></li>

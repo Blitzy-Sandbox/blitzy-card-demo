@@ -113,7 +113,7 @@
  *   <dt>{@link TemplatedUriObservationConvention}</dt>
  *   <dd>Replaces nothing, because the frozen corpus exports no spans: its whole instrumentation is
  *       {@code DISPLAY} to SYSOUT plus the four-character status renderer at
- *       {@code app/cbl/CBTRN02C.cbl:L714-L731}. It exists because exporting spans introduced a disclosure the
+ *       {@code app/cbl/CBTRN02C.cbl:L714-L727}. It exists because exporting spans introduced a disclosure the
  *       corpus could not have: Spring attaches the CONCRETE request path as the {@code http.url} span
  *       attribute, which published {@code SEC-USR-ID} of {@code app/cpy/CSUSR01Y.cpy:L18} on the two
  *       administrative routes and {@code ACCT-ID} of {@code app/cpy/CVACT01Y.cpy:L18} on the account route
@@ -193,10 +193,9 @@
  *       {@link CorrelationIdFilter} then {@code com.cardemo.security.JwtAuthenticationFilter} then
  *       role-based authorisation - so a request rejected with 401 or 403 is still correlated. Chain
  *       composition itself belongs to {@code com.cardemo.config.SecurityConfig}, not here.</li>
- *   <li><strong>Registration versus definition, stated precisely because an earlier revision of this item got
- *       it wrong.</strong> That revision said {@code com.cardemo.config.ObservabilityConfig} owns tracing and
- *       metrics registration and the wiring of these three classes; it is withdrawn. What
- *       {@code ObservabilityConfig} actually declares is <strong>exactly one {@code @Bean}, the application
+ *   <li><strong>Registration versus definition, stated precisely because the two are easy to confuse.</strong>
+ *       {@code com.cardemo.config.ObservabilityConfig} does not own tracing and metrics registration, nor the
+ *       wiring of these three classes. What it declares is <strong>exactly one {@code @Bean}, the application
  *       {@link java.time.Clock}</strong>, and that count is asserted by its own test. The three classes in this
  *       package <strong>self-register</strong> - {@link CorrelationIdFilter} and {@link HealthIndicators}
  *       through {@code @Component}, {@link MetricsConfig} through {@code @Configuration} - so the component
@@ -260,8 +259,8 @@
  *       {@code ./mvnw -B -ntp clean verify}</li>
  * </ul>
  *
- * <p><strong>The skip flag is a convenience, never a pass.</strong> An earlier revision of this list labelled
- * the skipping invocation the "full gate"; that label is withdrawn, because it invites a run that never
+ * <p><strong>The skip flag is a convenience, never a pass.</strong> Labelling the skipping invocation the
+ * "full gate" invites a run that never
  * executed the vulnerability scan to be reported as satisfying a gate whose definition requires it.
  * {@code -Ddependency-check.skip=true} suppresses {@code org.owasp:dependency-check-maven}, which wants network
  * access to the vulnerability feed, and the goal then prints {@code Skipping dependency-check}. Running Maven
@@ -307,8 +306,8 @@
  * </ul>
  *
  * <p><strong>Bringing the topology up. {@code docker compose up -d} starts all six services, and the
- * application is one of them.</strong> An earlier revision of this paragraph said the application itself was
- * not a Compose service and instructed the reader to run the built JAR separately; that is withdrawn.
+ * application is one of them.</strong> The application is a Compose service, so it does not have to be run
+ * separately from a built JAR.
  * {@code docker-compose.yml} declares <strong>six</strong> services on the {@code carddemo} network - the
  * {@code app} service itself, PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana - plus three named
  * volumes. So a single {@code docker compose up -d} builds the image from the repository {@code Dockerfile},
@@ -426,9 +425,9 @@
  *       renames the published series just as effectively. Third, is {@code observability/prometheus.yml}
  *       scraping the right host and port.
  *       <p><strong>What this chain must not conclude is that the counter has simply never been
- *       incremented.</strong> An earlier revision of this item ended with exactly that step, on the general
+ *       incremented.</strong> The general
  *       Micrometer rule that a never-incremented counter is absent from the exposition rather than present at
- *       zero; the rule is real but it does not apply to any CardDemo series, so the guidance is withdrawn.
+ *       zero is real, and it does not apply to any CardDemo series.
  *       {@link MetricsConfig} registers <strong>all ten of its series eagerly at construction</strong> - one
  *       untagged processed counter, one per reject code, one per authentication outcome and one per amount
  *       sign, each amount series a strongly-referenced {@code FunctionCounter} over an exact accumulator - so
@@ -504,8 +503,9 @@
  *   <dt>A line-level citation for {@code EIBTRNID} - {@code Not available}. Severity <strong>Medium</strong></dt>
  *   <dd>The specification describes {@link CorrelationIdFilter} as replacing {@code EIBTRNID}, but that
  *       symbol <strong>cannot be cited to a line</strong>: it occurs <strong>zero</strong> times anywhere
- *       under {@code app/**}. The complete EXEC-interface-block census of {@code app/cbl} is
- *       {@code EIBCALEN} 49 times and {@code EIBAID} 16 times, and nothing else - {@code EIBTRNID} is
+ *       under {@code app/**}. The complete EXEC-interface-block census under {@code app/} is two fields and
+ *       nothing else - {@code EIBCALEN} 49 times, and {@code EIBAID} 44 times, of which 16 sit in
+ *       {@code app/cbl} and 28 in the procedural copybook {@code app/cpy/CSSTRPFY.cpy}. {@code EIBTRNID} is
  *       supplied by the transaction monitor, which is exactly why it is absent from application source.
  *       <em>What would be needed:</em> an {@code EIBTRNID} reference somewhere in {@code app/cbl/**}; there
  *       is none, and no {@code app/} locator may be fabricated for it. The per-request identity evidence
@@ -528,13 +528,14 @@
  *   <dt>Live evidence for the container-dependent gates - what remains {@code Not available}, and what no
  *       longer does. Severity <strong>Medium</strong></dt>
  *   <dd><strong>A container runtime is present and the six-service stack is provisioned</strong>, so the
- *       container prerequisite is not the obstacle. An earlier revision of this item treated live evidence as
- *       unavailable for want of a runtime; that framing is withdrawn, and {@code Not available} is now reserved
- *       for evidence that is genuinely absent. What is genuinely absent is the end-to-end parity comparison:
- *       there is no {@code src/test/java/com/cardemo/e2e} tree and no committed legacy baseline output to
- *       compare against, and neither can be conjured from a running stack. <em>What is needed:</em> those two
- *       artefacts. The gates that need no container at all - the zero-warning build, the security audit and the
- *       scope-coverage check - are runnable unconditionally and are therefore the first evidence produced. Gate
+ *       container prerequisite is not the obstacle, and {@code Not available} is reserved
+ *       for evidence that is genuinely absent. What is genuinely absent is a captured run of the frozen
+ *       COBOL on real z/OS: {@code src/test/java/com/cardemo/e2e} is authored and the Gate 1 expectation is
+ *       committed under {@code src/test/resources/parity/gate1}, so the end-to-end parity comparison is made -
+ *       what a z/OS capture would add is corroboration from the real runtime, and no running stack can
+ *       conjure it. <em>What is needed:</em> that capture. The gates that need no container at all - the
+ *       zero-warning build, the security audit and the scope-coverage check - are runnable unconditionally
+ *       and are therefore the first evidence produced. Gate
  *       status per gate is stated in exactly one place, section 0.7.9.2 of
  *       {@code docs/technical-specifications.md}, and dated evidence in section 0.4.5.3; neither is restated
  *       here.</dd>

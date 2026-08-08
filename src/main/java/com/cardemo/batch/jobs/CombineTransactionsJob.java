@@ -253,7 +253,7 @@ import io.awspring.cloud.s3.S3Resource;
  * {@code String} over {@code CHAR(26)} end to end - never {@code LocalDateTime}, {@code Timestamp},
  * {@code Instant}, {@code OffsetDateTime} or {@code LocalDate} - because the corpus has three mutually
  * incompatible producers and the batch producer emits <b>hundredths-of-a-second</b> precision followed by
- * four literal zeros - not millisecond precision, which an earlier revision of this sentence claimed and which
+ * four literal zeros - not millisecond precision, which
  * would need seven fraction characters where {@code app/cbl/CBTRN02C.cbl:L159-L174} declares six.
  * Parsing and re-rendering would normalise that fourth-zero tail away and every generated timestamp would
  * differ from the baseline. This job performs no parsing, no reformatting, no normalising and no timezone
@@ -304,11 +304,11 @@ import io.awspring.cloud.s3.S3Resource;
  *       first: {@code TRANSACT.BKUP} comes from {@code STEP01R} of {@code app/proc/TRANREPT.prc:L21} and
  *       {@code SYSTRAN} from {@code app/jcl/INTCALC.jcl:L37-L41}. {@code CombinedTransactionReader} owns the
  *       decision and it is not re-implemented here.
- *       <p>Two earlier revisions of this entry are withdrawn. The first abended on an absent
- *       {@code TRANSACT.BKUP} generation while treating an absent {@code SYSTRAN} generation as an empty read;
- *       the second removed both failures and called an absent generation on either leg a successful empty
- *       read. Neither matches the member: the disposition is the same on both legs, so the outcome is the same
- *       on both legs.</li>
+ *       <p>Two asymmetric readings are both refused by the member. Abending on
+ *       an absent {@code TRANSACT.BKUP} generation while treating an absent {@code SYSTRAN} generation as an
+ *       empty read splits the legs; calling an absent generation on either leg a successful empty read drops
+ *       the failure altogether. The disposition is
+ *       the same on both legs, so the outcome is the same on both legs.</li>
  *   <li><b>A generation that exists and holds nothing is a different case, and is legitimately empty.</b> It
  *       is the object-store counterpart of {@code DISP=(NEW,CATLG,DELETE)} cataloguing a dataset to which
  *       nothing was written - which {@code app/jcl/INTCALC.jcl:L37-L41} does whenever
@@ -333,9 +333,9 @@ import io.awspring.cloud.s3.S3Resource;
  * {@code DEFINE CLUSTER} with {@code KEYS(16 0) RECORDSIZE(350 350)}.
  *
  * <p><b>It is the reason the daily stream is repeatable, so it is reproduced rather than documented away.</b>
- * An earlier revision recorded a decision that this member had no Java analogue, reasoning that inserting
- * rows into a relation needs no unload-empty-reload cycle and that the end state was the same either way.
- * <b>The end state is not the same</b>, and that reasoning was withdrawn as finding C-06. The delete and
+ * Recording this member as having no Java analogue - reasoning that inserting
+ * rows into a relation needs no unload-empty-reload cycle and that the end state is the same either way - is
+ * finding C-06, and <b>the end state is not the same</b>. The delete and
  * redefine leaves {@code REPRO} an <em>empty</em> target, so {@code :L41-L48} loads the merged set into a
  * master holding nothing. Without it the combine loads the merged set into a master that still holds every
  * row the first leg just supplied, so every identifier collides: the load correctly refuses with
@@ -491,12 +491,12 @@ public class CombineTransactionsJob {
      * <p>A stream buffer, not a bound on the run. {@code app/jcl/COMBTRAN.jcl:L33-L37} allocates
      * {@code SORTOUT} on {@code UNIT=SYSDA} with {@code SPACE=(CYL,(1,1),RLSE)}, so the sort's output has
      * always been disk with a buffer in front of it, and this constant is that buffer. It is the only quantity
-     * in this step that scales with anything other than the chunk size, which is why no per-run record cap
-     * exists any longer: an earlier revision accumulated the whole generation in a {@code StringBuilder}, a
-     * {@code String} and a {@code byte[]} at once and needed an invented
-     * {@code carddemo.batch.combtran.max-records-per-run} ceiling of one million records to keep that from
-     * exhausting the heap. {@code app/jcl/COMBTRAN.jcl} declares no such ceiling anywhere, and removing the
-     * accumulation removed the need to invent one.
+     * in this step that scales with anything other than the chunk size, and it is why no per-run record cap
+     * is needed: accumulating the whole generation in a {@code StringBuilder}, a
+     * {@code String} and a {@code byte[]} at once is what forces an invented
+     * {@code carddemo.batch.combtran.max-records-per-run} ceiling of one million records to keep the heap
+     * intact. {@code app/jcl/COMBTRAN.jcl} declares no such ceiling anywhere, and streaming instead of
+     * accumulating removes the need to invent one.
      */
     private static final int WORK_BUFFER_BYTES = 64 * 1024;
 
@@ -592,7 +592,7 @@ public class CombineTransactionsJob {
     /**
      * Job parameter instructing this job to archive and reset the transaction relation first, {@value}.
      *
-     * <p><b>Finding C-06, severity Critical.</b> {@code app/jcl/COMBTRAN.jcl:L48} REPROs the combined
+     * <p><b>Finding C-06, severity Blocker.</b> {@code app/jcl/COMBTRAN.jcl:L48} REPROs the combined
      * generation into the transaction cluster, and that cluster is empty when it does so - not by accident,
      * but because {@code app/jcl/TRANBKP.jcl} runs first and empties it:
      * {@code :L23-L33} REPROs the cluster out to {@code TRANSACT.BKUP(+1)}, {@code :L37-L45} DELETEs the
@@ -767,7 +767,6 @@ public class CombineTransactionsJob {
     /** Prefix of the deterministic correlation identifier this job mints when no outer scope owns one. */
     private static final String CORRELATION_ID_PREFIX = "combtran-";
 
-    // ------------------------------------------------------------------------------------------------
     // The 350-byte offset map of app/cpy/CVTRA05Y.cpy, expressed as zero-based [begin, end) bounds.
     //
     // These exist because REPRO INFILE at app/jcl/COMBTRAN.jcl:L48 has to read back what SORTOUT at
@@ -778,7 +777,6 @@ public class CombineTransactionsJob {
     // the other fails fast at startup instead of silently shifting every field.
     //
     // SYMNAMES at :L28 corroborates the first entry: TRAN-ID,1,16,CH can only be bytes 1-16.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code TRAN-ID PIC X(16)}, bytes 1-16, and the sort key of {@code app/jcl/COMBTRAN.jcl:L28}. */
     private static final int TRAN_ID_BEGIN = 0;
@@ -1430,12 +1428,12 @@ public class CombineTransactionsJob {
      * Creates the bounded staging file that stands in for {@code SORTOUT}'s allocated space.
      *
      * <p>{@code app/jcl/COMBTRAN.jcl:L33-L37} allocates {@code SORTOUT} on {@code UNIT=SYSDA} with
-     * {@code SPACE=(CYL,(1,1),RLSE)} - the sort's output has always been <em>disk</em>, never storage. An
-     * earlier revision of this step accumulated the whole generation in a {@code StringBuilder}, converted it
-     * to a {@code String} and then to a {@code byte[]}, which held three full copies of the output at once and
-     * needed an invented per-run record cap to stop a large input exhausting the heap. Staging to a temporary
+     * {@code SPACE=(CYL,(1,1),RLSE)} - the sort's output has always been <em>disk</em>, never storage.
+     * Accumulating the whole generation in a {@code StringBuilder}, converting it
+     * to a {@code String} and then to a {@code byte[]} holds three full copies of the output at once and
+     * forces an invented per-run record cap to stop a large input exhausting the heap. Staging to a temporary
      * file restores the source's own storage model, makes the resident set independent of the record count, and
-     * removes the reason the cap existed.
+     * removes any reason for such a cap.
      *
      * <p>The file lives wherever {@code java.io.tmpdir} points, is created with the platform's default
      * owner-only permissions, and is deleted in a {@code finally} block whether the step succeeds or fails.
@@ -1505,8 +1503,8 @@ public class CombineTransactionsJob {
         final String objectKey = requirePublishedGenerationKey(stepExecution);
 
         // REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM) - app/jcl/COMBTRAN.jcl:L48 - streamed rather than
-        // materialised. An earlier revision downloaded the whole generation with readAllBytes(), copied it
-        // into a String, and decoded it into one List<Transaction> before loading anything, which held four
+        // materialised. Downloading the whole generation with readAllBytes(), copying it
+        // into a String and decoding it into one List<Transaction> before loading anything holds four
         // full copies of the generation at peak. IDCAMS REPRO is a record-at-a-time copy with a buffer, so a
         // bounded batch is both the faithful shape and the one whose cost does not grow with the input.
         int decoded = 0;
@@ -1791,8 +1789,8 @@ public class CombineTransactionsJob {
      * {@code com.cardemo.observability.MetricsConfig#METRIC_RECORDS_PROCESSED} is defined as the
      * {@code DALYTRAN} population of {@code app/cbl/CBTRN02C.cbl:L206} - one increment per record that job
      * read - and the counter is untagged, so no query can afterwards separate a second source's contribution
-     * from it. An earlier revision advanced it here with the loaded row count, which double-counted every
-     * transaction the posting job had already counted and then counted the interest rows a second time on any
+     * from it. Advancing it here with the loaded row count would double-count every
+     * transaction the posting job had already counted and then count the interest rows a second time on any
      * subsequent combine, inflating an untagged series irrecoverably. The volume this step moves is real
      * information, so it is published where it belongs: the job execution context, keyed and readable by an
      * operator, a test and the pipeline orchestrator alike.
@@ -2298,7 +2296,7 @@ public class CombineTransactionsJob {
     /**
      * Validates a generation prefix against the one shared grammar.
      *
-     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to strip whitespace and
+     * <p><strong>Finding m-02, severity Medium, RESOLVED.</strong> This method used to strip whitespace and
      * trailing separators and check nothing else, and five sibling classes each carried a variant of it that
      * differed. {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is now the only
      * grammar, and it refuses a trailing separator rather than trimming one, so a configured value and the
@@ -2423,22 +2421,22 @@ public class CombineTransactionsJob {
      * {@code traceId} and {@code spanId} are published by the tracing bridge from real span identity and are
      * never set here.
      *
-     * <p><b>Finding H-03, severity High.</b> This listener used to publish the job instance identifier with a
-     * bare {@code propagateJobInstanceId} whose return value it discarded, and then end the run with an
-     * unconditional {@code propagateJobInstanceId(null)}. Because Spring Batch runs jobs on pooled threads and
-     * this job is launched from inside {@code BatchPipelineOrchestrator}'s stream, that removal erased the
-     * enclosing pipeline's identity: every pipeline event emitted after the nested job finished carried no
-     * {@code jobInstanceId} at all, and the correlation between a run's logs and its output objects - the
-     * whole reason the key exists - was lost for the remainder of the stream. The correlation identifier was
-     * already handled correctly by a mint-if-absent, clear-only-if-ours rule; the job instance identifier was
-     * not, and one entry restored while the other is removed is the worst of both.
+     * <p><b>Why neither entry may be propagated with a bare call and an unconditional clear.</b> Publishing
+     * the job instance identifier with a bare {@code propagateJobInstanceId} whose return value is discarded,
+     * and then ending the run with an unconditional {@code propagateJobInstanceId(null)}, erases the enclosing
+     * pipeline's identity: Spring Batch runs jobs on pooled threads and this job is launched from inside
+     * {@code BatchPipelineOrchestrator}'s stream, so every pipeline event emitted after the nested job
+     * finished would carry no {@code jobInstanceId} at all, and the correlation between a run's logs and its
+     * output objects - the whole reason the key exists - would be lost for the remainder of the stream. The
+     * correlation identifier needs a mint-if-absent, clear-only-if-ours rule, and so does the job instance
+     * identifier; one entry restored while the other is removed is the worst of both.
      *
-     * <p>The fix is not a second hand-rolled snapshot. Both entries now go through
+     * <p>A second hand-rolled snapshot is not the answer either. Both entries go through
      * {@link CorrelationIdFilter#enterBatchScope(long, String)} and
      * {@link CorrelationIdFilter#exitBatchScope()}, which is the single authoritative implementation of the
      * park-and-restore contract - an entry that was absent is removed, an entry that existed is put back, and
      * scopes nest so an inner job restores its caller's context rather than the absence of one. See finding
-     * M-02 for why five copies of that contract became one.
+     * M-02 for why that contract has exactly one implementation rather than one per call site.
      *
      * <p><b>The correlation identifier is derived, not random.</b> {@value #CORRELATION_ID_PREFIX} followed by
      * the job execution identifier is deterministic, so a run's identifier can be recomputed from its

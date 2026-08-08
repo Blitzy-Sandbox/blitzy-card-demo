@@ -220,7 +220,7 @@ class AwsEndpointAllowlistTest {
         @Test
         @DisplayName("the refusal names the property and the defect but echoes no part of the value")
         void theRefusalDoesNotEchoTheValue() {
-            // Not even the host. This test once required the host to be quoted, on the reasonable ground
+            // Not even the host. Requiring the host to be quoted is tempting on the reasonable ground
             // that it is the diagnosis and is not itself secret. The guard withholds it anyway, and the
             // reason is that a refused endpoint is by definition one nobody vetted: it may carry user
             // information, and the parse that would separate host from credential is the parse this
@@ -350,8 +350,8 @@ class AwsEndpointAllowlistTest {
         @Test
         @DisplayName("but a port must be present, because the emulator's edge is neither 80 nor 443")
         void aPortlessEndpointIsRefused() {
-            // Unconstrained in value is not the same as optional. This test once required the portless form
-            // to be admitted, which is a different claim and one nothing in this repository relies on: every
+            // Unconstrained in value is not the same as optional. Admitting the portless form
+            // is a different claim and one nothing in this repository relies on: every
             // endpoint the compose file, the environment template, the four profiles and the provisioning
             // script name carries a port. A portless value would resolve to 80 or 443, reach nothing, and
             // surface as a connection failure at the first call rather than as a named failure at startup.

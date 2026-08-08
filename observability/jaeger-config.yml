@@ -9,7 +9,7 @@
 # Capability  : NEW - additive. The frozen COBOL corpus exports no traces at
 #               all; its entire instrumentation is DISPLAY to SYSOUT plus the
 #               four-character status renderer at
-#               app/cbl/CBTRN02C.cbl:L714-L731. There is therefore no COBOL
+#               app/cbl/CBTRN02C.cbl:L714-L727. There is therefore no COBOL
 #               artefact this file translates. It exists because
 #               jaegertracing/all-in-one:1.62.0 reached end of life
 #               (CWE-1104, use of an unmaintained component) and the

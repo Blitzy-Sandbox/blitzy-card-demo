@@ -1713,16 +1713,12 @@ final class SignOnResponseTest {
     /**
      * The diagnostic rendering may not be turned into a forged log record.
      *
-     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
-     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
-     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
-     * caller liked, in the exact shape a reader trusts.
-     *
-     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
-     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
-     * which something renders the offending instance - so the rendering has to be safe on an instance that
-     * never passed validation. These tests therefore build hostile values directly, without validating them,
-     * which is the state the defect actually occurred in.
+     * <p>Every component {@code toString()} emits is declared {@code String} and arrives from a JSON request
+     * body, so a caller controls its bytes: concatenated straight in, a CR or LF forges as many further log
+     * lines as the caller likes, in the exact shape a reader trusts. {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is precisely the occasion
+     * on which something renders the offending instance, so these tests build hostile values directly and
+     * never validate them first.
      */
     @Nested
     @DisplayName("the diagnostic rendering cannot forge a log record")

@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Batch ItemProcessor (Java 25 / Spring Boot 3.5.11)
  * Function    : Daily transaction report - control break, pagination, 133-byte lines.
- * Source      : app/cbl/CBTRN03C.cbl (649 lines, 27 paragraphs) @ 7756d89
+ * Source      : app/cbl/CBTRN03C.cbl (649 lines, 26 own paragraph labels) @ 7756d89
  *               app/cpy/CVTRA07Y.cpy (report line layouts)
  *               app/proc/TRANREPT.prc STEP05R (sort + INCLUDE COND)
  * ******************************************************************
@@ -92,18 +92,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code -Ddependency-check.skip=true} is a local shortcut for a cold cache or an offline host and produces
  * no gate evidence.
  * <p>
- * Two test classes assert against this class today:
- * {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorScopeIsolationTest.java}, which
- * proves the per-execution state described below does not leak between overlapping executions, and
- * {@code src/test/java/com/cardemo/unit/batch/ParityLoggerRoutingTest.java}, which proves the parity log
- * routing. Re-derive the current set with
- * {@code grep -rl TransactionReportProcessor src/test/java}.
- * <p>
- * A third, {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorTest.java}, covers the
- * control break and the twenty-line pagination behaviourally. Two earlier revisions of this paragraph were
- * wrong about that file in opposite directions - one claimed "no assertion in this tree covers this class",
- * the other that the dedicated class was still owed - and both are withdrawn: it exists, which is why this
- * class does not appear in the zero-coverage set of the JaCoCo report.
+ * Three test classes assert against this class:
+ * {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorScopeIsolationTest.java} proves the
+ * per-execution state described below does not leak between overlapping executions,
+ * {@code src/test/java/com/cardemo/unit/batch/ParityLoggerRoutingTest.java} proves the parity log routing,
+ * and {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorTest.java} covers the control
+ * break and the twenty-line pagination behaviourally. Re-derive the set rather than trusting this list, with
+ * {@code grep -rl TransactionReportProcessor src/test/java} - a hand-maintained census in a comment cannot
+ * stay true.
  *
  * <p>This class is <strong>constructed once per step execution by its owning job</strong>, and that is a
  * required difference from its stateless
@@ -122,34 +118,27 @@ import com.cardemo.service.shared.FileStatusMapper;
  * means fresh counters, and <strong>this class holds no static mutable state</strong>, which
  * {@code TransactionReportProcessorScopeIsolationTest} asserts directly.
  *
- * <p>Two earlier revisions of this documentation are withdrawn, and the second was itself a defect. The
- * first left registration to {@code config/BatchConfig.java} and printed a {@code @Bean @StepScope} method
- * that file was expected to supply, while the class was unregistered, unscoped and stateful - its isolation
- * depended on a file nobody had written. The remediation applied then was {@code @Component} plus
- * {@code @StepScope} on the class with both dates bound by {@code @Value} from the job parameters. That
- * introduced a <strong>second</strong> defect: the owning job never resolved the bean, it constructed the
- * class directly, so the container published a definition no production path used and the annotations
- * documented a binding that never occurred. Two ownership models for one type. That is finding
- * <strong>F-008</strong>, severity Medium, and this contract is its resolution - the annotations and the two
- * {@code @Value} expressions are removed, and the job that already supplied both dates is now the declared
- * owner. It reads them from the job parameters through {@code startDateSymbol} and {@code endDateSymbol},
- * which name {@link #START_DATE_JOB_PARAMETER} and {@link #END_DATE_JOB_PARAMETER}, so the values still come
- * from {@code DATEPARM} by the same route - only the binding site moved from this constructor to its caller.
- * The stateless {@link TransactionCombineProcessor} keeps {@code @Component} because it is genuinely
- * injected as a step-bean parameter; {@link InterestCalculationProcessor} keeps its {@code @Value} binding
- * for the same reason.
+ * <p><strong>Why there is exactly one ownership model, and not two.</strong> Carrying {@code @Component}
+ * plus {@code @StepScope} here as well as being constructed with {@code new} by the job would publish a bean
+ * definition that no production path resolves, and the annotations would then document a binding that never
+ * occurs - two ownership models for one type, with the container's copy silently unexercised. So this class
+ * carries neither annotation and neither {@code @Value}: the job is the declared owner and supplies both
+ * dates from the job parameters through {@code startDateSymbol} and {@code endDateSymbol}, which name
+ * {@link #START_DATE_JOB_PARAMETER} and {@link #END_DATE_JOB_PARAMETER}, so the values reach this class from
+ * {@code DATEPARM} by the same route the source uses. The stateless {@link TransactionCombineProcessor} does
+ * carry {@code @Component}, because it is genuinely injected as a step-bean parameter, and
+ * {@link InterestCalculationProcessor} keeps its {@code @Value} binding for the same reason.
  *
- * <p>{@code config/BatchConfig.java} once carried a {@code @Bean @StepScope transactionReportProcessor}
- * factory as well. <strong>That factory was removed</strong> and is not reinstated. Two definitions of this
- * type could not coexist - the former {@code @Component} default bean name and the factory method name were
- * both {@code transactionReportProcessor} and {@code spring.main.allow-bean-definition-overriding} is
- * {@code false} in the base profile - and reinstating it under a unique name would move the constructor's
- * date validation behind a scoped proxy, where a rejected {@code DATEPARM} pair surfaces as a
+ * <p><strong>No {@code @Bean} factory for this type exists in {@code config/BatchConfig.java}, and none may
+ * be added.</strong> A factory method named {@code transactionReportProcessor} would collide with the
+ * default bean name a {@code @Component} on this class would take, and
+ * {@code spring.main.allow-bean-definition-overriding} is {@code false} in the base profile. Declaring one
+ * under a unique name would be worse rather than safer: it would move the constructor's date validation
+ * behind a scoped proxy, where a rejected {@code DATEPARM} pair surfaces as a
  * {@code BeanCreationException} at first method call instead of as the {@link FatalProcessingException} the
- * step reports today.
+ * step reports.
  *
- * <p>Nothing about this changes how a test drives the class: {@code new TransactionReportProcessor(...)}
- * is what production does and is what the unit tier does. Every collaborator and both dates arrive through
+ * <p>A test drives the class exactly as production does: {@code new TransactionReportProcessor(...)}. Every collaborator and both dates arrive through
  * the constructor; there is no setter, no static mutable field and no environment lookup.
  *
  * <p><strong>Lifecycle contract.</strong> Call {@link #openDatasets()} once before the first record,
@@ -311,26 +300,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>Not available</h2>
  *
  * <ul>
- *   <li>An earlier revision of this bullet said that {@code batch/jobs/**},
- *       {@code batch/readers/**} and {@code batch/writers/**} are unplanned in this branch; that is no
- *       longer true and the claim is withdrawn. All three packages exist and are populated - <b>four</b> jobs,
- *       <b>seven</b> readers and three writers. <b>Findings, severity Low, remediated:</b> this bullet
- *       previously reported five readers and named {@code batch/readers/TransactionBackupReader} among the
- *       types that were still absent; both statements were wrong, that reader is authored, and it is the
- *       sixth. This bullet then reported {@code batch/jobs/TransactionReportJob} and a report writer for the
- *       {@value #REPORT_LINE_LENGTH} character line as still absent, and left the concrete writer type and the
- *       chunk size <strong>Not available</strong>. That absence has ended and the claim is withdrawn:
- *       {@link com.cardemo.batch.jobs.TransactionReportJob} is authored and it wires this step end to end -
- *       reading through {@code TransactionBackupReader}, delegating page and control-break state to this
- *       processor, and emitting the {@value #REPORT_LINE_LENGTH} character records through its own fixed-width
- *       writer, so the {@link ReportLines} carrier is matched to that writer's item type. The report writer is
- *       therefore owned by the job rather than being a fourth type in {@code batch/writers/**}, which still
- *       holds exactly {@code RejectWriter}, {@code StatementWriter} and {@code TransactionWriter}.</li>
- *   <li>An earlier revision of this bullet said that
- *       {@code src/main/java/com/cardemo/batch/package-info.java} does not exist; that is no longer true
- *       and the claim is withdrawn. That file is authored, and it documents this package group at package
- *       level. This class documentation is no longer the sole discharge of clause E for the group; it
- *       remains the class level discharge, which is what clause E asks of a class this size.</li>
+ *   <li>Nothing about this step's wiring is outstanding, and one detail of it is worth stating because it
+ *       is easy to look for in the wrong place: the {@value #REPORT_LINE_LENGTH} character report writer is
+ *       owned by {@link com.cardemo.batch.jobs.TransactionReportJob} rather than being a fourth type in
+ *       {@code batch/writers/**}, which holds exactly {@code RejectWriter}, {@code StatementWriter} and
+ *       {@code TransactionWriter}. The job reads through {@code TransactionBackupReader}, delegates page and
+ *       control-break state to this processor, and emits the fixed-width records through that writer, which
+ *       is why the {@link ReportLines} carrier is matched to the writer's item type.</li>
  *   <li>No service level objective for report throughput or latency exists anywhere in the source
  *       corpus, so a performance target is <strong>Not available</strong>. Needed to close the gap: a
  *       stakeholder supplied objective. Until then Gate 3 records a measured baseline and this class
@@ -1215,17 +1191,16 @@ public class TransactionReportProcessor
     /**
      * Returns the {@code TRANTYPE} cluster, loading it on first use.
      *
-     * <p><strong>Finding, Medium severity - the reference tables were read once per record.</strong> The
+     * <p><strong>Why the reference tables are read once per step rather than once per record.</strong> The
      * source performs {@code READ TRANTYPE-FILE} at {@code app/cbl/CBTRN03C.cbl:L190} and
-     * {@code READ TRANCATG-FILE} at {@code :L195} on every iteration, and an earlier revision of this class
-     * reproduced that literally as a repository call per record. Against the 300-row fixture that is 600
-     * database round trips to resolve between them 25 distinct rows - {@code app/data/ASCII/trantype.txt}
-     * holds 7 records and {@code app/data/ASCII/trancatg.txt} holds 18. Both tables are now read once per
-     * step execution and served from a map thereafter, so the step issues two queries instead of 600.
+     * {@code READ TRANCATG-FILE} at {@code :L195} on every iteration. Reproducing that literally as a
+     * repository call per record costs 600 database round trips against the 300-row fixture to resolve
+     * between them 25 distinct rows - {@code app/data/ASCII/trantype.txt} holds 7 records and
+     * {@code app/data/ASCII/trancatg.txt} holds 18. Both tables are therefore read once per step execution
+     * and served from a map thereafter, so the step issues two queries instead of 600.
      *
-     * <p><strong>Why this is not the behaviour change the earlier revision feared.</strong> That revision
-     * declined to cache on the ground that it "would mask a reference table modified mid run". It would not,
-     * for two reasons that were each checked rather than assumed.
+     * <p><strong>Why that is not a behaviour change, and in particular why it cannot mask a reference table
+     * modified mid-run.</strong> Two reasons, each checked rather than assumed.
      *
      * <ul>
      *   <li><em>The cache lifetime is exactly the source's file-open window.</em> This class is
@@ -2141,11 +2116,9 @@ public class TransactionReportProcessor
         return found.get();
     }
 
-    // ==========================================================================================
     // The dataset lifecycle. app/cbl/CBTRN03C.cbl:L376-L392, :L394-L410, :L412-L428, :L430-L446,
     // :L448-L464, :L466-L482 (open) and :L514-L530, :L532-L549, :L551-L567, :L569-L585, :L587-L603,
     // :L605-L621 (close). Twelve paragraphs, six datasets, one method each.
-    // ==========================================================================================
 
     /**
      * Opens all six datasets in source order, reproducing the six {@code OPEN} paragraphs the mainline
@@ -2954,8 +2927,8 @@ public class TransactionReportProcessor
     /**
      * Refuses any character a fixed-width record may not carry, before it is padded or truncated.
      *
-     * <p><strong>Finding M-09, severity Major, RESOLVED.</strong> This method padded and truncated but
-     * validated nothing, so a carriage return, a line feed or any other control byte reaching it from a
+     * <p><strong>Finding M-09, severity High.</strong> Padding and truncating without
+     * validating lets a carriage return, a line feed or any other control byte reaching it from a
      * database column travelled straight into a {@value #REPORT_LINE_LENGTH}-byte record.
      * {@code app/proc/TRANREPT.prc} declares {@code DCB=(LRECL=133,RECFM=FB)} - fixed blocks, no delimiter -
      * so a consumer finds record boundaries by counting bytes. An embedded line feed does not corrupt the

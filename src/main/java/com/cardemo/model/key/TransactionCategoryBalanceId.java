@@ -101,9 +101,9 @@ import java.util.Objects;
  * {@code 1050-UPDATE-ACCOUNT} at {@code :L196} on each break, guarded by the first record test at
  * {@code :L195-L199}.
  *
- * <p><strong>The source does not flush the final account, and earlier revisions of this file said it
- * did.</strong> The statement "and once more when end of file is reached" was wrong and is corrected
- * here. The apparent final flush is {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code :L219-L220},
+ * <p><strong>The source does not flush the final account.</strong> "And once more when end of file is
+ * reached" is not what happens. The apparent final flush is {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at
+ * {@code :L219-L220},
  * but that {@code ELSE} belongs to {@code IF END-OF-FILE = 'N'} at {@code :L189} and can only be taken
  * when {@code END-OF-FILE} already equals {@code 'Y'} - which is exactly when the enclosing
  * {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already terminated, because

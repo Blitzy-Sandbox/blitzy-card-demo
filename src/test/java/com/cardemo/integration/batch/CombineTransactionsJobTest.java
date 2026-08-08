@@ -328,10 +328,8 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
     @Value("${carddemo.aws.s3.gdg-prefixes.transact-combined:gdg/transact-combined}")
     private String combinedPrefix;
 
-    // =================================================================================================
     // Contract values. Each is an immutable instance field rather than a static constant, because the
     // harness documents a hard limit of two static fields in this package and both of them are containers.
-    // =================================================================================================
 
     /**
      * Job execution-context entry carrying the concrete key the sort step created.
@@ -400,7 +398,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      * an inline tag, so a literal opening brace inside one leaves the tag unterminated and the rest of the
      * comment is swallowed; an entity is not expanded inside an inline code tag either, so escaping it there
      * does not help. The character therefore has to leave the inline tag altogether to be both well formed
-     * and readable. An earlier revision of this comment described the hazard while still committing it.
+     * and readable - describing the hazard inside an inline tag commits it.
      */
     private final String positiveOverpunch = "{ABCDEFGHI";
 
@@ -558,9 +556,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      */
     private final String shellMetacharacters = "; id && $(id) | `id` > /nowhere";
 
-    // =================================================================================================
     // app/jcl/TRANBKP.jcl - the archive-and-reset that makes the stream repeatable (finding C-06)
-    // =================================================================================================
 
     /**
      * The instructed archive unloads the master, empties it, and its generation becomes the first leg.
@@ -656,9 +652,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(expected.size());
     }
 
-    // =================================================================================================
     // STEP TOPOLOGY - app/jcl/COMBTRAN.jcl:L22 and :L41, and the absence of COND between them
-    // =================================================================================================
 
     /**
      * The member's two steps run in source order with nothing between them, and publish the handoff.
@@ -723,9 +717,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isTrue();
     }
 
-    // =================================================================================================
     // CONCATENATION AND SORT - app/jcl/COMBTRAN.jcl:L23-L26, :L28 and :L30
-    // =================================================================================================
 
     /**
      * Every {@code TRANSACT.BKUP(0)} record is presented before every {@code SYSTRAN(0)} record.
@@ -833,9 +825,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isLessThan(identifiers.indexOf(tenth));
     }
 
-    // =================================================================================================
     // THE BULK LOAD - app/jcl/COMBTRAN.jcl:L41 to :L48, REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)
-    // =================================================================================================
 
     /**
      * The load copies the whole combined generation into the relation, and every row satisfies every key.
@@ -1023,9 +1013,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(backup.size() + systran.size());
     }
 
-    // =================================================================================================
     // THE DUPLICATE-IDENTIFIER FAILURE - the outcome that must never be smoothed over
-    // =================================================================================================
 
     /**
      * A repeated identifier fails the load, as a typed duplicate, with its cause preserved and no row left.
@@ -1100,9 +1088,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isZero();
     }
 
-    // =================================================================================================
     // BOUNDARY CONDITIONS - the three ways the concatenated SORTIN can be short of records
-    // =================================================================================================
 
     /**
      * An empty {@code SYSTRAN(0)} generation leaves the backup records to be combined on their own.
@@ -1142,11 +1128,11 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      * empty generation is a real state and is exercised here, and the absent-generation state is exercised by
      * {@link #anAbsentBackupGenerationFailsAllocation()} immediately below.
      *
-     * <p>An earlier revision of this class recorded the absent case as <strong>Not available</strong> as a
-     * parity claim and declined to test it, on the grounds that a file-unavailable status occurs nowhere in
-     * the COBOL corpus. The premise was sound but the conclusion inverted the consequence: because no such
-     * status exists in the corpus, the reader had no business <em>producing</em> one, and the untested path
-     * was the one that occurs on every clean environment. Both states are now asserted.
+     * <p>Recording the absent case as <strong>Not available</strong> as a
+     * parity claim, and declining to test it on the grounds that a file-unavailable status occurs nowhere in
+     * the COBOL corpus, inverts the consequence of a sound premise: because no such
+     * status exists in the corpus, the reader has no business <em>producing</em> one, and the untested path
+     * would be the one that occurs on every clean environment. Both states are asserted.
      */
     @Test
     @DisplayName("9. an empty TRANSACT.BKUP(0) generation leaves only the SYSTRAN(0) records to combine, "
@@ -1176,9 +1162,9 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      * {@code COND=} parameter on {@code :L22} or {@code :L41} says nothing about it: {@code COND} gates step
      * <em>execution</em> on a preceding return code, while allocation happens first and unconditionally.
      *
-     * <p><strong>Two earlier readings of this case are withdrawn.</strong> The first reported an absent
+     * <p><strong>Two readings of this case are refused.</strong> Reporting an absent
      * {@code TRANSACT.BKUP} as {@code '35'} while treating an absent {@code SYSTRAN} generation as an empty
-     * read - an asymmetry the member does not support. The second replaced it with symmetric <em>success</em>,
+     * read is an asymmetry the member does not support. Replacing it with symmetric <em>success</em>,
      * because the pipeline's own stage ordering places the sole {@code TRANSACT.BKUP} producer
      * ({@code TransactionReportJob}'s {@code STEP01R}, {@code app/proc/TRANREPT.prc:L21}) downstream of the
      * combine. That inverted the dependency: a topology that cannot satisfy a precondition is a topology to
@@ -1309,9 +1295,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isZero();
     }
 
-    // =================================================================================================
     // RISKY-PATTERN DISCHARGE - generation content is data, and the sort is in-process
-    // =================================================================================================
 
     /**
      * Content lifted from a generation object is bound as data and is never interpreted.
@@ -1408,9 +1392,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isEmpty();
     }
 
-    // =================================================================================================
     // INPUT CONSTRUCTION - frozen fixture bytes, spliced only where a test needs a different identifier
-    // =================================================================================================
 
     /**
      * Reads every record of the frozen daily transaction fixture through the harness's loader.
@@ -1555,9 +1537,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
         return value + " ".repeat(width - value.length());
     }
 
-    // =================================================================================================
     // GENERATION KEYS AND OBJECTS - (0) resolves the greatest key, (+1) creates a new one
-    // =================================================================================================
 
     /**
      * Writes the {@code TRANSACT.BKUP(0)} generation of {@code app/jcl/COMBTRAN.jcl:L24}.
@@ -1838,9 +1818,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
         return records;
     }
 
-    // =================================================================================================
     // LAUNCHING AND READING BACK
-    // =================================================================================================
 
     /**
      * Launches the job with the harness's per-test discriminator and no parameter of its own.
@@ -2034,9 +2012,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
         return rendered;
     }
 
-    // =================================================================================================
     // COMPOUND ASSERTIONS
-    // =================================================================================================
 
     /**
      * Asserts two record lists hold byte-identical images, naming only the position and the identifier.

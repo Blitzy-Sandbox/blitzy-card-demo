@@ -90,12 +90,12 @@ import org.springframework.batch.test.MetaDataInstanceFactory;
  * Instrument ownership: that {@code MetricsConfig} is the only place an instrument is created, that every
  * facade method has a production caller, and that each caller moves the series it is the producer for.
  *
- * <p>The four-instrument contract of AAP section 0.7.7 was previously asserted only in prose. Three writers
- * each took a {@code MeterRegistry} and resolved counters of their own, two of them re-declaring the metric
- * name and one re-declaring the reject-code tag key as well. Micrometer's registration being idempotent kept
- * that working, so nothing failed - but nothing checked that the four spellings agreed either, and the tag key
- * genuinely had diverged in one place. Meanwhile two of the four facade methods had no caller at all, which
- * meant two of the four documented series could never move.
+ * <p>The four-instrument contract of AAP section 0.7.7 is also stated in prose, which cannot hold it. Three
+ * writers each taking a {@code MeterRegistry} and resolving counters of their own - two re-declaring the metric
+ * name and one re-declaring the reject-code tag key as well - keeps working, because Micrometer's registration
+ * is idempotent, so nothing fails; but nothing checks that the four spellings agree either, and a tag key
+ * diverging in one place is exactly what that permits. A facade method with no caller is the mirror image: a
+ * documented series that can never move.
  *
  * <p>The tests below pin both halves. Ownership is asserted structurally - no writer constructor accepts a
  * registry, so none of them can register anything - and the wiring is asserted behaviourally, by driving each
@@ -191,7 +191,7 @@ class MetricInstrumentOwnershipTest {
         @Test
         @DisplayName("StatementWriter takes no meter owner at all, so it cannot advance any series")
         void theStatementWriterHoldsNoMeterOwner() {
-            // Finding H-09, severity High, RESOLVED, asserted at the type level so it cannot silently
+            // Finding H-09, severity High, asserted at the type level so it cannot silently
             // regress. A statement is a rendering of transactions posted on an earlier run, so it shares no
             // unit with any of the four instruments: not the DALYTRAN records-considered counter of
             // app/cbl/CBTRN02C.cbl:L206, not the reject counter of :L214, not a sign-on attempt, and not a
@@ -209,7 +209,7 @@ class MetricInstrumentOwnershipTest {
         @Test
         @DisplayName("The combine and report jobs hold no meter owner, so neither can recount posted rows")
         void theCombineAndReportJobsHoldNoMeterOwner() {
-            // Finding F-010, severity High, RESOLVED, asserted at the type level for the same reason
+            // Finding F-010, severity High, asserted at the type level for the same reason
             // StatementWriter is above: withholding the facade is permanent where declining to call it is a
             // convention. carddemo.batch.records.processed reproduces DISPLAY 'TRANSACTIONS PROCESSED :' at
             // app/cbl/CBTRN02C.cbl:L236, which is the DALYTRAN population POSTTRAN read. COMBTRAN merges the

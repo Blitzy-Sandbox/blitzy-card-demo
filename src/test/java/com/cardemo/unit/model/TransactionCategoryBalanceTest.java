@@ -22,7 +22,7 @@
  *               collision, 6 B / 2 fields)              @ 7756d89
  * Source      : app/catlg/LISTCAT.txt:L1371 (KEYLEN 17, AVGLRECL 50)
  *               and :L3938-L3946 (AIX 3 / PATH 3)       @ 7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L467-L500, :L474-L479, :L481,
+ * Source      : app/cbl/CBTRN02C.cbl:L467-L501, :L474-L479, :L481,
  *               :L512, :L530 (the upsert)               @ 7756d89
  * Source      : app/cbl/CBACT04C.cbl:L188-L222 (account control
  *               break over a single ascending scan)     @ 7756d89
@@ -923,7 +923,7 @@ class TransactionCategoryBalanceTest {
     }
 
     /**
-     * Free constructibility. {@code app/cbl/CBTRN02C.cbl:L467-L500} is an upsert whose read accepts a
+     * Free constructibility. {@code app/cbl/CBTRN02C.cbl:L467-L501} is an upsert whose read accepts a
      * not-found status as success, so the create branch must be able to build a complete row for a key that
      * does not yet exist, in one step and with no invented default.
      */

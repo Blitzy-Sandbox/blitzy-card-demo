@@ -483,7 +483,7 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
      * no reason to accept such a value: all 300 identifiers in {@code app/data/ASCII/dailytran.txt}
      * bytes 1-16 are decimal digits, and both generators produce digits only - the descending-browse
      * maximum-plus-one of {@code app/cbl/COTRN02C.cbl:L444-L451} and the date-plus-suffix concatenation
-     * of {@code app/cbl/CBACT04C.cbl:L473-L516}. Refusing a control character therefore cannot refuse a
+     * of {@code app/cbl/CBACT04C.cbl:L473-L515}. Refusing a control character therefore cannot refuse a
      * legitimate record, which is the test a parity-preserving guard has to pass.
      *
      * <p>The check is placed after the length check so that a wrong-length value is still reported as a
@@ -659,7 +659,7 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
      * that adding a message later cannot forget it.
      *
      * <p>The rendering is total: every input produces a safe output, including inputs the validation
-     * boundary would have refused, because this method is also used to report those refusals. Anything
+     * boundary would have refused, because this method renders those refusals too. Anything
      * outside printable ASCII is escaped, not merely the control characters that
      * {@link #containsControlCharacter(String)} refuses - the guard is deliberately narrow so it cannot
      * refuse a legitimate record, while the rendering is deliberately broad so that a character the

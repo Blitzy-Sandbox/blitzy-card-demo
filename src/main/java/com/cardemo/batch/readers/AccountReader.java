@@ -5,7 +5,7 @@
  * Type        : Spring Batch ItemStreamReader (read-only verification step)
  * Function    : Read-only sequential scan of the account master, replacing
  *               the COBOL batch reader CBACT01C.
- * Source      : app/cbl/CBACT01C.cbl (193 lines, 7 paragraphs)
+ * Source      : app/cbl/CBACT01C.cbl (193 lines, 6 own paragraph labels)
  *               app/cpy/CVACT01Y.cpy (300-byte ACCOUNT-RECORD)
  *               app/catlg/LISTCAT.txt:L59 (KEYLEN 11 / AVGLRECL 300)
  *               app/jcl/READACCT.jcl (job that executes CBACT01C)
@@ -147,17 +147,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to run, build and test</h2>
  * <strong>The read-only verification step that owns this reader is authored, and nothing about the batch tier
- * around it is outstanding.</strong> Two earlier revisions of this paragraph are withdrawn: the first said the
- * owning {@code Job} and {@code Step} were wired in {@code com.cardemo.config.BatchConfig} and that
- * {@code com.cardemo.batch.jobs} held {@code InterestCalculationJob} only; the second said the verification
- * step was "genuinely still owed" and that no {@code Step} referenced this reader, so none was constructed at
- * runtime. The step exists:
+ * around it is outstanding.</strong> The step is authored and referenced, and the
+ * owning {@code Job} and {@code Step} are not wired anywhere else:
  * {@link com.cardemo.config.BatchConfig#datasetVerificationReadAccountStep} is the
  * Java counterpart of {@code app/jcl/READACCT.jcl}, and
  * {@link com.cardemo.config.BatchConfig#datasetVerificationJob} composes it with the three
  * sibling members as one operator submission, selectable by name through the framework's own {@code spring.batch.job.name}
- * property, which is the launch signal that survives after the bespoke operator launcher was
- * withdrawn.
+ * property, which is the launch signal - no bespoke operator launcher is declared, because one would launch
+ * from inside {@code SpringApplication.run}.
  * The step writes nothing: its sink reaches no relation, no object store and no queue, because
  * {@code app/cbl/CBACT01C.cbl} performs {@code OPEN}, {@code READ} and {@code CLOSE} only.
  * {@code com.cardemo.batch.jobs} holds its six target jobs and each declares its own {@code Step} beans;
@@ -184,16 +181,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     </li>
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
- * warning. <strong>Both test tiers now cover this class.</strong> An earlier revision of this paragraph said
- * neither was authored, that {@code unit/batch} held three classes none of which referenced this reader, and
- * that {@code integration/batch} held one abstract Testcontainers base with no concrete subclass beneath it;
- * every part of that is withdrawn. {@code src/test/java/com/cardemo/unit/batch} holds <strong>36</strong>
- * sources and covers the status renderer, the guard logic and the keyset scan through
+ * warning. <strong>Both test tiers cover this class.</strong> {@code src/test/java/com/cardemo/unit/batch}
+ * covers the status renderer, the guard logic and the keyset scan through
  * {@code AccountReaderTest}, {@code SequentialReaderContractTest},
  * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and
- * {@code BatchLogHygieneTest}. {@code src/test/java/com/cardemo/integration/batch} holds <strong>4</strong>
- * sources - one abstract Testcontainers base and three concrete classes that execute under Failsafe against
- * PostgreSQL 16 and LocalStack. This class still creates neither, because test sources are outside the scope
+ * {@code BatchLogHygieneTest}, and {@code src/test/java/com/cardemo/integration/batch} holds the abstract
+ * Testcontainers base and the concrete classes that execute under Failsafe against
+ * PostgreSQL 16 and LocalStack. Re-measure either tier's size with a directory listing rather than quoting a
+ * figure. This class creates neither, because test sources are outside the scope
  * of the package it belongs to.
  *
  * <h2>Key configs and defaults</h2>
@@ -209,10 +204,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     the emitted sequence byte reproducible.</li>
  * <li>{@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile and
  *     {@code spring.jpa.open-in-view} is {@code false}; the schema is owned by the Flyway migrations.</li>
- * <li>No AWS, bucket, queue or topic configuration is read by this reader, and no AWS client is injected, so
- *     it requests no cloud privilege whatever.</li>
- * <li>No transaction annotation is declared. See {@link #read()} for why a {@code readOnly} annotation here
- *     would be decorative rather than effective, and how read-only is guaranteed instead.</li>
+ * <li>No cloud privilege and no transaction annotation, both stated for all four verification readers in
+ *     {@code com.cardemo.batch.readers}' package documentation; {@link #read()} records how read-only is
+ *     guaranteed here.</li>
  * </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -284,10 +278,8 @@ public class AccountReader implements ItemStreamReader<Account> {
      */
     private static final String ABEND_CULPRIT = "CBACT01C";
 
-    // ----------------------------------------------------------------------------------------------------
     // Legacy DISPLAY literals, reproduced byte for byte. Each is followed by its measured inner length so a
     // reviewer can confirm fidelity without opening the source. Rule 1 clause F: every assertion is cited.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/CBACT01C.cbl:L71}, 38 characters. */
     private static final String START_OF_EXECUTION_MESSAGE = "START OF EXECUTION OF PROGRAM CBACT01C";
@@ -374,7 +366,6 @@ public class AccountReader implements ItemStreamReader<Account> {
         "ACCT-GROUP-ID           :",
     };
 
-    // ----------------------------------------------------------------------------------------------------
     // Record geometry, retained as documentation only.
     //
     // app/cpy/CVACT01Y.cpy declares the 300-byte layout, corroborated four independent ways: the FD at
@@ -386,12 +377,12 @@ public class AccountReader implements ItemStreamReader<Account> {
     // 69-78, current-cycle credit 79-90, current-cycle debit 91-102, postal code 103-112, group identifier
     // 113-122, filler 123-300.
     //
-    // WHY THESE ARE NO LONGER CONSTANTS. Eight width and padding constants used to live here, and every one of
-    // them existed to serve the two DISPLAY reproductions this class no longer performs: the field-by-field
-    // emission of 1100-DISPLAY-ACCT-RECORD and the whole-record image of :L78, both of which published customer
-    // financial data to a log channel and are now refused - see displayAccountRecord(Account) for the full
-    // reasoning. With their only callers gone the constants were unreachable, and Rule 1 clause B forbids dead
-    // code, so they were removed rather than left as a promise this class no longer keeps. The geometry itself
+    // WHY NO WIDTH OR PADDING CONSTANT IS DECLARED HERE. Eight of them would exist only to serve two DISPLAY
+    // reproductions this class does not perform: the field-by-field
+    // emission of 1100-DISPLAY-ACCT-RECORD and the whole-record image of :L78, both of which publish customer
+    // financial data to a log channel and are refused - see displayAccountRecord(Account) for the full
+    // reasoning. With no caller they would be unreachable, and Rule 1 clause B forbids dead
+    // code. The geometry itself
     // is provenance worth keeping legible, which is what this comment is for. This reader consumes mapped rows
     // through JPA and parses no fixed-width byte anywhere, so it needs no width at runtime; the byte-exact
     // rendering of a record belongs to the fixed-width writers, which own the zoned-decimal codec.
@@ -403,15 +394,15 @@ public class AccountReader implements ItemStreamReader<Account> {
     // emits a label carrying the same misspelling. Severity is Medium rather than Low because it is a standing
     // naming trap: a maintainer who "corrects" the spelling in any one of the places it appears - copybook
     // citation, entity property, column name - breaks compilation against the entity contract or the schema.
-    // Remediation: do not rename it. A sanctioned rename must be atomic across the entity, the Flyway
-    // migration, every reader and writer and the expected-output baselines, and is owed an entry in the
-    // DECISION_LOG.md as a deliberate divergence from the frozen corpus.
+    // Remediation: do not rename it. The decision to preserve it is DL-LD-08 in DECISION_LOG.md; a
+    // sanctioned rename must be atomic across the entity, the Flyway migration, every reader and writer
+    // and the expected-output baselines, and needs its own entry there as a deliberate divergence from
+    // the frozen corpus.
     //
     // The three PIC X(10) date fields are carried as String over CHAR(10) columns and are never parsed into a
     // java.time type by this reader: a verification scan must be able to hold a value no date parser would
     // accept. Parsing and validation belong to com.cardemo.service.shared.DateValidationService, which replaces
     // CALL 'CSUTLDTC'.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code ACCT-ID PIC 9(11)}, bytes 1-11 of the record. */
     private static final int ACCOUNT_ID_DIGITS = 11;
@@ -447,10 +438,11 @@ public class AccountReader implements ItemStreamReader<Account> {
      * standing naming trap &mdash; a maintainer who &quot;corrects&quot; the spelling in any one of the four
      * places it appears (copybook citation, entity property, column name, display label) breaks either
      * compilation against the entity contract or byte-comparison of the emitted label, and the two failures
-     * surface in different gates. <i>Remediation:</i> do not rename it. Should a rename ever be sanctioned, it
+     * surface in different gates. <i>Remediation:</i> do not rename it - the decision to preserve the
+     * misspelling is {@code DL-LD-08} in the {@code DECISION_LOG.md}. Should a rename ever be sanctioned, it
      * must be applied atomically across the entity, the Flyway migration, every reader and writer, and the
-     * expected-output baselines, and owed an entry in the {@code DECISION_LOG.md} as a deliberate divergence
-     * from the frozen corpus.
+     * expected-output baselines, and needs its own entry there as a deliberate divergence from the frozen
+     * corpus.
      *
      * @see Account#getExpiraionDate()
      */
@@ -486,9 +478,9 @@ public class AccountReader implements ItemStreamReader<Account> {
      * The token is not a run of a numeric character, so it can never be mistaken for a value that happened to
      * be zero.
      * <p>
-     * <b>Why a run of {@code '*'} rather than a bracketed word.</b> An earlier revision composed this constant
-     * from a {@code "[REDACTED]"} marker right-padded out to the field width. That spelling is withdrawn, for
-     * two reasons that only became visible once every redaction site could be compared side by side. It was
+     * <b>Why a run of {@code '*'} rather than a bracketed word.</b> Composing this constant
+     * from a {@code "[REDACTED]"} marker right-padded out to the field width is wrong for
+     * two reasons that are only visible once every redaction site is compared side by side. It would be
      * the sole divergence among the emitter-side redactions: {@code TransactionReportProcessor} withholds
      * {@code TRAN-AMT}, {@code InterestCalculationProcessor} withholds {@code TRAN-CAT-BAL}, and
      * {@code TransactionDetailService} withholds both an amount and a merchant identifier, each as a run of
@@ -501,10 +493,8 @@ public class AccountReader implements ItemStreamReader<Account> {
      */
     private static final String REDACTED_MONEY = "*".repeat(MONEY_DIGITS);
 
-    // ----------------------------------------------------------------------------------------------------
     // Execution-context keys for the restart cursor. Namespaced by simple class name so two readers in the
     // same step cannot collide.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Key under which the number of rows already emitted is checkpointed. */
     private static final String CONTEXT_KEY_RECORDS_READ = "AccountReader.recordsRead";
@@ -531,10 +521,8 @@ public class AccountReader implements ItemStreamReader<Account> {
     /** {@code END-OF-FILE} after {@code MOVE 'Y' TO END-OF-FILE} ({@code app/cbl/CBACT01C.cbl:L108}). */
     private static final String END_OF_FILE_YES = "Y";
 
-    // ----------------------------------------------------------------------------------------------------
     // File-status literals, derived from com.cardemo.model.enums.FileStatus rather than restated, so that the
     // single definition of each code stays single (Rule 1 clause C3, avoid duplication).
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The {@code '0'} that occupies the second byte of {@link #STATUS_PHYSICAL_IO_ERROR}.
@@ -570,9 +558,7 @@ public class AccountReader implements ItemStreamReader<Account> {
     private static final String STATUS_PHYSICAL_IO_ERROR =
             String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_SUBCODE_NONE;
 
-    // ----------------------------------------------------------------------------------------------------
     // Collaborators, injected through the constructor and never reassigned.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The persistence access point for the account master, replacing the {@code ACCTFILE} VSAM cluster. */
     private final AccountRepository accountRepository;
@@ -589,11 +575,9 @@ public class AccountReader implements ItemStreamReader<Account> {
     /** Rows fetched per round trip; validated at construction and never changed afterwards. */
     private final int pageSize;
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor state. Every field below is the Java counterpart of a WORKING-STORAGE item at
     // app/cbl/CBACT01C.cbl:L46-L67 and is therefore an INSTANCE field: never static, never shared. The step
     // scope gives each step execution its own instance.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01)} ({@code :L65}). Held as its literal {@code 'N'} or {@code 'Y'} value. */
     private String endOfFile = END_OF_FILE_NO;
@@ -663,9 +647,7 @@ public class AccountReader implements ItemStreamReader<Account> {
         this.pageSize = requirePositivePageSize(pageSize);
     }
 
-    // ====================================================================================================
     // Mainline PROCEDURE DIVISION, app/cbl/CBACT01C.cbl:L70-L87, realised as the ItemStream lifecycle.
-    // ====================================================================================================
 
     /**
      * Opens the scan: emits the start-of-execution banner and performs {@code 0000-ACCTFILE-OPEN}, reproducing
@@ -882,9 +864,7 @@ public class AccountReader implements ItemStreamReader<Account> {
         return recordsRead;
     }
 
-    // ====================================================================================================
     // 1000-ACCTFILE-GET-NEXT, app/cbl/CBACT01C.cbl:L92-L116.
-    // ====================================================================================================
 
     /**
      * Reads the next record and applies the three-way sequential-read guard of
@@ -1029,9 +1009,7 @@ public class AccountReader implements ItemStreamReader<Account> {
         return STATUS_SUCCESS;
     }
 
-    // ====================================================================================================
     // 1100-DISPLAY-ACCT-RECORD, app/cbl/CBACT01C.cbl:L118-L131.
-    // ====================================================================================================
 
     /**
      * The counterpart of {@code 1100-DISPLAY-ACCT-RECORD} ({@code app/cbl/CBACT01C.cbl:L118-L131}).
@@ -1130,9 +1108,7 @@ public class AccountReader implements ItemStreamReader<Account> {
         PARITY_LOG.debug(RECORD_SEPARATOR);
     }
 
-    // ====================================================================================================
     // 0000-ACCTFILE-OPEN, app/cbl/CBACT01C.cbl:L133-L149.
-    // ====================================================================================================
 
     /**
      * Opens the account master, reproducing {@code 0000-ACCTFILE-OPEN}
@@ -1200,9 +1176,7 @@ public class AccountReader implements ItemStreamReader<Account> {
         // EXIT.  (:L149)
     }
 
-    // ====================================================================================================
     // 9000-ACCTFILE-CLOSE, app/cbl/CBACT01C.cbl:L151-L167.
-    // ====================================================================================================
 
     /**
      * Closes the account master, reproducing {@code 9000-ACCTFILE-CLOSE}
@@ -1263,9 +1237,7 @@ public class AccountReader implements ItemStreamReader<Account> {
         // EXIT.  (:L167)
     }
 
-    // ====================================================================================================
     // 9999-ABEND-PROGRAM, app/cbl/CBACT01C.cbl:L169-L173.
-    // ====================================================================================================
 
     /**
      * Abends the step, reproducing {@code 9999-ABEND-PROGRAM} ({@code app/cbl/CBACT01C.cbl:L169-L173}).
@@ -1306,9 +1278,7 @@ public class AccountReader implements ItemStreamReader<Account> {
                 cause);
     }
 
-    // ====================================================================================================
     // 9910-DISPLAY-IO-STATUS, app/cbl/CBACT01C.cbl:L176-L189.
-    // ====================================================================================================
 
     /**
      * Renders a file status as the legacy diagnostic line, reproducing {@code 9910-DISPLAY-IO-STATUS}
@@ -1343,10 +1313,8 @@ public class AccountReader implements ItemStreamReader<Account> {
         return fileStatusMapper.displayIoStatus(fileStatus);
     }
 
-    // ====================================================================================================
     // Fixed-width rendering, supporting DISPLAY ACCOUNT-RECORD at app/cbl/CBACT01C.cbl:L78 and the eleven
     // field lines of 1100-DISPLAY-ACCT-RECORD. Every method below is static and pure.
-    // ====================================================================================================
 
     /**
      * Renders the whole record as one {@value #RECORD_LENGTH}-character image, standing in for
@@ -1518,11 +1486,9 @@ public class AccountReader implements ItemStreamReader<Account> {
         return value + String.valueOf(ALPHANUMERIC_PAD).repeat(width - length);
     }
 
-    // ====================================================================================================
     // Restart support and construction-time validation. No legacy counterpart: the mainline at
     // app/cbl/CBACT01C.cbl:L70-L87 always scans from the first record, because a JES2 job restart re-ran the
     // step from the top. Restartability is additive, and it changes no emitted value.
-    // ====================================================================================================
 
     /**
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead

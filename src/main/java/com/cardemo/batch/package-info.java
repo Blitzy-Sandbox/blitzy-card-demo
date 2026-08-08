@@ -14,16 +14,16 @@
  *               + app/proc/REPROC.prc + app/ctl/REPROCT.ctl
  *               + app/jcl/DEFGDGB.jcl + app/jcl/DALYREJS.jcl
  *               + app/jcl/REPTFILE.jcl
- *               + app/cbl/CBTRN02C.cbl (731 lines, 27 paragraphs)
- *               + app/cbl/CBTRN01C.cbl (491 lines, 19 paragraphs)
- *               + app/cbl/CBACT04C.cbl (652 lines, 23 paragraphs)
- *               + app/cbl/CBTRN03C.cbl (649 lines, 27 paragraphs)
- *               + app/cbl/CBSTM03A.CBL (924 lines, 26 paragraphs)
- *               + app/cbl/CBSTM03B.CBL (230 lines, 15 paragraphs)
- *               + app/cbl/CBACT01C.cbl (193 lines, 7 paragraphs)
- *               + app/cbl/CBACT02C.cbl (178 lines, 6 paragraphs)
- *               + app/cbl/CBACT03C.cbl (178 lines, 6 paragraphs)
- *               + app/cbl/CBCUS01C.cbl (178 lines, 6 paragraphs)
+ *               + app/cbl/CBTRN02C.cbl (731 lines, 26 own paragraph labels)
+ *               + app/cbl/CBTRN01C.cbl (491 lines, 18 own paragraph labels)
+ *               + app/cbl/CBACT04C.cbl (652 lines, 22 own paragraph labels)
+ *               + app/cbl/CBTRN03C.cbl (649 lines, 26 own paragraph labels)
+ *               + app/cbl/CBSTM03A.CBL (924 lines, 25 own paragraph labels)
+ *               + app/cbl/CBSTM03B.CBL (230 lines, 14 own paragraph labels)
+ *               + app/cbl/CBACT01C.cbl (193 lines, 6 own paragraph labels)
+ *               + app/cbl/CBACT02C.cbl (178 lines, 5 own paragraph labels)
+ *               + app/cbl/CBACT03C.cbl (178 lines, 5 own paragraph labels)
+ *               + app/cbl/CBCUS01C.cbl (178 lines, 5 own paragraph labels)
  *               + app/cpy/CVTRA05Y.cpy + app/cpy/CVTRA06Y.cpy
  *               + app/cpy/CVTRA07Y.cpy + app/cpy/COSTM01.CPY
  *               + app/csd/CARDDEMO.CSD + app/catlg/LISTCAT.txt
@@ -62,7 +62,7 @@
  * it refuses at context refresh any configuration in which two of the nine configured roots could resolve to
  * one another's objects. Its callers are jobs, readers and writers - three of the four leaves - so no leaf can
  * own it without the other two depending on a sibling, and no class outside this layer needs it at all.
- * <strong>Finding m-02, severity Minor, RESOLVED:</strong> before it existed, six classes each carried a
+ * <strong>Finding m-02, severity Medium, RESOLVED:</strong> before it existed, six classes each carried a
  * private validator and no two agreed, the weakest checking only that the value was not entirely separators.
  *
  * <p>The reader this document is written for is a maintainer who has never seen COBOL. Where a decision
@@ -155,9 +155,7 @@
  *   <li>{@code TransactionReportJob} - from {@code app/jcl/TRANREPT.jcl}, {@code app/proc/TRANREPT.prc},
  *       {@code app/proc/REPROC.prc}, {@code app/ctl/REPROCT.ctl} and {@code app/cbl/CBTRN03C.cbl}.</li>
  *   <li>{@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} - the end-to-end stream with decider
- *       gating and the parallel split. An earlier revision of this entry named it as planned rather than
- *       present so that its absence was not mistaken for an omission in the plan; that qualification is
- *       withdrawn, because the class is now authored and beans may reference it.</li>
+ *       gating and the parallel split. It is authored rather than planned, so beans may reference it.</li>
  * </ul>
  *
  * <p><strong>There are exactly six jobs. Never a seventh.</strong> {@code app/cbl/CBTRN01C.cbl} is folded
@@ -168,8 +166,8 @@
  * only. Measured at this commit: {@code OPEN} 18, {@code READ} 17, {@code CLOSE} 18, {@code DISPLAY} 42,
  * and {@code WRITE}, {@code REWRITE} and {@code DELETE} <strong>zero</strong>. A program that writes
  * nothing cannot be a job that produces something, so a standalone job would have been an invention. It
- * remains a first-class row for paragraph-correspondence purposes and is owed one in the
- * {@code TRACEABILITY_MATRIX.md}.
+ * remains a first-class row for paragraph-correspondence purposes and has its rows in
+ * {@code TRACEABILITY_MATRIX.md} - 36 of them, under {@code TM-CBTRN01C-*}.
  *
  * <p>The same reasoning makes four more programs <strong>read-only verification steps</strong> rather than
  * producers: {@code app/cbl/CBACT01C.cbl}, {@code app/cbl/CBACT02C.cbl}, {@code app/cbl/CBACT03C.cbl} and
@@ -185,8 +183,8 @@
  * <strong>25</strong> with {@code maven.compiler.release} at 25 and <strong>no preview features</strong>,
  * Maven <strong>3.9.11</strong>, {@code spring-boot-starter-parent} 3.5.11, Spring Batch 5.2.4, the Spring
  * Cloud AWS bill of materials 3.3.0, Hibernate 6.6.42.Final and the PostgreSQL driver
- * <strong>42.7.13</strong> - a forward override in {@code pom.xml}; an earlier revision published the
- * parent-managed 42.7.10 and is withdrawn. Testcontainers
+ * <strong>42.7.13</strong> - a forward override in {@code pom.xml}, not the parent-managed 42.7.10.
+ * Testcontainers
  * is pinned to 2.0.3 by property rather than by importing a second bill of materials, and only the four
  * prefixed coordinates resolve at that version. <strong>Add no dependency, and no Lombok.</strong>
  *
@@ -494,8 +492,8 @@
  *       input bytes untouched. No single temporal type can round-trip all three. So the representation is
  *       {@code String} over {@code CHAR(26)} - <strong>never {@code LocalDateTime}, {@code Timestamp} or
  *       {@code Instant}</strong> - and formatting goes to <strong>hundredths-of-a-second</strong> precision
- *       followed by four literal zeros, never to millisecond or nanosecond precision. An earlier revision of
- *       this invariant said milliseconds; it is withdrawn, because three fraction digits plus four zeros is
+ *       followed by four literal zeros, never to millisecond or nanosecond precision: three fraction digits
+ *       plus four zeros is
  *       seven characters where {@code app/cbl/CBTRN02C.cbl:L159-L174} declares six -
  *       {@code DB2-MIL PIC 9(002)} then {@code DB2-REST PIC X(04)}.</li>
  *   <li><strong>Reject codes are business outcomes driving {@code ExitStatus}, and are never thrown.</strong>
@@ -532,17 +530,24 @@
  *       property binding, which is what keeps the fail-fast placeholder behaviour intact.</li>
  *   <li><strong>Paragraph correspondence is one-to-one and labels are never consolidated.</strong> Every
  *       applicable COBOL source label maps to a single private Java method carrying a source-citing comment,
- *       <em>including</em> duplicate, empty, unreachable and defect paths. The label counts this subtree owns,
- *       measured at this commit: {@code CBTRN02C} 27, {@code CBTRN03C} 27, {@code CBSTM03A} 26,
- *       {@code CBACT04C} 23, {@code CBTRN01C} 19, {@code CBSTM03B} 15, {@code CBACT01C} 7, and
- *       {@code CBACT02C}, {@code CBACT03C} and {@code CBCUS01C} 6 each - 162 labels in total.</li>
+ *       <em>including</em> duplicate, empty, unreachable and defect paths. Two figures are published here
+ *       under distinct names because they measure different things: the <strong>own</strong> count is
+ *       PROCEDURE DIVISION paragraph labels, and the <strong>published</strong> count adds the one synthetic
+ *       entry row each program with an entry point contributes to {@code TRACEABILITY_MATRIX.md}. Measured at
+ *       this commit: {@code CBTRN02C} 26 own / 27 published, {@code CBTRN03C} 26 / 27, {@code CBSTM03A} 25 /
+ *       26, {@code CBACT04C} 22 / 23, {@code CBTRN01C} 18 / 18, {@code CBSTM03B} 14 / 14,
+ *       {@code CBACT01C} 6 / 7, and {@code CBACT02C}, {@code CBACT03C} and {@code CBCUS01C} 5 / 6 each -
+ *       <strong>152 own labels, 160 published rows</strong>. The own figure is the one that corresponds
+ *       one-to-one to private Java methods.</li>
  * </ul>
  *
  * <h2>Source behaviour preserved deliberately</h2>
  *
  * <p>Each item below is a source behaviour that a well-meaning implementer would "fix". Parity is the
- * contract of this migration, so none of them is fixed, and each is owed an entry in the
- * {@code DECISION_LOG.md} together with a row in the {@code TRACEABILITY_MATRIX.md}.
+ * contract of this migration, so none of them is fixed, and each is held in {@code DECISION_LOG.md}
+ * together with its rows in {@code TRACEABILITY_MATRIX.md}: the specific defects under the
+ * {@code DL-LD-*} identifiers, the specific parity decisions under {@code DL-PP-*}, and the
+ * low-severity behaviours that a well-meaning implementer would normalise under {@code DL-PP-13}.
  *
  * <ul>
  *   <li><strong>Reject code 103 overwrites 102.</strong> In {@code 1500-B-LOOKUP-ACCT} at
@@ -623,7 +628,7 @@
  * collapsing the three independent COBOL commits of {@code 2000-POST-TRANSACTION} into one atomic Java
  * transaction closes an orphaned-row hazard as a side effect: the legacy rewrite-failure path leaves an
  * orphaned category-balance row and an orphaned transaction row behind. That is a genuine behavioural
- * improvement, not equivalence, and it is owed an entry in the {@code DECISION_LOG.md} saying so.
+ * improvement, not equivalence, and {@code DL-DV-01} in {@code DECISION_LOG.md} says so.
  *
  * <p>The register of retained parity artefacts is the marker at each declaration, plus the roster held by the
  * root package documentation. This document deliberately does not restate that register as a count, because a
@@ -633,8 +638,8 @@
  *
  * <p>Exactly <strong>one</strong> rule governs this project, titled "GLOBAL CODING &amp; DESIGN STANDARDS
  * (Apply to all projects)" and framed "You are a senior engineer + code auditor. Enforce the standards below
- * consistently." It has six lettered clauses, all binding on this layer. An earlier generation of the
- * specification described six separate rules; that was a defect, and the correct reading is one rule with six
+ * consistently." It has six lettered clauses, all binding on this layer. Reading it as six separate rules is
+ * a misreading: it is one rule with six
  * clauses.
  *
  * <dl>
@@ -721,7 +726,8 @@
  * <p><strong>Parity governs, and Clause B is satisfied by a different mechanism.</strong> The clause's own
  * wording forbids dead code and "TODOs without owners or tracking reference" - it is untracked residue that
  * it targets. Every artefact retained here is cited to its source line, marked at its declaration with an
- * explicit intentional-no-op comment, and owed an entry in the {@code DECISION_LOG.md}. It is a
+ * explicit intentional-no-op comment, and covered by {@code DL-CR-01} in {@code DECISION_LOG.md},
+ * whose register is keyed by identifier and locator rather than by a total. It is a
  * documented faithful reproduction of behaviour that exists in the system of record, not abandoned code.
  * Deleting these sites would produce a layer that is marginally cleaner and measurably less traceable,
  * failing a stated acceptance criterion to satisfy a stylistic one.
@@ -731,16 +737,13 @@
  * <p>Stated plainly rather than papered over, with what would be needed to close each:
  *
  * <ul>
- *   <li><strong>The {@code CBSTM03B} paragraph count, 15 against 14.</strong> The specification states 15 and
- *       an independent scan by a sibling agent reported 14. Measured at this commit, the delta is
- *       explicable and both figures are right under their own definition: an Area-A label scan of
- *       {@code app/cbl/CBSTM03B.CBL} finds 15 labels, of which one -
- *       {@code FILE-CONTROL.} at {@code :L30} - sits in the {@code ENVIRONMENT DIVISION} rather than the
- *       {@code PROCEDURE DIVISION}. Counting procedure paragraphs alone gives the 14 that run from
- *       {@code :L116} to {@code :L228}. The banner above keeps 15, the figure the traceability record uses.
- *       What remains {@code Not available} is confirmation that the sibling scan drew the line in that same
- *       place rather than for some other reason; closing it needs that scan's paragraph list, and until then
- *       no label may be consolidated or invented to force either number.</li>
+ *   <li><strong>The {@code CBSTM03B} label census: 15 Area-A lines, 14 paragraphs.</strong> An Area-A label
+ *       scan of {@code app/cbl/CBSTM03B.CBL} finds 15 lines, of which one - {@code FILE-CONTROL.} at
+ *       {@code :L30} - sits in the {@code ENVIRONMENT DIVISION} rather than the {@code PROCEDURE DIVISION}.
+ *       The paragraph count is therefore <strong>14</strong>, running from {@code :L116} to {@code :L228},
+ *       and 14 is the figure this subtree publishes and the figure
+ *       {@code TRACEABILITY_MATRIX.md} carries. Fifteen is the Area-A total and nothing else; it is never a
+ *       paragraph count. No label may be consolidated or invented to reconcile the two.</li>
  *   <li><strong>No service-level objective exists anywhere in the source.</strong> The COBOL publishes no
  *       throughput or latency target, so the performance gate records a <strong>measured baseline</strong>
  *       and nothing more. A target is {@code Not available} and none may be invented; setting one would need

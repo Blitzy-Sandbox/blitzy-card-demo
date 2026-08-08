@@ -16,8 +16,9 @@
  *               CDEMO-PGM-CONTEXT)
  * Source      : app/cbl/COMEN01C.cbl:153 @ 7756d89 (EXEC CICS XCTL PROGRAM(...) -
  *               state carried across transfers)
- * Replaces    : the CICS per-request thread of identity; EIBTRNID citation is Not
- *               available (see class Javadoc)
+ * Capability  : NEW - additive. The frozen corpus declares no per-request identity of
+ *               its own, so this replaces nothing. The COMMAREA it is contrasted with
+ *               carried navigation state between programs, not a request identifier.
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -100,7 +101,7 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 
 /**
- * Proves that the correlation identifier - the Java replacement for the CICS per-request thread of identity -
+ * Proves that the correlation identifier - an additive capability with no counterpart in the frozen corpus -
  * is generated or accepted, placed in the diagnostic context under three exact keys, attached to the active
  * span, echoed once on the response, removed in a {@code finally} block, and carried onto outbound object-store
  * and queue calls.
@@ -128,25 +129,35 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
  * status {@code '23'} renders {@code FILE STATUS IS: NNNN0023}. The stray {@code NNNN} is a preserved legacy
  * quirk; this class asserts that the logging pipeline emits it verbatim and unmasked.
  *
- * <p><strong>{@code EIBTRNID}: Not available.</strong> The construct this filter replaces
- * cannot be cited, and no locator for it is invented here. A census across the whole repository returns zero
- * occurrences of {@code EIBTRNID}; the complete exec-interface-block census in {@code app/cbl} is
- * {@code EIBCALEN} forty-nine times and {@code EIBAID} sixteen times, with no {@code EIBDATE},
- * {@code EIBTIME} or {@code EIBTRNID} anywhere. <em>What is needed:</em> the CICS-supplied exec-interface-block
- * copybook, which the transaction monitor provides and which is not part of this repository. This class and its
- * banner therefore cite the five real anchors named above instead.
+ * <p><strong>There is no legacy per-request identifier for this to replace, and none is invented.</strong> The
+ * technical specification motivates the filter by analogy with {@code EIBTRNID}, and an analogy is all it is:
+ * {@code EIBTRNID} occurs <strong>zero times</strong> anywhere in this repository, so a replacement
+ * relationship would be a claim about a construct the corpus does not contain. The complete exec-interface-block
+ * inventory under {@code app/} is two fields and no others - {@code EIBCALEN} at <strong>49</strong>
+ * occurrences across 17 programs, and {@code EIBAID} at <strong>44</strong> occurrences across 13 files, of
+ * which 16 are in the 12 programs and the remaining 28 are in the procedural copybook
+ * {@code app/cpy/CSSTRPFY.cpy} that those programs copy into their procedure division. Neither field is an
+ * identity: the first is a length and the second is an attention key. There is no {@code EIBDATE}, no
+ * {@code EIBTIME} and no {@code EIBTRMID} either. This class and its banner therefore cite the five real
+ * anchors named above, and the capability is documented as additive rather than as a translation - the decision
+ * is {@code DL-MS-16} in {@code DECISION_LOG.md}.
  *
  * <p>Two further mandatory disclosures, recorded here because this class is in the evidence path for both:
  *
  * <ul>
- *   <li><strong>The end-to-end parity baseline is Not available.</strong> An exhaustive search
- *       for {@code expected}, {@code baseline}, {@code golden}, {@code .out}, {@code sysout},
- *       {@code DALYREJS}, {@code TRANREPT}, {@code STMTFILE} and {@code HTMLFILE} artefacts returns dataset
- *       <em>definition</em> job control only and zero captured data. <em>What is needed:</em> a captured
- *       {@code DALYREJS} 430-byte reject dataset plus the resulting {@code TRANSACT}, {@code ACCTDATA} and
- *       {@code TCATBALF} images from a real {@code POSTTRAN} run at a known input state. No baseline file is
- *       created and no expected bytes are fabricated - a baseline produced by running this Java implementation
- *       would be circular - so this class asserts no parity baseline.</li>
+ *   <li><strong>The end-to-end parity expectation exists; what is unavailable is a mainframe capture to
+ *       corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own
+ *       output - {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected},
+ *       {@code DALYREJS.expected} and {@code CBTRN02C.sysout.expected} - derived by compiling
+ *       {@code app/cbl/CBTRN02C.cbl} unmodified and running it against the frozen fixtures, with the harness
+ *       and the derivation recorded beside them in {@code PROVENANCE.properties}. Nothing there was produced by
+ *       running this Java implementation, because that would be circular.
+ *       <em>What remains needed:</em> a captured {@code DALYREJS} 430-byte reject dataset plus the resulting
+ *       {@code TRANSACT}, {@code ACCTDATA} and {@code TCATBALF} images from a real {@code POSTTRAN} execution on
+ *       z/OS at a known input state, which would corroborate the source-derived oracle against the real runtime
+ *       rather than replace it. That capture is {@code Not available}, and it is prerequisite 7 of
+ *       {@code docs/validation-gates.md} Gate 1. This class asserts the correlation surface, not the parity
+ *       oracle; the oracle is asserted by {@code com.cardemo.e2e.GateVerificationTest}.</li>
  *   <li><strong>File status {@code '35'}, file unavailable, is Not available.</strong> The
  *       census across {@code app/cbl} finds the literal {@code '35'} zero times and
  *       {@code DFHRESP(NOTOPEN)} zero times. <em>What is needed:</em> a source occurrence to translate; until
@@ -234,12 +245,10 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 @DisplayName("Correlation identifier lifecycle, and its propagation onto outbound cloud calls")
 class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationTest {
 
-    // =================================================================================================
     // Contract constants. Every one is deeply immutable and final: no mutable static state exists in this
     // class, per Rule 1 Clause B. The diagnostic-context keys and the header name are declared here and
     // asserted against the published constants of com.cardemo.observability.CorrelationIdFilter, so a
     // rename on either side fails a test rather than emptying a JSON field in silence.
-    // =================================================================================================
 
     /** The correlation key, exactly as {@code logback-spring.xml} reads it. */
     private static final String MDC_KEY_CORRELATION_ID = "correlationId";
@@ -430,10 +439,8 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
      */
     private static final int NOTIFICATION_POLL_SECONDS = 20;
 
-    // =================================================================================================
     // Collaborators. Injected, never constructed: com.cardemo.config.AwsConfig owns the cloud clients and
     // the emulator endpoint override, and nothing here supplies a region, an endpoint or a credential.
-    // =================================================================================================
 
     /** Dispatches through the real servlet filter chain in the harness's mock web environment. */
     @Autowired
@@ -456,10 +463,8 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
     private List<SecurityFilterChain> securityFilterChains;
 
 
-    // =================================================================================================
     // Shared helpers. Each one is small, explicit and free of hidden state. None of them swallows an
     // exception: where a helper cannot do its job it fails the assertion that called it, with the reason.
-    // =================================================================================================
 
     /**
      * Takes an immutable snapshot of the calling thread's diagnostic context.
@@ -848,9 +853,7 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
                 List.of(new SimpleGrantedAuthority(USER_AUTHORITY)));
     }
 
-    // =================================================================================================
     // The published contract: the four key spellings, the header name, the bound, and single registration.
-    // =================================================================================================
 
     /** The literals the whole application shares, and the proof that the filter runs once per request. */
     @Nested
@@ -918,9 +921,7 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
         }
     }
 
-    // =================================================================================================
     // The lifecycle: placed for the duration of the request, removed in a finally block, never bleeding.
-    // =================================================================================================
 
     /** Placement, removal and the absence of bleed between requests on one thread. */
     @Nested
@@ -1026,9 +1027,7 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
     }
 
 
-    // =================================================================================================
     // The inbound header is untrusted. Four arrival shapes, and four distinct attacks inside the third.
-    // =================================================================================================
 
     /** Absent, blank, malformed and well formed, with every malformed value discarded rather than repaired. */
     @Nested
@@ -1190,9 +1189,7 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
         }
     }
 
-    // =================================================================================================
     // A refused request is the one that most needs an identifier, and it must create no server-side state.
-    // =================================================================================================
 
     /** The 401 and 403 arms of the chain, and the stateless session policy. */
     @Nested
@@ -1291,10 +1288,8 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
     }
 
 
-    // =================================================================================================
     // The trace context. Present when a span is active, absent without error when none is, because the
     // test profile deliberately neutralises trace export while leaving tracing itself switched on.
-    // =================================================================================================
 
     /** The two states the trace entries can legitimately be in, and the absence of a failure in either. */
     @Nested
@@ -1371,10 +1366,8 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
         }
     }
 
-    // =================================================================================================
     // Propagation across the process boundary: the execution interceptor on every cloud client, and the
     // message header on the queue publish that replaces EXEC CICS WRITEQ TD QUEUE('JOBS').
-    // =================================================================================================
 
     /** The outbound half of the thread of identity, asserted against the real emulator-backed clients. */
     @Nested
@@ -1662,10 +1655,8 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
     }
 
 
-    // =================================================================================================
     // The record an operator actually reads. Masking lives in the encoder rather than in the event, so
     // every assertion here renders a captured event through the very encoder the application runs.
-    // =================================================================================================
 
     /** Field population, the empty-rather-than-missing default, the preserved legacy literal, and masking. */
     @Nested

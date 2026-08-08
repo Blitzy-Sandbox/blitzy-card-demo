@@ -127,7 +127,7 @@ public record CardListResponse(
      * @param statusCode the row's active status as a raw one-character code, {@code CRDSTS01..07 PIC X(1)};
      *     may be null on a blank filler row
      * @param cardKey an opaque, sealed, expiring reference to this row's card, or null on a blank filler
-     *     row. <strong>Finding, severity Major - remediated by this member.</strong> The source's list map
+     *     row. <strong>Finding, severity High - remediated by this member.</strong> The source's list map
      *     carries the full account number and the full card number in every row
      *     ({@code ACCTNO01..07 PIC X(11)} and {@code CRDNUM01..07 PIC X(16)}), and a terminal operator
      *     typed {@code S} or {@code U} beside a row to reach the detail or update screen. This projection

@@ -55,7 +55,6 @@ import com.cardemo.model.dto.BillPaymentResponse;
 import com.cardemo.model.dto.CardDto;
 import com.cardemo.model.dto.CardListResponse;
 import com.cardemo.model.dto.CardResponse;
-import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.dto.MenuResponse;
 import com.cardemo.model.dto.PageResponse;
 import com.cardemo.model.dto.ReportSubmissionResponse;
@@ -199,26 +198,48 @@ class ApiResponseContractTest {
         }
 
         @Test
-        @DisplayName("The account response carries the as-displayed group, which is the only route to the nine")
-        void accountResponseCarriesTheAsDisplayedGroup() {
-            // Transformation Rule 7 puts ACUP-OLD-DETAILS in the body of the matching PUT, and
-            // app/cbl/COACTUPC.cbl:4109-4193 compares all twenty-nine of its values, the nine protected
-            // ones included. The read therefore has to supply the group, and it does so as the group
-            // itself: a client reassembling it from display fields would get the date of birth wrong on
-            // every request, since the live value is dash-separated at offsets 1/6/9 and the snapshot is
-            // unseparated at 1/5/7.
-            assertThat(componentNames(AccountViewResponse.class)).contains("olddetails");
+        @DisplayName("The account response carries the as-displayed snapshot sealed, and never as a group")
+        void accountResponseCarriesTheAsDisplayedSnapshotSealed() {
+            // Transformation Rule 7 puts the ACUP-OLD-DETAILS group in the body of the matching PUT, because
+            // a stateless server holds no COMMAREA between the two turns. app/cbl/COACTUPC.cbl:4109-4193
+            // compares all twenty-nine of its values, the nine protected ones included - which is exactly
+            // why the group may not travel readably. It travels as one opaque sealed member instead, for two
+            // independent reasons: publishing the group would put the nine on the wire on a plain read, and a
+            // group the caller could rewrite would let the caller assert that the record had not changed,
+            // making the comparison the guard exists for unconditionally true.
+            assertThat(componentNames(AccountViewResponse.class))
+                    .contains("snapshot")
+                    .doesNotContain("olddetails");
 
-            final java.lang.reflect.RecordComponent[] components =
-                    AccountViewResponse.class.getRecordComponents();
-            final java.lang.reflect.RecordComponent group =
-                    java.util.Arrays.stream(components)
-                            .filter(component -> "oldDetails".equals(component.getName()))
+            final java.lang.reflect.RecordComponent sealed =
+                    java.util.Arrays.stream(AccountViewResponse.class.getRecordComponents())
+                            .filter(component -> "snapshot".equals(component.getName()))
                             .findFirst()
                             .orElseThrow();
-            assertThat(group.getType())
-                    .as("the component must be the very type the PUT binds, so it can be echoed unaltered")
-                    .isEqualTo(com.cardemo.model.dto.AccountUpdateRequest.OldDetails.class);
+            assertThat(sealed.getType())
+                    .as("the component is an opaque token, not a structured group")
+                    .isEqualTo(String.class);
+            // And the shape is symmetrical: the request binds the same opaque member, so the value the read
+            // issued is echoed back verbatim rather than reassembled. AccountUpdateRequest is a class rather
+            // than a record - it declares fifty-four screen fields - so its wire members are read from the
+            // constructor Jackson binds through.
+            final java.lang.reflect.Constructor<?> wireConstructor =
+                    java.util.Arrays.stream(
+                                    com.cardemo.model.dto.AccountUpdateRequest.class.getConstructors())
+                            .filter(candidate -> candidate.isAnnotationPresent(
+                                    com.fasterxml.jackson.annotation.JsonCreator.class))
+                            .findFirst()
+                            .orElseThrow();
+            final List<String> boundMembers = Arrays.stream(wireConstructor.getParameters())
+                    .map(parameter -> parameter.getAnnotation(
+                            com.fasterxml.jackson.annotation.JsonProperty.class))
+                    .filter(java.util.Objects::nonNull)
+                    .map(property -> property.value().toLowerCase(Locale.ROOT))
+                    .toList();
+            assertThat(boundMembers)
+                    .as("the PUT binds the sealed member and declares no readable group")
+                    .contains("snapshot")
+                    .doesNotContain("olddetails");
         }
 
         /** Holder so the legacy projection is named once and the vacuity check above stays readable. */
@@ -242,21 +263,21 @@ class ApiResponseContractTest {
                     "00000000011", CARD_NUMBER, "ANNA LEE", "Y", "12", "2099", null, null, null);
             // The group the matching PUT echoes back, per transformation Rule 7. The expiry DAY is in it
             // and is on no read map, which is why the group travels rather than flat fields.
-            final CardUpdateRequest.CardDetails oldDetails = new CardUpdateRequest.CardDetails(
-                    "00000000011", CARD_NUMBER,
-                    new CardUpdateRequest.CardData("ANNA LEE",
-                            new CardUpdateRequest.ExpiraionDate("2099", "12", "31"), "Y"));
+            final String sealedSnapshot = "c2VhbGVkLWNhcmQtc25hcHNob3Q";
 
-            final String json =
-                    MAPPER.writeValueAsString(CardResponse.readOf(detail, oldDetails, "sealed-reference"));
+            final String json = MAPPER.writeValueAsString(
+                    CardResponse.readOf(detail, sealedSnapshot, "sealed-reference"));
 
-            // The group carries no card number: :1347 sources that member from the RECEIVED map field, so
-            // it is redundant with the request's own identity and emitting it would defeat the masking.
+            // The sealed snapshot discloses nothing: it is one opaque string, so the card number that
+            // maskedCardNumber exists to withhold cannot reappear through it, and neither can the embossed
+            // name or the expiry day the comparison consumes.
             assertThat(json).doesNotContain(CARD_NUMBER);
             assertThat(json).contains(MASKED_CARD_NUMBER);
-            // Every value the comparison consumes IS present, including the day the detail map never
-            // declared, which is the whole reason the group travels rather than flat fields.
-            assertThat(json).contains("oldDetails").contains("expiryDay").contains("31");
+            assertThat(json).contains("\"snapshot\":\"" + sealedSnapshot + "\"");
+            // The expiry DAY is the value the detail map never declared and the comparison at :1507 needs.
+            // It is inside the sealed value and therefore absent as a readable member - which is the whole
+            // point: a client echoes the sealed value rather than reassembling the group.
+            assertThat(json).doesNotContain("expiryDay").doesNotContain("cardData");
             assertThat(json).doesNotContain("TRNNAME").doesNotContain("COCRDSLC");
         }
 
@@ -266,7 +287,7 @@ class ApiResponseContractTest {
             final CardDto detail = CardDto.detail("CCUP", "T1", "01/15/26", "COCRDUPC", "T2", "10:30:00",
                     "00000000011", CARD_NUMBER, "ANNA LEE", "Y", "12", "2099", null, null, null);
 
-            assertThat(CardResponse.writeOf(detail).oldDetails()).isNull();
+            assertThat(CardResponse.writeOf(detail).snapshot()).isNull();
             assertThat(CardResponse.writeOf(detail).maskedCardNumber()).isEqualTo(MASKED_CARD_NUMBER);
         }
 
@@ -373,8 +394,9 @@ class ApiResponseContractTest {
      * The six recurring header fields of the seventeen symbolic maps, and the {@code XCTL} operand, are
      * transcribed on the field-contract types and excluded from every JSON body.
      *
-     * <p>Two operations used to publish them - the delete-user confirmation put all six on the wire, and both
-     * menu option records put the program name there. Both are closed by {@code @JsonIgnoreProperties}, which
+     * <p>Two operations could otherwise publish them - the delete-user confirmation carries all six on its
+     * component, and both
+     * menu option records carry the program name. Both are closed by {@code @JsonIgnoreProperties}, which
      * keeps the component, its width check and its copybook citation while removing it from the body. These
      * tests assert the body, because the body is the contract.
      */

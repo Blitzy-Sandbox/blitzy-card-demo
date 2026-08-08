@@ -66,13 +66,13 @@ import java.util.function.Function;
  *       {@code @JsonIgnore} is needed on it and why no zero-argument reader exists to need one.</li>
  *   </ul>
  *
- * <p><strong>Why a read path exists at all, severity HIGH.</strong> It used to have none, and the
- * consequence was worse than the problem it was avoiding: with the body member unreadable, the controller
- * accepted the credential through a bespoke {@code X-Presented-Password} request header instead, and the
- * body member it had bound was ignored. Two harms followed. Generic ingress, proxy and APM redaction
+ * <p><strong>Why a read path exists at all, severity HIGH.</strong> With no read path the
+ * consequence is worse than the problem it avoids: with the body member unreadable, the controller
+ * has to accept the credential through a bespoke {@code X-Presented-Password} request header instead, and the
+ * body member it bound is ignored. Two harms follow. Generic ingress, proxy and APM redaction
  * recognises the standard authorization, cookie and body-password channels, not a project-invented header
- * name, so the credential travelled through exactly the channel least likely to be scrubbed. And the value
- * that was audited - the body - could differ from the value that was hashed, because they arrived
+ * name, so the credential would travel through exactly the channel least likely to be scrubbed. And the value
+ * that is audited - the body - could differ from the value that is hashed, because they arrive
  * independently. One narrowly-scoped, non-serializing, non-bean read path removes both harms: the credential
  * travels in the request body only, and the value hashed is by construction the value bound.
  * The persisted layout {@code app/cpy/CSUSR01Y.cpy} is an 80-byte record — {@code SEC-USR-ID PIC X(08)} at
@@ -229,10 +229,10 @@ import java.util.function.Function;
  * <p><strong>Troubleshooting.</strong> If a password appears in any log line, HTTP response or test
  * snapshot, the cause is not this class serialising it — the field is write-only and its one read path takes
  * an argument, which is what makes it invisible to every reflective discoverer, so no {@code @JsonIgnore} is
- * involved anywhere in the guarantee. Read the bullet list above rather than looking for that annotation: an
- * earlier revision of this file carried an unused import of it, which a review recorded as a hygiene finding
- * precisely because a reader who trusted this paragraph would go looking for an annotation that was never
- * there. Look instead at a custom validation-error handler serialising a rejected value, at a
+ * involved anywhere in the guarantee. Read the bullet list above rather than looking for that annotation,
+ * which is not declared here at all - an unused import of it would be a hygiene finding precisely because a
+ * reader who trusted this paragraph would go looking for it. Look instead at a custom validation-error handler
+ * serialising a rejected value, at a
  * mapper configured to auto-detect private fields rather than bean accessors, or at request-body logging
  * upstream of the controller. If an inbound password does not arrive at the service, confirm the JSON key is
  * exactly {@code password} and that the request reaches the write-only constructor parameter rather than a
@@ -490,14 +490,14 @@ public class UserCreateRequest {
     /**
      * Hands the bound credential to a caller-supplied reader and returns whatever that reader produces.
      *
-     * <p><strong>Finding H-01, severity High, RESOLVED.</strong> This class deliberately publishes no
-     * {@code getPassword()}, and for a while it published nothing at all - with the consequence that the
-     * add endpoint could not reach the credential it had just bound and validated, and read it from an
-     * undocumented {@code X-Presented-Password} request header instead. That was worse in three ways than the
-     * accessor it was avoiding: a contract-conformant body reached the service with a null credential and
-     * silently took the empty-password arm of {@code app/cbl/COUSR01C.cbl:136}; the credential travelled in a
+     * <p><strong>Finding H-01, severity High.</strong> This class deliberately publishes no
+     * {@code getPassword()}, and publishing nothing at all instead has the consequence that the
+     * add endpoint cannot reach the credential it has just bound and validated, and reads it from an
+     * undocumented {@code X-Presented-Password} request header instead. That is worse in three ways than the
+     * accessor it avoids: a contract-conformant body reaches the service with a null credential and
+     * silently takes the empty-password arm of {@code app/cbl/COUSR01C.cbl:136}; the credential travels in a
      * header, which proxies, gateways and access logs record far more readily than a body; and the endpoint's
-     * real contract was invisible to every client and every generated document.
+     * real contract is invisible to every client and every generated document.
      *
      * <p><strong>Why this is not the read path the class refuses to publish.</strong> The danger of
      * {@code getPassword()} is that it is a <em>bean</em> read path: Jackson, any reflective bean mapper, any

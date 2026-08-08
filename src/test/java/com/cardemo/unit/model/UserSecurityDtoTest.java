@@ -565,6 +565,8 @@ final class UserSecurityDtoTest {
 
     /**
      * Component names of {@code recordType} in declaration order.
+     * @param recordType the record type to inspect.
+     * @return its component names, in declaration order.
      */
     private static List<String> componentNamesOf(final Class<?> recordType) {
         final List<String> names = new ArrayList<>();
@@ -604,6 +606,8 @@ final class UserSecurityDtoTest {
 
     /**
      * Collects {@code value} only when it is present, keeping the harvested list free of nulls.
+     * @param target the list to collect into.
+     * @param value the value, ignored when null.
      */
     private static void addIfPresent(final List<String> target, final String value) {
         if (value != null) {
@@ -1052,6 +1056,7 @@ final class UserSecurityDtoTest {
 
         /**
          * Asserts that no method {@code recordType} declares can read a credential.
+         * @param recordType the payload type to inspect.
          */
         private void assertThatNoCredentialAccessorIsDeclaredBy(final Class<?> recordType) {
             for (final Method declared : recordType.getDeclaredMethods()) {
@@ -1295,7 +1300,7 @@ final class UserSecurityDtoTest {
 
             assertThatCode(() -> pageOf(List.of(ownRow)))
                     .as("app/cbl/COUSR03C.cbl never compares the target identifier against the signed-on "
-                            + "one; that absent guard is preserved and owed an entry in the DECISION_LOG.md")
+                            + "one; that absent guard is preserved and held as DL-LD-06 in the DECISION_LOG.md")
                     .doesNotThrowAnyException();
             assertThat(pageOf(List.of(ownRow)).rows().get(0).userId()).isEqualTo(signedOnUser);
             assertThat(isSelected(pageOf(List.of(ownRow)).rows().get(0).selectionFlag()))
@@ -1423,6 +1428,9 @@ final class UserSecurityDtoTest {
 
         /**
          * Builds a row with only {@code component} set to {@code value}, and returns that value back.
+         * @param component the single component to set.
+         * @param value the value to set it to.
+         * @return that same value, read back off the built row.
          */
         private String rowValueOf(final String component, final String value) {
             final UserRow only = switch (component) {
@@ -1805,7 +1813,11 @@ final class UserSecurityDtoTest {
                 "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
                 "userIdInput", "firstName", "lastName", "userType", "errorMessage");
 
-        /** A fully populated screen, every field at or under its declared width. */
+        /**
+         * A fully populated screen, every field at or under its declared width.
+         *
+         * @return that screen.
+         */
         private static UserDeleteScreen populated() {
             return new UserDeleteScreen("CU03", "Delete User", "01/02/26", "COUSR03C", "CardDemo",
                     "10:20:30", "ADMNUSR1", "FNAMEAA1", "LNM1", "A", null);

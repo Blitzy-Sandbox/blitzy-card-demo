@@ -390,6 +390,14 @@ class AdminControllerTest {
      * {@code CDEMO-CU02-USR-SELECTED} - the value the user-list screen left in the commarea - moves it into
      * {@code USRIDINI OF COUSR2AI} and only then performs {@code PROCESS-ENTER-KEY}. The screen field carried
      * the navigation context; it did not originate it. Here the path segment is that context.
+     *
+     * <p><strong>Finding API-003, severity HIGH - remediated, and the reason this group tests three states
+     * rather than two.</strong> An absent member and an empty one used to be handled identically, both
+     * overwritten with the path identity. That made the source's own {@code USRIDINI = SPACES OR LOW-VALUES}
+     * rejection - {@code :L146-L151} and {@code :L179-L185} - unreachable through this surface. The
+     * substitution is now confined to the absent state, which is the only state {@code :L102-L103} models: even
+     * on the first-entry leg the commarea selection was moved only when it was itself non-empty, and the
+     * re-entry leg a write corresponds to back-fills nothing at all.
      */
     @Nested
     @DisplayName("the addressed identifier comes from the path, and the body may not contradict it")
@@ -440,19 +448,64 @@ class AdminControllerTest {
         }
 
         /**
-         * A blank body identifier is the same condition as an absent one - it is not a disagreement, and it
-         * is not the source's empty-identifier rejection either, because the path supplied one.
+         * FINDING API-003, severity HIGH. A body that names the identifier <em>emptily</em> is a different
+         * state from a body that does not name it at all, and the source distinguishes them.
+         *
+         * <p>This test previously asserted the opposite - that an empty value was filled from the path exactly
+         * as an absent one is - and that behaviour let a caller walk past a validation branch
+         * {@code app/cbl/COUSR02C.cbl} enforces twice, at {@code :L146-L151} and again at {@code :L179-L185},
+         * both rejecting {@code USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES}. The expectation is realigned to
+         * the frozen source rather than the source being read to fit the expectation.
+         *
+         * <p>Why the source draws the line here: the substitution at {@code :L102-L103} happens on the FIRST
+         * ENTRY leg only, and even there only when {@code CDEMO-CU02-USR-SELECTED NOT = SPACES AND LOW-VALUES},
+         * so an empty selection was never moved onto the screen. The re-entry leg at {@code :L106-L111} -
+         * which is the leg a write corresponds to - receives the map as typed and back-fills nothing.
+         *
+         * <p>Asserted as relayed-unchanged rather than as a rejection because the rejection is the service's
+         * to raise, in the source's own words;
+         * {@code com.cardemo.unit.service.UserUpdateServiceTest} covers that arm over the same four fills.
+         * What this class owns is that the controller does not overwrite the value before the service can see
+         * it.
+         *
+         * @param empty the identifier the body carries: blanks or low values, the two fills COBOL treats as
+         *     empty
          */
-        @ParameterizedTest
-        @ValueSource(strings = {"", " ", "        "})
-        @DisplayName("a blank body identifier is filled from the path too, not refused")
-        void aBlankBodyIdentifierIsFilledFromThePath(final String blank) {
+        @ParameterizedTest(name = "an identifier of [{0}] is relayed as sent")
+        @ValueSource(strings = {"", " ", "        ", "\u0000", "\u0000\u0000\u0000", " \u0000 "})
+        @DisplayName("an empty body identifier is relayed as sent, so the source's own rejection is reachable")
+        void anEmptyBodyIdentifierIsRelayedAsSent(final String empty) {
             final ArgumentCaptor<UserUpdateRequest> captured = stubbedService();
 
-            controller().updateUser(USER_ID, bodyNaming(blank));
+            controller().updateUser(USER_ID, bodyNaming(empty));
 
             verify(userUpdateService).updateUser(captured.capture(), any());
-            assertThat(captured.getValue().userId()).isEqualTo(USER_ID);
+            assertThat(captured.getValue().userId())
+                    .as("filling this from the path would make 'User ID can NOT be empty...' unreachable "
+                            + "through this surface, which is finding API-003")
+                    .isEqualTo(empty);
+        }
+
+        /**
+         * FINDING API-003, the second half. An empty identifier must not be reported as a
+         * <em>disagreement</em>, because it makes no claim about which user is meant.
+         *
+         * <p>A low-values fill used to reach exactly that wrong branch: {@code String#isBlank()} is false for
+         * {@code U+0000} - {@code Character.isWhitespace('\u0000')} is false - so a NUL-filled member escaped
+         * the blank test, was compared against the path value, and was refused as naming a different user. The
+         * status was right by accident and the reason was wrong.
+         *
+         * @param empty a fill COBOL treats as empty
+         */
+        @ParameterizedTest(name = "an identifier of [{0}] is not reported as a disagreement")
+        @ValueSource(strings = {"", " ", "\u0000", "\u0000\u0000"})
+        @DisplayName("an empty body identifier is not refused as a mismatch with the path")
+        void anEmptyBodyIdentifierIsNotAMismatch(final String empty) {
+            stubbedService();
+
+            controller().updateUser(USER_ID, bodyNaming(empty));
+
+            verify(userUpdateService).updateUser(any(), any());
         }
 
         /**

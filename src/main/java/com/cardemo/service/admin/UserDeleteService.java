@@ -1,11 +1,11 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Component   : UserDeleteService
  * Application : CardDemo
  * Type        : Spring @Service (admin, user delete)
  * Function    : Delete a user from USRSEC file
- * Source      : app/cbl/COUSR03C.cbl (359 lines, 11 paragraphs) @ 7756d89
- * ****************************************************************************
+ * Source      : app/cbl/COUSR03C.cbl (359 lines, 11 own paragraph labels) @ 7756d89
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -20,7 +20,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.service.admin;
 
@@ -50,7 +50,7 @@ import com.cardemo.service.shared.FileStatusMapper;
 
 /**
  * The user-delete screen: one keyed read of the {@code USRSEC} security file, a confirmation gate, and one
- * delete. This is the Java replacement for {@code app/cbl/COUSR03C.cbl} (359 lines, 11 paragraphs), the CICS
+ * delete. This is the Java replacement for {@code app/cbl/COUSR03C.cbl} (359 lines, 11 own paragraph labels), the CICS
  * program behind transaction {@code CU03} - {@code DEFINE TRANSACTION(CU03)} at
  * {@code app/csd/CARDDEMO.CSD}:479-480 naming {@code PROGRAM(COUSR03C)}, whose own definition is at
  * {@code :299} - painting mapset {@code COUSR03} ({@code :169}) whose generated symbolic map is
@@ -85,9 +85,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to build and test</h2>
  *
- * <p>Java 25 ({@code maven.compiler.release} 25, no preview features) and Maven 3.9.11, under parent
- * {@code spring-boot-starter-parent:3.5.11}, with the toolchain floor asserted by
- * {@code maven-enforcer-plugin:3.5.0}.
+ * <p>The toolchain, the plugin versions and the zero-warning compiler settings are the project's, and
+ * are stated once in {@code pom.xml}; what follows is only what is specific to this file.
  *
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file. {@code maven-compiler-plugin:3.14.1} runs
@@ -641,11 +640,9 @@ public class UserDeleteService {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Public surface. Five entry points, one per way the source can be reached: with no communication
     // area, on a first display, on the ENTER arm, on the PF5 arm that destroys the record, and on a
     // submitted screen with any attention identifier at all.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Reproduces the source reached with no communication area at all: {@code IF EIBCALEN = 0} at
@@ -843,11 +840,9 @@ public class UserDeleteService {
         return mainPara(true, true, aid, null, request, confirmed);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // The eleven paragraphs of app/cbl/COUSR03C.cbl, one private method each, in source order. None is
     // consolidated, including the four whose CICS or COMMAREA state has no Java counterpart. The
     // source-citing Javadoc on each is the evidence the scope-coverage gate reads.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * {@code app/cbl/COUSR03C.cbl}:82 {@code MAIN-PARA} - the entry point: resets the working flags, decides
@@ -1235,8 +1230,8 @@ public class UserDeleteService {
      * {@code RECOVERY(NONE)}, so the source held the row exclusively from the read until the delete. This read
      * therefore goes through {@link com.cardemo.repository.UserSecurityRepository#findByIdForUpdate(String)},
      * which takes the same lock, and the enclosing {@code @Transactional(rollbackFor = Exception.class)} method
-     * releases it where the source's unit of work did. <strong>Finding, MEDIUM severity, resolved:</strong> the
-     * read previously used the unlocked {@code findById}, so the read and the delete were an unguarded sequence
+     * releases it where the source's unit of work did. <strong>Finding, MEDIUM severity:</strong> the
+     * unlocked {@code findById} would leave the read and the delete an unguarded sequence
      * in which a concurrent update could be silently destroyed.
      *
      * <p>{@code :294} is a live {@code DISPLAY} of the response and reason codes, so it is reproduced as a
@@ -1419,7 +1414,7 @@ public class UserDeleteService {
      * <p>Reached from the {@code DFHPF4} arm at {@code :119-120}. There is no terminal to clear, so in Java
      * the pair of statements produces a fresh, empty response and nothing more. <strong>No cleared state is
      * retained anywhere</strong>: the work area is created per call and discarded when the call returns, so a
-     * subsequent caller can never observe what this one cleared. Retained rather than deleted because the
+     * subsequent caller can never observe what this one cleared. It is kept because the
      * paragraph correspondence is the evidence the scope-coverage gate reads.
      *
      * @param work the method-local work area
@@ -1452,14 +1447,12 @@ public class UserDeleteService {
         work.message = SPACES;                              // :356                 WS-MESSAGE.
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Mechanism helpers. None corresponds to a source paragraph: each stands in for a COBOL language or
     // CICS mechanism that has no paragraph of its own - a figurative-constant test, an intrinsic phrase,
     // a response-code capture, a typed status translation, the two-phase terminal gate. They are helpers
     // rather than a separate class on purpose: Rule 1 Clause C fixes this package's file set, and keeping
     // them here is what stops the eleven paragraph methods from carrying statements the source does not
     // have.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Enforces the two-phase confirmation gate that the source enforced structurally.
@@ -1572,7 +1565,7 @@ public class UserDeleteService {
      * belong to the category-balance upsert, the disclosure-group default fallback and the file subprogram's
      * secondary status, all of which are batch-side. A not-found user here is an error.
      *
-     * <p>The recorded cause is consumed: it is cleared once read, so it cannot be attached twice.
+     * <p>The recorded cause is consumed - cleared as it is read - so it cannot be attached twice.
      *
      * @param work            the method-local work area, carrying the recorded status and any cause
      * @param operation       the operation attempted, for the exception's context
@@ -1683,13 +1676,11 @@ public class UserDeleteService {
         return value;
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Nested types. Declared here rather than as files of their own because Rule 1 Clause C fixes this
     // package's file set: the enumeration is not referenced outside this service and its controller, and
     // the work area is an implementation detail of a single turn. The response record is not declared
     // here at all - com.cardemo.model.dto.UserSecurityDto.UserDeleteScreen already owns the eleven-field
     // contract of app/cpy-bms/COUSR03.CPY, and duplicating it would be the duplication Clause C forbids.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * The attention identifiers the source dispatches on at {@code app/cbl/COUSR03C.cbl}:108, standing in for

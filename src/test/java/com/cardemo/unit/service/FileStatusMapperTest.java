@@ -123,8 +123,8 @@ import org.springframework.dao.DuplicateKeyException;
  *   <li>{@code app/cbl/CBTRN02C.cbl:L467-L542} - {@code 2700-UPDATE-TCATBAL}, lenient at its read guard
  *       {@code :L481} and strict at its {@code WRITE} verification {@code :L512} and its {@code REWRITE}
  *       verification {@code :L530}.</li>
- *   <li>{@code app/cbl/CBACT04C.cbl:L415-L460} - the disclosure group lookup, lenient at {@code :L422} and
- *       <strong>strict at {@code :L446}</strong>.</li>
+ *   <li>{@code app/cbl/CBACT04C.cbl:L415-L440} - the disclosure group lookup, lenient at {@code :L422};
+ *       and {@code :L443-L460}, its retry, <strong>strict at {@code :L446}</strong>.</li>
  *   <li>{@code app/cbl/CBSTM03A.CBL:L80} plus the nine sites {@code :L736}, {@code :L748}, {@code :L771},
  *       {@code :L789}, {@code :L807}, {@code :L862}, {@code :L879}, {@code :L895} and {@code :L911} - the
  *       only places in the corpus where {@code '04'} is success.</li>
@@ -541,11 +541,9 @@ class FileStatusMapperTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Group 2 - the four-character rendering of 9910-DISPLAY-IO-STATUS, a byte-level contract.
     // Source: app/cbl/CBTRN02C.cbl:L714-L727 (the paragraph body; L728 onward are version-stamp
-    // comments, which is why the widely quoted "L714-L731" over-runs the paragraph).
-    // ------------------------------------------------------------------------------------------
+    // comments, which is why the widely quoted "L714-L727" over-runs the paragraph).
 
     /**
      * Group 2. The byte-level rendering contract of {@code 9910-DISPLAY-IO-STATUS}, whose body is
@@ -709,11 +707,9 @@ class FileStatusMapperTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Group 3 - the status to exception map, including the two outcomes that are not failures.
     // Source: the guard idiom at app/cbl/CBTRN02C.cbl:L236-L252 and :L345-L369, and the abend
     // contract at :L707-L711 whose field set is app/cpy/CSMSG02Y.cpy (CABENDD.CPY) L21-L29.
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Group 3. The central translation itself: {@code '00'} and {@code '10'} yield nothing at all,
@@ -978,13 +974,11 @@ class FileStatusMapperTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Group 4 - the three, and only three, sites where a non-'00' status is SUCCESS. A blanket
     // status to exception mapping would wrongly abend every one of them.
     //   Site 1  app/cbl/CBTRN02C.cbl:L467 2700-UPDATE-TCATBAL, read guard at :L481
     //   Site 2  app/cbl/CBACT04C.cbl:L415 1200-GET-INTEREST-RATE, guards at :L422 and :L446
     //   Site 3  app/cbl/CBSTM03A.CBL:L80  WS-M03B-RC, the nine '00' OR '04' sites
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Group 4. The only three sites in the corpus where a non-{@code '00'} status is success, and the
@@ -1229,13 +1223,11 @@ class FileStatusMapperTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Group 5 - reject codes are business outcomes, not exceptions. They are modelled as an enum
     // elsewhere and drive ExitStatus; they are never thrown, and nothing this mapper produces may
     // carry one. Source: app/cbl/CBTRN02C.cbl:L176-L182 (the 430 byte reject record), :L181
     // (WS-VALIDATION-FAIL-REASON PIC 9(04)), :L385 :L397 :L410 :L417 :L556 (the five assignments)
     // and :L229-L231 (RETURN-CODE 4 if and only if the reject count exceeds zero).
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Group 5. The negative-space contract. Batch reject codes are business outcomes that drive an
@@ -1481,13 +1473,11 @@ class FileStatusMapperTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Group 6 - hostile and boundary inputs. Rule 1 clause A requires that inputs be treated as
     // untrusted and clause B requires null and empty cases to be handled explicitly. The corpus
     // guarantees a two byte IO-STATUS (app/cbl/CBTRN02C.cbl:L131-L133), but a Java store, adapter
     // or test double can present anything at all, and a diagnostic path must never be the thing
     // that fails while reporting a failure.
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Group 6. Untrusted input, per the security-by-default principle: a status field arriving from a
@@ -1675,13 +1665,11 @@ class FileStatusMapperTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Group 7 - Rule 1 clause D (no secrets in code, logs, tests or config), clause C (no
     // environment specific assumptions) and the build path contract of this test tier. The
     // masking carve-out matters most: logback-spring.xml masks credentials, password hashes and
     // social security numbers, and NO masking rule may touch the DISPLAY line, because the
     // end-to-end parity gate compares it against the legacy baseline byte for byte.
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Group 7. Two cross-cutting contracts that have no single COBOL locator but are binding
@@ -2071,7 +2059,7 @@ class FileStatusMapperTest {
     /**
      * The store-failure classification, which is the same decision asked from the other direction.
      *
-     * <p><strong>Findings F-2 and F-8, severity Major - this group pins the remediation.</strong> Four write
+     * <p><strong>Findings F-2 and F-8, severity High - this group pins the remediation.</strong> Four write
      * sites caught {@code org.springframework.dao.DataIntegrityViolationException} and reported it
      * unconditionally as the duplicate condition. That one type is the translation of {@code SQLSTATE} classes
      * {@code 22} and {@code 23} alike, so a value the column could not hold was answered {@code 409} naming an
@@ -2082,13 +2070,6 @@ class FileStatusMapperTest {
     @Nested
     @DisplayName("8. The store failure classification: only 23505 is a duplicate, and class 22 is a request error")
     class StoreFailureClassification {
-
-        /**
-         * Sole constructor, invoked by the test framework.
-         */
-        StoreFailureClassification() {
-            // Nothing to establish: the classification is a static, stateless decision.
-        }
 
         @Test
         @DisplayName("the published constants are the states classified on, so a silent change fails a test")

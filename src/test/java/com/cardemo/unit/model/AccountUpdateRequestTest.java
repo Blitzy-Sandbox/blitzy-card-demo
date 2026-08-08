@@ -50,6 +50,7 @@ import com.cardemo.model.dto.AccountUpdateRequest;
 import com.cardemo.model.dto.AccountUpdateRequest.NewDetails;
 import com.cardemo.model.dto.AccountUpdateRequest.OldDetails;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -249,8 +250,29 @@ final class AccountUpdateRequestTest {
     /** Screen fields declared by {@code app/cpy-bms/COACTUP.CPY} between lines 17 and 342. */
     private static final int MAP_FIELDS = 54;
 
-    /** Top-level members: the 54 screen fields plus the two snapshot groups. */
-    private static final int TOP_LEVEL_MEMBERS = 56;
+    /** The one opaque member that carries the as-displayed snapshot. */
+    private static final String SEALED_MEMBER = "snapshot";
+
+    /** The one member no request binds: the opened as-displayed group, attached server side. */
+    private static final String SERVER_SIDE_MEMBER = "oldDetails";
+
+    /**
+     * Top-level members: the 54 screen fields, the sealed {@code snapshot} member, and the two snapshot
+     * groups.
+     *
+     * <p>Fifty-seven rather than fifty-six, and the extra one is the sealed member. Only 55 of the 57 bind
+     * from JSON: {@code oldDetails} is a server-side field that no wire member reaches, attached by
+     * {@code withOldDetails} after {@code SnapshotTokenService} opens the sealed value. That is what keeps
+     * the operand of {@code app/cbl/COACTUPC.cbl:4109-4193} out of the caller's hands while still letting the
+     * projected screen carry it.</p>
+     */
+    private static final int TOP_LEVEL_MEMBERS = 57;
+
+    /**
+     * Members the wire constructor binds: the 54 screen fields, the sealed snapshot and
+     * {@code ACUP-NEW-DETAILS}. {@code ACUP-OLD-DETAILS} is deliberately absent.
+     */
+    private static final int WIRE_MEMBERS = 56;
 
     /** Members of {@code ACUP-OLD-DETAILS} after overlay canonicalisation. */
     private static final int OLD_MEMBERS = 29;
@@ -369,7 +391,7 @@ final class AccountUpdateRequestTest {
      */
     static Stream<Arguments> payloadTypes() {
         return Stream.of(
-                Arguments.of(AccountUpdateRequest.class, TOP_LEVEL_MEMBERS),
+                Arguments.of(AccountUpdateRequest.class, WIRE_MEMBERS),
                 Arguments.of(OldDetails.class, OLD_MEMBERS),
                 Arguments.of(NewDetails.class, NEW_MEMBERS));
     }
@@ -398,18 +420,25 @@ final class AccountUpdateRequestTest {
     }
 
     /**
-     * Returns the sole declared constructor of a payload type.
+     * Returns the sole {@code @JsonCreator} constructor of a payload type - the one and only way a payload
+     * enters from the wire.
+     *
+     * <p>Exactly one is required, so that no inbound path bypasses the width contracts. A type may declare a
+     * second, <em>private</em> constructor for server-side copying; {@code onlyOnePublicWayIn} asserts that
+     * any such extra is private and therefore unreachable from a request.</p>
      *
      * @param type the payload type
-     * @return its only constructor
+     * @return its wire constructor
      */
-    private static Constructor<?> soleConstructor(final Class<?> type) {
-        final Constructor<?>[] constructors = type.getDeclaredConstructors();
-        assertThat(constructors)
-                .as("%s must offer exactly one way in, so that no path bypasses the width contracts",
-                        type.getSimpleName())
+    private static Constructor<?> wireConstructor(final Class<?> type) {
+        final List<Constructor<?>> creators = Arrays.stream(type.getDeclaredConstructors())
+                .filter(candidate -> candidate.isAnnotationPresent(JsonCreator.class))
+                .toList();
+        assertThat(creators)
+                .as("%s must offer exactly one way in from the wire, so that no inbound path bypasses the"
+                        + " width contracts", type.getSimpleName())
                 .hasSize(1);
-        return constructors[0];
+        return creators.getFirst();
     }
 
     /**
@@ -419,7 +448,7 @@ final class AccountUpdateRequestTest {
      * @return the parameter names
      */
     private static List<String> parameterNames(final Class<?> type) {
-        return Arrays.stream(soleConstructor(type).getParameters())
+        return Arrays.stream(wireConstructor(type).getParameters())
                 .map(Parameter::getName)
                 .toList();
     }
@@ -463,6 +492,12 @@ final class AccountUpdateRequestTest {
      */
     private static <T> T withMembers(final Class<T> type, final Map<String, String> values) {
         final List<String> names = parameterNames(type);
+        // oldDetails is not a wire parameter, so a caller asking for it is asking for something the contract
+        // deliberately does not offer. Say so here rather than at an opaque index of -1.
+        assertThat(values.keySet())
+                .as("%s binds no readable as-displayed group; use the sealed member instead",
+                        type.getSimpleName())
+                .doesNotContain(SERVER_SIDE_MEMBER);
         final Object[] arguments = new Object[names.size()];
         values.forEach((name, value) -> {
             final int index = names.indexOf(name);
@@ -472,7 +507,7 @@ final class AccountUpdateRequestTest {
             arguments[index] = value;
         });
         try {
-            return type.cast(soleConstructor(type).newInstance(arguments));
+            return type.cast(wireConstructor(type).newInstance(arguments));
         } catch (ReflectiveOperationException cause) {
             throw new AssertionError("cannot construct " + type.getSimpleName(), cause);
         }
@@ -493,8 +528,11 @@ final class AccountUpdateRequestTest {
      */
     private static <T> T fullyPopulated(final Class<T> type) {
         final Map<String, String> values = new LinkedHashMap<>();
+        final List<String> bound = parameterNames(type);
         for (final String member : fieldNames(type)) {
-            if (isSnapshotGroup(type, member)) {
+            // The sealed snapshot is an opaque token, not a screen field, so it has no PIC width to populate
+            // to; the two groups are nested payloads; and oldDetails is not a wire member at all.
+            if (isSnapshotGroup(type, member) || SEALED_MEMBER.equals(member) || !bound.contains(member)) {
                 continue;
             }
             values.put(member, "0".repeat(declaredWidth(type, member)));
@@ -587,14 +625,15 @@ final class AccountUpdateRequestTest {
     }
 
     /**
-     * Returns a copy of {@code payload} in which one snapshot group is replaced.
+     * Returns a copy of {@code payload} in which one member is replaced.
      *
-     * <p>The payload is immutable, so this rebuilds it through the canonical constructor rather than
-     * mutating it - which is the point of the {@link Immutability} group.</p>
+     * <p>The payload is immutable, so this rebuilds it through the wire constructor rather than mutating it -
+     * which is the point of the {@link Immutability} group. The as-displayed group is not a wire member, so it
+     * is reattached afterwards through {@code withOldDetails}, which is the only route that exists to it.</p>
      *
      * @param payload the payload to copy
-     * @param group   {@code oldDetails} or {@code newDetails}
-     * @param value   the group to place in the copy
+     * @param group   the member to replace - {@code newDetails}, or {@code oldDetails} to reattach the group
+     * @param value   the value to place in the copy
      * @return the rebuilt payload
      */
     private static AccountUpdateRequest replaceGroup(final AccountUpdateRequest payload,
@@ -603,11 +642,23 @@ final class AccountUpdateRequestTest {
         final Object[] arguments = new Object[names.size()];
         for (int index = 0; index < names.size(); index++) {
             final String name = names.get(index);
-            arguments[index] = name.equals(group) ? value : readMember(payload, name);
+            arguments[index] = readMember(payload, name);
         }
+        final AccountUpdateRequest rebuilt;
         try {
-            return (AccountUpdateRequest) soleConstructor(AccountUpdateRequest.class)
+            rebuilt = (AccountUpdateRequest) wireConstructor(AccountUpdateRequest.class)
                     .newInstance(arguments);
+        } catch (ReflectiveOperationException cause) {
+            throw new AssertionError("cannot rebuild AccountUpdateRequest", cause);
+        }
+        if (SERVER_SIDE_MEMBER.equals(group)) {
+            return rebuilt.withOldDetails((OldDetails) value);
+        }
+        final Object[] withReplacement = arguments.clone();
+        withReplacement[names.indexOf(group)] = value;
+        try {
+            return ((AccountUpdateRequest) wireConstructor(AccountUpdateRequest.class)
+                    .newInstance(withReplacement)).withOldDetails(payload.getOldDetails());
         } catch (ReflectiveOperationException cause) {
             throw new AssertionError("cannot rebuild AccountUpdateRequest", cause);
         }
@@ -760,14 +811,22 @@ final class AccountUpdateRequestTest {
 
         @Test
         @DisplayName("declares the 54 COACTUP screen fields plus oldDetails and newDetails")
-        void declaresFiftyFourScreenFieldsPlusTwoGroups() {
+        void declaresFiftyFourScreenFieldsPlusTheSealedSnapshotAndTwoGroups() {
             final List<String> names = fieldNames(AccountUpdateRequest.class);
             assertThat(names)
                     .as("app/cpy-bms/COACTUP.CPY declares 54 input fields between line 17 and "
-                            + "line 342; the two snapshot groups are additional")
+                            + "line 342; the sealed snapshot and the two groups are additional")
                     .hasSize(TOP_LEVEL_MEMBERS)
-                    .endsWith("oldDetails", "newDetails");
-            assertThat(names.size() - 2).isEqualTo(MAP_FIELDS);
+                    .endsWith(SEALED_MEMBER, SERVER_SIDE_MEMBER, "newDetails");
+            assertThat(names.size() - 3).isEqualTo(MAP_FIELDS);
+            // And of those three, only two are reachable from a request. The as-displayed group is attached
+            // by withOldDetails once the sealed member has been opened and verified, so a caller cannot
+            // supply the operand the comparison at :4109-4193 exists to check.
+            assertThat(parameterNames(AccountUpdateRequest.class))
+                    .as("the wire binds the sealed snapshot, never the group it seals")
+                    .hasSize(WIRE_MEMBERS)
+                    .contains(SEALED_MEMBER, "newDetails")
+                    .doesNotContain(SERVER_SIDE_MEMBER);
         }
 
         @Test
@@ -790,11 +849,16 @@ final class AccountUpdateRequestTest {
         @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypes")
         @DisplayName("declares one constructor parameter per member on each type")
         void declaresOneParameterPerMember(final Class<?> type, final int expectedMembers) {
-            assertThat(fieldNames(type)).hasSize(expectedMembers);
-            assertThat(soleConstructor(type).getParameterCount()).isEqualTo(expectedMembers);
+            assertThat(wireConstructor(type).getParameterCount()).isEqualTo(expectedMembers);
+            // Every parameter names a member, in declaration order, so nothing a caller sends is silently
+            // discarded. The reverse containment is deliberately NOT asserted: AccountUpdateRequest declares
+            // one member the wire does not bind - the opened as-displayed group - and that asymmetry is the
+            // contract rather than a defect.
+            assertThat(fieldNames(type)).containsAll(parameterNames(type));
             assertThat(parameterNames(type))
-                    .as("a parameter that matches no member would be silently discarded")
-                    .containsExactlyElementsOf(fieldNames(type));
+                    .containsExactlyElementsOf(fieldNames(type).stream()
+                            .filter(member -> !SERVER_SIDE_MEMBER.equals(member))
+                            .toList());
         }
 
         @Test
@@ -874,7 +938,7 @@ final class AccountUpdateRequestTest {
         @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypes")
         @DisplayName("offers exactly one way in, so no path bypasses the width contracts")
         void offersExactlyOneWayIn(final Class<?> type, final int expectedMembers) {
-            assertThat(soleConstructor(type).getParameterCount()).isEqualTo(expectedMembers);
+            assertThat(wireConstructor(type).getParameterCount()).isEqualTo(expectedMembers);
         }
 
         @ParameterizedTest(name = "{0} declares no mutable static state")
@@ -893,13 +957,16 @@ final class AccountUpdateRequestTest {
         @DisplayName("binds through the creator, so the payload is complete when it is validated")
         void bindsThroughTheCreator() throws Exception {
             final String json = "{\"accountId\":\"00000000001\","
-                    + "\"oldDetails\":{\"activeStatus\":\"Y\"},"
+                    + "\"snapshot\":\"c2VhbGVkLXZhbHVl\","
                     + "\"newDetails\":{\"activeStatus\":\"N\"}}";
             final AccountUpdateRequest bound =
                     STRICT_MAPPER.readValue(json, AccountUpdateRequest.class);
             assertThat(bound.getAccountId()).isEqualTo("00000000001");
-            assertThat(bound.getOldDetails().getActiveStatus()).isEqualTo("Y");
+            assertThat(bound.getSnapshot()).isEqualTo("c2VhbGVkLXZhbHVl");
             assertThat(bound.getNewDetails().getActiveStatus()).isEqualTo("N");
+            assertThat(bound.getOldDetails())
+                    .as("the as-displayed group is never bound from a request, whatever it contains")
+                    .isNull();
         }
 
         @ParameterizedTest(name = "{0} does not implement Serializable")
@@ -1176,12 +1243,14 @@ final class AccountUpdateRequestTest {
         @Test
         @DisplayName("binds the misspelled name, so the contract is usable and not merely strict")
         void bindsTheMisspelledName() throws Exception {
-            final String json = "{\"oldDetails\":{\"expiraionDate\":\"20250131\"},"
-                    + "\"newDetails\":{\"expiraionDate\":\"20260131\"}}";
-            final AccountUpdateRequest bound =
-                    STRICT_MAPPER.readValue(json, AccountUpdateRequest.class);
-            assertThat(bound.getOldDetails().getExpiraionDate()).isEqualTo("20250131");
+            // The edited group binds from the request; the as-displayed group binds only inside the sealed
+            // snapshot, which SnapshotTokenService deserialises through this same mapper - so the misspelling
+            // has to survive on both types, and it is asserted on both.
+            final AccountUpdateRequest bound = STRICT_MAPPER.readValue(
+                    "{\"newDetails\":{\"expiraionDate\":\"20260131\"}}", AccountUpdateRequest.class);
             assertThat(bound.getNewDetails().getExpiraionDate()).isEqualTo("20260131");
+            assertThat(STRICT_MAPPER.readValue("{\"expiraionDate\":\"20250131\"}", OldDetails.class)
+                    .getExpiraionDate()).isEqualTo("20250131");
         }
 
         /**
@@ -1436,22 +1505,41 @@ final class AccountUpdateRequestTest {
         @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypesOnly")
         @DisplayName("emits exactly the stored members and no derived view, on all three types")
         void emitsExactlyTheStoredMembers(final Class<?> type) {
+            // The as-displayed group is excluded from the serialised form by @JsonIgnore, because it carries
+            // the nine protected customer values and must never be rendered. Everything else round-trips.
             assertThat(serializedProperties(withMembers(type, Map.of())))
-                    .containsExactlyInAnyOrderElementsOf(fieldNames(type));
+                    .containsExactlyInAnyOrderElementsOf(fieldNames(type).stream()
+                            .filter(member -> !SERVER_SIDE_MEMBER.equals(member))
+                            .toList());
         }
 
         @Test
         @DisplayName("round-trips, so a client can return the snapshot it was given")
         void roundTripsThroughJson() throws Exception {
-            final AccountUpdateRequest original = replaceGroup(
-                    withOnly(AccountUpdateRequest.class, "accountId", "00000000001"),
-                    "oldDetails", withOnly(OldDetails.class, "currentBalance", "00000001940{"));
+            final Map<String, String> members = new LinkedHashMap<>();
+            members.put("accountId", "00000000001");
+            members.put(SEALED_MEMBER, "c2VhbGVkLXZhbHVl");
+            final AccountUpdateRequest original =
+                    withMembers(AccountUpdateRequest.class, members)
+                            .withOldDetails(withOnly(OldDetails.class, "currentBalance", "00000001940{"));
             final String json = STRICT_MAPPER.writeValueAsString(original);
+
+            assertThat(json)
+                    .as("the group the server attached is withheld from the rendering entirely")
+                    .doesNotContain("oldDetails")
+                    .doesNotContain("00000001940{");
             final AccountUpdateRequest restored =
                     STRICT_MAPPER.readValue(json, AccountUpdateRequest.class);
             assertThat(restored.getAccountId()).isEqualTo("00000000001");
-            assertThat(restored.getOldDetails().getCurrentBalance()).isEqualTo("00000001940{");
-            assertThat(restored.getOldDetails().currentBalanceAmount())
+            assertThat(restored.getSnapshot())
+                    .as("what a client returns is the sealed value, byte for byte")
+                    .isEqualTo("c2VhbGVkLXZhbHVl");
+            assertThat(restored.getOldDetails()).isNull();
+            // And the group itself still round-trips on its own type, which is the path
+            // SnapshotTokenService takes when it opens the sealed value.
+            assertThat(STRICT_MAPPER.readValue(
+                            STRICT_MAPPER.writeValueAsString(original.getOldDetails()), OldDetails.class)
+                    .currentBalanceAmount())
                     .isEqualByComparingTo(new BigDecimal("194.00"));
         }
 
@@ -1505,11 +1593,25 @@ final class AccountUpdateRequestTest {
         @Test
         @DisplayName("withholds the offending name and value from the refusal message")
         void withholdsTheOffendingNameAndValue() {
-            final String json = "{\"oldDetails\":{\"forgedName\":\"123-45-6789\"}}";
-            assertThat(refusalOf(() -> STRICT_MAPPER.readValue(json, AccountUpdateRequest.class)))
+            final String json = "{\"forgedName\":\"123-45-6789\"}";
+            assertThat(refusalOf(() -> STRICT_MAPPER.readValue(json, OldDetails.class)))
                     .hasMessageContaining("OldDetails accepts only the 29 properties")
                     .hasMessageNotContaining("forgedName")
                     .hasMessageNotContaining("123-45-6789");
+        }
+
+        @Test
+        @DisplayName("refuses a request that names the as-displayed group at all")
+        void refusesARequestThatNamesTheAsDisplayedGroup() {
+            // A caller sending the group is asking to supply the operand of the comparison at
+            // app/cbl/COACTUPC.cbl:4109-4193 - the one operand the comparison exists to obtain from the
+            // server. The property is not declared, so the guard refuses it rather than discarding it, and
+            // the refusal says why.
+            assertThat(refusalOf(() -> STRICT_MAPPER.readValue(
+                    "{\"oldDetails\":{\"activeStatus\":\"Y\"}}", AccountUpdateRequest.class)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("arrives only inside the sealed snapshot")
+                    .hasMessageNotContaining("activeStatus");
         }
 
         @Test
@@ -1518,7 +1620,7 @@ final class AccountUpdateRequestTest {
             assertThat(refusalOf(() -> STRICT_MAPPER.readValue("{\"notAField\":\"x\"}",
                     AccountUpdateRequest.class)))
                     .hasMessageContaining("AccountUpdateRequest accepts only the "
-                            + TOP_LEVEL_MEMBERS + " properties");
+                            + WIRE_MEMBERS + " properties");
             assertThat(refusalOf(() -> STRICT_MAPPER.readValue(
                     "{\"newDetails\":{\"notAField\":\"x\"}}", AccountUpdateRequest.class)))
                     .hasMessageContaining("NewDetails accepts only the " + NEW_MEMBERS
@@ -1528,20 +1630,20 @@ final class AccountUpdateRequestTest {
         @Test
         @DisplayName("accepts every declared property, so the guard is not over-broad")
         void acceptsEveryDeclaredProperty() throws Exception {
-            for (final String member : fieldNames(AccountUpdateRequest.class)) {
+            for (final String member : parameterNames(AccountUpdateRequest.class)) {
                 assertThat(STRICT_MAPPER.readValue("{\"" + member + "\":null}",
                         AccountUpdateRequest.class)).isNotNull();
             }
-            final Map<String, Class<?>> groups = new LinkedHashMap<>();
-            groups.put("oldDetails", OldDetails.class);
-            groups.put("newDetails", NewDetails.class);
-            for (final Map.Entry<String, Class<?>> group : groups.entrySet()) {
-                for (final String member : fieldNames(group.getValue())) {
-                    final String json =
-                            "{\"" + group.getKey() + "\":{\"" + member + "\":null}}";
-                    assertThat(STRICT_MAPPER.readValue(json, AccountUpdateRequest.class))
-                            .isNotNull();
-                }
+            for (final String member : fieldNames(NewDetails.class)) {
+                assertThat(STRICT_MAPPER.readValue(
+                        "{\"newDetails\":{\"" + member + "\":null}}", AccountUpdateRequest.class))
+                        .isNotNull();
+            }
+            // The as-displayed group is deserialised directly, by SnapshotTokenService opening the sealed
+            // value, so its members are exercised on the type itself rather than through the request.
+            for (final String member : fieldNames(OldDetails.class)) {
+                assertThat(STRICT_MAPPER.readValue("{\"" + member + "\":null}", OldDetails.class))
+                        .isNotNull();
             }
         }
 
@@ -1611,7 +1713,10 @@ final class AccountUpdateRequestTest {
         void returnsTheValueItWasGiven() {
             final AccountUpdateRequest payload = fullyPopulated(AccountUpdateRequest.class);
             for (final String member : fieldNames(AccountUpdateRequest.class)) {
-                if (isSnapshotGroup(AccountUpdateRequest.class, member)) {
+                if (isSnapshotGroup(AccountUpdateRequest.class, member)
+                        || SEALED_MEMBER.equals(member)) {
+                    // The two groups are nested payloads and the sealed snapshot is an opaque token with no
+                    // PIC width, so none of the three is populated by the widest-legal-payload builder.
                     assertThat(readMember(payload, member)).isNull();
                     continue;
                 }

@@ -20,7 +20,7 @@
  *               per-execution object keys, nested isolation on one
  *               thread and concurrent isolation across two threads.
  * Source      : app/cbl/CBTRN02C.cbl:L562-L579 (DALYTRAN write guard)
- *               app/cbl/CBTRN02C.cbl:L424-L465 (2000-POST-TRANSACTION)
+ *               app/cbl/CBTRN02C.cbl:L424-L444 (2000-POST-TRANSACTION)
  *               app/cpy/CVTRA05Y.cpy           (350-byte record)
  *               app/cbl/CBSTM03A.CBL:L293      (OPEN OUTPUT)
  *               app/cbl/CBSTM03A.CBL:L339      (CLOSE)

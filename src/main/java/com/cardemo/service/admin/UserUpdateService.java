@@ -1,11 +1,11 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Component   : UserUpdateService
  * Application : CardDemo
  * Type        : Spring @Service (admin, user update)
  * Function    : Update a user in USRSEC file
- * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 paragraphs) @ 7756d89
- * ****************************************************************************
+ * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 own paragraph labels) @ 7756d89
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -20,7 +20,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.service.admin;
 
@@ -57,7 +57,7 @@ import com.cardemo.service.shared.FileStatusMapper;
 /**
  * The user-update screen: one keyed read of the {@code USRSEC} security file, five operator fields validated in
  * one fixed order, four field-by-field change predicates, and a single conditional rewrite. This is the Java
- * replacement for {@code app/cbl/COUSR02C.cbl} (414 lines, 11 paragraphs), the CICS program behind transaction
+ * replacement for {@code app/cbl/COUSR02C.cbl} (414 lines, 11 own paragraph labels), the CICS program behind transaction
  * {@code CU02} - {@code DEFINE TRANSACTION(CU02)} at {@code app/csd/CARDDEMO.CSD}:469-470 naming
  * {@code PROGRAM(COUSR02C)}, whose own definition is at {@code :292} - painting mapset {@code COUSR02}
  * ({@code :165}) whose generated symbolic map is {@code app/cpy-bms/COUSR02.CPY}.
@@ -77,8 +77,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * found, not found, or the operation failed - with the source's exact message text in every case.
  *
  * <p>It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*}, which is authored as of 4 August 2026; an earlier revision of this paragraph
- * recorded that controller as planned and this service as having no HTTP entry point.
+ * {@code /api/admin/*}, which is authored, so this service has an HTTP entry point rather than none.
  * {@code com.cardemo.config.SecurityConfig} restricts
  * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the {@code 'A'} against
  * {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at {@code app/cpy/COCOM01Y.cpy}:27-28, surfaced as
@@ -91,9 +90,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to build and test</h2>
  *
- * <p>Java 25 ({@code maven.compiler.release} 25, no preview features) and Maven 3.9.11, under parent
- * {@code spring-boot-starter-parent:3.5.11}, with the toolchain floor asserted by
- * {@code maven-enforcer-plugin:3.5.0}.
+ * <p>The toolchain, the plugin versions and the zero-warning compiler settings are the project's, and
+ * are stated once in {@code pom.xml}; what follows is only what is specific to this file.
  *
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file. {@code maven-compiler-plugin:3.14.1} runs
@@ -753,12 +751,10 @@ public class UserUpdateService {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Public surface. Five entry points, one per way the source can be reached: with no communication
     // area, on a first display, on the ENTER arm, on the save arm, and on a submitted screen with any
     // attention identifier at all - which is the only entry point through which the preserved PF3-save
     // quirk is reachable.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Reproduces the source reached with no communication area at all: {@code IF EIBCALEN = 0} at
@@ -967,12 +963,10 @@ public class UserUpdateService {
         return mainPara(true, true, aid, null, request, expected);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // The eleven paragraphs of app/cbl/COUSR02C.cbl, mapped one to one, in source order, and never
     // consolidated - including the paths that are empty, that are unreachable in Java, and that carry a
     // preserved quirk. The label correspondence is the evidence the scope-coverage gate reads, so a
     // twelfth private method that merged two labels, or a tenth that dropped one, would break it.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * {@code app/cbl/COUSR02C.cbl}:82 {@code MAIN-PARA} - the entry paragraph, which resets the two flags and
@@ -1662,7 +1656,7 @@ public class UserUpdateService {
      * <p>Reached from the {@code DFHPF4} arm at {@code :120-121}. There is no terminal to clear, so in Java the
      * pair of statements produces a fresh, empty response and nothing more. <strong>No cleared state is retained
      * anywhere</strong>: the work area is created per call and discarded when the call returns, so a subsequent
-     * caller can never observe what this one cleared. Retained rather than deleted because the paragraph
+     * caller can never observe what this one cleared. It is kept because the paragraph
      * correspondence is the evidence the scope-coverage gate reads.
      *
      * @param work the method-local work area
@@ -1692,13 +1686,11 @@ public class UserUpdateService {
         work.message = SPACES;                                // :411                 WS-MESSAGE.
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Mechanism helpers. None of these corresponds to a source paragraph: each stands in for a COBOL
     // language or CICS mechanism that has no paragraph of its own - a fixed-width comparison, a
     // response-code capture, an intrinsic phrase, a typed status translation. They are helpers rather
     // than a separate class on purpose: Rule 1 Clause C fixes this package at four files, and the
     // change-detection comparison in particular must live inside this bean.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Concludes the turn at the source's own return point, {@code app/cbl/COUSR02C.cbl}:135-138
@@ -1929,7 +1921,7 @@ public class UserUpdateService {
      * that silently returned nothing would swallow the failure, so the decline becomes a file-access failure
      * carrying the source's own message rather than being left to become {@code null}.
      *
-     * <p>The recorded cause is consumed: it is cleared once read, so it cannot be attached twice.
+     * <p>The recorded cause is consumed - cleared as it is read - so it cannot be attached twice.
      *
      * @param work            the method-local work area, carrying the recorded status and any cause
      * @param operation       the operation attempted, for the exception's context
@@ -2037,11 +2029,9 @@ public class UserUpdateService {
         return value;
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Nested types. Declared here rather than as files of their own because Rule 1 Clause C fixes this
     // package at four source files; none of the three public types is referenced outside this service
     // and its controller, and the work area is an implementation detail of a single turn.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * The attention identifier the operator pressed, standing in for {@code EIBAID} as the

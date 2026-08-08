@@ -7,16 +7,16 @@
  * Function    : Spring Batch Job, Step and Flow topology replacing the
  *               JES2 / JCL / DFSORT / IDCAMS job stream.
  * Source      : app/jcl/POSTTRAN.jcl + app/cbl/CBTRN02C.cbl (731 lines,
- *               27 paragraphs) + app/cbl/CBTRN01C.cbl (491 lines,
- *               19 paragraphs); app/jcl/INTCALC.jcl
- *               + app/cbl/CBACT04C.cbl (652 lines, 23 paragraphs);
+ *               26 own paragraph labels) + app/cbl/CBTRN01C.cbl (491 lines,
+ *               18 own paragraph labels); app/jcl/INTCALC.jcl
+ *               + app/cbl/CBACT04C.cbl (652 lines, 22 own paragraph labels);
  *               app/jcl/COMBTRAN.jcl (52 lines, no COBOL program);
  *               app/jcl/CREASTMT.JCL (97 lines)
- *               + app/cbl/CBSTM03A.CBL (924 lines, 26 paragraphs)
- *               + app/cbl/CBSTM03B.CBL (230 lines, 15 labels);
+ *               + app/cbl/CBSTM03A.CBL (924 lines, 25 own paragraph labels)
+ *               + app/cbl/CBSTM03B.CBL (230 lines, 14 own paragraph labels);
  *               app/jcl/TRANREPT.jcl + app/proc/TRANREPT.prc
  *               + app/proc/REPROC.prc + app/ctl/REPROCT.ctl
- *               + app/cbl/CBTRN03C.cbl (649 lines, 27 paragraphs)
+ *               + app/cbl/CBTRN03C.cbl (649 lines, 26 own paragraph labels)
  *               @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -55,19 +55,19 @@
  * <ul>
  *   <li>{@code DailyTransactionPostingJob} - from {@code app/jcl/POSTTRAN.jcl}, whose
  *       {@code //STEP15 EXEC PGM=CBTRN02C} at {@code :L23} names six data DD statements, plus
- *       {@code app/cbl/CBTRN02C.cbl} (731 lines, 27 paragraphs) and {@code app/cbl/CBTRN01C.cbl}
- *       (491 lines, 19 paragraphs).</li>
+ *       {@code app/cbl/CBTRN02C.cbl} (731 lines, 26 own paragraph labels) and {@code app/cbl/CBTRN01C.cbl}
+ *       (491 lines, 18 own paragraph labels).</li>
  *   <li>{@code InterestCalculationJob} - from {@code app/jcl/INTCALC.jcl}, whose
  *       {@code //STEP15 EXEC PGM=CBACT04C,PARM='2022071800'} at {@code :L22} supplies the date parameter,
- *       plus {@code app/cbl/CBACT04C.cbl} (652 lines, 23 paragraphs).</li>
+ *       plus {@code app/cbl/CBACT04C.cbl} (652 lines, 22 own paragraph labels).</li>
  *   <li>{@code CombineTransactionsJob} - from {@code app/jcl/COMBTRAN.jcl} (52 lines) and nothing else.</li>
  *   <li>{@code StatementGenerationJob} - from {@code app/jcl/CREASTMT.JCL} (97 lines, five steps) plus
- *       {@code app/cbl/CBSTM03A.CBL} (924 lines, 26 paragraphs) and {@code app/cbl/CBSTM03B.CBL}
- *       (230 lines, 15 labels).</li>
+ *       {@code app/cbl/CBSTM03A.CBL} (924 lines, 25 own paragraph labels) and {@code app/cbl/CBSTM03B.CBL}
+ *       (230 lines, 14 own paragraph labels).</li>
  *   <li>{@code TransactionReportJob} - from the five-member report chain {@code app/jcl/TRANREPT.jcl}
  *       (84 lines), {@code app/proc/TRANREPT.prc} (82 lines), {@code app/proc/REPROC.prc} (32 lines) and
  *       {@code app/ctl/REPROCT.ctl} (15 lines), plus {@code app/cbl/CBTRN03C.cbl} (649 lines,
- *       27 paragraphs).</li>
+ *       26 own paragraph labels).</li>
  *   <li>{@code BatchPipelineOrchestrator} - from the overall JCL job stream. It composes the five jobs above
  *       into one end-to-end pipeline and owns the gating between them.</li>
  * </ul>
@@ -90,8 +90,7 @@
  * {@code app/jcl/} executes it, so a standalone job would be an invention rather than a translation. Folding a
  * program into a step is not the same as dropping it, so it still gets its own rows in
  * {@code TRACEABILITY_MATRIX.md}, and it has them: <strong>36 {@code TM-CBTRN01C-*} rows</strong> are mapped
- * there. An earlier revision said the row was "still owed in the planned" matrix; the matrix has since been
- * authored at the repository root and the obligation is discharged, so that claim is withdrawn. Reproduce with
+ * there, in the matrix authored at the repository root. Reproduce with
  * {@code grep -c 'TM-CBTRN01C' TRACEABILITY_MATRIX.md}.
  *
  * <h3>CombineTransactionsJob has no COBOL program at all</h3>
@@ -224,20 +223,20 @@
  * bound, each by its own job class - together with {@code carddemo.batch.jobs.pipeline.name} at
  * {@code CARDDEMO-PIPELINE} for the orchestrator, which is not one of the five JCL members. That namespace
  * is the one authoritative spelling for every job name, and it carries nothing besides them: a per-job
- * {@code .enabled} flag and a {@code carddemo.batch.jobs.creastmt.steps} count were declared and bound by
- * nothing, so they are withdrawn rather than given a binder. The statement job has five steps because
+ * {@code .enabled} flag and a {@code carddemo.batch.jobs.creastmt.steps} count are declared nowhere, and must
+ * not be: a key bound by nothing misleads an operator. The statement job has five steps because
  * {@code app/jcl/CREASTMT.JCL} has five, and the five stages are constructor dependencies of
- * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, so neither value could have been settable.
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, so neither value could be settable.
  * The step count is asserted against {@code StatementGenerationJob.STEP_COUNT}, and finding CFG-002 is
- * the record of the withdrawal.
+ * the record of that decision.
  *
  * <p>Job <em>tuning</em> lives one level up, under {@code carddemo.batch.<id>.*} rather than under
  * {@code jobs}: the per-job keys {@code carddemo.batch.posttran.chunk-size}, {@code .intcalc.chunk-size},
  * {@code .tranrept.chunk-size}, {@code .combtran.chunk-size} and {@code .creastmt.chunk-size}, each
  * {@code 100} and each resolving through {@code carddemo.batch.chunk-size} before its own literal. Two run
  * bounds, {@code carddemo.batch.combtran.max-records-per-run} and
- * {@code carddemo.batch.creastmt.max-work-records}, were declared alongside them and are withdrawn: each was
- * read by a constant that no longer exists, because the combine sort streams to a staging file instead of
+ * {@code carddemo.batch.creastmt.max-work-records}, are deliberately absent: neither is declared and neither
+ * is read, because the combine sort streams to a staging file instead of
  * accumulating the generation and the statement work file's size is reported into the job execution context
  * instead of being capped. Whether a job runs is governed by {@code spring.batch.job.enabled} plus an
  * explicit launch, never by a key in either namespace.
@@ -401,7 +400,8 @@
  * <h3>Artefacts that look like defects and are not</h3>
  *
  * <p>Four constructs are reproduced deliberately. Each is cited here at its own locator, marked intentional
- * at its site, and tracked for the {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}. Only
+ * at its site, and held in {@code DECISION_LOG.md} at {@code DL-CR-01} with a row in
+ * {@code TRACEABILITY_MATRIX.md}. Only
  * the first belongs to the bounded retained-for-parity register enumerated in {@code com.cardemo}; the other
  * three are documented source behaviour at their own locators rather than register entries:
  *
@@ -427,7 +427,8 @@
  * requires preserving these no-ops - two of them unreachable - so the paragraph map stays mechanically
  * provable and Gate 7 can verify it. <strong>Parity governs.</strong> The clause forbids <em>untracked</em>
  * dead code and deferred work without an owner or tracking reference, and every artefact above is cited at
- * its locator, marked intentional where it appears, and tracked for the {@code DECISION_LOG.md} and
+ * its locator, marked intentional where it appears, and held at {@code DL-CR-01} in {@code DECISION_LOG.md}
+ * with a row in
  * {@code TRACEABILITY_MATRIX.md}. Deleting a call site to satisfy a stylistic rule would fail a stated
  * acceptance criterion, which is the worse trade.
  *
@@ -451,7 +452,8 @@
  * <h3>Two labelled deviations</h3>
  *
  * <p>These are behavioural improvements rather than parity, and are labelled as such here rather than
- * presented as equivalence. Each is owed an entry in the {@code DECISION_LOG.md} saying so:
+ * presented as equivalence. Each is held in {@code DECISION_LOG.md} saying so - {@code DL-DV-03}
+ * for the removed ceiling and {@code DL-DV-01} for the closed orphan-write hazard:
  *
  * <ul>
  *   <li><strong>Atomicity.</strong> {@code app/cbl/CBTRN02C.cbl} commits the transaction-category-balance
@@ -461,8 +463,9 @@
  *   <li><strong>Capacity.</strong> {@code app/cbl/CBSTM03A.CBL} holds its working set in a fixed table of 51
  *       card entries by 10 transactions each - a hard ceiling of 510 transactions per run, with both indices
  *       incremented under no bounds check at all. {@code StatementGenerationJob} streams instead, removing a
- *       silent overrun. The legacy ceiling is stated here as the historical capacity limit and owed a row in
- *       the {@code TRACEABILITY_MATRIX.md}. <strong>No authored ceiling replaces it.</strong> Two did - a
+ *       silent overrun. The legacy ceiling is stated here as the historical capacity limit, is held as
+ *       {@code DL-DV-03} in the {@code DECISION_LOG.md}, and carries its row in the
+ *       {@code TRACEABILITY_MATRIX.md}. <strong>No authored ceiling replaces it.</strong> Two did - a
  *       configured run bound and a per-card-group bound - and finding BAT-002 removed both, because a refusal
  *       at an invented threshold is a business rule the corpus does not contain. Run size is bounded by the
  *       input: every stage streams one record at a time.</li>

@@ -79,15 +79,14 @@ import com.cardemo.unit.model.FixtureLoader;
  * <p><b>What it is not.</b> It is not a captured mainframe run. A real POSTTRAN execution against a real VSAM
  * cluster remains the strongest possible evidence and remains unavailable; that gap is stated in
  * {@code docs/validation-gates.md} rather than papered over. What this class does establish is that the
- * expected outcome <b>is derivable</b> from the frozen corpus, which is the claim an earlier revision of the
- * gate denied.
+ * expected outcome <b>is derivable</b> from the frozen corpus.
  *
- * <h3>The claim that no oracle was derivable, and why it was wrong</h3>
+ * <h3>Why a stateless single-pass reading is not a second faithful model</h3>
  *
- * <p>An earlier revision of Gate 1 argued that no expected total could be asserted because "two faithful
- * models of {@code app/cbl/CBTRN02C.cbl} disagree over these fixtures, because {@code :L393-L395} re-reads the
- * account per transaction while {@code :L545-L560} mutates its accumulators, so any hand-derived total is
- * model-sensitive rather than an oracle."
+ * <p>One reading of Gate 1 holds that no expected total can be asserted at all, on the argument that "two
+ * faithful models of {@code app/cbl/CBTRN02C.cbl} disagree over these fixtures, because {@code :L393-L395}
+ * re-reads the account per transaction while {@code :L545-L560} mutates its accumulators, so any hand-derived
+ * total is model-sensitive rather than an oracle." That argument does not hold.
  *
  * <p><b>The two models do not both exist.</b> {@code 2800-UPDATE-ACCOUNT-REC} at {@code :L561} ends in
  * {@code REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD}, and a VSAM {@code REWRITE} replaces the record in the
@@ -518,7 +517,22 @@ public final class PostingParityOracle {
         }
     }
 
-    /** One staging record's decoded fields, read once per record as {@code 1000-DALYTRAN-GET-NEXT} does. */
+    /**
+     * One staging record's decoded fields, read once per record as {@code 1000-DALYTRAN-GET-NEXT} does.
+     * @param rawRecord the 350-byte staging image, kept verbatim for the reject trailer.
+     * @param tranId {@code DALYTRAN-ID}, sixteen characters.
+     * @param typeCode {@code DALYTRAN-TYPE-CD}, two characters.
+     * @param categoryCode {@code DALYTRAN-CAT-CD}, four characters.
+     * @param source {@code DALYTRAN-SOURCE}, ten characters.
+     * @param description {@code DALYTRAN-DESC}, one hundred characters.
+     * @param amount {@code DALYTRAN-AMT}, decoded from its overpunch sign.
+     * @param merchantId {@code DALYTRAN-MERCHANT-ID}, nine characters.
+     * @param merchantName {@code DALYTRAN-MERCHANT-NAME}, fifty characters.
+     * @param merchantCity {@code DALYTRAN-MERCHANT-CITY}, fifty characters.
+     * @param merchantZip {@code DALYTRAN-MERCHANT-ZIP}, ten characters.
+     * @param cardNumber {@code DALYTRAN-CARD-NUM}, sixteen characters.
+     * @param originTimestamp {@code DALYTRAN-ORIG-TS}, twenty-six characters.
+     */
     private record StagingRecord(
             String rawRecord,
             String tranId,
@@ -785,7 +799,11 @@ public final class PostingParityOracle {
     // Paragraph re-derivations. One private method per COBOL paragraph, in source order.
     // ====================================================================================================
 
-    /** The outcome of {@code 1500-VALIDATE-TRAN}: a reason code and its description. */
+    /**
+     * The outcome of {@code 1500-VALIDATE-TRAN}: a reason code and its description.
+     * @param reasonCode the reason code, zero when the record validates.
+     * @param description the reason description, blank when the record validates.
+     */
     private record Validation(int reasonCode, String description) {
     }
 

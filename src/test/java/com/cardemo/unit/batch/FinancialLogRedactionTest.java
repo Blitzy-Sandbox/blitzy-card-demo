@@ -96,9 +96,9 @@ class FinancialLogRedactionTest {
      * The stand-in a withheld {@code PIC S9(10)V99} money field of {@code app/cpy/CVACT01Y.cpy} carries:
      * twelve characters, one per digit position the field would have occupied.
      *
-     * <p>An earlier revision of this suite expected {@code "[REDACTED]"} here, taken from the {@code REDACTION}
-     * property of {@code src/main/resources/logback-spring.xml}. That expectation is withdrawn, because it
-     * confused two different mechanisms. {@code [REDACTED]} is what the <em>masking layer</em> substitutes when
+     * <p>Expecting {@code "[REDACTED]"} here, taken from the {@code REDACTION}
+     * property of {@code src/main/resources/logback-spring.xml}, would
+     * confuse two different mechanisms. {@code [REDACTED]} is what the <em>masking layer</em> substitutes when
      * one of its rules matches text that has already been rendered. What this suite inspects is the opposite
      * case: an emitter that never writes the value at all, and that must put something of exactly the field's
      * width in its place so the fixed-width record geometry still holds. Every emitter-side redaction in the
@@ -301,8 +301,8 @@ class FinancialLogRedactionTest {
             // These two lines get the routing control only. They are end-of-data aggregates that carry no
             // identifier of any kind, so there is nothing on either line to link the figure to, and their
             // exact text is the output-equivalence guarantee this reproduction exists to provide - which
-            // redacting would trade away in return for withholding an unlinkable total. An earlier revision
-            // of this suite expected a redaction token here and therefore contradicted the emitter.
+            // redacting would trade away in return for withholding an unlinkable total. Expecting a redaction
+            // token on either line would contradict the emitter.
             assertThat(capturedLines())
                     .anySatisfy(line -> assertThat(line).isEqualTo("TRAN-AMT 0"))
                     .anySatisfy(line -> assertThat(line).isEqualTo("WS-PAGE-TOTAL0"));

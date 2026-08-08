@@ -200,9 +200,11 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * {@code CBSTM03A} assigns no {@code RETURN-CODE} anywhere. Asserting 999, or 12, or a fabricated exit-code
  * locator for this job would be inventing a contract the source does not have.
  *
- * <p><strong>No expected-output baseline.</strong> The Gate 1 boundary-parity baseline is
- * <em>Not available</em>. An exhaustive search of the repository for captured statement output returned only
- * dataset-definition job control and zero captured data. What is needed is a {@code STMTFILE} at 80 bytes
+ * <p><strong>No expected-output baseline for statement output.</strong> The Gate 1 posting expectation is
+ * committed under {@code src/test/resources/parity/gate1/} and is derived from
+ * {@code app/cbl/CBTRN02C.cbl}, so it covers no statement output at all. A search of the repository for
+ * captured {@code STMTFILE} or {@code HTMLFILE} data returns only dataset-definition job control and zero
+ * captured data, so a statement baseline is <em>Not available</em>. What is needed is a {@code STMTFILE} at 80 bytes
  * per line and an {@code HTMLFILE} at 100 bytes per line taken from a real {@code CBSTM03A} run at a known
  * input state. Until such an artefact exists this class creates no baseline file and fabricates no expected
  * bytes; a baseline produced by running the Java implementation would be circular and is forbidden.
@@ -269,8 +271,9 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       {@code app/jcl/CREASTMT.JCL:69} against 100 in the execution step at {@code :94}. The 100-byte width
  *       governs, confirmed independently by {@code 05 HTML-FIXED-LN PIC X(100)} at
  *       {@code app/cbl/CBSTM03A.CBL:148-149}. That confirmation is precisely why the mismatch is a legacy
- *       defect to log rather than a signal to change the width. Remediation: none in code - it is recorded in
- *       the planned root-owned decision log and the emitted width is asserted here.</li>
+ *       defect to log rather than a signal to change the width. Remediation: none in code - it is held as
+ *       {@code DL-LD-02} in the root-owned {@code DECISION_LOG.md} and the emitted width is asserted
+ *       here.</li>
  *   <li><strong>Medium</strong> - a physically corrupted {@code STMTFILE} data-definition line at
  *       {@code app/jcl/CREASTMT.JCL:90}, whose text is fragments of three different statements run together.
  *       Remediation: log it; no reconstruction of the intended text is attempted, because any reconstruction
@@ -338,11 +341,9 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
     @Value("${carddemo.aws.s3.work-prefixes.trxfl:work/trxfl}")
     private String workPrefix;
 
-    // =================================================================================================
     // Contract values. Every one is an instance field, never static: the parent harness documents a hard
     // budget of exactly two static fields for this whole package, both of them containers, and a constant
     // here would widen a rule that exists to keep global mutable state out of the tier.
-    // =================================================================================================
 
     /** {@code DELDEF01} at {@code app/jcl/CREASTMT.JCL:22}, the first of the five steps. */
     private final String defineStepName = "statementGenerationDefineStep";
@@ -464,9 +465,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
      */
     private final int aboveCeilingTransactionCount = 560;
 
-    // =================================================================================================
     // The five steps and the work-cluster contract.
-    // =================================================================================================
 
     /**
      * The five steps of {@code app/jcl/CREASTMT.JCL} run, once each, in the order the member declares them.
@@ -551,9 +550,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // The projection. app/jcl/CREASTMT.JCL:54 - the headline preserved defect of this job.
-    // =================================================================================================
 
     /**
      * {@code OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)} writes
@@ -793,9 +790,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(probeTransactionId(1));
     }
 
-    // =================================================================================================
     // The two output widths. app/jcl/CREASTMT.JCL:89 and :94.
-    // =================================================================================================
 
     /**
      * One step emits two objects at two different widths: 80 bytes for the text and 100 for the markup.
@@ -813,8 +808,8 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
      * independent of the job control: {@code 05 HTML-FIXED-LN PIC X(100)} at
      * {@code app/cbl/CBSTM03A.CBL:148-149} is the field the program actually writes from. That independent
      * confirmation is precisely why the mismatch is a legacy defect to record rather than a signal to change
-     * the width, and it is recorded in the planned root-owned decision log rather than here. Severity:
-     * Medium.
+     * the width, and it is held as {@code DL-LD-02} in the root-owned {@code DECISION_LOG.md} rather than
+     * here. Severity: Medium.
      */
     @Test
     @DisplayName("6. STMTFILE objects are exact multiples of 80 bytes and HTMLFILE objects of 100, per "
@@ -935,9 +930,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                 .hasSize(seededCrossReferenceCount * 2);
     }
 
-    // =================================================================================================
     // The removed resident-table ceiling. app/cbl/CBSTM03A.CBL:225-230 - a labelled deviation.
-    // =================================================================================================
 
     /**
      * More than the legacy {@value com.cardemo.model.dto.StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN}
@@ -958,8 +951,8 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
      * <p><strong>Why the deviation is taken, and what justifies it.</strong> Streaming is both more efficient
      * and safer: it removes a silent corruption path entirely. But it changes behaviour at scale, and Rule 1
      * Clause A permits a tradeoff only when it is justified rather than assumed - so this is recorded as a
-     * labelled deviation with the legacy ceiling preserved as the historical capacity limit, owed an entry in
-     * the planned root-owned decision log. Pretending the ceiling was preserved would be false; leaving its
+     * labelled deviation with the legacy ceiling preserved as the historical capacity limit, held as
+     * {@code DL-DV-03} in the root-owned {@code DECISION_LOG.md}. Pretending the ceiling was preserved would be false; leaving its
      * removal unasserted would be worse. The input here exceeds <em>both</em> legacy limits: the run total,
      * and the per-card limit, because {@value #aboveCeilingTransactionCount} spread over
      * {@value #seededCrossReferenceCount} cards puts more than ten on some of them.
@@ -1012,10 +1005,8 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                         "maxTransactionsPerRun");
     }
 
-    // =================================================================================================
     // The five-stage initialisation. app/cbl/CBSTM03A.CBL:296-314, :760-761, :851-852, :779-780,
     // :797-798, :815-816.
-    // =================================================================================================
 
     /**
      * The transaction stream is primed and its groups are available <em>before</em> the first cross-reference
@@ -1074,9 +1065,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                 .anySatisfy(line -> assertThat(line).contains(probeDescription));
     }
 
-    // =================================================================================================
     // The file-service read guards. app/cbl/CBSTM03A.CBL - nine '00' or '04' sites, one strict get-next.
-    // =================================================================================================
 
     /**
      * The same file status is fatal on one transaction read path and normal on the other, so no blanket
@@ -1157,9 +1146,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                 .isEmpty();
     }
 
-    // =================================================================================================
     // COND=(0,NE). app/jcl/CREASTMT.JCL:56, :66, :79 - the corpus's only three sites.
-    // =================================================================================================
 
     /**
      * On a zero return code all three condition-code gates admit their step, and none of the gates is a
@@ -1225,9 +1212,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // The step handoff. app/jcl/CREASTMT.JCL:58-59 - STEP020's INFILE is STEP010's SORTOUT.
-    // =================================================================================================
 
     /**
      * {@code STEP020} consumes exactly the object {@code STEP010} created, and the generation is reserved
@@ -1300,9 +1285,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                 .isEqualTo((long) committed * StatementTransaction.RECORD_LENGTH);
     }
 
-    // =================================================================================================
     // Boundary conditions.
-    // =================================================================================================
 
     /**
      * An empty transaction relation: the first four steps succeed on nothing, and {@code STEP040} then abends
@@ -1557,9 +1540,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Launching and outcome helpers.
-    // =================================================================================================
 
     /**
      * Launches the statement job with the run identifier the parent harness requires and nothing else.
@@ -1659,9 +1640,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         return names;
     }
 
-    // =================================================================================================
     // Object-store readers.
-    // =================================================================================================
 
     /**
      * Reads the projected work object this run created and splits it into fixed-width records.
@@ -1815,9 +1794,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         return records;
     }
 
-    // =================================================================================================
     // Seeded-state readers.
-    // =================================================================================================
 
     /**
      * Returns every seeded cross-reference card number in ascending order.
@@ -1889,9 +1866,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         return "****" + cardNumber.substring(cardNumber.length() - visible);
     }
 
-    // =================================================================================================
     // Probe fixtures. Every value is deterministic and every timestamp derives from the injected clock.
-    // =================================================================================================
 
     /**
      * The leading {@value com.cardemo.model.dto.StatementTransaction#PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH}

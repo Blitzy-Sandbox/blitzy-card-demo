@@ -1,11 +1,11 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Component   : UserAddService
  * Application : CardDemo
  * Type        : Spring @Service (admin, user add)
  * Function    : Add a new Regular/Admin user to USRSEC file
- * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 paragraphs) @ 7756d89
- * ****************************************************************************
+ * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 own paragraph labels) @ 7756d89
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -20,7 +20,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.service.admin;
 
@@ -75,8 +75,7 @@ import jakarta.persistence.PersistenceException;
  * already taken, or the write failed - with the source's exact message text in each case.
  *
  * <p>It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*}, which is authored as of 4 August 2026; an earlier revision of this paragraph
- * recorded that controller as planned and this service as having no HTTP entry point.
+ * {@code /api/admin/*}, which is authored, so this service has an HTTP entry point rather than none.
  * {@code com.cardemo.config.SecurityConfig} restricts
  * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the
  * {@code 'A'} against {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at
@@ -90,9 +89,8 @@ import jakarta.persistence.PersistenceException;
  *
  * <h2>How to build and test</h2>
  *
- * <p>Java 25 ({@code maven.compiler.release} 25, no preview features) and Maven 3.9.11, under parent
- * {@code spring-boot-starter-parent:3.5.11}, with the toolchain floor asserted by
- * {@code maven-enforcer-plugin:3.5.0}.
+ * <p>The toolchain, the plugin versions and the zero-warning compiler settings are the project's, and
+ * are stated once in {@code pom.xml}; what follows is only what is specific to this file.
  *
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file. {@code maven-compiler-plugin:3.14.1} runs
@@ -680,10 +678,8 @@ public class UserAddService {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Public surface. Four entry points, one per way the source can be reached: with no communication
     // area, on a first display, on a submitted screen, and on the ENTER arm of a submitted screen.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Reproduces the source reached with no communication area at all: {@code IF EIBCALEN = 0} at
@@ -827,11 +823,9 @@ public class UserAddService {
         return mainPara(true, true, aid, request, presentedPassword);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Source-mapped paragraphs. Nine labels, nine private methods, in source order.
     // Never consolidate: the scope-coverage gate is read out of exactly this correspondence, so mapping
     // fewer than nine breaks it.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * {@code app/cbl/COUSR01C.cbl:71 MAIN-PARA} - the entry paragraph. Clears the error switch and the
@@ -1306,10 +1300,8 @@ public class UserAddService {
         // SEC-USR-ID is deliberately NOT cleared here. See this method's Javadoc.
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Mechanism helpers. These carry no paragraph of their own: each one is the Java mechanism that
     // stands in for a CICS or Language Environment facility the source could assume.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Performs the write of {@code app/cbl/COUSR01C.cbl}:240-248 and records the condition it raised, so that
@@ -1567,7 +1559,7 @@ public class UserAddService {
      * translation that silently returned nothing would swallow the failure, so the decline is turned into a
      * {@code FileAccessException} carrying the same context rather than left to become {@code null}.
      *
-     * <p>The recorded cause is consumed: it is cleared once read, so it cannot be attached twice.
+     * <p>The recorded cause is consumed - cleared as it is read - so it cannot be attached twice.
      *
      * @param work      the per-invocation work area, carrying any recorded cause
      * @param ioStatus  the recorded file status
@@ -1700,11 +1692,9 @@ public class UserAddService {
                 work.transferRequested ? work.toProgram : null);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Nested types. Declared inside the service so that the fixed four-file budget of
     // com.cardemo.service.admin is unaffected: UserListService, UserAddService, UserUpdateService and
     // UserDeleteService, alongside this package's package-info.java.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * The attention identifier evaluated by {@code EVALUATE EIBAID} at {@code app/cbl/COUSR01C.cbl}:90-103.

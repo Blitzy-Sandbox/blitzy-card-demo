@@ -15,7 +15,7 @@
  *               because SPACES is not LOW-VALUES in the source.
  * Source      : app/cpy/CSMSG02Y.cpy:L22-L28 (internally CABENDD.CPY) @ 7756d89
  * Source      : app/cbl/COACTUPC.cbl:L2634-L2638, L4205-L4209 @ 7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L707-L710 (9999-ABEND-PROGRAM) @ 7756d89
+ * Source      : app/cbl/CBTRN02C.cbl:L707-L711 (9999-ABEND-PROGRAM) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -65,7 +65,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       into {@code ABEND-CODE}, i.e. a zero-padded four-character value, not an integer.</li>
  *   <li><strong>The batch abend</strong> is a different mechanism entirely:
  *       {@code MOVE 999 TO ABCODE} followed by {@code CALL 'CEE3ABD'}
- *       ({@code app/cbl/CBTRN02C.cbl:L707-L710}). {@code ABCODE} is the Language Environment abend-code
+ *       ({@code app/cbl/CBTRN02C.cbl:L707-L711}). {@code ABCODE} is the Language Environment abend-code
  *       parameter, a number, which is why {@link FatalProcessingException#BATCH_ABEND_CODE} is an
  *       {@code int} while {@code getAbendCode()} is a {@code String}. This test asserts both
  *       representations side by side precisely so that the two are never merged - they are not the same
@@ -414,7 +414,7 @@ class FatalProcessingExceptionTest {
                     "0999", "CBTRN02C", "UNEXPECTED FILE STATUS ON DALYTRAN", "ABENDING PROGRAM");
 
             assertThat(thrown.getAbendCulprit())
-                    .as("the guard at app/cbl/CBTRN02C.cbl:L707-L710 names the failing program before "
+                    .as("the guard at app/cbl/CBTRN02C.cbl:L707-L711 names the failing program before "
                             + "calling CEE3ABD, and that name is what an operator needs first")
                     .isEqualTo("CBTRN02C");
             assertThat(thrown.getMessage()).isEqualTo("ABENDING PROGRAM");

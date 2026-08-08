@@ -313,9 +313,9 @@ final class TestTierContractTest {
          *
          * <p>Asserted by name because this is the regression it closes rather than a general principle. That
          * suite covers seventeen REST operations, and the first thing anyone changing one of them does is run
-         * its scenario alone - which an imposed order does not support. It previously carried twenty-two
-         * {@code @Order} positions over principals created once for the whole class, so a failure early in
-         * the sequence masked every scenario after it and one scenario deleted a principal the others
+         * its scenario alone - which an imposed order does not support. Twenty-two
+         * {@code @Order} positions over principals created once for the whole class would mean a failure early
+         * in the sequence masked every scenario after it, and one scenario deleting a principal the others
          * authenticated with.
          */
         @Test

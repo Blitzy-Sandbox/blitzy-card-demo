@@ -1,13 +1,13 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionAddService.java
  * Application : CardDemo
  * Type        : Spring Service Bean
  * Function    : Transaction add. Reproduces COTRN02C (transaction CT02):
  *               ten-stage validation cascade, dual numeric parsing, and
  *               max-key-plus-one identifier generation.
- * Source      : app/cbl/COTRN02C.cbl (783 lines, 18 paragraphs) @ 7756d89
- * ****************************************************************************
+ * Source      : app/cbl/COTRN02C.cbl (783 lines, 18 own paragraph labels) @ 7756d89
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -22,7 +22,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.service.transaction;
 
@@ -87,8 +87,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       This class therefore consults <em>no</em> clock: it holds no {@code Clock}, calls no {@code now()}
  *       and formats no timestamp. Both the batch rendering {@code yyyy-MM-dd-HH.mm.ss.SS0000} and the
  *       online rendering {@code yyyy-MM-dd HH:mm:ss.SSSSSS} are wrong for this program. This corrects the
- *       technical specification, which describes a generated timestamp; owed an entry in the
- *       {@code DECISION_LOG.md}. Remediation: none — the source is authoritative.</li>
+ *       technical specification, which describes a generated timestamp; registered as
+ *       {@code CIT-COTRN02C-NO-CLOCK} under {@code DL-CR-09} in the {@code DECISION_LOG.md}.
+ *       Remediation: none — the source is authoritative.</li>
  *   <li><b>High — the identifier generation race is deliberately retained.</b>
  *       {@code app/cbl/COTRN02C.cbl:443-450} moves {@code HIGH-VALUES} into the key, browses backwards for
  *       the highest existing identifier, adds one, and writes. That is racy under concurrency, exactly as
@@ -97,7 +98,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       the Gate 1 comparison against the legacy baseline. A collision surfaces as
  *       {@code DuplicateRecordException} from the primary key constraint, which is the intended outcome and
  *       matches the shared {@code DUPKEY}/{@code DUPREC} branch at {@code app/cbl/COTRN02C.cbl:735-736}.
- *       Owed an entry in the {@code DECISION_LOG.md}. Remediation: acceptable only because parity against the
+ *       Held as {@code DL-PP-04} in {@code DECISION_LOG.md}, with its operational exposure at {@code DL-RR-04}. Remediation: acceptable only because parity against the
  *       legacy baseline is the contract; revisit if concurrent add throughput becomes a requirement.</li>
  *   <li><b>High — validation is strictly fail fast.</b> {@code SEND-TRNADD-SCREEN} issues
  *       {@code EXEC CICS SEND} and then {@code EXEC CICS RETURN} at
@@ -111,7 +112,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       currency parsed and echoed at {@code app/cbl/COTRN02C.cbl:383-386}, which is <em>before</em> the two
  *       dates are semantically validated at {@code :389-427} and <em>before</em> the merchant identifier
  *       numeric check at {@code :430-437}. A tidier ordering would change which echo the caller receives on
- *       a date validation failure. Owed an entry in the {@code DECISION_LOG.md}. Remediation: none — reorder
+ *       a date validation failure. Held as {@code DL-PP-13} in {@code DECISION_LOG.md}. Remediation: none — reorder
  *       only if the parity contract is renegotiated, because the echoed amount is byte compared.</li>
  *   <li><b>Medium — on the PF5 path the key validation and the cross reference read execute twice.</b>
  *       {@code COPY-LAST-TRAN-DATA} performs {@code VALIDATE-INPUT-KEY-FIELDS} at
@@ -151,7 +152,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><b>Low — the screen header reads no clock in this target.</b>
  *       {@code MOVE FUNCTION CURRENT-DATE} at {@code app/cbl/COTRN02C.cbl:554} is presentation only, and the
  *       zero-clock constraint above is absolute for this file, so {@code populateHeaderInfo} echoes the
- *       request's own date and time text. Owed an entry in the {@code DECISION_LOG.md}.</li>
+ *       request's own date and time text. Held as {@code DL-CR-09} in {@code DECISION_LOG.md}, whose register
+ *       covers inventing a clock the program does not read.</li>
  *   </ol>
  *
  * <h2>Fixed-width input contract</h2>
@@ -222,9 +224,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code CurrencyAwareAmountConverter} and {@code EditedAmountPrinter}, all consumed here, so no local
  *       fallback was written and no deviation needed logging.</li>
  *   <li><b>Resolved during discovery</b> - {@code src/main/resources/db/migration/V1__create_schema.sql},
- *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} all exist. An earlier revision of this
- *       bullet said they did not and called the resulting schema Not available; that is no longer true and
- *       the claim is withdrawn. The column widths this class relies on are therefore enforced by the schema
+ *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} all exist, so the schema is not
+ *       Not available. The column widths this class relies on are therefore enforced by the schema
  *       as well as by the entity guards, and because {@code spring.jpa.hibernate.ddl-auto} is
  *       {@code validate} in all four profiles a divergence aborts context startup. No DDL is
  *       emitted here.</li>
@@ -247,10 +248,8 @@ public class TransactionAddService {
     /** Structured diagnostics, replacing the {@code DISPLAY} statements of the source. */
     private static final Logger LOG = LoggerFactory.getLogger(TransactionAddService.class);
 
-    // ------------------------------------------------------------------------------------------------
     // Identity, dataset and navigation literals.
     // Source: app/cbl/COTRN02C.cbl:36-42 WORKING-STORAGE program and dataset names.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code WS-PGMNAME PIC X(08) VALUE 'COTRN02C'}, {@code app/cbl/COTRN02C.cbl:36}. */
     private static final String PROGRAM_NAME = "COTRN02C";
@@ -282,10 +281,8 @@ public class TransactionAddService {
     /** {@code CCDA-TITLE02}, {@code app/cpy/COTTL01Y.cpy:20-22}, forty characters. */
     private static final String SCREEN_TITLE_02 = "              CardDemo                  ";
 
-    // ------------------------------------------------------------------------------------------------
     // Byte-exact screen literals. Every string below is compared byte for byte by the parity gates and
     // must not be reworded, retrimmed, recased or merged with a similar string from another program.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code CCDA-MSG-INVALID-KEY}, {@code app/cpy/CSMSG01Y.cpy:20-21}, used at {@code COTRN02C:150}. */
     private static final String INVALID_KEY_MESSAGE = "Invalid key pressed. Please see below...";
@@ -406,10 +403,8 @@ public class TransactionAddService {
     /** Fourth {@code STRING} operand, {@code app/cbl/COTRN02C.cbl:732}, delimited by size. */
     private static final String ADDED_MESSAGE_SUFFIX = ".";
 
-    // ------------------------------------------------------------------------------------------------
     // Cursor targets. Each is the symbolic map length field the source drives to -1 so the terminal places
     // the cursor there. Carried on the result so a caller can reproduce the focus behaviour.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code ACTIDINL}, driven at {@code app/cbl/COTRN02C.cbl:123}, {@code :201}, {@code :228} and others. */
     private static final String CURSOR_ACCOUNT_ID = "ACTIDINL";
@@ -454,10 +449,8 @@ public class TransactionAddService {
     private static final String CURSOR_CONFIRMATION = "CONFIRML";
 
 
-    // ------------------------------------------------------------------------------------------------
     // Field names carried on ValidationException. These are names only; the exception never carries a
     // field value, so neither a card number nor an amount can leak through a validation failure.
-    // ------------------------------------------------------------------------------------------------
 
     /** Request component name for {@code ACTIDINI}. */
     private static final String FIELD_ACCOUNT_ID = "accountId";
@@ -501,11 +494,9 @@ public class TransactionAddService {
     /** Request component name for {@code CONFIRMI}. */
     private static final String FIELD_CONFIRMATION = "confirmation";
 
-    // ------------------------------------------------------------------------------------------------
     // Field widths. Screen widths come from app/cpy-bms/COTRN02.CPY; record widths come from
     // app/cpy/CVTRA05Y.cpy. The pairs that differ are the widening moves of ADD-TRANSACTION and the
     // truncating moves of COPY-LAST-TRAN-DATA.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code ACTIDINI PIC X(11)}, {@code app/cpy-bms/COTRN02.CPY:60}. */
     private static final int ACCOUNT_ID_WIDTH = 11;
@@ -588,10 +579,8 @@ public class TransactionAddService {
      */
     private static final int HEADER_TIME_WIDTH = 8;
 
-    // ------------------------------------------------------------------------------------------------
     // Positional mask geometry. Every offset below is one-based, exactly as COBOL reference modification
     // is, and is transcribed from the EVALUATE conditions rather than re-expressed as a pattern.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code TRNAMTI(1:1)}, {@code app/cbl/COTRN02C.cbl:340}. */
     private static final int AMOUNT_SIGN_POSITION = 1;
@@ -650,9 +639,7 @@ public class TransactionAddService {
     /** Zero, the fill character for a numeric move into an alphanumeric field of the same width. */
     private static final String ZERO_DIGIT = "0";
 
-    // ------------------------------------------------------------------------------------------------
     // Date validation contract, app/cbl/COTRN02C.cbl:60, :389-407 and :409-427.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'}, {@code app/cbl/COTRN02C.cbl:60}. */
     private static final String DATE_VALIDATION_FORMAT = "YYYY-MM-DD";
@@ -666,10 +653,8 @@ public class TransactionAddService {
      */
     private static final String TOLERATED_MESSAGE_NUMBER = "2513";
 
-    // ------------------------------------------------------------------------------------------------
     // Confirmation values, app/cbl/COTRN02C.cbl:169-188. The field is a raw single character, never a
     // boolean, because the source distinguishes 'Y', 'y', 'N', 'n', spaces, low values and anything else.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code WHEN 'Y'}, {@code app/cbl/COTRN02C.cbl:170}. */
     private static final String CONFIRM_YES_UPPER = "Y";
@@ -684,10 +669,8 @@ public class TransactionAddService {
     private static final String CONFIRM_NO_LOWER = "n";
 
 
-    // ------------------------------------------------------------------------------------------------
     // CICS response codes. The exec layer below reports these so each paragraph can EVALUATE WS-RESP-CD
     // exactly as the source does, and the numeric values are the DFHRESP equivalents.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code DFHRESP(NORMAL)}. */
     private static final int CICS_RESP_NORMAL = 0;
@@ -737,10 +720,8 @@ public class TransactionAddService {
     /** {@code EXEC CICS WRITE}, {@code app/cbl/COTRN02C.cbl:713}. */
     private static final String OPERATION_WRITE = "WRITE";
 
-    // ------------------------------------------------------------------------------------------------
     // Redaction. Card numbers flow through nearly every method in this class, so no log statement, no
     // exception message and no exception key may ever carry one.
-    // ------------------------------------------------------------------------------------------------
 
     /** Stands in for a present card number in any diagnostic or exception payload. */
     private static final String CARD_NUMBER_REDACTED = "<redacted-16-digit-card-number>";
@@ -748,10 +729,8 @@ public class TransactionAddService {
     /** Stands in for an absent card number in any diagnostic or exception payload. */
     private static final String CARD_NUMBER_ABSENT = "<absent>";
 
-    // ------------------------------------------------------------------------------------------------
     // Abend contract. The corpus-wide abend idiom is code 999 with return code 12; the abend work areas
     // themselves are app/cpy/CSMSG02Y.cpy, whose fields are the fatal exception payload.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * {@code ABEND-CODE PIC X(4)} carrying the corpus abend code, {@code app/cpy/CSMSG02Y.cpy:L22-L23}.
@@ -785,14 +764,12 @@ public class TransactionAddService {
      */
     private static final String ZERO_FILLED_TRANSACTION_KEY = ZERO_DIGIT.repeat(TRANSACTION_ID_WIDTH);
 
-    // ------------------------------------------------------------------------------------------------
     // The two numeric converters and the edited-amount printer are owned by com.cardemo.config.WebConfig,
     // published there as singleton beans, and INJECTED here. They are deliberately not constructed in this
     // class: doing so produced a second copy of each parsing rule, so the object the MVC conversion service
     // registered was never the object that actually parsed a transaction amount or a card number. One rule,
     // one object. WebConfig registers them for query and path binding only, so a JSON request body does not
     // pass through them and this class must invoke them explicitly.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Digits-only parser, the counterpart of {@code FUNCTION NUMVAL} at {@code app/cbl/COTRN02C.cbl:204},
@@ -873,9 +850,7 @@ public class TransactionAddService {
     }
 
 
-    // ================================================================================================
     // Public contract.
-    // ================================================================================================
 
     /**
      * The attention identifier the operator raised, the counterpart of {@code EIBAID} in the
@@ -1098,9 +1073,7 @@ public class TransactionAddService {
     }
 
 
-    // ================================================================================================
     // Paragraph 1 of 18. Source: app/cbl/COTRN02C.cbl MAIN-PARA (:107-159).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code MAIN-PARA} ({@code :107-159}).
@@ -1193,9 +1166,7 @@ public class TransactionAddService {
         }
     }
 
-    // ================================================================================================
     // Paragraph 2 of 18. Source: app/cbl/COTRN02C.cbl PROCESS-ENTER-KEY (:164-188).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code PROCESS-ENTER-KEY} ({@code :164-188}).
@@ -1235,9 +1206,7 @@ public class TransactionAddService {
         failValidation(work, CONFIRMATION_INVALID_MESSAGE, CURSOR_CONFIRMATION, FIELD_CONFIRMATION, false);
     }
 
-    // ================================================================================================
     // Paragraph 3 of 18. Source: app/cbl/COTRN02C.cbl VALIDATE-INPUT-KEY-FIELDS (:193-230).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code VALIDATE-INPUT-KEY-FIELDS} ({@code :193-230}).
@@ -1295,9 +1264,7 @@ public class TransactionAddService {
     }
 
 
-    // ================================================================================================
     // Paragraph 4 of 18. Source: app/cbl/COTRN02C.cbl VALIDATE-INPUT-DATA-FIELDS (:235-437).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code VALIDATE-INPUT-DATA-FIELDS} ({@code :235-437}).
@@ -1326,7 +1293,7 @@ public class TransactionAddService {
      * this program is immediately followed by {@code PERFORM SEND-TRNADD-SCREEN}, which returns from the
      * task, so {@code ERR-FLG-ON} at {@code :237} cannot be true on entry. It is retained rather than
      * deleted because deleting it would break the paragraph body correspondence the coverage gate verifies
-     * (Low; owed an entry in the {@code DECISION_LOG.md}).
+     * (Low; covered by {@code DL-CR-01} in the {@code DECISION_LOG.md}).
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1460,9 +1427,7 @@ public class TransactionAddService {
         }
     }
 
-    // ================================================================================================
     // Paragraph 5 of 18. Source: app/cbl/COTRN02C.cbl ADD-TRANSACTION (:442-466).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code ADD-TRANSACTION} ({@code :442-466}).
@@ -1535,9 +1500,7 @@ public class TransactionAddService {
         writeTransactFile(work);
     }
 
-    // ================================================================================================
     // Paragraph 6 of 18. Source: app/cbl/COTRN02C.cbl COPY-LAST-TRAN-DATA (:471-495).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code COPY-LAST-TRAN-DATA} ({@code :471-495}). <p> The PF5 prefill. It
@@ -1603,9 +1566,7 @@ public class TransactionAddService {
     }
 
 
-    // ================================================================================================
     // Paragraph 7 of 18. Source: app/cbl/COTRN02C.cbl RETURN-TO-PREV-SCREEN (:500-511).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code RETURN-TO-PREV-SCREEN} ({@code :500-511}).
@@ -1641,9 +1602,7 @@ public class TransactionAddService {
                 work.cdemoFromProgram);
     }
 
-    // ================================================================================================
     // Paragraph 8 of 18. Source: app/cbl/COTRN02C.cbl SEND-TRNADD-SCREEN (:516-534).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code SEND-TRNADD-SCREEN} ({@code :516-534}).
@@ -1700,9 +1659,7 @@ public class TransactionAddService {
         work.taskEnded = true;
     }
 
-    // ================================================================================================
     // Paragraph 9 of 18. Source: app/cbl/COTRN02C.cbl RECEIVE-TRNADD-SCREEN (:539-547).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code RECEIVE-TRNADD-SCREEN} ({@code :539-547}).
@@ -1745,9 +1702,7 @@ public class TransactionAddService {
         work.confirm = fixedWidth(request.confirmation(), CONFIRMATION_WIDTH);
     }
 
-    // ================================================================================================
     // Paragraph 10 of 18. Source: app/cbl/COTRN02C.cbl POPULATE-HEADER-INFO (:552-571).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code POPULATE-HEADER-INFO} ({@code :552-571}).
@@ -1762,7 +1717,7 @@ public class TransactionAddService {
      * generates no timestamp at all on the write path, the zero-clock constraint is absolute for this file,
      * so the header echoes the date and time text the request carried rather than consulting a clock. The
      * renderings are {@code MM/DD/YY} and {@code HH:MM:SS}, eight characters each, per
-     * {@code app/cpy/CSDAT01Y.cpy:30-41}. Owed an entry in the {@code DECISION_LOG.md}.
+     * {@code app/cpy/CSDAT01Y.cpy:30-41}. Held as {@code DL-CR-09} in {@code DECISION_LOG.md}.
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1776,9 +1731,7 @@ public class TransactionAddService {
         work.curTime = truncate(work.requestCurrentTime, HEADER_TIME_WIDTH);
     }
 
-    // ================================================================================================
     // Paragraph 11 of 18. Source: app/cbl/COTRN02C.cbl READ-CXACAIX-FILE (:576-604).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code READ-CXACAIX-FILE} ({@code :576-604}).
@@ -1819,9 +1772,7 @@ public class TransactionAddService {
         sendTrnaddScreen(work);
     }
 
-    // ================================================================================================
     // Paragraph 12 of 18. Source: app/cbl/COTRN02C.cbl READ-CCXREF-FILE (:609-637).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code READ-CCXREF-FILE} ({@code :609-637}).
@@ -1860,9 +1811,7 @@ public class TransactionAddService {
         sendTrnaddScreen(work);
     }
 
-    // ================================================================================================
     // Paragraph 13 of 18. Source: app/cbl/COTRN02C.cbl STARTBR-TRANSACT-FILE (:642-668).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code STARTBR-TRANSACT-FILE} ({@code :642-668}).
@@ -1877,7 +1826,8 @@ public class TransactionAddService {
      * {@code EXEC CICS STARTBR} only positions a browse, and Spring Data JPA has no separate positioning
      * call because the descending top-one query both positions and reads. The exec layer therefore reports a
      * normal response, and the not-found and other branches are retained for paragraph completeness and
-     * documented as unreachable in this target (Low; owed an entry in the {@code DECISION_LOG.md}).
+     * documented as unreachable in this target (Low; covered by {@code DL-CR-01} in the
+     * {@code DECISION_LOG.md}).
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1904,9 +1854,7 @@ public class TransactionAddService {
         sendTrnaddScreen(work);
     }
 
-    // ================================================================================================
     // Paragraph 14 of 18. Source: app/cbl/COTRN02C.cbl READPREV-TRANSACT-FILE (:673-697).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code READPREV-TRANSACT-FILE} ({@code :673-697}).
@@ -1941,9 +1889,7 @@ public class TransactionAddService {
         sendTrnaddScreen(work);
     }
 
-    // ================================================================================================
     // Paragraph 15 of 18. Source: app/cbl/COTRN02C.cbl ENDBR-TRANSACT-FILE (:702-706).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code ENDBR-TRANSACT-FILE} ({@code :702-706}).
@@ -1964,9 +1910,7 @@ public class TransactionAddService {
         }
     }
 
-    // ================================================================================================
     // Paragraph 16 of 18. Source: app/cbl/COTRN02C.cbl WRITE-TRANSACT-FILE (:711-749).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code WRITE-TRANSACT-FILE} ({@code :711-749}).
@@ -2085,9 +2029,7 @@ public class TransactionAddService {
         return accessFailure(work, OPERATION_WRITE, LOGICAL_FILE_TRANSACT, ADD_FAILURE_MESSAGE);
     }
 
-    // ================================================================================================
     // Paragraph 17 of 18. Source: app/cbl/COTRN02C.cbl CLEAR-CURRENT-SCREEN (:754-757).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code CLEAR-CURRENT-SCREEN} ({@code :754-757}).
@@ -2104,9 +2046,7 @@ public class TransactionAddService {
         sendTrnaddScreen(work);
     }
 
-    // ================================================================================================
     // Paragraph 18 of 18. Source: app/cbl/COTRN02C.cbl INITIALIZE-ALL-FIELDS (:762-779).
-    // ================================================================================================
 
     /**
      * Source: {@code app/cbl/COTRN02C.cbl} {@code INITIALIZE-ALL-FIELDS} ({@code :762-779}).
@@ -2139,11 +2079,9 @@ public class TransactionAddService {
     }
 
 
-    // ================================================================================================
     // The exec layer. One method per EXEC CICS command, reporting the response code the paragraph above
     // evaluates. Keeping the command distinct from the paragraph is what lets each paragraph body remain a
     // one-to-one rendering of its source EVALUATE.
-    // ================================================================================================
 
     /**
      * {@code EXEC CICS READ DATASET(WS-CXACAIX-FILE)}, {@code app/cbl/COTRN02C.cbl:578-586}.
@@ -2322,9 +2260,7 @@ public class TransactionAddService {
         return responseCode;
     }
 
-    // ================================================================================================
     // Failure construction and diagnostics.
-    // ================================================================================================
 
     /**
      * Reproduces the recurring failure idiom of this program: set {@code WS-ERR-FLG}, move the message,
@@ -2406,9 +2342,7 @@ public class TransactionAddService {
                 this.fileStatusMapper.displayIoStatus(work.ioStatus));
     }
 
-    // ================================================================================================
     // Numeric parsing. Two distinct paths, never one shared parser.
-    // ================================================================================================
 
     /**
      * The strict digits-only path, the counterpart of {@code FUNCTION NUMVAL} at
@@ -2469,9 +2403,7 @@ public class TransactionAddService {
         }
     }
 
-    // ================================================================================================
     // COBOL primitives. Each renders one language behaviour the source relies on.
-    // ================================================================================================
 
     /**
      * Applies the {@code 2513} tolerance of {@code app/cbl/COTRN02C.cbl:397-407} and {@code :417-427}: accept
@@ -2757,12 +2689,10 @@ public class TransactionAddService {
     }
 
 
-    // ================================================================================================
     // Per-invocation state. Every legacy working-storage item and every symbolic map field lives here, on
     // an object created inside the entry point, so nothing is ever held on the bean. There is no static
     // mutable state anywhere in this class, and in particular no static counter behind identifier
     // generation: WS-TRAN-ID-N is per-invocation working storage in the source and is a local here.
-    // ================================================================================================
 
     /**
      * Stands in for the working-storage section of {@code app/cbl/COTRN02C.cbl:34-103} together with the

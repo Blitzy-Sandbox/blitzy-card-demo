@@ -391,7 +391,7 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      *
      * <p><strong>The target program is transcribed but not published.</strong>
      *
-     * <p>FINDING, severity Minor - remediated here. {@code programName} was serialized onto the wire, so a
+     * <p>FINDING, severity Medium - remediated here. {@code programName} was serialized onto the wire, so a
      * menu response disclosed the legacy program identities {@code COACTVWC}, {@code COUSR00C} and their
      * siblings. It is transcribed on this record because the option table genuinely declares it, and it is
      * excluded from the JSON because of what it is for: it is the operand of
@@ -446,7 +446,7 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      *
      * <p><strong>The target program is transcribed but not published.</strong>
      *
-     * <p>FINDING, severity Minor - remediated here. {@code programName} was serialized onto the wire, so a
+     * <p>FINDING, severity Medium - remediated here. {@code programName} was serialized onto the wire, so a
      * menu response disclosed the legacy program identities {@code COACTVWC}, {@code COUSR00C} and their
      * siblings. It is transcribed on this record because the option table genuinely declares it, and it is
      * excluded from the JSON because of what it is for: it is the operand of

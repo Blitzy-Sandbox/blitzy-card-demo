@@ -220,13 +220,13 @@
  * <em>declares</em> while this section counts the fields a type actually <em>carries</em>, and only the
  * second is a completeness claim.
  *
- * <p><strong>Correction, Blocker severity, resolved.</strong> An earlier revision of this package
- * represented only <strong>390</strong> of the 441 fields, 88.4 percent, because three maps had no
+ * <p><strong>Correction, Blocker severity.</strong> Representing only <strong>390</strong> of the 441
+ * fields, 88.4 percent, is what happens when three maps have no
  * representation whatsoever: {@code COMEN01.CPY} (20), {@code COADM01.CPY} (20) and
- * {@code COUSR03.CPY} (11). {@link MenuResponse} modelled the {@code COMEN02Y} and {@code COADM02Y}
- * option tables only, and the user contract modelled {@code COUSR00.CPY} only. Those 51 fields are now
- * carried by {@link MenuResponse.MenuScreen} and {@link UserSecurityDto.UserDeleteScreen}, and
- * 390 + 20 + 20 + 11 = <strong>441</strong>. The gap mattered because a map with no payload is an
+ * {@code COUSR03.CPY} (11) - which is the case when {@link MenuResponse} models the {@code COMEN02Y} and
+ * {@code COADM02Y} option tables only and the user contract models {@code COUSR00.CPY} only. Those 51 fields
+ * are carried by {@link MenuResponse.MenuScreen} and {@link UserSecurityDto.UserDeleteScreen}, and
+ * 390 + 20 + 20 + 11 = <strong>441</strong>. The gap matters because a map with no payload is an
  * endpoint whose request or response cannot be expressed at all, not merely a documentation omission.
  *
  * <p><strong>Correction, High severity, resolved.</strong> {@code docs/technical-specifications.md} was
@@ -382,38 +382,33 @@
  * <h3>Test</h3>
  *
  * <ul>
- *   <li><strong>Location, and what exists today.</strong> Unit tests for these types live in the sibling
+ *   <li><strong>Location, and what the statements below mean.</strong> Unit tests for these types live in the sibling
  *       test tree at {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package,
  *       which contains no test class and no fixture. <strong>All seventeen</strong> payloads now have a
  *       dedicated test class under that path, one per type, and each is additionally referenced from the
- *       controller, service and batch test classes that bind or emit it. An earlier revision of this bullet
- *       said only eight had a test and that the other nine were unreferenced; both halves are false and the
- *       claim is withdrawn. Every assertion listed below is therefore a statement about existing coverage
+ *       controller, service and batch test classes that bind or emit it. Every assertion listed below is
+ *       therefore a statement about existing coverage
  *       rather than an outstanding obligation - but coverage is per assertion, not per file, so a listed
- *       assertion that a test class does not actually make is still owed. Counts move as the tree grows, so
- *       re-measure rather than quoting them.</li>
+ *       assertion is covered only when the class actually makes it, never by the class merely existing.
+ *       Counts move as the tree grows, so re-measure rather than quoting them.</li>
  *   <li><strong>Coverage gate.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor
  *       on the merged bundle at the {@code verify} phase with {@code haltOnFailure}, and there are
  *       <strong>no exclusions</strong> for this package. The figure must come from meaningful assertions
  *       and must not be padded by calling getters in a loop. This file is documentation only, contributes
  *       no executable lines, and therefore neither helps nor harms the figure.</li>
- *   <li><strong>Coverage plugin version - the pin is 0.8.12 and it is not raised.</strong> An earlier
- *       revision of this entry said the plugin was pinned to 0.8.13; that is withdrawn.
+ *   <li><strong>Coverage plugin version - the pin is 0.8.12 and it is not raised.</strong>
  *       {@code pom.xml} pins {@code jacoco-maven-plugin.version} at <strong>0.8.12</strong>, exactly as the
  *       requirement names it. Java 25 emits class file major version 69 and the rejection comes from
  *       <strong>ASM</strong> rather than from JaCoCo, so only the plugin's transitive reader is advanced -
  *       {@code org.ow2.asm:asm}, {@code asm-commons} and {@code asm-tree} to <strong>9.9</strong>, with the
  *       runtime agent at the matching <strong>0.8.14</strong> build. Both halves are required. The
  *       measurement is recorded in {@code pom.xml}, and the divergence <strong>has its entry in
- *       {@code DECISION_LOG.md}</strong> at the repository root. An earlier revision described that entry as
- *       owed in a "planned" register that "does not exist at this commit"; the register has since been
- *       authored, so that qualification is withdrawn.</li>
+ *       {@code DECISION_LOG.md}</strong> at the repository root.</li>
  *   <li><strong>Assertions that actually matter</strong> for this package, as distinct from mechanical
  *       accessor coverage. Read the list that follows as the <strong>required</strong> set. Every one of the
  *       seventeen payloads has a test class, so no entry below is blocked on a missing class; what an entry
- *       still records is the specific assertion, and an assertion a class does not yet make is owed even
- *       though the class exists. An earlier revision of this bullet said only eight payloads had a test
- *       class at all and marked nine entries unavailable on that basis; that is false and is withdrawn:
+ *       records is the specific assertion, and an existing class satisfies an entry only by making that
+ *       assertion:
  *       <ul>
  *         <li>Each payload's field count asserted against its map's verified census figure, so a field
  *             added or dropped fails the test rather than drifting silently.</li>
@@ -720,8 +715,8 @@
  *       files: the 17 payloads named above and this file. No nineteenth file may be added, and in
  *       particular <strong>no {@code README} and no Markdown file of any kind</strong>, here or anywhere
  *       under {@code src/main/java}, because this docstring is the module documentation. Cross cutting
- *       findings belongs in the {@code DECISION_LOG.md} and
- *       {@code TRACEABILITY_MATRIX.md}.</li>
+ *       findings belong in {@code DECISION_LOG.md} and
+ *       {@code TRACEABILITY_MATRIX.md}, both authored at the repository root.</li>
  *   <li><strong>No shared helper, mapper, base class or validator.</strong> For the field divergence
  *       reasons evidenced above. A reviewer seeing repeated header fields across payloads is seeing a
  *       faithful reproduction of seventeen genuinely different maps, not copy and paste to be

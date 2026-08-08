@@ -40,9 +40,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * legacy z/OS runtime at once.
  *
  * <p>This type is deliberately the smallest class in the tree. It bootstraps and delegates; it configures
- * nothing. Bean definitions live in the {@code com.cardemo.config} classes - four authored today of a
- * target six - and the exhaustive package narrative lives in {@code com.cardemo.package-info.java}, which
- * this summary does not restate.
+ * nothing. Bean definitions live in the {@code com.cardemo.config} classes - <strong>all six authored</strong>:
+ * {@code AwsConfig}, {@code BatchConfig}, {@code JpaConfig}, {@code ObservabilityConfig},
+ * {@code SecurityConfig} and {@code WebConfig} - and the exhaustive package narrative lives in
+ * {@code com.cardemo.package-info.java}, which this summary does not restate.
+ *
+ * <p>The six are named individually rather than counted, because a name list cannot drift out of step with
+ * the directory the way a bare count can.
  *
  * <p><strong>What it does.</strong> It replaces the <em>CICS region</em> - 17 online transaction programs
  * driven from 3270 terminals in pseudo-conversational mode, with screen state held in the COMMAREA and
@@ -66,37 +70,29 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * <p>Component scanning is rooted at {@code com.cardemo} - the default of {@code @SpringBootApplication},
  * which is why no {@code scanBasePackages} attribute appears below - so it reaches whatever is authored,
- * without enumeration. <strong>Every count below is a delivered count</strong>, re-measured 7 August 2026;
- * the {@code present / target} notation an earlier revision used is gone because no package differs from its
- * target any longer: {@code config} 6, {@code security} 4, {@code model} (entity 11, key 3, enums 4,
+ * without enumeration. <strong>Every count below is a delivered count</strong>, re-measured 7 August 2026.
+ * The {@code present / target} notation an earlier revision used is dropped <em>here</em> because this
+ * paragraph reports what exists rather than progress towards a plan; three leaves do still exceed the target
+ * counts of the action plan - {@code security} by {@code SnapshotTokenService}, {@code observability} by its
+ * fourth class and {@code dto} by the per-endpoint request and response records that keep an entity off the
+ * wire - and {@code com.cardemo.package-info} keeps the notation and states the reason for each. Neither file
+ * claims the plan was met exactly; an earlier revision of this sentence did, which contradicted its own
+ * sibling: {@code config} 6, {@code security} 4, {@code model} (entity 11, key 3, enums 4,
  * <strong>dto 29</strong>), {@code repository} 11, {@code service} 21 across nine leaves,
  * {@code controller} <strong>8</strong> exposing <strong>17 operations</strong>, {@code batch}
  * (jobs <strong>6</strong>, processors 5, readers <strong>7</strong>, writers 3), {@code exception} 9 and
- * {@code observability} <strong>4</strong>. Three of those figures are corrections: the dto leaf was published
- * as 26, the jobs leaf as 3 of 6 and the readers leaf as 6 of 7, and the observability leaf as 3. Reproduce
- * any of them with {@code find src/main/java/com/cardemo/<leaf> -maxdepth 1 -name '*.java' \
+ * {@code observability} <strong>4</strong>. Reproduce any of them with
+ * {@code find src/main/java/com/cardemo/<leaf> -maxdepth 1 -name '*.java' \
  * ! -name 'package-info.java' | wc -l}.
  * {@code com.cardemo.unit.infrastructure.InventoryCountGateTest} fails the build if a figure here
  * drifts from the directory, which is what keeps this paragraph honest rather than merely current.
  *
- * <p><strong>Nothing in this tree is still to be authored.</strong> An earlier revision of this paragraph
- * named two outstanding batch jobs, {@code CombineTransactionsJob} and {@code BatchPipelineOrchestrator}, and
- * both are now present - so the {@code batch/jobs} leaf is complete at 6, and every layer above is complete
- * with it: 8 controllers exposing all 17 operations of {@code app/csd/CARDDEMO.CSD}, 7 batch readers, 21
- * services across 9 leaves, 11 entities and 11 repositories. That earlier revision also stated the jobs leaf
- * as 3 of 6 and the readers leaf as 6 of 7 <em>in the same paragraph</em> that called the reader layer
- * complete, which is the shape this class of defect takes: two figures for one fact, disagreeing, both
- * written by hand.
- *
- * <p><strong>Two revisions of this paragraph are withdrawn, and both erred in the same direction.</strong> The
- * first reported six of eight controllers, twelve of seventeen operations, one of six batch jobs and five of
- * seven readers, with whole-tree totals of 143 files and 119 types plus 24 package documents. The second
- * corrected those but still reported {@code dto} 26, {@code observability} 3, {@code batch.jobs} 3 of 6 and
- * {@code batch.readers} 6 of 7, and still named {@code CombineTransactionsJob} and
- * {@code BatchPipelineOrchestrator} as "still to be authored" after both had landed. Each understated what was
- * delivered, which is the more damaging direction for an evidence artefact to be wrong in: a reader concludes
- * that authored, tested code does not exist. The figures above are the measured ones and the sentence naming
- * what remains was corrected in the same edit, so no two statements here can disagree.
+ * <p><strong>Nothing in this tree is still to be authored.</strong> Every layer is complete: the
+ * {@code batch/jobs} leaf at 6, 8 controllers exposing all 17 operations of {@code app/csd/CARDDEMO.CSD},
+ * 7 batch readers, 21 services across 9 leaves, 11 entities and 11 repositories. A hand-written count and a
+ * hand-written "still to be authored" sentence in the same paragraph is how two figures for one fact end up
+ * disagreeing, which is exactly why {@code InventoryCountGateTest} measures the directory rather than
+ * trusting this text.
  *
  * <p>The whole-tree file totals are <strong>deliberately no longer restated</strong>. They change with every
  * file added anywhere in the tree, they were the first figures to go stale, and a reader who needs them is
@@ -113,9 +109,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * The two launch paths are {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the SQS
  * listener that replaces the JES2 internal reader behind {@code DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
  * DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD)} at
- * {@code app/csd/CARDDEMO.CSD:L499-L505}. <strong>Both are authored.</strong> Two earlier revisions of this
- * paragraph are withdrawn: the first said both were planned, the second said the orchestrator was authored and
- * the listener was not, so that a queued request was drained by nothing. The listener is the single {@code @SqsListener} declaration in this tree,
+ * {@code app/csd/CARDDEMO.CSD:L499-L505}. <strong>Both are authored</strong>, and both matter: an
+ * orchestrator without a listener leaves a queued request drained by nothing. The listener is the single
+ * {@code @SqsListener} declaration in this tree,
  * {@code BatchConfig.ReportJobQueueListener}, and it withdraws itself under exactly three conditions rather
  * than being absent - when no queue is configured, when {@code spring.batch.job.name} names a job, because a
  * submitted batch process must not become a second reader of the queue that fed it, and when
@@ -134,11 +130,18 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * <p>Run the packaged artefact with {@code java -jar target/carddemo-1.0.0.jar}, or in place with
  * {@code ./mvnw spring-boot:run}, against the local topology brought up by {@code docker compose up}
- * (PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana). Three profiles exist: {@code local},
- * {@code test} and {@code prod}. The AWS endpoint override is present only in {@code local} and {@code test};
- * the base profile and {@code prod} carry none, so a silent fall-back to a live AWS endpoint is structurally
- * impossible. There are no credential defaults anywhere, and every AWS interaction targets LocalStack with
- * zero live credentials.
+ * (PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana). Three overlay profiles exist over the base
+ * one: {@code local}, {@code test} and {@code prod}.
+ *
+ * <p><strong>Finding CODE-010, severity Medium, resolved: the AWS endpoint override is present in every
+ * profile, and that is what makes a live endpoint unreachable.</strong> This paragraph previously said the
+ * override appeared only in {@code local} and {@code test} and that the base profile and {@code prod} carried
+ * none - the opposite of the fact, and a description of a build that would reach live AWS by default. The base
+ * profile sets {@code endpoint: ${AWS_ENDPOINT_URL}} for S3, SQS and SNS, and {@code prod} restates all three;
+ * in both, deliberately, <strong>with no default value</strong>, so an unset variable fails property
+ * resolution and aborts startup instead of resolving to an Amazon address. Only {@code local} supplies a
+ * default, and the default it supplies is the emulator's own {@code http://localhost:4566}. There are no
+ * credential defaults anywhere, and every AWS interaction targets LocalStack with zero live credentials.
  *
  * <p><strong>Key configuration and defaults.</strong> {@code src/main/resources/application.yml} is the
  * authority and carries the full rationale per property; the startup-critical few are:
@@ -205,7 +208,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   <li><em>Batch exit codes are contracts, not diagnostics.</em> Return code 4 is set if and only if the
  *       reject count exceeds zero ({@code app/cbl/CBTRN02C.cbl:L202-L234}); return code 8 is failure; and an
  *       unexpected {@code FILE STATUS} abends with code 999 and return code 12
- *       ({@code app/cbl/CBTRN02C.cbl:L707-L710}). They are surfaced by the batch layer, never by this
+ *       ({@code app/cbl/CBTRN02C.cbl:L707-L711}). They are surfaced by the batch layer, never by this
  *       bootstrap.</li>
  *   <li><em>Diagnosis.</em> Structured JSON logs carry {@code traceId}, {@code spanId} and
  *       {@code correlationId} in the MDC, the last populated by

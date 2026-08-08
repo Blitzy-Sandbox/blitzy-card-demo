@@ -156,9 +156,9 @@ import org.junit.jupiter.api.Nested;
  * as well as main compilation. {@code maven-enforcer-plugin} 3.5.0 asserts the toolchain, and JaCoCo applies
  * a line-coverage floor at {@code verify}. No dependency is added by this class: JUnit Jupiter 5.12.2,
  * AssertJ 3.27.7, Jackson <strong>2.22.1</strong> and Hibernate Validator <strong>8.0.5.Final</strong> are
- * already on the test classpath through the pinned starters - both are forward overrides declared in
- * {@code pom.xml}, and an earlier revision of this sentence published the parent-managed 2.19.4 and
- * 8.0.3.Final instead. Re-derive with {@code ./mvnw -B -ntp dependency:list} rather than quoting either.</p>
+ * already on the test classpath through the pinned starters - the last two are forward overrides declared in
+ * {@code pom.xml} rather than the versions the parent manages, so no parent-managed figure is the one in
+ * force. Re-derive with {@code ./mvnw -B -ntp dependency:list} rather than quoting either.</p>
  *
  * <h2>Key configurations and defaults</h2>
  *
@@ -577,15 +577,11 @@ final class UserUpdateRequestTest {
      */
     private static final String FIXED_HEADER_TIME = HEADER_TIME_FORMAT.format(FIXED_MOMENT);
 
-    // ---------------------------------------------------------------------------------------------
     // Bean validation. Both references are final and both targets are immutable and thread-safe, so this
     // is shared constant state rather than shared mutable state. One bootstrap, released deterministically.
-    // ---------------------------------------------------------------------------------------------
 
-    // ---------------------------------------------------------------------------------------------
     // Pure helpers. Each models one COBOL construct so that the carrier can be asserted against the
     // source's own semantics. All are static and side-effect free, and none reads ambient state.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * Reads the canonical moment from the injected fixed clock without ever consulting the ambient clock.
@@ -1993,16 +1989,12 @@ final class UserUpdateRequestTest {
     /**
      * The diagnostic rendering may not be turned into a forged log record.
      *
-     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
-     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
-     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
-     * caller liked, in the exact shape a reader trusts.
-     *
-     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
-     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
-     * which something renders the offending instance - so the rendering has to be safe on an instance that
-     * never passed validation. These tests therefore build hostile values directly, without validating them,
-     * which is the state the defect actually occurred in.
+     * <p>Every component {@code toString()} emits is declared {@code String} and arrives from a JSON request
+     * body, so a caller controls its bytes: concatenated straight in, a CR or LF forges as many further log
+     * lines as the caller likes, in the exact shape a reader trusts. {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is precisely the occasion
+     * on which something renders the offending instance, so these tests build hostile values directly and
+     * never validate them first.
      */
     @Nested
     @DisplayName("the diagnostic rendering cannot forge a log record")

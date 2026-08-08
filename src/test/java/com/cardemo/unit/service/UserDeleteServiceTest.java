@@ -19,7 +19,7 @@
  *               there is no self-delete guard and no confirmation
  *               handshake on the only irreversible operation in the
  *               application
- * Source      : app/cbl/COUSR03C.cbl (359 lines, 11 paragraphs) @ 7756d89
+ * Source      : app/cbl/COUSR03C.cbl (359 lines, 11 own paragraph labels) @ 7756d89
  * Source      : app/cpy-bms/COUSR03.CPY (11 input fields, no credential) @ 7756d89
  * Source      : app/cpy/CSUSR01Y.cpy (80 byte record, KEYS(8,0)) @ 7756d89
  * Source      : app/cpy/COCOM01Y.cpy (CDEMO-USER-ID, CDEMO-USER-TYPE) @ 7756d89
@@ -299,13 +299,11 @@ import jakarta.persistence.LockModeType;
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
 class UserDeleteServiceTest {
 
-    // -----------------------------------------------------------------------------------------------------
     // Credential-shaped placeholders. No password and no digest literal exists in this file: the eighty byte
     // record of app/cpy/CSUSR01Y.cpy carries SEC-USR-PWD PIC X(08), so the entity demands a value of the
     // contractual shape, and that value is assembled from named parts instead of being written out. Rule 1
     // Clause D names tests explicitly, and the ten seeded users of app/jcl/DUSRSECJ.jcl are never asserted
     // as the plaintext the inline seed data carries.
-    // -----------------------------------------------------------------------------------------------------
 
     /** The field separator of the digest format, held apart so no whole digest appears as a literal. */
     private static final char DIGEST_FIELD_MARKER = '$';
@@ -322,9 +320,7 @@ class UserDeleteServiceTest {
     /** Thirty-one characters standing where a digest body would sit; it verifies nothing. */
     private static final String SYNTHETIC_BODY = "NotARealCredentialPlaceholder00";
 
-    // -----------------------------------------------------------------------------------------------------
     // Identifiers and stored field values, drawn from the ten rows app/jcl/DUSRSECJ.jcl seeds inline.
-    // -----------------------------------------------------------------------------------------------------
 
     /** A standard user of the seeded set: the deletion target on the ordinary paths. */
     private static final String USER_ID = "USER0003";
@@ -366,10 +362,8 @@ class UserDeleteServiceTest {
     private static final List<String> QUERY_TOKENS =
             List.of("select ", "from ", "where ", "delete from", ";", "--");
 
-    // -----------------------------------------------------------------------------------------------------
     // Program literals of app/cbl/COUSR03C.cbl, each asserted against the production declaration as well as
     // against the frozen source, so a transcription error here cannot pass as agreement.
-    // -----------------------------------------------------------------------------------------------------
 
     /** {@code WS-PGMNAME PIC X(08) VALUE 'COUSR03C'} at {@code app/cbl/COUSR03C.cbl}:36. */
     private static final String PROGRAM_NAME = "COUSR03C";
@@ -444,10 +438,8 @@ class UserDeleteServiceTest {
     /** The blank the map and the message field are set to; {@code SPACES} has no width in a Java string. */
     private static final String BLANK = "";
 
-    // -----------------------------------------------------------------------------------------------------
     // Response codes and file statuses. The CICS RESP values of :281, :287 and :293 and the file statuses the
     // service records for them, asserted against the production declarations rather than restated as truth.
-    // -----------------------------------------------------------------------------------------------------
 
     /** {@code DFHRESP(NORMAL)}. */
     private static final int CICS_RESP_NORMAL = 0;
@@ -467,9 +459,7 @@ class UserDeleteServiceTest {
     /** The {@code '9x'} family member recorded for an infrastructure failure. */
     private static final String IO_STATUS_IO_ERROR = "90";
 
-    // -----------------------------------------------------------------------------------------------------
     // Widths, counts and the frozen corpus. Every count below was verified by direct inspection at 7756d89.
-    // -----------------------------------------------------------------------------------------------------
 
     /** {@code WS-MESSAGE PIC X(80)} at {@code app/cbl/COUSR03C.cbl}:38. */
     private static final int WORK_AREA_MESSAGE_WIDTH = 80;
@@ -564,10 +554,8 @@ class UserDeleteServiceTest {
     private static final List<String> TRANSACTIONAL_ENTRY_POINTS =
             List.of("openScreen", "lookupUser", "deleteUser", "submitScreen");
 
-    // -----------------------------------------------------------------------------------------------------
     // The clock. Fixed, so the header of :245 renders identically on every run, and parsed rather than
     // computed so that no call anywhere in this file consults the wall clock.
-    // -----------------------------------------------------------------------------------------------------
 
     /** The instant every rendering in this suite is taken at. */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
@@ -578,9 +566,7 @@ class UserDeleteServiceTest {
     /** What {@code HH:mm:ss} yields for that instant in UTC, matching {@code CURTIMEI PIC X(8)}. */
     private static final String EXPECTED_HEADER_TIME = "19:27:53";
 
-    // -----------------------------------------------------------------------------------------------------
     // Collaborators.
-    // -----------------------------------------------------------------------------------------------------
 
     /** The store, doubled under strict stubs so that an unused stubbing fails rather than passes quietly. */
     @Mock
@@ -600,11 +586,9 @@ class UserDeleteServiceTest {
                 Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
     }
 
-    // -----------------------------------------------------------------------------------------------------
     // Fixtures and helpers. Every one is used: an unused helper would be the dead code Rule 1 Clause B
     // forbids, and none of them is shared with a sibling suite, because this program's dispatch and its
     // failure literals differ from the update program's and a shared implementation would hide that.
-    // -----------------------------------------------------------------------------------------------------
 
     /**
      * Assembles a digest of the contractual shape from named parts, so that no digest literal and no password
@@ -907,6 +891,8 @@ class UserDeleteServiceTest {
         private final AtomicInteger reads = new AtomicInteger();
 
         /**
+         * Fixes the reading this clock reports, and counts the reads.
+         *
          * @param fixed the instant to return; must not be {@code null}
          * @param zone  the zone to report; must not be {@code null}
          */
@@ -932,6 +918,8 @@ class UserDeleteServiceTest {
         }
 
         /**
+         * Reports the tally the send-count assertions read.
+         *
          * @return the number of screen sends performed so far
          */
         private int sendCount() {
@@ -948,9 +936,7 @@ class UserDeleteServiceTest {
         return new CountingClock(FIXED_INSTANT, ZoneOffset.UTC);
     }
 
-    // =====================================================================================================
     // 1. The headline contract: there is NO self-delete guard, and the absence is asserted positively
-    // =====================================================================================================
 
     /**
      * {@code grep -c "CDEMO-USER-ID" app/cbl/COUSR03C.cbl} answers {@code 0}. The signed-on identifier that
@@ -1061,10 +1047,8 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 2. The read and the delete are sequential and unguarded at :190-191, and the verb at :307-311 names
     //    no key. The transaction boundary closes the undefined branch, a deliberate deviation.
-    // =====================================================================================================
 
     /**
      * {@code DELETE-USER-INFO} performs {@code READ-USER-SEC-FILE} at {@code app/cbl/COUSR03C.cbl}:190 and
@@ -1210,9 +1194,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 3. There is NO confirmation handshake on the only irreversible operation in the application
-    // =====================================================================================================
 
     /**
      * {@code app/cbl/COBIL00C.cbl}:173-190 gates a bill payment behind a four-way handshake over
@@ -1303,9 +1285,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 4. Only ONE key deletes, and it is the opposite asymmetry from the sibling program
-    // =====================================================================================================
 
     /**
      * The dispatch at {@code app/cbl/COUSR03C.cbl}:108-130 assigns the destructive operation to
@@ -1493,9 +1473,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 5. The lookup path: three fields, no credential, the CONTINUE that stops nothing, and the double send
-    // =====================================================================================================
 
     /**
      * {@code PROCESS-ENTER-KEY} at {@code app/cbl/COUSR03C.cbl}:142-169 blanks three map fields at
@@ -1704,9 +1682,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 6. The delete path: the clear that runs BEFORE the sentence, and the WRONG-VERB literal at :332
-    // =====================================================================================================
 
     /**
      * {@code DELETE-USER-SEC-FILE} at {@code app/cbl/COUSR03C.cbl}:305-336 holds two traps and one preserved
@@ -1930,9 +1906,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 7. Two vestigial declarations: a write-only flag and a pagination block on a single-record screen
-    // =====================================================================================================
 
     /**
      * {@code WS-USR-MODIFIED} is declared at {@code app/cbl/COUSR03C.cbl}:45-47 and set once, at {@code :85}.
@@ -2048,9 +2022,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 8. Field contracts and paragraph correspondence
-    // =====================================================================================================
 
     /**
      * The request shape comes from {@code app/cpy-bms/COUSR03.CPY}, <strong>eleven input fields</strong> and
@@ -2207,9 +2179,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 9. Hostile input, boundaries and determinism - Rule 1 Clauses A and B
-    // =====================================================================================================
 
     /**
      * Emptiness is the <strong>only</strong> validation either path performs: {@code :144-154} and
@@ -2388,9 +2358,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 10. Least privilege and statelessness - Rule 1 Clause D
-    // =====================================================================================================
 
     /**
      * This service sits behind {@code /api/admin/*} and performs the most destructive operation in the
@@ -2464,9 +2432,7 @@ class UserDeleteServiceTest {
         }
     }
 
-    // =====================================================================================================
     // 11. The frozen corpus, re-read on every build. Rule 1 Clause F: evidence, not recollection.
-    // =====================================================================================================
 
     /**
      * Every claim this suite makes about the source is re-verified here against {@code app/} itself, so that

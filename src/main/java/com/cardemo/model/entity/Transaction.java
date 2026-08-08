@@ -358,9 +358,8 @@ import jakarta.persistence.Version;
  *
  * <h2>The schema migration now exists and its agreement is machine-verified</h2>
  * {@code src/main/resources/db/migration/V1__create_schema.sql} <strong>exists</strong> and declares the
- * {@code transaction} table with fourteen columns. An earlier revision of this paragraph
- * recorded that the migration did not exist when this class was authored; that is no longer true and the
- * claim is withdrawn. Agreement between this field table and {@code V1} is not taken on trust: it is
+ * {@code transaction} table with fourteen columns. Agreement between this field table and {@code V1} is not
+ * taken on trust: it is
  * asserted mechanically by {@code SchemaStructureTest}, which parses the DDL and cross-checks column
  * widths and primary-key order against {@code app/cpy/CVTRA05Y.cpy}. Because
  * {@code spring.jpa.hibernate.ddl-auto: validate} is set in every profile, any residual mismatch of
@@ -372,9 +371,8 @@ import jakarta.persistence.Version;
  * {@code V2__create_indexes.sql} declares {@code CREATE INDEX idx_transaction_proc_ts ON "transaction" USING
  * btree (tran_proc_ts)}, which is the B-tree replacement for {@code TRANSACT.VSAM.AIX}. It is deliberately
  * <strong>non-unique</strong>, because the alternate index it replaces carries {@code NONUNIQUEKEY}, and the
- * table name is quoted because {@code transaction} is a reserved word in the SQL standard. An earlier revision
- * of this paragraph called that index planned rather than present; that is no longer true and the claim is
- * withdrawn.
+ * table name is quoted because {@code transaction} is a reserved word in the SQL standard. The index is
+ * present, not planned.
  *
  * <p>{@code V1__create_schema.sql} declares precisely this table:
  *
@@ -1143,7 +1141,7 @@ public class Transaction {
      *
      * <p>Rejects {@code null} and any value outside 0 through 999999999 inclusive, which is what nine
      * unsigned display digits and equally a {@code NUMERIC(9)} column can hold. Zero is accepted and is
-     * not a sentinel to reject: {@code app/cbl/CBACT04C.cbl:L473-L516} builds its synthetic interest
+     * not a sentinel to reject: {@code app/cbl/CBACT04C.cbl:L473-L515} builds its synthetic interest
      * transactions with a merchant identifier of zero. Declared {@code private static} for the reason given
      * on {@link #requireWidth(String, String, String, int)}.
      *

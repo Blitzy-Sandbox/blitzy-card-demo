@@ -195,6 +195,13 @@ final class TransactionSourceTest {
     /** The value staged on 50 fixture rows that the corpus never assigns from a literal. */
     private static final String UNASSIGNED_FIXTURE_VALUE = "OPERATOR";
 
+    /**
+     * Reads one frozen corpus member whole, so a literal is asserted against the source itself
+     * rather than against a transcription of it.
+     *
+     * @param path the repository-relative path of the member.
+     * @return its text, decoded as ISO-8859-1 because the corpus is single-byte.
+     */
     private static String read(final String path) {
         try {
             return Files.readString(Path.of(path), StandardCharsets.ISO_8859_1);
@@ -203,7 +210,10 @@ final class TransactionSourceTest {
         }
     }
 
-    /** The literal each program assigns, keyed by program path, taken from the source itself. */
+    /**
+     * The literal each program assigns, keyed by program path, taken from the source itself.
+     * @return those pairs, one per assigning program.
+     */
     private static Map<String, String> literalAssignments() {
         final Map<String, String> found = new LinkedHashMap<>();
         for (final String program : List.of(INTEREST_PROGRAM, BILL_PAYMENT_PROGRAM)) {

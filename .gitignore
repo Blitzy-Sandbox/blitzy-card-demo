@@ -268,6 +268,15 @@ core.[0-9]*
 Thumbs.db
 desktop.ini
 
+# Python bytecode caches. Two CI helper scripts are committed under
+# .github/ - the plugin-graph advisory scanner and the sign-on log-redaction
+# filter - and running or syntax-checking either one leaves a __pycache__
+# directory beside it. Those caches are interpreter- and version-specific
+# build output, so committing them would add churn that no reader can act on;
+# they were staged once before this rule existed, which is why it is here.
+__pycache__/
+*.py[cod]
+
 # The frozen legacy corpus is protected by OMISSION, not by negation.
 # app/, samples/ and diagrams/ are read-only reference material that
 # must survive byte-for-byte and stay visible. Unlike .gitattributes and

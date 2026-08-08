@@ -5,7 +5,7 @@
  * Type        : Spring Batch ItemStreamReader (read-only verification step)
  * Function    : Read-only sequential scan of the customer master, replacing
  *               the COBOL batch reader CBCUS01C.
- * Source      : app/cbl/CBCUS01C.cbl (178 lines, 6 paragraphs)
+ * Source      : app/cbl/CBCUS01C.cbl (178 lines, 5 own paragraph labels)
  *               app/cpy/CVCUS01Y.cpy (500-byte CUSTOMER-RECORD)
  *               app/cpy/CUSTREC.cpy (same layout, differing DOB field name)
  *               app/catlg/LISTCAT.txt:L632 (KEYLEN 9 / AVGLRECL 500)
@@ -210,16 +210,15 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to run, build and test</h2>
  * The read-only verification {@code Step} that owns this reader is <strong>authored</strong>, and nothing
- * about the batch tier around it is outstanding. Two earlier revisions of this paragraph are withdrawn:
- * the first named {@code com.cardemo.config.BatchConfig} as the home of every {@code Job} and
- * {@code Step} and said {@code com.cardemo.batch.jobs} held one job, {@code InterestCalculationJob}; the
- * second said this reader's verification step and its launcher were still owed. Both exist:
+ * about the batch tier around it is outstanding. Both this reader's verification step and its launcher are
+ * declared, the launcher being the framework's own rather than a job of its own inside {@code com.cardemo.config.BatchConfig}:
  * {@link com.cardemo.config.BatchConfig#datasetVerificationReadCustomerStep} is the
  * Java counterpart of {@code app/jcl/READCUST.jcl}, and
  * {@link com.cardemo.config.BatchConfig#datasetVerificationJob} composes it with the
  * three sibling members as one operator submission, selectable by name through the framework's own
- * {@code spring.batch.job.name} property, which is the launch signal that survives after the
- * bespoke operator launcher was withdrawn. The step writes nothing: its sink reaches no relation, no object store and no
+ * {@code spring.batch.job.name} property, which is the launch signal - no
+ * bespoke operator launcher is declared, because one would launch from inside
+ * {@code SpringApplication.run}. The step writes nothing: its sink reaches no relation, no object store and no
  * queue, because {@code app/cbl/CBCUS01C.cbl} performs {@code OPEN}, {@code READ} and {@code CLOSE} only.
  * {@code com.cardemo.batch.jobs} holds its six target jobs and <strong>each declares its own
  * {@code Step} beans</strong>, while {@code BatchConfig} owns the dataset bindings and the record
@@ -242,18 +241,16 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     </li>
  * </ul>
  * The compiler runs with {@code -Xlint:all} and {@code failOnWarning}, so the build fails on any warning.
- * <strong>Both test tiers now cover this class.</strong> An earlier revision of this paragraph said neither was
- * authored, that {@code unit/batch} held three classes none of which referenced this reader, and that
- * {@code integration/batch} held one abstract Testcontainers base with no concrete subclass beneath it; every
- * part of that is withdrawn. {@code src/test/java/com/cardemo/unit/batch} holds <strong>36</strong> sources and
+ * <strong>Both test tiers cover this class.</strong> {@code src/test/java/com/cardemo/unit/batch}
  * covers the status renderer, the twin guards and the emission count through {@code CustomerReaderTest},
  * {@code SequentialReaderContractTest}, {@code SequentialReaderKeysetScanTest},
  * {@code ReaderSensitiveDataTest} and {@code BatchLogHygieneTest}, with
  * {@code FinancialLogRedactionTest} and
  * {@code com.cardemo.unit.observability.SensitiveDataRedactionTest} covering the redaction rules.
- * {@code src/test/java/com/cardemo/integration/batch} holds <strong>4</strong> sources - one abstract
- * Testcontainers base and three concrete classes that execute under Failsafe against PostgreSQL 16 and
- * LocalStack. The two assertions specific to this class are both delivered, by
+ * {@code src/test/java/com/cardemo/integration/batch} holds the abstract
+ * Testcontainers base and the concrete classes that execute under Failsafe against PostgreSQL 16 and
+ * LocalStack; re-measure either tier's size with a directory listing rather than quoting a figure. The two
+ * assertions specific to this class are both delivered, by
  * {@code ReaderSensitiveDataTest}: <b>exactly two record events per row</b>, checked as both record events of
  * {@code CBCUS01C:L78} and {@code :L96} still being emitted, and <b>no personal-data field value present
  * anywhere in captured log output</b>, checked by asserting that a local projection rather than the entity is
@@ -277,10 +274,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <li>Log-masking rules are configured in {@code src/main/resources/logback-spring.xml} and govern whatever
  *     reaches an aggregator. They are a safety net here rather than the mechanism; see the personal-data
  *     section above.</li>
- * <li>No AWS, bucket, queue or topic configuration is read by this reader, and no AWS client is injected, so
- *     it requests no cloud privilege whatever.</li>
- * <li>No transaction annotation is declared. See {@link #read()} for why a {@code readOnly} annotation here
- *     would be decorative rather than effective, and how read-only is guaranteed instead.</li>
+ * <li>No cloud privilege and no transaction annotation, both stated for all four verification readers in
+ *     {@code com.cardemo.batch.readers}' package documentation; {@link #read()} records how read-only is
+ *     guaranteed here.</li>
  * </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -362,10 +358,8 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      */
     private static final String ABEND_CULPRIT = "CBCUS01C";
 
-    // ----------------------------------------------------------------------------------------------------
     // Legacy DISPLAY literals, reproduced byte for byte. Each is followed by its measured inner length so a
     // reader can confirm fidelity without opening the source, and each carries its own source locator.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/CBCUS01C.cbl:L71}, 38 characters. */
     private static final String START_OF_EXECUTION_MESSAGE = "START OF EXECUTION OF PROGRAM CBCUS01C";
@@ -401,10 +395,8 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     /** {@code app/cbl/CBCUS01C.cbl:L155}, 16 characters. */
     private static final String ABENDING_PROGRAM_MESSAGE = "ABENDING PROGRAM";
 
-    // ----------------------------------------------------------------------------------------------------
     // Execution-context keys for the restart cursor. Namespaced by simple class name so two readers in the
     // same step cannot collide. Both values are numeric; see update(ExecutionContext).
-    // ----------------------------------------------------------------------------------------------------
 
     /** Key under which the number of rows already emitted is checkpointed. */
     private static final String CONTEXT_KEY_RECORDS_READ = "CustomerReader.recordsRead";
@@ -435,10 +427,8 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     /** The character a COBOL {@code MOVE} into a numeric display item pads with on the left. */
     private static final char NUMERIC_PAD = '0';
 
-    // ----------------------------------------------------------------------------------------------------
     // File-status literals, derived from com.cardemo.model.enums.FileStatus rather than restated, so that the
     // single definition of each code stays single (Rule 1 clause C, avoid duplication).
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * {@code '00'}: the status the source tests at {@code app/cbl/CBCUS01C.cbl:L94}, {@code :L121} and
@@ -471,9 +461,7 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     private static final String STATUS_PHYSICAL_IO_ERROR =
             String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_PAD;
 
-    // ----------------------------------------------------------------------------------------------------
     // Collaborators, injected through the constructor and never reassigned.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The persistence access point for the customer master, replacing the {@code CUSTFILE} VSAM cluster. */
     private final CustomerRepository customerRepository;
@@ -490,11 +478,9 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     /** Rows fetched per round trip; validated at construction and never changed afterwards. */
     private final int pageSize;
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor state. Every field below is the Java counterpart of a WORKING-STORAGE item at
     // app/cbl/CBCUS01C.cbl:L46-L67 and is therefore an INSTANCE field: never static, never shared. The step
     // scope gives each step execution its own instance.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01)} ({@code :L65}). Held as its literal {@code 'N'} or {@code 'Y'} value. */
     private String endOfFile = END_OF_FILE_NO;
@@ -564,9 +550,7 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         this.pageSize = requirePositivePageSize(pageSize);
     }
 
-    // ====================================================================================================
     // Mainline PROCEDURE DIVISION, app/cbl/CBCUS01C.cbl:L70-L87, realised as the ItemStream lifecycle.
-    // ====================================================================================================
 
     /**
      * Opens the scan: emits the start-of-execution banner and performs {@code 0000-CUSTFILE-OPEN}, reproducing
@@ -793,9 +777,7 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         return recordsRead;
     }
 
-    // ====================================================================================================
     // 1000-CUSTFILE-GET-NEXT, app/cbl/CBCUS01C.cbl:L92-L116.
-    // ====================================================================================================
 
     /**
      * Reads the next record and applies the three-way sequential-read guard of
@@ -839,7 +821,6 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         // nested test and its documentation cites this very paragraph, at :L98 (Rule 1 clause C).
         applResult = fileStatusMapper.applResultForSequentialRead(ioStatus);
 
-        // ------------------------------------------------------------------------------------------------
         // PRESERVED QUIRK, the duplicated record display. The next line of the source, inside the '00'
         // branch and immediately after MOVE 0 TO APPL-RESULT, is:
         //
@@ -856,7 +837,6 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         //      files are NOT interchangeable. app/cbl/CBACT03C.cbl:L96 is active, like this one.
         // The CONTENT is masked while the COUNT is preserved: that split resolves the tension between
         // keeping personal data out of log volume and reproducing the source's event count exactly.
-        // ------------------------------------------------------------------------------------------------
         if (applResult == FileStatusMapper.APPL_AOK && LOG.isDebugEnabled()) {
             LOG.debug("{} record read (app/cbl/CBCUS01C.cbl:L96); sequence={}",
                     LOGICAL_FILE,
@@ -932,12 +912,12 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * The window size cannot affect the emitted output, because the ordering is fixed independently of it, and
      * the seek bound is exclusive so no row is visited twice or skipped.
      * <p>
-     * <b>A bespoke repository method is declared for this, and it is not speculative.</b> An earlier revision
-     * of this class narrowed the inherited {@code findAll(Pageable)} overload instead and recorded that a
-     * declared finder would be dead code. That reasoning held only while the window was offset-paged: the
+     * <b>A bespoke repository method is declared for this, and it is not speculative.</b> Narrowing the
+     * inherited {@code findAll(Pageable)} overload instead, on the ground that a
+     * declared finder would be dead code, holds only while the window is offset-paged: the
      * inherited overload can express an order and a limit, but it cannot express a seek bound, so it cannot
      * express this contract at all. The declared finder therefore has exactly one consumer, this method, and
-     * the repository's own documentation was corrected in step.
+     * the repository's own documentation says so.
      * <p>
      * A second, unrelated saving: this finder returns a {@code List}, so no {@code COUNT(*)} is issued. The
      * page-shaped predecessor computed a total on every refill that nothing on this path ever read. The one
@@ -991,9 +971,7 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         return STATUS_SUCCESS;
     }
 
-    // ====================================================================================================
     // 0000-CUSTFILE-OPEN, app/cbl/CBCUS01C.cbl:L118-L134.
-    // ====================================================================================================
 
     /**
      * Opens the customer master, reproducing {@code 0000-CUSTFILE-OPEN}
@@ -1064,9 +1042,7 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         // EXIT.  (:L134)
     }
 
-    // ====================================================================================================
     // 9000-CUSTFILE-CLOSE, app/cbl/CBCUS01C.cbl:L136-L152.
-    // ====================================================================================================
 
     /**
      * Closes the customer master, reproducing {@code 9000-CUSTFILE-CLOSE}
@@ -1127,12 +1103,10 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         // EXIT.  (:L152)
     }
 
-    // ====================================================================================================
     // Z-ABEND-PROGRAM, app/cbl/CBCUS01C.cbl:L154-L158.
     //
     // NOTE THE LABEL. This program spells it Z-ABEND-PROGRAM, not 9999-ABEND-PROGRAM as CBACT01C, CBACT02C
     // and CBACT03C do. The citation is the source's spelling and is deliberately not normalised.
-    // ====================================================================================================
 
     /**
      * Abends the step, reproducing {@code Z-ABEND-PROGRAM} ({@code app/cbl/CBCUS01C.cbl:L154-L158}).
@@ -1184,12 +1158,10 @@ public class CustomerReader implements ItemStreamReader<Customer> {
                 cause);
     }
 
-    // ====================================================================================================
     // Z-DISPLAY-IO-STATUS, app/cbl/CBCUS01C.cbl:L161-L174.
     //
     // NOTE THE LABEL. This program spells it Z-DISPLAY-IO-STATUS, not 9910-DISPLAY-IO-STATUS as its three
     // siblings do. The citation is the source's spelling and is deliberately not normalised.
-    // ====================================================================================================
 
     /**
      * Renders a file status as the legacy diagnostic line, reproducing {@code Z-DISPLAY-IO-STATUS}
@@ -1227,7 +1199,6 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         return fileStatusMapper.displayIoStatus(fileStatus);
     }
 
-    // ====================================================================================================
     // Identifier rendering. The ONLY field of CUSTOMER-RECORD this class ever renders, and the reason the
     // two record events of parity structure 2 can be emitted at all without breaching Rule 1 clause D.
     //
@@ -1235,13 +1206,10 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     // 1100- paragraph to justify the latter, and the former would reconstruct exactly the 500-byte image
     // that must not reach a log. There is also no zoned-decimal codec, because app/cpy/CVCUS01Y.cpy
     // declares no S9 picture clause anywhere and one would therefore be unreachable.
-    // ====================================================================================================
 
-    // ====================================================================================================
     // Restart support and construction-time validation. No legacy counterpart: the mainline at
     // app/cbl/CBCUS01C.cbl:L70-L87 always scans from the first record, because a JES2 job restart re-ran the
     // step from the top. Restartability is additive, and it changes no emitted value.
-    // ====================================================================================================
 
     /**
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead

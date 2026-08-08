@@ -1707,6 +1707,7 @@ class StatementTransactionTest {
          * which is exactly the {@code TRNX-KEY} order of {@code app/cpy/COSTM01.CPY:L21-L23}. It is a
          * {@link Comparator} rather than a spawned sort process: AAP transformation rule 9 forbids spawning an
          * external sort, and Rule 1 clause D forbids the {@code ProcessBuilder} that would do it.
+         * @return that comparator.
          */
         private Comparator<StatementTransaction> sortOrder() {
             return Comparator.comparing(StatementTransaction::cardNumber)

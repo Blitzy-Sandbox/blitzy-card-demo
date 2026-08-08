@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Boot Service Bean (Java 25)
  * Function    : Accept and process credit card detail request.
- * Source      : app/cbl/COCRDSLC.cbl (887 lines, 37 paragraphs) @ 7756d89
+ * Source      : app/cbl/COCRDSLC.cbl (887 lines, 34 own / 36 mapped paragraph labels) @ 7756d89
  ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -2154,8 +2154,9 @@ public class CardDetailService {
      * {@code GO TO} and no {@code THRU} reference anywhere. The only paragraph that could have reached it,
      * {@code 9000-READ-DATA} at {@code :726}, performs
      * {@code 9100-GETCARD-BYACCTCARD THRU 9100-GETCARD-BYACCTCARD-EXIT} and nothing else. It is preserved so the
-     * paragraph map stays mechanically provable for the scope-coverage gate, and it is owed an entry in the
-     * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}. Severity <b>Low</b>.
+     * paragraph map stays mechanically provable for the scope-coverage gate, and it is covered by
+     * {@code DL-CR-01} in the {@code DECISION_LOG.md}, with its rows in
+     * {@code TRACEABILITY_MATRIX.md}. Severity <b>Low</b>.
      *
      * <p><b>The body is deliberately empty and must stay empty.</b> A repository call here would
      * manufacture a phantom caller for a finder that nothing else needs - dead code of a worse kind than
@@ -2196,7 +2197,7 @@ public class CardDetailService {
      *
      * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Its body in the source is the single statement
      * {@code EXIT} at {@code :811}, so it is a genuine no-operation there too - unreachable and empty on
-     * both sides of the migration. Owed an entry in the {@code DECISION_LOG.md} and
+     * both sides of the migration. Held as {@code DL-CR-01} in {@code DECISION_LOG.md}, with a row in
      * {@code TRACEABILITY_MATRIX.md} alongside its partner; severity <b>Low</b>. It is kept as a separate
      * method because the mandate forbids consolidating a label with its {@code -EXIT} partner.
      */
@@ -2213,8 +2214,8 @@ public class CardDetailService {
      * its own two labels, with no {@code PERFORM}, {@code GO TO} or {@code THRU} reference anywhere in the member.
      * The field it would have sent, {@code WS-LONG-MSG PIC X(500)} declared at {@code :125}, is referenced only
      * inside this dead body, at {@code :822} and {@code :823}, and nowhere else. Contrast {@code SEND-PLAIN-TEXT} at
-     * {@code :838}, which <i>is</i> performed - from {@code :379-380} - and is therefore implemented for real. Owed
-     * an entry in the {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; severity <b>Low</b>.
+     * {@code :838}, which <i>is</i> performed - from {@code :379-380} - and is therefore implemented for real.
+     * Held as {@code DL-CR-01} in {@code DECISION_LOG.md}, with a row in {@code TRACEABILITY_MATRIX.md}; severity <b>Low</b>.
      *
      * <p><b>What the source would have done</b>, from {@code :821-829}: {@code EXEC CICS SEND TEXT
      * FROM(WS-LONG-MSG) LENGTH(LENGTH OF WS-LONG-MSG) ERASE FREEKB} followed by {@code EXEC CICS RETURN}.
@@ -2233,7 +2234,7 @@ public class CardDetailService {
      * <p>Source: {@code app/cbl/COCRDSLC.cbl} paragraph {@code SEND-LONG-TEXT-EXIT.} at line 831, body
      * {@code EXIT} at {@code :832}.
      *
-     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Owed an entry in the {@code DECISION_LOG.md} and
+     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Held as {@code DL-CR-01} in {@code DECISION_LOG.md}, with a row in
      * {@code TRACEABILITY_MATRIX.md} with its partner; severity <b>Low</b>. Kept separate for the same
      * reason: a label and its {@code -EXIT} are two labels.
      */

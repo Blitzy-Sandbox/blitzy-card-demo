@@ -232,7 +232,7 @@ import org.springframework.dao.DuplicateKeyException;
  *   <li>This file has <strong>no retained-no-op instance of its own</strong>. The parity mandate does force
  *       some deliberately empty constructs elsewhere in the migration - they live in
  *       {@code InterestCalculationProcessorTest}, {@code StatementProcessorTest} and the {@code RejectCode}
- *       enum, each owed an entry in the {@code DECISION_LOG.md} and a row in the
+ *       enum, each covered by {@code DL-CR-01} in the {@code DECISION_LOG.md} and carrying its rows in
  *       {@code TRACEABILITY_MATRIX.md} - but
  *       inventing one here to look consistent would be fabrication, so none exists.</li>
  * </ul>
@@ -347,10 +347,8 @@ final class TransactionCombineProcessorTest {
         logger.setLevel(originalLevel);
     }
 
-    // ---------------------------------------------------------------------------------------------------
     // Shared fixtures. Every one is synthetic or drawn from the frozen ASCII fixture, and none carries a
     // real credential, a real card number or any other value that would be sensitive if it were logged.
-    // ---------------------------------------------------------------------------------------------------
 
     /**
      * Builds a record carrying only an identifier, reaching the field directly.
@@ -445,7 +443,11 @@ final class TransactionCombineProcessorTest {
         return ordered;
     }
 
-    /** Projects a stream onto its identifiers, so an ordering can be asserted without record noise. */
+    /**
+     * Projects a stream onto its identifiers, so an ordering can be asserted without record noise.
+     * @param stream the records to project.
+     * @return their {@code TRAN-ID} values, in stream order.
+     */
     private static List<String> identifiersOf(final List<Transaction> stream) {
         final List<String> identifiers = new ArrayList<>(stream.size());
         for (final Transaction item : stream) {
@@ -454,7 +456,10 @@ final class TransactionCombineProcessorTest {
         return identifiers;
     }
 
-    /** Every message an appender received, formatted exactly as it would be written. */
+    /**
+     * Every message an appender received, formatted exactly as it would be written.
+     * @return those messages, in the order they were logged.
+     */
     private List<String> loggedMessages() {
         final List<String> messages = new ArrayList<>();
         for (final ILoggingEvent event : appender.list) {
@@ -559,9 +564,7 @@ final class TransactionCombineProcessorTest {
         return value;
     }
 
-    // ===================================================================================================
     // STEP05R - app/jcl/COMBTRAN.jcl:L22-L37
-    // ===================================================================================================
 
     /**
      * The concatenated input of {@code :L23-L26} and the single ascending key of {@code :L28} and
@@ -958,9 +961,7 @@ final class TransactionCombineProcessorTest {
         }
     }
 
-    // ===================================================================================================
     // Processor shape - the per-record pass-through that carries the merge semantics
-    // ===================================================================================================
 
     /**
      * The processor's shape: an {@link ItemProcessor} that validates, passes through and stores nothing.
@@ -1118,9 +1119,7 @@ final class TransactionCombineProcessorTest {
         }
     }
 
-    // ===================================================================================================
     // STEP10 - app/jcl/COMBTRAN.jcl:L41-L48. The duplicate-key contract.
-    // ===================================================================================================
 
     /**
      * The load contract: a repeated {@code TRAN-ID} must fail, and must never be absorbed.
@@ -1374,9 +1373,7 @@ final class TransactionCombineProcessorTest {
         }
     }
 
-    // ===================================================================================================
     // AAP invariant 9 and Rule 1 clause D - no external process, no store, in the compiled form
-    // ===================================================================================================
 
     /**
      * DFSORT became a {@link Comparator}, and that is provable from the compiled class rather than asserted.
@@ -1405,7 +1402,7 @@ final class TransactionCombineProcessorTest {
                     .as("the whole of SORT FIELDS=(TRAN-ID,A) at app/jcl/COMBTRAN.jcl:L30 reduces to one "
                             + "in-process comparator. No temporary sort work file is created and no child "
                             + "process is started, so there is nothing to clean up and nothing to inject "
-                            + "into. This is a labelled mechanism substitution owed an entry in "
+                            + "into. This is a labelled mechanism substitution held as DL-MS-08 in "
                             + "DECISION_LOG.md, "
                             + "not a performance claim")
                     .isInstanceOf(Comparator.class);
@@ -1423,9 +1420,7 @@ final class TransactionCombineProcessorTest {
         }
     }
 
-    // ===================================================================================================
     // Rule 1 clause D - the identifier is the one attacker-influenced value this step handles
-    // ===================================================================================================
 
     /**
      * A hostile {@code TRAN-ID} must not be able to forge a log record or split a message.

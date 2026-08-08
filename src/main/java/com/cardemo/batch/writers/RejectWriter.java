@@ -111,9 +111,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       configured, and the emulator endpoint override is declared in all four profiles - bound to a bare
  *       {@code ${AWS_ENDPOINT_URL}} with no default in the base, {@code test} and {@code prod} profiles, so an
  *       unset variable fails the context at startup, and defaulted to the LocalStack edge only in
- *       {@code application-local.yml}. No live-cloud path is therefore structurally reachable from this class.
- *       An earlier revision of this item said the override existed only in the {@code local} and
- *       {@code test} profiles; that is withdrawn.</li>
+ *       {@code application-local.yml}. No live-cloud path is therefore structurally reachable from this
+ *       class.</li>
  *   </ul>
  *
  * <h2>Why the 350-byte serialisation is not shared with the sibling writer</h2>
@@ -147,24 +146,23 @@ import com.cardemo.service.shared.FileStatusMapper;
  * numeric order, and identifiers make the key reproducible on re-run whereas a timestamp would not. That is
  * the determinism tradeoff, taken deliberately.
  *
- * <p><strong>Finding H-04, severity High, RESOLVED. One generation is one object.</strong> An earlier revision
- * created a fresh object per chunk, so a run whose rejects spanned three commit intervals left three objects
- * under one generation prefix while {@code app/jcl/POSTTRAN.jcl:L38} names a single dataset. A later
- * {@code (0)} reference resolves the greatest key under the prefix, so it saw only the <em>last</em> chunk and
- * silently reported a fraction of the run's rejects as all of them - the worst kind of defect, because the
- * output looked entirely well formed. The generation is now one object, assembled once at
- * {@code 9300-DALYREJS-CLOSE}.
+ * <p><strong>One generation is one object.</strong> Allocating a fresh object per chunk would leave a run
+ * whose rejects spanned three commit intervals with three objects under one generation prefix, while
+ * {@code app/jcl/POSTTRAN.jcl:L38} names a single dataset. A later {@code (0)} reference resolves the greatest
+ * key under the prefix, so such a consumer would see only the <em>last</em> chunk and silently report a
+ * fraction of the run's rejects as all of them - the worst kind of defect, because the output looks entirely
+ * well formed. The generation is one object, assembled once at {@code 9300-DALYREJS-CLOSE}.
  *
- * <p><strong>Finding M-06, severity Major, RESOLVED. A written reject is durable when its chunk commits.</strong>
- * The H-04 fix above was first implemented as a single {@code OutputStream} held open across every chunk, and
- * that stream was itself a defect: the object did not exist until {@link #close()} completed it, while
- * {@link #update(ExecutionContext)} published a record count and an attempt key at every chunk boundary. A step
- * that failed part way therefore left a checkpoint describing records that existed nowhere, because the
- * in-flight upload was abandoned - and since a restart resumes the reader at the cursor the failed attempt
- * reached, those rejects were unreproducible and silently lost from what is, in a card system, a regulated audit
- * trail. Each chunk now uploads its own complete part object under the generation's {@value #PART_SEGMENT}
- * segment, and {@link #close()} concatenates the parts into the one generation object and deletes them. A
- * restart adopts the parts the failed attempt left and carries every record forward. Peak memory is one part's
+ * <p><strong>A written reject is durable when its chunk commits.</strong> Assembling that one object from a
+ * single {@code OutputStream} held open across every chunk would not achieve it: the object would not exist
+ * until {@link #close()} completed it, while {@link #update(ExecutionContext)} publishes a record count and an
+ * attempt key at every chunk boundary. A step that failed part way would leave a checkpoint describing records
+ * that existed nowhere, because the in-flight upload is abandoned - and since a restart resumes the reader at
+ * the cursor the failed attempt reached, those rejects would be unreproducible and silently lost from what is,
+ * in a card system, a regulated audit trail. Each chunk therefore uploads its own complete part object under
+ * the generation's {@value #PART_SEGMENT} segment, and {@link #close()} concatenates the parts into the one
+ * generation object and deletes them. A restart adopts the parts the failed attempt left and carries every
+ * record forward. Peak memory is one part's
  * transfer buffer rather than the reject volume; the run is never held in the heap.
  *
  * <p>The concrete key is published twice, at two scopes and for two readers, and in both cases only once the
@@ -301,14 +299,13 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * unchanged, and so that the protocol still expresses "the whole generation" rather than "the latest part
      * of it".
      *
-     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision published only into the <em>step</em>
-     * execution context and told the reader to "promote these to the job execution context from the step's
-     * configuration if a later step needs them". No promotion existed, no configuration performed one, and the
-     * class that would have configured it does not exist - so the three entries this writer published were
-     * discarded when the step ended and no consumer of any kind could read them. The prefix entry did not
-     * rescue it either: a prefix lets a consumer <em>list</em> a generation, which reintroduces exactly the
-     * race the exact keys were recorded to avoid, and a listing cannot recover creation order. <i>Remediation,
-     * applied:</i> every key is appended here, in creation order, into the job execution context, by this
+     * <p><b>Publishing into the <em>step</em> execution context alone would discard the record.</b> Deferring
+     * promotion to a later step's configuration - "promote these to the job execution context if a later step
+     * needs them" - relies on wiring that does not exist, so the entries would be discarded when the step ended
+     * and no consumer of any kind could read them. The prefix entry does not rescue that either: a prefix lets
+     * a consumer <em>list</em> a generation, which reintroduces exactly the race the exact keys are recorded to
+     * avoid, and a listing cannot recover creation order. Every key is appended here, in creation order, into
+     * the job execution context, by this
      * class, so the record is complete with no external wiring. The step-scoped entries are kept because a
      * listener inside the running step legitimately wants the latest one.
      *
@@ -433,7 +430,7 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     /**
      * Key segment holding this generation's durable per-chunk parts, {@value}.
      *
-     * <p><strong>Finding M-06, severity Major, RESOLVED.</strong> Each chunk's records are uploaded as their
+     * <p>Each chunk's records are uploaded as their
      * own complete object under this segment, so the bytes a chunk wrote are durable the moment the chunk
      * commits. {@link #close()} concatenates the parts into the one generation object and removes them.
      *
@@ -458,10 +455,10 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * Format for the per-step generation sequence inside an object key: {@value #KEY_IDENTIFIER_FORMAT}-wide
      * zero-padded digits, the same width as every other numeric key component.
      *
-     * <p><b>Finding, severity Medium, RESOLVED.</b> An earlier revision padded this component to six digits
-     * while the identifier components beside it were padded to nineteen. Six digits does not cover the domain
-     * of the {@code long} that feeds it, and the consequence is not a truncated key - {@code %06d} widens
-     * rather than truncates - but a <em>silently non-monotonic</em> one: the millionth object in a step is
+     * <p><b>The padding width must cover the domain of the {@code long} that feeds it.</b> Padding this
+     * component to six digits while the identifier components beside it are padded to nineteen does not, and
+     * the consequence is not a truncated key - {@code %06d} widens rather than truncates - but a
+     * <em>silently non-monotonic</em> one:
      * numbered {@code 1000000}, which is seven characters, and {@code "1000000"} sorts before {@code "999999"}
      * lexicographically. The whole point of zero-padding these components is that
      * {@code app/catlg/LISTCAT.txt}'s {@code (0)} generation reference becomes "the lexicographically greatest
@@ -695,14 +692,14 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     /**
      * The application's sole meter owner, through which this writer reports a rejected record.
      *
-     * <p>This class holds no meter, no metric name and no tag key of its own. It previously held all three and
-     * built the counter itself with {@code Counter.builder(...).register(meterRegistry)}, relying on
-     * Micrometer's idempotent registration to make that "cooperate with" the central configuration. That
-     * reasoning was sound about the <em>count</em> - no additional instrument was created - but wrong about
-     * <em>metadata</em>: Micrometer keeps the description and tag set of whichever registration happens
-     * first and silently discards every later builder's, so the published help text depended on bean
-     * initialisation order, and the name and tag key had to be kept byte-identical across two files by
-     * comment alone. Reporting through the owner instead leaves exactly one declaration of each.
+     * <p>This class holds no meter, no metric name and no tag key of its own, and must not acquire any.
+     * Building the counter here with {@code Counter.builder(...).register(meterRegistry)} and relying on
+     * Micrometer's idempotent registration to "cooperate with" the central configuration is sound about the
+     * <em>count</em> - no additional instrument is created - and wrong about <em>metadata</em>: Micrometer keeps
+     * the description and tag set of whichever registration happens first and silently discards every later
+     * builder's, so the published help text would depend on bean initialisation order, and the name and tag key
+     * would have to be kept byte-identical across two files by comment alone. Reporting through the owner
+     * leaves exactly one declaration of each.
      */
     private final MetricsConfig metricsConfig;
 
@@ -731,30 +728,29 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     /**
      * The one concrete object key this step's {@code (+1)} generation consists of, derived once at construction.
      *
-     * <p><strong>Finding H-04, severity High, RESOLVED.</strong> An earlier revision allocated a fresh key per
-     * chunk from a monotonic sequence, so a run that rejected records across three commit intervals left three
+     * <p><strong>One key per generation, not one per chunk.</strong> Allocating a fresh key per chunk from a
+     * monotonic sequence would leave a run that rejected records across three commit intervals with three
      * objects under one generation prefix. {@code app/jcl/POSTTRAN.jcl:L38} names a single dataset,
      * {@code AWS.M2.CARDDEMO.DALYREJS(+1)}, and a later relative reference to {@code (0)} resolves that one
-     * dataset whole - so a consumer resolving "the current generation" as the greatest key under the prefix saw
-     * only the <em>last</em> chunk and silently reported a fraction of the run's rejects as all of them. The
-     * generation is now one object, assembled from the durable chunk parts at close, and this field is that
-     * object's key.
+     * dataset whole - so a consumer resolving "the current generation" as the greatest key under the prefix
+     * would see only the <em>last</em> chunk and silently report a fraction of the run's rejects as all of
+     * them. The generation is one object, assembled from the durable chunk parts at close, and this field is
+     * that object's key.
      */
     private final String generationObjectKey;
 
     /**
      * How many durable parts this generation holds, and therefore the ordinal of the next one.
      *
-     * <p><strong>Finding M-06, severity Major, RESOLVED.</strong> This replaced a single long-lived
-     * {@code OutputStream} held open across every chunk of the step. That stream was the defect: the object it
-     * was building did not exist until {@link #close()} completed it, while
-     * {@link #update(ExecutionContext)} was persisting a record count and an attempt key at every chunk
-     * boundary. A step that failed part way therefore left a checkpoint describing records that existed
-     * nowhere - the in-flight upload was aborted - and because a restart resumes the reader at the cursor the
-     * failed attempt reached, those rejects were unreproducible and silently lost from a regulated audit
-     * trail.
+     * <p><strong>Durable parts, not one long-lived stream.</strong> A single {@code OutputStream} held open
+     * across every chunk of the step cannot give this guarantee: the object it builds does not exist until
+     * {@link #close()} completes it, while {@link #update(ExecutionContext)} persists a record count and an
+     * attempt key at every chunk boundary. A step that failed part way would leave a checkpoint describing
+     * records that existed nowhere - the in-flight upload is aborted - and because a restart resumes the reader
+     * at the cursor the failed attempt reached, those rejects would be unreproducible and silently lost from a
+     * regulated audit trail.
      *
-     * <p>Each chunk now uploads its own complete part object, so the ordinal is also the count of parts the
+     * <p>Each chunk uploads its own complete part object, so the ordinal is also the count of parts the
      * store has accepted. Deterministic in the ordinal, so a retried chunk overwrites its own part rather than
      * adding a duplicate: an object-store PUT replaces.
      */
@@ -788,14 +784,14 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      *        absent value fails the context rather than writing somewhere unintended
      * @param rejectGdgPrefix the reject generation prefix from
      *        {@code carddemo.aws.s3.gdg-prefixes.daly-rejs}.
-     *        <b>Finding, severity High, RESOLVED:</b> an earlier revision hard-coded {@code "dalyrejs/"} in a
-     *        private constant. {@code application.yml} declares this base authoritatively as {@code gdg/dalyrejs},
-     *        citing {@code app/jcl/DALYREJS.jcl:L25}, and it is one of the seven {@code 0GDG BASE} entries
-     *        reported at {@code app/catlg/LISTCAT.txt:L3942} - so the hard-coded value was not merely a second
-     *        declaration site, it disagreed with the first: every reject object was written to {@code dalyrejs/}
-     *        while every consumer configured from the catalogue looked under {@code gdg/dalyrejs/} and found an
-     *        empty generation. That is a silent data-loss path, not a naming inconsistency.
-     *        <i>Remediation, applied:</i> the key is bound here with no inline default, so the catalogue is the
+     *        <b>This prefix must never be hard-coded in a private constant.</b> {@code application.yml}
+     *        declares the base authoritatively as {@code gdg/dalyrejs}, citing
+     *        {@code app/jcl/DALYREJS.jcl:L25}, and it is one of the seven {@code 0GDG BASE} entries reported at
+     *        {@code app/catlg/LISTCAT.txt:L3942}. A hard-coded {@code "dalyrejs/"} would not merely be a second
+     *        declaration site, it would disagree with the first: every reject object would be written to
+     *        {@code dalyrejs/} while every consumer configured from the catalogue looked under
+     *        {@code gdg/dalyrejs/} and found an empty generation. That is a silent data-loss path, not a naming
+     *        inconsistency. The key is bound here with no inline default, so the catalogue is the
      *        one source of truth and an absent value fails the context; must not be {@code null} or blank
      * @param stepExecution the step this writer serves, supplied by the step scope. Permitted to be
      *        {@code null} so a unit test can construct the class directly; when it is {@code null} the object
@@ -835,7 +831,7 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * transaction mirror and the report generations, which is indistinguishable from success until someone
      * looks.
      *
-     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to strip a trailing
+     * <p><strong>Finding m-02, severity Medium, RESOLVED.</strong> This method used to strip a trailing
      * separator so that {@code gdg/dalyrejs} and {@code gdg/dalyrejs/} composed the identical key, and it
      * checked nothing else. Five sibling classes each carried a variant that differed, and none of the five
      * checked a leading separator, a doubled separator, a traversal segment or the character range.
@@ -910,6 +906,10 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      *         mapper does not classify as an I/O error
      * @throws com.cardemo.exception.FileAccessException if the object-storage write fails, carrying the
      *         {@code DALYREJS} logical name, the {@code WRITE} operation and the underlying cause
+     * @throws Exception never as a bare {@code Exception}. The checked signature is
+     *         {@code ItemWriter#write(Chunk)}'s own, and this implementation narrows it: every failure it
+     *         raises is one of the two typed unchecked exceptions above, so a caller has nothing to catch
+     *         that it could not have caught from those types
      */
     @Override
     public void write(final Chunk<? extends RejectedTransaction> chunk) throws Exception {
@@ -1447,10 +1447,10 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * two of the fields rendered through here, {@code DALYTRAN-CARD-NUM} and {@code DALYTRAN-ID}, are
      * sensitive or identifying, and an exception message is destined for a log.
      *
-     * <p><b>Every character is checked against an explicit permitted set. Finding, severity High, RESOLVED.</b>
-     * An earlier revision checked only the <em>length</em>, so any control byte an upstream system had placed
-     * in a merchant name or a description travelled straight into the emitted stream. That is an injection
-     * defect, not an untidiness: the payload is <b>unblocked and undelimited</b> - see
+     * <p><b>Every character is checked against an explicit permitted set, not only the length.</b> A
+     * length-only check lets any control byte an upstream system placed in a merchant name or a description
+     * travel straight into the emitted stream. That is an injection defect, not an untidiness: the payload is
+     * <b>unblocked and undelimited</b> - see
      * {@link #assertUnblockedFraming(int, int)} - so a consumer finds record boundaries by counting
      * {@value com.cardemo.model.enums.RejectCode#REJECT_RECORD_LENGTH} bytes and by nothing else. A carriage
      * return, a line feed or a NUL inside a picture-clause field is a byte that a line-oriented reader, a shell
@@ -1747,7 +1747,7 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * @throws com.cardemo.exception.FileAccessException if the object-storage write fails
      */
     private synchronized void appendToGeneration(final String payload, final int recordCount) {
-        // DEADLINE AND RETRY, and where they come from. Finding, severity High, RESOLVED. The upload below is
+        // DEADLINE AND RETRY, and where they come from. The upload below is
         // synchronous, so an unbounded call would hold the chunk transaction open for as long as the endpoint
         // chose to stall. No per-call override is configured HERE on purpose: a deadline written at this call
         // site would be a second policy that drifts from the one every other AWS call obeys.
@@ -1804,8 +1804,8 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * <p>Side effects: uploads this chunk's records as one complete object under the generation's part
      * segment, and advances the part ordinal only once the store has accepted it. The parts are assembled into
      * the single generation object by {@link #close()}, not here, which is exactly the {@code WRITE} versus
-     * {@code CLOSE} split the source has - the difference from an earlier revision being that a written record
-     * is now durable at {@code WRITE} time rather than only at {@code CLOSE} time (finding M-06).
+     * {@code CLOSE} split the source has, with the added guarantee that a written record is durable at
+     * {@code WRITE} time rather than only at {@code CLOSE} time.
      *
      * @param bytes the exact payload, already framing-checked
      * @return {@code null} when the write was accepted, otherwise the throwable that prevented it
@@ -1960,13 +1960,13 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * is one dataset, so it is one object. The job execution identifier is included so a restart of the same
      * job instance writes to a distinct key that sorts after the previous attempt's.
      *
-     * <p><b>A correction to what this javadoc used to claim.</b> It previously said that the newer key sorting
-     * after the older one is "what lets a consumer resolve 'the current generation' as the greatest key under
-     * the prefix and get a whole run rather than a fragment". <b>That was not achievable and the code did not
-     * do it.</b> A restart resumes the reader at the cursor the failed attempt reached, so the newer object can
-     * only hold the rejects found after that cursor - by construction a fragment, not a whole run. Measured on
-     * the 300-row fixture with a forced failure at record 46: objects of 430x4 and 430x34 under one generation,
-     * and a published record count of 34 beside a reject count of 38.
+     * <p><b>The distinct key is not what delivers a whole run, and must not be read as though it were.</b>
+     * "The newer key sorts after the older one, so a consumer resolving 'the current generation' as the
+     * greatest key under the prefix gets a whole run rather than a fragment" is not achievable by sort order
+     * alone: a restart resumes the reader at the cursor the failed attempt reached, so the newer object can only
+     * hold the rejects found after that cursor - by construction a fragment. Measured on the 300-row fixture
+     * with a forced failure at record 46: objects of 430x4 and 430x34 under one generation, and a published
+     * record count of 34 beside a reject count of 38.
      *
      * <p>The distinct key is still correct, but a distinct key alone is not the mechanism that delivers a whole
      * run. {@link #adoptPriorAttempt(ExecutionContext)} is: the restarted attempt adopts the durable parts the

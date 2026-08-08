@@ -56,7 +56,7 @@ import org.springframework.stereotype.Component;
  *
  * <h2>What it does</h2>
  *
- * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> Six classes each carried their own private
+ * <p><strong>Finding m-02, severity Medium, RESOLVED.</strong> Six classes each carried their own private
  * prefix validator and no two agreed. Measured before this class existed:
  *
  * <table border="1">

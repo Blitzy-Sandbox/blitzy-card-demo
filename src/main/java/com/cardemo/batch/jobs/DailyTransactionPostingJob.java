@@ -6,8 +6,8 @@
  * Function    : Daily transaction posting - validation cascade, reject
  *               engine and atomic three-write posting.
  * Source      : app/jcl/POSTTRAN.jcl + app/cbl/CBTRN02C.cbl (731 lines,
- *               27 paragraphs) + app/cbl/CBTRN01C.cbl (491 lines,
- *               19 paragraphs) @ 7756d89
+ *               26 own paragraph labels) + app/cbl/CBTRN01C.cbl (491 lines,
+ *               18 own paragraph labels) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -217,8 +217,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * through {@code chunk(POSTING_COMMIT_INTERVAL, transactionManager)} makes all three <strong>one atomic
  * unit</strong>, so the orphan hazard cannot occur. The interval is <strong>one record</strong>, which is what
  * keeps the unit of work exactly as wide as the source's own: a failure on one record rolls back that record
- * and no other, and every record already processed is already durable. Owed an entry, with the locator above,
- * in the {@code DECISION_LOG.md}.
+ * and no other, and every record already processed is already durable. Held, with the locator above, as
+ * {@code DL-DV-01} in {@code DECISION_LOG.md}.
  *
  * <h2>Deviation 2 - the pre-flight adds two datasets POSTTRAN never supplied</h2>
  *
@@ -952,9 +952,11 @@ public class DailyTransactionPostingJob {
      *
      * <p><strong>Why a stack rather than a single slot.</strong> A single slot holds one displacement per
      * thread, which is correct only while no second execution can begin on a thread that already has one in
-     * progress. The planned {@code BatchPipelineOrchestrator} launches this job as part of a wider stream, so
-     * a nested or re-entrant launch on the same thread is reachable. (It is named in a code font rather than
-     * linked because it is not authored yet, so this sentence stays true either way.) With a single slot that
+     * progress. {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} launches this job as part of a wider
+     * stream, so a nested or re-entrant launch on the same thread is reachable. (An earlier revision of this
+     * sentence called that class <em>planned</em> and named it in a code font rather than linking it, on the
+     * grounds that it was not authored yet; it is authored, so the qualifier is withdrawn and the link
+     * stands.) With a single slot that
      * reachable case is silently destructive in both directions: the inner {@code set} overwrites the
      * outer's displaced values, and the inner {@code remove} then leaves the outer restore with nothing to
      * put back. The outer scope's correlation identifier would be lost for the remainder of the thread's
@@ -1183,12 +1185,10 @@ public class DailyTransactionPostingJob {
         return value;
     }
 
-    // ====================================================================================================
     // The bean surface. This folder contributes only Job, Step and Flow beans; every piece of
     // infrastructure - the job repository, the transaction manager, the data source, the object-storage
     // gateway - is injected, never redeclared. The batch-processing enabler annotation appears nowhere:
     // under Spring Boot 3 it switches OFF the batch auto-configuration that supplies the JobRepository.
-    // ====================================================================================================
 
     /**
      * The read-only pre-flight step: {@code app/cbl/CBTRN01C.cbl}, all 491 lines of it.
@@ -1431,14 +1431,12 @@ public class DailyTransactionPostingJob {
                 .build();
     }
 
-    // ====================================================================================================
     // app/cbl/CBTRN01C.cbl - the read-only pre-flight. Nineteen paragraph labels, mapped one to one below
     // with no consolidation. FILE-CONTROL at :L28 is a declaration rather than an executable paragraph and
     // has no method: its six SELECT statements map onto the six repositories declared as fields, namely
     // DALYTRAN -> dailyTransactionRepository, CUSTFILE -> customerRepository,
     // XREFFILE -> crossReferenceRepository, CARDFILE -> cardRepository, ACCTFILE -> accountRepository and
     // TRANFILE -> transactionRepository. The other eighteen each have a method.
-    // ====================================================================================================
 
     /**
      * {@code MAIN-PARA} - {@code app/cbl/CBTRN01C.cbl:L155}-{@code :L197}.
@@ -1705,12 +1703,12 @@ public class DailyTransactionPostingJob {
      * lookups and both emissions once more, on the iteration that sets the end-of-file flag, because they sit
      * outside the inner {@code IF END-OF-FILE = 'N'} at {@code :L167} and inside the outer one at
      * {@code :L165} - with {@code DALYTRAN-CARD-NUM} still holding whatever the previous successful read left
-     * in it. An earlier revision of this method emitted a <em>narrative</em> about that repetition instead of
-     * performing it, which is not the same observable behaviour: the diagnostic line an operator sees is the
+     * in it. Emitting a <em>narrative</em> about that repetition instead of
+     * performing it is not the same observable behaviour: the diagnostic line an operator sees is the
      * record's own line, not a note about it, and this program exists only to produce that output. The
-     * repetition is now genuinely executed, against the record the loop left behind.
+     * repetition is genuinely executed here, against the record the loop left behind.
      *
-     * <p>It costs no extra dataset access, which is what made the earlier shortcut tempting. The window that
+     * <p>It costs no extra dataset access, which is what makes a narrative shortcut tempting. The window that
      * carried the record also carried its resolved cross-reference and account rows, so the repeated lookup is
      * answered from the same resolution the in-loop lookup used - which is exactly what the source's own
      * re-read does, since re-reading the same key returns the same row.
@@ -2104,7 +2102,6 @@ public class DailyTransactionPostingJob {
         return abendProgram(ABEND_CULPRIT_PRE_FLIGHT, abendMessage, reason, cause);
     }
 
-    // ====================================================================================================
     // app/cbl/CBTRN02C.cbl - the posting program. Twenty-seven paragraph labels. This class owns the open,
     // close, counter and exit-status skeleton; the record-level paragraphs belong to the sibling classes and
     // are delegated to, never duplicated. The full map, with the owner of each:
@@ -2141,7 +2138,6 @@ public class DailyTransactionPostingJob {
     //                                    MOVE '0000' TO DB2-REST at :701
     //   9999-ABEND-PROGRAM       :707  - abendProgram(), abend code 999
     //   9910-DISPLAY-IO-STATUS   :714  - displayIoStatus()
-    // ====================================================================================================
 
     /**
      * {@code 0000-DALYTRAN-OPEN} - {@code app/cbl/CBTRN02C.cbl:L236}-{@code :L253}.
@@ -2346,12 +2342,10 @@ public class DailyTransactionPostingJob {
         return new FatalProcessingException(ABEND_CODE, culprit, reason, abendMessage, cause);
     }
 
-    // ====================================================================================================
     // The universal I/O guard idiom, written once. Every OPEN, READ and CLOSE in both source programs has
     // the identical shape: MOVE 8 TO APPL-RESULT, do the verb, map '00' to 0 and anything else to 12, then
     // IF APPL-AOK CONTINUE ELSE display, render the status and abend. Recognising it as one idiom rather
     // than as thirty-odd individual checks is what lets a single mapper own the translation.
-    // ====================================================================================================
 
     /**
      * A dataset access that either succeeds or raises a store failure.
@@ -3179,9 +3173,9 @@ public class DailyTransactionPostingJob {
             final long processed = readCounter(stepExecution, PROCESSED_COUNT_CONTEXT_ENTRY);
             final long rejected = readCounter(stepExecution, REJECT_COUNT_CONTEXT_ENTRY);
 
-            // FINDING, SEVERITY HIGH - remediated here. Everything below used to run unconditionally, so a
-            // step that FAILED still emitted the two end-of-run counters as though the run had completed and
-            // still promoted its generation keys into the job context, where a downstream step would read them
+            // FINDING, SEVERITY HIGH. Nothing below may run unconditionally: a
+            // step that FAILED would then emit the two end-of-run counters as though the run had completed and
+            // would promote its generation keys into the job context, where a downstream step would read them
             // as the run's output. The source cannot do that: :L227-:L232 is reached only by falling out of the
             // mainline loop, and every failure path before it goes through 9999-ABEND-PROGRAM, which calls
             // CEE3ABD and never returns. A failed step therefore emits no summary and publishes no output, and

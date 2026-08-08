@@ -32,7 +32,7 @@
  *               COUSR02C.cbl (414, 11), COUSR03C.cbl (359, 11),
  *               COMEN01C.cbl (282, 7), COADM01C.cbl (268, 7)
  *               @ 7756d89
- * Source      : app/cbl/CSUTLDTC.cbl (157 lines, 2 paragraphs) +
+ * Source      : app/cbl/CSUTLDTC.cbl (157 lines, 2 own paragraph labels) +
  *               app/cpy/CSUTLDPY.cpy (14 Area-A labels) +
  *               app/cpy/CSUTLDWY.cpy @ 7756d89
  * Source      : app/cbl/CBSTM03B.CBL (230 lines; 4 DD names by 6
@@ -257,22 +257,22 @@
  * which is why both are stated with their composition rather than as a single headline number.
  *
  * <dl>
- *   <dt><strong>Structural source census: 639 Area-A entries across the 28 programs</strong></dt>
- *   <dd>Being 553 paragraph style entries and 86 {@code SECTION} entries. This is a <em>lexical</em> inventory
- *       of everything written in Area A, so it counts the {@code IDENTIFICATION} and {@code ENVIRONMENT}
- *       division entries alongside the procedure labels - {@code PROGRAM-ID.}, {@code DATE-WRITTEN.} and
- *       {@code DATE-COMPILED.} in the online programs, {@code FILE-CONTROL.} in the batch ones. Those are
- *       declarations: they carry no statement, they are performed by nothing, and <strong>none of them becomes
- *       a Java method in any package.</strong> The figure is retained because it is the census that proves no
- *       source line was overlooked, and for no other purpose.</dd>
+ *   <dt><strong>Procedure-division paragraph census: 528 labels across the 28 programs</strong></dt>
+ *   <dd>Every Area-A label that appears after {@code PROCEDURE DIVISION}, which is the measure
+ *       {@code TRACEABILITY_MATRIX.md} publishes and maps 528 of 528 of. A parse that admits all four
+ *       divisions instead reports a larger figure, because it counts declarations - {@code PROGRAM-ID.},
+ *       {@code DATE-WRITTEN.} and {@code DATE-COMPILED.} in the online programs, {@code FILE-CONTROL.} in the
+ *       batch ones - alongside the procedure labels. Those carry no statement, they are performed by nothing,
+ *       and <strong>none of them becomes a Java method in any package</strong>, so an all-division figure is a
+ *       parser artefact and never a coverage figure. {@code TRACEABILITY_MATRIX.md} section 1.4 records that
+ *       distinction once, and this package does not restate the artefact's value.</dd>
  *   <dt><strong>Executable mapping inventory: 552 labels</strong></dt>
  *   <dd>Being 528 in-program procedure labels - every Area-A label that appears after
  *       {@code PROCEDURE DIVISION} - plus 10 expanded from {@code app/cpy/CSSTRPFY.cpy} and 14 from
  *       {@code app/cpy/CSUTLDPY.cpy}. <strong>This is the figure that corresponds one to one to private Java
  *       methods</strong>, and it is the figure the mapped-method column of the table above is drawn from and
- *       the one the scope-coverage gate reads. It is smaller than the structural census by exactly the 111
- *       division-header entries and {@code SECTION} entries that declare rather than execute, and larger by
- *       the 24 labels the two procedural copybooks expand into their host programs.</dd>
+ *       the one the scope-coverage gate reads. It exceeds the procedure-division census by exactly the 24
+ *       labels the two procedural copybooks expand into their host programs, and by nothing else.</dd>
  * </dl>
  *
  * <p>Two contributions come from copybooks rather than from the programs themselves, and both are easy to

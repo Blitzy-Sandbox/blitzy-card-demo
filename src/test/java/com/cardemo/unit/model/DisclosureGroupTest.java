@@ -16,7 +16,8 @@
  *               interest calculator's DEFAULT fallback working.
  * Source      : app/cpy/CVTRA02Y.cpy:L5-L10 (50 B, composite key 16) @ 7756d89
  * Source      : app/catlg/LISTCAT.txt:L896 (KEYLEN 16, AVGLRECL 50)
- * Source      : app/cbl/CBACT04C.cbl:L214-L216, L415-L460, L462-L470, L482-L484
+ * Source      : app/cbl/CBACT04C.cbl:L214-L216, L415-L440, L443-L460, L462-L470,
+ *               L482-L484
  * Source      : app/csd/CARDDEMO.CSD (eight CICS files; DISCGRP absent)
  * Source      : app/data/ASCII/discgrp.txt, trancatg.txt, acctdata.txt
  * ******************************************************************

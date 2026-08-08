@@ -246,8 +246,22 @@ class RequestBoundaryHardeningTest {
         return request;
     }
 
+    /**
+     * The byte bound, applied before authorization and before MVC binding.
+     *
+     * <p>Finding LOW-004, severity Low. This group used to be titled "applied before authentication", which the
+     * measured chain contradicts: {@code SecurityContextHolderFilter}, {@code JwtAuthenticationFilter},
+     * {@code HeaderWriterFilter}, {@code RequestBodyLimitFilter}, {@code RequestMediaTypeFilter}, and
+     * {@code AuthorizationFilter} last. The bound runs <em>after</em> the bearer filter.
+     *
+     * <p>What the tests prove is unchanged, because the bearer filter refuses nothing - it populates the
+     * security context when a token is present and passes an anonymous request through. The refusal for want
+     * of authorization is the last filter, and argument resolution is later still, so an oversized body from an
+     * entirely unauthenticated caller is still answered {@code 413} without any handler running. That is what
+     * these cases assert, and it is asserted by driving the filter directly with no principal at all.
+     */
     @Nested
-    @DisplayName("the byte bound, applied before authentication")
+    @DisplayName("the byte bound, applied before authorization and MVC binding")
     class ByteBound {
 
         @Test
@@ -339,7 +353,7 @@ class RequestBoundaryHardeningTest {
             assertThat(chain.getRequest())
                     .as("""
                         and nothing downstream ran. The bound reads the length-less body itself, up to one \
-                        byte past the limit, so the refusal happens before authentication and before any \
+                        byte past the limit, so the refusal happens before authorization and before any \
                         handler - rather than lazily from inside a body read, where Spring converts the \
                         IOException into HttpMessageNotReadableException and the answer becomes 400.""")
                     .isNull();
@@ -542,7 +556,7 @@ class RequestBoundaryHardeningTest {
     }
 
     /**
-     * The header bound, which is read before the body and before authentication.
+     * The header bound, which is read before the body and before any filter in the security chain.
      *
      * <p><strong>Finding CFG-004, severity Medium - these tests pin both halves.</strong> The shipped profile
      * declared {@code server.tomcat.max-http-request-header-size}, and nothing binds that key. Spring Boot
@@ -628,7 +642,7 @@ class RequestBoundaryHardeningTest {
     /**
      * The control-character screen over a request body, and the boundary it must not cross.
      *
-     * <p><strong>Finding F-1, severity Major - these tests pin both halves of the remediation.</strong> A
+     * <p><strong>Finding F-1, severity High - these tests pin both halves of the remediation.</strong> A
      * {@code U+0000} inside a JSON string travelled unexamined from an inbound body into a character column,
      * where PostgreSQL refused the byte sequence; the refusal surfaced as an input-output failure on
      * {@code PUT /api/admin/users/{userId}} and as an abend on {@code POST /api/admin/users} rather than as the
@@ -886,7 +900,7 @@ class RequestBoundaryHardeningTest {
         }
 
         @Test
-        @DisplayName("an unsatisfiable Accept is answered 406 WITH a body, which it previously had not")
+    @DisplayName("an unsatisfiable Accept is answered 406 WITH a body, never with an empty one")
         void anUnsatisfiableAcceptIsAnswered406WithABody() throws Exception {
             final MockHttpServletResponse response =
                     resolve(new HttpMediaTypeNotAcceptableException(List.of(MediaType.APPLICATION_JSON)));
@@ -1066,7 +1080,7 @@ class RequestBoundaryHardeningTest {
     /**
      * The refusal <em>record</em>, as distinct from the refusal <em>response</em>.
      *
-     * <p><strong>Finding C-01, severity Critical - these tests pin the remediation.</strong> The response body
+     * <p><strong>Finding C-01, severity Blocker - these tests pin the remediation.</strong> The response body
      * was already proven to echo nothing back; the log record was not, and it was the one carrying the caller's
      * bytes. Four boundary sites logged raw request metadata: the media-type screen logged the declared
      * {@code Content-Type}, the framework-boundary resolver logged the method and the URI, the firewall handler

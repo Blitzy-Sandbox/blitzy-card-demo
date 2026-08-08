@@ -18,7 +18,7 @@
  *               under CLUSTER--AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS at
  *               :L894, with RKP 0 at :L897 and UNIQUE INDEXED at :L898
  *               app/cbl/CBACT04C.cbl:L107 - COPY CVTRA02Y - and
- *               :L415-L460 - the DEFAULT group fallback
+ *               :L415-L440 and :L443-L460 - the DEFAULT group fallback
  *               app/data/ASCII/discgrp.txt - 51 rows, three groups of
  *               seventeen, 50 bytes each
  *               app/data/ASCII/acctdata.txt - ACCT-GROUP-ID is ten

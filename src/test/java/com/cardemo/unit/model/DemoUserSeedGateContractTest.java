@@ -422,9 +422,10 @@ class DemoUserSeedGateContractTest {
         /**
          * Returns the SQL identifier text of a line, with comments and quoted literals removed.
          *
-         * <p>Stripping single-quoted literals is required, not cosmetic. One seeded BCrypt digest is
-         * {@code $2a$10$yC2yWBCVvR2Mp...}, which contains the letters {@code CVv}; a case-insensitive
-         * substring search over the raw line therefore reports a verification value in a password hash.
+         * <p>Stripping single-quoted literals is required, not cosmetic. A BCrypt digest is 53 characters of
+         * base-64-ish alphabet after its {@code $2a$10$} prefix, so some seeded digest inevitably contains the
+         * trigram {@code CVv}; a case-insensitive substring search over the raw line therefore reports a
+         * verification value in a password hash.
          * The property under test is that no <em>identifier</em> names a verification column, so the
          * literals - where a digest, a name or an address legitimately holds arbitrary text - are removed
          * before the search. This is the same distinction the schema itself draws between a column name
@@ -487,13 +488,14 @@ class DemoUserSeedGateContractTest {
          *
          * <p>A scan that silently stripped too much would report a clean file no matter what it contained.
          * This pins both directions: a quoted digest carrying the letters {@code CVv} is not a finding, and
-         * a bare column declaration is.
+         * a bare column declaration is. The digest below is wholly synthetic — it reproduces only the shape
+         * and the trigram the property turns on, and matches no value the seed migration writes.
          */
         @Test
         @DisplayName("the scan distinguishes a column named for a verification value from a digest holding one")
         void theScanDistinguishesIdentifiersFromLiterals() {
             assertThat(mentionsVerificationValue(identifierTextOf(
-                    "  ('USER0001', '$2a$10$yC2yWBCVvR2MpALAjIxBj.PhUCay2jxyYaHiIJDtOC95LotiiHoD2', 'U'),")))
+                    "  ('SYNTH001', '$2a$10$AAAAAAAACVvAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'U'),")))
                     .as("a digest that happens to contain the letters is not a verification column")
                     .isFalse();
             assertThat(mentionsVerificationValue(identifierTextOf("  card_cvv_cd CHAR(3) NOT NULL,")))

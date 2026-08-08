@@ -38,6 +38,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.validation.FieldError;
@@ -79,10 +80,10 @@ import com.cardemo.service.card.CardUpdateService;
  *
  * <ul>
  *   <li>{@code CCLI} at {@code app/csd/CARDDEMO.CSD:L357} fronting {@code PROGRAM(COCRDLIC)} at
- *       {@code :L358} - {@code app/cbl/COCRDLIC.cbl}, 1,459 lines and 42 paragraph labels, painting
+ *       {@code :L358} - {@code app/cbl/COCRDLIC.cbl}, 1,459 lines and 39 own paragraph labels, painting
  *       mapset {@code COCRDLI}. Reached by {@link #listCards}.</li>
  *   <li>{@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347} fronting {@code PROGRAM(COCRDSLC)} at
- *       {@code :L348} - {@code app/cbl/COCRDSLC.cbl}, 887 lines and 37 paragraph labels, painting mapset
+ *       {@code :L348} - {@code app/cbl/COCRDSLC.cbl}, 887 lines and 34 own paragraph labels, painting mapset
  *       {@code COCRDSL}. Reached by {@link #getCardDetail}.</li>
  *   <li>{@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367}, described
  *       {@code DESCRIPTION(CREDIT CARD UPDATE TRANSACTION)} at {@code :L368}, fronting
@@ -171,7 +172,7 @@ import com.cardemo.service.card.CardUpdateService;
  *
  * <h2>Findings and deviations, with severities</h2>
  *
- * <p>Every finding this class carries is classified and tracked; each is also owed an entry in the
+ * <p>Every finding this class carries is classified and tracked; each is also held in the
  * {@code DECISION_LOG.md} under the entry named at the end of its item. Nothing in this list is a silent
  * substitution, and nothing in it is a defect left unstated.</p>
  *
@@ -463,23 +464,20 @@ public class CardController {
 
     /**
      * The problem-detail property carrying the correlation identifier of the failing request.
-     * <p>
-     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
-     * file-status values that used to be returned to the client are now written only to the log, and this
-     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
-     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
-     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
-     * attacker holding the response body cannot.
+     *
+     * <p>It is the hinge of the posture the package documentation states: the same value
+     * {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the withheld detail from the log
+     * while a caller holding only the response body cannot.
      */
     private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
     /**
      * The value substituted when no correlation identifier is in the diagnostic context.
-     * <p>
-     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
-     * handler here has passed through it, so this is unreachable in the server. It exists because a
-     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
-     * {@code null} member and make the body's shape depend on how it was produced.
+     *
+     * <p>Unreachable in the server, because {@code CorrelationIdFilter} runs at
+     * {@code HIGHEST_PRECEDENCE} ahead of every handler here. It exists so that a handler invoked
+     * directly by a unit test still produces a body of the same shape.
      */
     private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
@@ -579,6 +577,23 @@ public class CardController {
     /** Abend reason for an unexpected card-detail failure. */
     private static final String CARD_DETAIL_ABEND_REASON = "CARD DETAIL RETRIEVAL FAILED UNEXPECTEDLY";
 
+    /**
+     * {@code ABEND-REASON} for a request that reached a snapshot-bearing operation with no usable principal.
+     *
+     * <p>Both routes are declared authenticated in {@code SecurityConfig}, so this is a broken chain rather
+     * than a client mistake, which is why it abends rather than answering {@code 401}: a {@code 401} would
+     * tell the caller to authenticate, when in fact they already had.</p>
+     */
+    private static final String SUBJECT_ABEND_REASON = "NO PRINCIPAL FOR SNAPSHOT BINDING";
+
+    /**
+     * {@code ABEND-MSG} for that condition. Names no principal, no route and no token.
+     */
+    private static final String SUBJECT_ABEND_MESSAGE =
+            "A card operation was reached with no authenticated principal, so the as-displayed snapshot could"
+                    + " be bound to no subject. The security filter chain declares both card routes"
+                    + " authenticated; check that it is installed.";
+
     /** Abend reason for an unexpected card-update failure. */
     private static final String CARD_UPDATE_ABEND_REASON = "CARD UPDATE FAILED UNEXPECTEDLY";
 
@@ -672,7 +687,7 @@ public class CardController {
     /**
      * Operation 1 of 3 - one page of cards. Replaces CICS transaction {@code CCLI}
      * ({@code app/csd/CARDDEMO.CSD:L357}) and the program it fronts, {@code app/cbl/COCRDLIC.cbl} (1,459
-     * lines, 42 paragraph labels), which painted mapset {@code COCRDLI}.
+     * lines, 39 own paragraph labels), which painted mapset {@code COCRDLI}.
      *
      * <p><strong>Purpose.</strong> Returns one screen of card rows, optionally narrowed by an account
      * filter and a card filter, together with the cursor needed to ask for the adjacent screen. It is
@@ -868,7 +883,7 @@ public class CardController {
     /**
      * Operation 2 of 3 - one card's details. Replaces CICS transaction {@code CCDL}
      * ({@code app/csd/CARDDEMO.CSD:L347}) and the program it fronts,
-     * <strong>{@code app/cbl/COCRDSLC.cbl}</strong> (887 lines, 37 paragraph labels), which painted mapset
+     * <strong>{@code app/cbl/COCRDSLC.cbl}</strong> (887 lines, 34 own paragraph labels), which painted mapset
      * {@code COCRDSL}.
      *
      * <p>The program is {@code COCRDSLC}, the card select program, and <strong>not</strong>
@@ -891,7 +906,8 @@ public class CardController {
      * index, and <em>nothing performs them</em>: {@code 9000-READ-DATA.} at {@code :L726} performs only the
      * {@code 9100} range, and the label {@code 9150} occurs nowhere else in the program. The pair is
      * genuinely unreachable and is retained for parity in the <em>service</em> layer, where the paragraph
-     * map must stay complete and mechanically checkable; it is owed an entry in the {@code DECISION_LOG.md} and
+     * map must stay complete and mechanically checkable; it is covered by {@code DL-CR-01} in the
+     * {@code DECISION_LOG.md} and has its rows in
      * {@code TRACEABILITY_MATRIX.md} as tracked rather than abandoned code, which is what keeps it
      * compatible with the no-dead-code standard. Two consequences bind here. It is documented at this
      * operation but <em>not reproduced</em> at it, because a controller has no paragraph map. And
@@ -918,12 +934,13 @@ public class CardController {
      * invent a validation the map does not express.</p>
      *
      * <p><strong>The response is also the precondition for the update.</strong> It carries the
-     * {@code CCUP-OLD-DETAILS} group as its {@code oldDetails} member, and the matching {@code PUT} requires
-     * that group in its request body. It is what {@code 9300-CHECK-CHANGE-IN-REC} at
+     * {@code CCUP-OLD-DETAILS} group sealed into its {@code snapshot} member, and the matching {@code PUT}
+     * requires that value in its request body. It is what {@code 9300-CHECK-CHANGE-IN-REC} at
      * {@code app/cbl/COCRDUPC.cbl} compares against, so it must be the values <em>this read displayed</em>
      * rather than values derived from the live row at write time - deriving them there makes the comparison
-     * tautologically true and destroys the guard. It is produced by the update service, which owns the group,
-     * and it is returned as the group rather than as flat fields because
+     * tautologically true and destroys the guard, and so does letting the caller rewrite them, which is why
+     * the value is sealed rather than published. It is produced by the update service, which owns the group,
+     * and it carries the whole group rather than flat fields because
      * {@code app/cpy-bms/COCRDSL.CPY} declares fifteen fields and none of them is the expiry <em>day</em>
      * that {@code :L1507} compares. The card verification value of {@code :L294} is not a member: it is
      * stored but has no read path at any layer, and the concurrency question its predicate asked is answered
@@ -952,8 +969,10 @@ public class CardController {
      * response, or null when the caller supplied the two filters directly. When present it supplies BOTH
      * filters and neither may accompany it, because a client that has one of these has no need to compose
      * the other and a request carrying both is ambiguous about which the caller meant
-     * @return {@code 200 OK} with the masked card detail projection and the as-displayed group a subsequent
-     * update echoes back as {@code oldDetails}; never null
+     * @param authentication the principal Spring Security resolved, whose name is the subject the sealed
+     * snapshot is issued to; a snapshot issued here will not open for another operator
+     * @return {@code 200 OK} with the masked card detail projection and the sealed as-displayed snapshot a
+     * subsequent update echoes back as {@code snapshot}; never null
      * @throws ValidationException if either filter is absent, blank or not exactly the required number of
      * digits
      * @throws RecordNotFoundException if no card carries that number
@@ -964,7 +983,12 @@ public class CardController {
     public ResponseEntity<CardResponse> getCardDetail(
             @RequestParam(name = "accountFilter", required = false) final String accountFilter,
             @RequestParam(name = "cardFilter", required = false) final String cardFilter,
-            @RequestParam(name = CARD_KEY_FIELD, required = false) final String cardKey) {
+            @RequestParam(name = CARD_KEY_FIELD, required = false) final String cardKey,
+            final Authentication authentication) {
+
+        // Resolved FIRST, before any read is issued. An absent principal on this route is a wiring defect
+        // rather than a request outcome, and a defect is reported without having touched a dataset.
+        final String subject = subjectOf(authentication);
 
         // An opaque row reference stands in for the two filters, and the filters are relayed unchanged when
         // it is absent. Resolving it here rather than in the service is deliberate: the service reproduces
@@ -977,19 +1001,21 @@ public class CardController {
 
         final CardDto detail = retrieveCardDetail(resolvedAccountFilter, resolvedCardFilter);
 
-        // The as-displayed group the matching update must echo back. It is produced by the UPDATE service,
-        // because that service owns CCUP-OLD-DETAILS, and it is returned as the group itself because
-        // app/cpy-bms/COCRDSL.CPY declares fifteen fields and none of them is the expiry day that :1507
-        // compares - so this is the only route by which a client obtains it.
-        final CardUpdateRequest.CardDetails oldDetails =
-                acquireUpdateSnapshot(resolvedAccountFilter, resolvedCardFilter);
+        // The sealed as-displayed snapshot the matching update must echo back. It is produced by the UPDATE
+        // service, because that service owns CCUP-OLD-DETAILS, and it carries the group rather than flat
+        // fields because app/cpy-bms/COCRDSL.CPY declares fifteen fields and none of them is the expiry day
+        // that :1507 compares - so this is the only route by which a client obtains it. It is sealed because a
+        // group the caller could rewrite would make the :1503-1508 comparison unconditionally true; the value
+        // is bound to this operation, these two identifiers, this principal and an expiry.
+        final String snapshot = acquireUpdateSnapshot(resolvedAccountFilter, resolvedCardFilter, subject);
         // The response carries a reference of its own, so a client that arrived here from a list row can
-        // reach the update without ever holding the card number.
-        final CardResponse response = CardResponse.readOf(detail, oldDetails,
+        // reach the update without ever holding the card number. It is sealed under a different operation
+        // kind from the snapshot, so neither value opens in the other's place.
+        final CardResponse response = CardResponse.readOf(detail, snapshot,
                 sealCardHandle(detail.getAccountId(), detail.getCardNumber()));
 
-        LOG.debug("Served transaction {} program {}: detail returned for one card with its as-displayed group",
-                CARD_DETAIL_TRANSACTION_ID, CARD_DETAIL_PROGRAM);
+        LOG.debug("Served transaction {} program {}: detail returned for one card with its sealed"
+                + " as-displayed snapshot", CARD_DETAIL_TRANSACTION_ID, CARD_DETAIL_PROGRAM);
 
         return ResponseEntity.ok(response);
     }
@@ -997,8 +1023,8 @@ public class CardController {
     /**
      * Operation 3 of 3 - apply a card update. Replaces CICS transaction {@code CCUP}
      * ({@code app/csd/CARDDEMO.CSD:L367}, described {@code DESCRIPTION(CREDIT CARD UPDATE TRANSACTION)} at
-     * {@code :L368}) and the program it fronts, {@code app/cbl/COCRDUPC.cbl} (1,560 lines, 48 paragraph
-     * labels), which painted mapset {@code COCRDUP}.
+     * {@code :L368}) and the program it fronts, {@code app/cbl/COCRDUPC.cbl} (1,560 lines, 45 own /
+     * 47 mapped paragraph labels), which painted mapset {@code COCRDUP}.
      *
      * <p><strong>Purpose.</strong> Applies an edited card record and returns the refreshed detail. The
      * whole of the work - the field edits, the change detection against the as-displayed snapshot, and the
@@ -1013,11 +1039,13 @@ public class CardController {
      * {@code app/cbl/COCRDUPC.cbl:L303-L313}. {@code @Valid} is applied so that the width constraints the
      * record declares, and those of its nested groups, are enforced before the service is entered.</p>
      *
-     * <p><strong>The as-displayed snapshot is a body member.</strong> The other half of
+     * <p><strong>The as-displayed snapshot is a sealed body member.</strong> The other half of
      * {@code app/cbl/COCRDUPC.cbl:L291-L301}, {@code CCUP-OLD-DETAILS}, arrives as the body's
-     * {@code oldDetails} group, echoed back unaltered from the preceding detail read. Transformation Rule 7
-     * puts it there: the program's own half of the COMMAREA held it between the two turns of the
-     * pseudo-conversation and a stateless server has nowhere to put it. The write is guarded twice over and
+     * {@code snapshot} member: one opaque authenticated string, echoed back unaltered from the preceding
+     * detail read. Transformation Rule 7 puts it there - the program's own half of the COMMAREA held it
+     * between the two turns of the pseudo-conversation and a stateless server has nowhere to put it - and it
+     * is sealed rather than readable because a group the caller can rewrite would make the comparison
+     * unconditionally true. The write is guarded twice over and
      * neither guard substitutes for the other - the field-by-field comparison of {@code :L1498-L1521}, and
      * the {@code @Version} column that detects any concurrent write to the row. The one member of the legacy
      * group that does not travel is the card verification value of {@code :L294}: it is stored but has no
@@ -1050,21 +1078,28 @@ public class CardController {
      * {@code 404} when the card row is absent. {@code 409} when the update lost a race - the response
      * carries the concurrency outcome, so a record changed by someone else stays distinguishable from a
      * lock that could not be taken and from a write that failed after locking. {@code 428} when the body
-     * carried no {@code oldDetails} group, or a hollow one, so the lost-update guard had nothing to compare
-     * against and the write was never attempted: read the record and resend the group that read returned.
-     * {@code 412} when the group no longer matches the stored row, which is the guard doing its work: read
-     * again, re-apply the edits over the values that read returned, and do not retry blindly.
+     * carried no {@code snapshot} member, or one that opened onto nothing, so the lost-update guard had
+     * nothing to compare against and the write was never attempted: read the record and resend the value that
+     * read returned. {@code 412} when the presented snapshot failed to open - altered, issued for another
+     * card, issued to another operator, or expired - or when the group it carries no longer matches the
+     * stored row, which is the guard doing its work: read again, re-apply the edits over the values that read
+     * returned, and do not retry blindly.
      * {@code 502} for an I/O failure and {@code 500} for an abend.</p>
      *
-     * @param request the received map and <b>both</b> snapshot groups; must not be null and is relayed to
-     * the service exactly as bound. Its {@code oldDetails} group is the group the preceding detail read
-     * returned; an absent or hollow one is reported as unconfirmed rather than compared against nothing.
+     * @param request the received map, the edited group and the sealed {@code snapshot} member; must not be
+     * null and is relayed to the service exactly as bound - the sealed member especially, being an
+     * authentication tag over specific bytes. That member is the value the preceding detail read returned; an
+     * absent one, or one that opens onto nothing, is reported as unconfirmed rather than compared against
+     * nothing.
      * @return {@code 200 OK} with the refreshed and masked card detail projection; never null
      * @throws ValidationException if an edit paragraph refuses a field
      * @throws RecordNotFoundException if the card row is absent
      * @param cardKey an opaque row reference taken from a card-list row or a detail response, or null when
      * the body carries the account identifier and the card number itself. When present it supplies both, and
-     * the body must not also carry either
+     * the body must not also carry either. It is sealed under its own operation kind, distinct from the
+     * snapshot's, so the two are not interchangeable
+     * @param authentication the principal Spring Security resolved, whose name is the subject the sealed
+     * snapshot must have been issued to
      * @throws ConcurrentUpdateException if the update was abandoned for any of the recorded outcomes
      * @throws FatalProcessingException if the update fails for any reason other than a typed CardDemo
      * failure
@@ -1072,15 +1107,20 @@ public class CardController {
     @PutMapping
     public ResponseEntity<CardResponse> updateCard(
             @Valid @RequestBody final CardUpdateRequest request,
-            @RequestParam(name = CARD_KEY_FIELD, required = false) final String cardKey) {
+            @RequestParam(name = CARD_KEY_FIELD, required = false) final String cardKey,
+            final Authentication authentication) {
+
+        // Resolved FIRST, before the reference is opened or the service is entered, for the same reason as on
+        // the read: an absent principal here is a wiring defect and is reported without touching a dataset.
+        final String subject = subjectOf(authentication);
 
         // The row reference arrives as a request parameter and NOT as a body member, and that is a contract
         // constraint rather than a style choice: app/cpy-bms/COCRDUP.CPY declares exactly seventeen input
-        // fields, transformation Rule 6 fixes the body to those seventeen plus the two snapshot groups, and
-        // a nineteen-component request record is what that rule means here. The reference is a transport
-        // concern - it identifies WHICH card the body applies to, not what it contains - so it stays a
-        // parameter while both snapshot groups stay in the body.
-        final CardDto updated = applyCardUpdate(withIdentityFrom(request, cardKey));
+        // fields, transformation Rule 6 fixes the body to those seventeen plus the sealed snapshot and the
+        // submitted group, and a nineteen-component request record is what that rule means here. The
+        // reference is a transport concern - it identifies WHICH card the body applies to, not what it
+        // contains - so it stays a parameter while the sealed snapshot stays in the body.
+        final CardDto updated = applyCardUpdate(withIdentityFrom(request, cardKey), subject);
 
         LOG.debug("Served transaction {} program {}: one card row updated",
                 CARD_UPDATE_TRANSACTION_ID, CARD_UPDATE_PROGRAM);
@@ -1179,16 +1219,18 @@ public class CardController {
      * {@code LOCKED_BUT_UPDATE_FAILED} is a write that failed after the lock was taken. All three answer
      * {@code 409}, and the outcome is reported as a problem-detail member so that they stay separable.</p>
      *
-     * <p>{@code DATA_CHANGED_BEFORE_UPDATE} answers {@code 412}. It is the change-detection guard of
-     * {@code 9300-CHECK-CHANGE-IN-REC} firing: the {@code oldDetails} group the body carried no longer
-     * matches the stored row. A failed precondition is answered with the status defined for exactly that, and
+     * <p>{@code DATA_CHANGED_BEFORE_UPDATE} answers {@code 412}. It is either the change-detection guard of
+     * {@code 9300-CHECK-CHANGE-IN-REC} firing - the group the sealed snapshot carries no longer matches the
+     * stored row - or the sealed snapshot itself failing to open, which is the same class of answer: the
+     * precondition the caller presented cannot be honoured. A failed precondition is answered with the status
+     * defined for exactly that, and
      * it is the status the account update already answers for the same outcome, so one outcome produces one
      * status across both update surfaces.</p>
      *
      * <p>{@code CHANGES_NOT_CONFIRMED} is different in kind again and answers {@code 428}. It means no
-     * {@code oldDetails} group was presented at all, or a hollow one was, so the lost-update guard had
-     * nothing to compare against and the write was never attempted - an absent precondition rather than a
-     * failed one. That is exactly the condition {@code 428} exists for, and the distinct status tells a
+     * {@code snapshot} member was presented at all, or one was presented that opened onto nothing, so the
+     * lost-update guard had nothing to compare against and the write was never attempted - an absent
+     * precondition rather than a failed one. That is exactly the condition {@code 428} exists for, and the distinct status tells a
      * client to fetch the detail and resend rather than to re-read and merge.</p>
      *
      * <p>The message is relayed byte for byte where the exception carries one, which is how the legacy
@@ -1303,8 +1345,9 @@ public class CardController {
      * rather than {@code 502} on four surfaces and {@code 500} on this one.</p>
      *
      * <p>The four-character expanded status that the legacy status renderer produced, the logical file and the
-     * operation are all <strong>logged rather than returned</strong>. An earlier revision reported all three in
-     * the body on the grounds that each identifies the failure without disclosing any data; individually that
+     * operation are all <strong>logged rather than returned</strong>. Reporting all three in
+     * the body is tempting on the grounds that each identifies the failure without disclosing any data;
+     * individually that
      * is true, but together they tell a caller which internal dataset failed which verb with which status,
      * which is the disclosure {@code CWE-209} names. No key and no field value is reported either. The detail
      * is fixed, the body carries {@value #ERROR_CODE_IO_FAILURE} and the correlation identifier that joins it
@@ -1407,11 +1450,9 @@ public class CardController {
      * inconsistency as a High-severity finding on this seam, and it is the same defect on every route in this
      * package that binds a body.
      *
-     * <p><strong>Why it is declared here rather than centrally.</strong> The envelope is per-controller by
-     * design: the title names the resource, so a single advice class could not produce it without being told
-     * which controller it was answering for. This package declares no {@code @ControllerAdvice} and no shared
-     * base class, and this method keeps that property - it carries {@code @ExceptionHandler} only and is
-     * scoped to this controller alone, exactly like the typed mappers above it.
+     * <p><strong>Why it is declared here rather than centrally.</strong> Stated for the whole package in
+     * {@code com.cardemo.controller}'s package documentation; this handler keeps that property, carrying
+     * {@code @ExceptionHandler} only and answering for this controller alone.
      *
      * <p><strong>What the body does not contain.</strong> No rejected value, no field name, no constraint
      * message, no exception class and no discriminator; {@link #BIND_FAILURE_PROBLEM_DETAIL} records why each
@@ -1447,18 +1488,11 @@ public class CardController {
      * Maps a request body the framework could not read onto {@code 400 Bad Request} with this controller's
      * own envelope.
      *
-     * <p>Claims the one exception the framework folds three conditions into, all of which occur before the
-     * mapped method is entered: a body that is not well-formed JSON, a body carrying a property outside the
-     * schema, and a request with no body where {@code @RequestBody} requires one. Each was previously answered
-     * by the framework's default handling, in a shape no client-side handler written against this package's
-     * envelope could read - the second half of the same High-severity finding.
-     *
-     * <p>The status is {@code 400} rather than {@code 415} or {@code 422}: the caller addressed the right
-     * operation with the right media type and sent something this operation cannot accept, which is precisely
-     * a bad request. Answering it identically to a bean-validation refusal is deliberate, and the two are told
-     * apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line.
-     *
-     * <p>This method is not request-mapped and is none of the three operations.
+     * <p>Which three framework conditions fold into this one exception, why the status is {@code 400}
+     * rather than {@code 415} or {@code 422}, and why the handler is declared per controller rather than
+     * centrally are stated for the whole package in {@code com.cardemo.controller}'s package
+     * documentation. The two refusals are told apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than
+     * by the status line, and this method is not request-mapped, so it is none of the three operations.
      *
      * @param unreadable the framework's read failure, whose message and cause chain are deliberately kept out
      *                   of the body and emitted at {@code DEBUG} only
@@ -1586,15 +1620,17 @@ public class CardController {
      *
      * @param accountFilter the account filter as resolved, relayed verbatim.
      * @param cardFilter the card filter as resolved, relayed verbatim.
-     * @return the as-displayed group, never null
+     * @param subject the authenticated principal the snapshot is issued to, taken from the resolved
+     * {@code Authentication} and never from a request member.
+     * @return the sealed as-displayed snapshot, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private CardUpdateRequest.CardDetails acquireUpdateSnapshot(final String accountFilter,
-                                                                final String cardFilter) {
+    private String acquireUpdateSnapshot(final String accountFilter, final String cardFilter,
+                                         final String subject) {
 
         try {
-            return this.cardUpdateService.fetchSnapshotForUpdate(accountFilter, cardFilter);
+            return this.cardUpdateService.sealSnapshotForUpdate(accountFilter, cardFilter, subject);
         } catch (final CardDemoException modelled) {
             throw modelled;
         } catch (final RuntimeException unexpected) {
@@ -1611,15 +1647,16 @@ public class CardController {
      * through - because the change detection compares the two snapshot groups as they arrive and any
      * normalisation here would change its verdict.</p>
      *
-     * @param request the received map and both snapshot groups, relayed verbatim.
+     * @param request the received map, the edited group and the sealed snapshot, relayed verbatim.
+     * @param subject the authenticated principal the sealed snapshot must have been issued to.
      * @return the refreshed card projection, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private CardDto applyCardUpdate(final CardUpdateRequest request) {
+    private CardDto applyCardUpdate(final CardUpdateRequest request, final String subject) {
 
         try {
-            return this.cardUpdateService.updateCard(request);
+            return this.cardUpdateService.updateCard(request, subject);
         } catch (final CardDemoException modelled) {
             throw modelled;
         } catch (final RuntimeException unexpected) {
@@ -1632,8 +1669,8 @@ public class CardController {
      * Returns the request with its two identifiers taken from an opaque row reference, when one was sent.
      *
      * <p>A record has no wither, so a new one is constructed with all nineteen components: the seventeen map
-     * fields relayed unchanged, the two snapshot groups relayed unchanged, and only the account identifier
-     * and the card number substituted. Copying the components explicitly rather than mutating is what keeps
+     * fields relayed unchanged, the sealed snapshot and the edited group relayed unchanged, and only the
+     * account identifier and the card number substituted. Copying the components explicitly rather than mutating is what keeps
      * the "passed through verbatim" property of this operation true - nothing is trimmed, folded or
      * reformatted on the way past.
      *
@@ -1671,7 +1708,7 @@ public class CardController {
                 request.errorMessage(),
                 request.functionKeys(),
                 request.functionKeysContinued(),
-                request.oldDetails(),
+                request.snapshot(),
                 request.newDetails());
     }
 
@@ -1825,7 +1862,7 @@ public class CardController {
     /**
      * Refuses a backward-paging request that does not carry the position it is asking to move back from.
      *
-     * <p><strong>Finding, severity Major - remediated here.</strong>
+     * <p><strong>Finding, severity High - remediated here.</strong>
      * {@code GET /api/cards?action=PAGE_BACKWARD} with no cursors answered
      * {@code 502 CARDDEMO-IO-FAILURE}, titled "Card data store input-output failure", and logged
      * {@code status 032 on file CARDDAT during READ}. Nothing had failed. The store was healthy and the
@@ -1893,7 +1930,7 @@ public class CardController {
     /**
      * Refuses any request that names a page past the first without carrying the cursor that addresses it.
      *
-     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * <p><strong>Finding, severity Medium - remediated here.</strong>
      * {@code GET /api/cards?action=PAGE_FORWARD&page=8} with no cursor answered {@code 200} reporting
      * {@code pageNumber=8} while serving <em>page one's seven rows</em>, and
      * {@code action=SUBMIT&page=8} did the same. A response that reports a page number it did not serve is
@@ -2010,7 +2047,7 @@ public class CardController {
     /**
      * Seals one row's account identifier and card number into an opaque reference.
      *
-     * <p><strong>Finding, severity Major - remediated by this method and its opener.</strong> The list, the
+     * <p><strong>Finding, severity High - remediated by this method and its opener.</strong> The list, the
      * detail and the update operations were individually correct and collectively unusable. The source's
      * list map carries the full card number in every row and a terminal operator typed {@code S} or
      * {@code U} beside one to reach the next screen; this projection masks it, which is right for an HTTP
@@ -2134,6 +2171,38 @@ public class CardController {
     }
 
     /**
+     * Resolves the subject the as-displayed snapshot is bound to, from the authenticated principal and from
+     * nothing else.
+     *
+     * <p>This is the transcription of {@code CDEMO-USER-ID} at {@code app/cpy/COCOM01Y.cpy:L25}: the token's
+     * subject claim, never a request parameter, a body member or a session attribute, so a caller cannot
+     * assert whose snapshot they hold. Both routes that call it are declared authenticated in
+     * {@code SecurityConfig}, so an absent or anonymous principal here is a wiring defect rather than a
+     * request a client made - and it is refused as such rather than being silently sealed under a placeholder,
+     * which would make every snapshot transferable between callers.</p>
+     *
+     * @param authentication the principal the security filter chain resolved, possibly null when the request
+     * bypassed the chain.
+     * @return the principal name, never null and never blank
+     * @throws FatalProcessingException when no usable principal reached the operation, carrying the
+     * {@code app/cpy/CSMSG02Y.cpy} abend payload with this program as the culprit
+     */
+    private static String subjectOf(final Authentication authentication) {
+
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken
+                || authentication.getName() == null
+                || authentication.getName().isBlank()) {
+            LOG.warn("Refused a card operation: no authenticated principal reached it, so the as-displayed"
+                    + " snapshot could be bound to no subject. Only sign-on CC00 is unauthenticated.");
+            throw new FatalProcessingException(ABEND_CODE, CARD_DETAIL_PROGRAM, SUBJECT_ABEND_REASON,
+                    SUBJECT_ABEND_MESSAGE);
+        }
+        return authentication.getName();
+    }
+
+    /**
      * Resolves the administrator flag from the authenticated principal, and from nothing else.
      *
      * <p>The transcription of {@code CDEMO-USER-TYPE} at {@code app/cpy/COCOM01Y.cpy:L26} with its two
@@ -2250,18 +2319,11 @@ public class CardController {
     /**
      * Stamps the two properties every error body carries, and returns the same instance for chaining.
      *
-     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
-     * handler cannot omit the envelope by accident: the {@code return} statement reads
-     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
-     * into that shape.
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so the
+     * envelope cannot be omitted by accident.
      *
-     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
-     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
-     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
-     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
-     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
-     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
-     * nothing is swallowed.
+     * <p>What the envelope discloses and what it withholds is the {@code CWE-209} posture stated for the
+     * whole package in {@code com.cardemo.controller}'s package documentation.
      *
      * @param problem the body under construction; must not be null.
      * @param errorCode one of the {@code ERROR_CODE_*} constants.

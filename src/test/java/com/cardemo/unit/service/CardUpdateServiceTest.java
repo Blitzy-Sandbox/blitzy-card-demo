@@ -9,7 +9,7 @@
  *               single-dataset write sequence of 9200-WRITE-PROCESSING, the
  *               six-field edit cascade of 1200-EDIT-MAP-INPUTS, and every
  *               outcome literal byte-for-byte.
- * Source      : app/cbl/COCRDUPC.cbl (1,560 lines, 48 paragraphs),
+ * Source      : app/cbl/COCRDUPC.cbl (1,560 lines, 45 own / 47 mapped paragraph labels),
  *               app/cpy/CSSTRPFY.cpy (procedural YYYY-STORE-PFKEY) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -50,7 +50,9 @@ import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.entity.Card;
 import com.cardemo.repository.CardRepository;
+import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.card.CardUpdateService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.cardemo.service.shared.FileStatusMapper;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -82,7 +84,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Unit tests for {@link CardUpdateService}, the Java replacement for the COBOL CICS program
- * {@code app/cbl/COCRDUPC.cbl} (1,560 lines, 48 paragraphs) fronting transaction {@code CCUP},
+ * {@code app/cbl/COCRDUPC.cbl} (1,560 lines, 45 own / 47 mapped paragraph labels) fronting transaction {@code CCUP},
  * at traceability anchor commit {@code 7756d89}.
  *
  * <p><strong>1. What it does.</strong> Every assertion below is derived from the COBOL source
@@ -405,6 +407,42 @@ final class CardUpdateServiceTest {
     /** A valid status that differs from the stored one, so the group test always sees a change. */
     private static final String CARD_STATUS_TOGGLED = "N";
 
+    // -----------------------------------------------------------------------------------------
+    // Snapshot sealing. Transformation Rule 7 moves the storage lifetime the COMMAREA held between
+    // the two turns of the pseudo-conversation onto the request, and the value travels sealed so that
+    // the operand of the Regime B comparison at :1503-1508 is never one the guarded party could choose.
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * The authenticated principal every sealed value below is bound to. {@code SEC-USR-ID} is
+     * {@code PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:14}.
+     */
+    private static final String SUBJECT = "ADMIN001";
+
+    /** A second principal, used to prove a value sealed for one operator is useless to another. */
+    private static final String OTHER_SUBJECT = "USER0001";
+
+    /**
+     * The operation kind {@code CardUpdateService} seals under. Duplicated rather than exposed, because
+     * the constant is private to the bean and a test that reached for it would assert its own value.
+     */
+    private static final String SNAPSHOT_KIND = "card-update-snapshot";
+
+    /** The record-key separator the bean joins the two identifiers with. */
+    private static final String RECORD_KEY_SEPARATOR = "/";
+
+    /** The placeholder the bean substitutes for an absent identifier in the record key. */
+    private static final String NO_IDENTIFIER = "-";
+
+    /**
+     * A test-only sealing key. Thirty-two ASCII bytes, comfortably over the component's documented
+     * minimum, and local to this file - no configured or deployed key appears here.
+     */
+    private static final String SEALING_KEY = "card-update-service-test-key!!!!";
+
+    /** The sealer's documented default lifetime, in seconds. */
+    private static final long SEAL_LIFETIME_SECONDS = 900L;
+
     /**
      * The sole collaborator of the bean, mocked because this tier reaches no database. Strict stubs
      * keep every stubbing inside the single test that consumes it.
@@ -416,19 +454,132 @@ final class CardUpdateServiceTest {
     private CardUpdateService service;
 
     /**
+     * The <em>real</em> sealer, deliberately not a mock.
+     *
+     * <p>The as-displayed group reaches {@code updateCard} only by being opened from a sealed value, so a
+     * mocked sealer would assert nothing about the one property that matters: that the group the Regime B
+     * comparison of {@code :1503-1508} consumes is the group <em>this server</em> issued, for this card, to
+     * this principal. Sealing and opening for real is what lets the rejection tests present a tampered,
+     * transplanted, foreign-principal or expired value and observe the refusal.</p>
+     */
+    private SnapshotTokenService snapshotTokenService;
+
+    /**
      * Builds the bean with the mocked repository and a fixed clock, so the screen date and time are
      * reproducible and no validation outcome can depend on when the suite runs.
      */
     @BeforeEach
     void createServiceUnderTest() {
-        service = new CardUpdateService(cardRepository, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
+        snapshotTokenService = sealerAt(FIXED_INSTANT);
+        service = new CardUpdateService(cardRepository, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC),
+                snapshotTokenService);
     }
 
-    // -----------------------------------------------------------------------------------------
+    /**
+     * Builds a sealer whose clock stands at a chosen instant, so expiry is asserted by moving the clock
+     * rather than by sleeping.
+     *
+     * @param instant the instant the sealer measures lifetimes from
+     * @return a sealer over the test key
+     */
+    private static SnapshotTokenService sealerAt(final Instant instant) {
+        return new SnapshotTokenService(SEALING_KEY, SEAL_LIFETIME_SECONDS,
+                Clock.fixed(instant, ZoneOffset.UTC), new ObjectMapper());
+    }
+
+    /**
+     * Renders the record key the bean seals under: the two identifiers that address the row, joined, with a
+     * fixed placeholder for an absent one.
+     *
+     * @param accountId  the account identifier as received
+     * @param cardNumber the card number as received
+     * @return the record key
+     */
+    private static String recordKey(final String accountId, final String cardNumber) {
+        return keyComponent(accountId) + RECORD_KEY_SEPARATOR + keyComponent(cardNumber);
+    }
+
+    /**
+     * Renders one record-key component.
+     *
+     * @param value the identifier as received
+     * @return the value, or the placeholder when it is absent or blank
+     */
+    private static String keyComponent(final String value) {
+        return value == null || value.isBlank() ? NO_IDENTIFIER : value;
+    }
+
+    /**
+     * Seals an as-displayed group exactly as {@code sealSnapshotForUpdate} does: bound to this operation, to
+     * the two identifiers that address the row and to the principal, and with the card number dropped from
+     * the payload because {@code :1347} sources it from the received map field.
+     *
+     * @param group      the group to seal, or {@code null} to seal nothing
+     * @param accountId  the account identifier the value is bound to
+     * @param cardNumber the card number the value is bound to
+     * @param subject    the principal the value is bound to
+     * @return the sealed value, or {@code null} when {@code group} was {@code null}
+     */
+    private String seal(final CardUpdateRequest.CardDetails group, final String accountId,
+                        final String cardNumber, final String subject) {
+        if (group == null) {
+            return null;
+        }
+        return snapshotTokenService.seal(SNAPSHOT_KIND, recordKey(accountId, cardNumber), subject,
+                new CardUpdateRequest.CardDetails(group.accountId(), null, group.cardData()));
+    }
+
+    /**
+     * Builds a request carrying an already-sealed value verbatim, rather than sealing a group for it. This is
+     * what a REST caller submits: the value the preceding read issued, echoed back unaltered.
+     *
+     * @param sealedSnapshot the sealed value to carry, or {@code null} to carry none
+     * @return a request whose submitted name agrees with the stored record, so nothing changed
+     */
+    private CardUpdateRequest sealedRequest(final String sealedSnapshot) {
+        return sealedRequest(sealedSnapshot, STORED_NAME);
+    }
+
+    /**
+     * Builds a request carrying an already-sealed value verbatim, with a chosen cardholder name.
+     *
+     * @param sealedSnapshot the sealed value to carry, or {@code null} to carry none
+     * @param cardholderName submitted {@code CRDNAMEI PIC X(50)}
+     * @return a populated request
+     */
+    private CardUpdateRequest sealedRequest(final String sealedSnapshot, final String cardholderName) {
+        return new CardUpdateRequest(null, null, null, null, null, null,
+                ACCOUNT_ID, CARD_NUMBER, cardholderName, STORED_STATUS,
+                STORED_MONTH, STORED_YEAR, STORED_DAY,
+                null, null, null, null, sealedSnapshot, null);
+    }
+
+    /**
+     * Recovers the group {@code updateCard} would have opened from a request's sealed member, so that the
+     * in-process {@code processRequest} entry point can be driven with the identical operand.
+     *
+     * <p>The card number is restored from the request's own identity field, which is what {@code :1347}
+     * does: {@code MOVE CC-CARD-NUM TO CCUP-OLD-CARDID} takes the <em>received</em> value, not the stored
+     * one.</p>
+     *
+     * @param request the submitted request
+     * @return the opened group, or {@code null} when the request carries no sealed value
+     */
+    private CardUpdateRequest.CardDetails openedSnapshot(final CardUpdateRequest request) {
+        if (request == null || request.snapshot() == null) {
+            return null;
+        }
+        final CardUpdateRequest.CardDetails opened = snapshotTokenService.open(request.snapshot(),
+                SNAPSHOT_KIND, recordKey(request.accountId(), request.cardNumber()), SUBJECT,
+                CardUpdateRequest.CardDetails.class);
+        return opened.cardNumber() != null ? opened
+                : new CardUpdateRequest.CardDetails(opened.accountId(), request.cardNumber(),
+                        opened.cardData());
+    }
+
     // Fixture builders. Deliberately private to this class: the account program's comparison
     // folds case symmetrically and never refreshes its snapshot, so nothing here may be shared
     // with AccountUpdateServiceTest without being wrong for one of the two.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * The three characters {@code CARD-CVV-CD PIC 9(03)} holds on the stored row, chosen with a leading zero
@@ -516,7 +667,7 @@ final class CardUpdateServiceTest {
         return new CardUpdateRequest(null, null, null, null, null, null,
                 ACCOUNT_ID, CARD_NUMBER, cardholderName, cardStatusCode,
                 expiryMonth, expiryYear, expiryDay,
-                null, null, null, null, oldDetails, null);
+                null, null, null, null, seal(oldDetails, ACCOUNT_ID, CARD_NUMBER, SUBJECT), null);
     }
 
     /**
@@ -539,7 +690,7 @@ final class CardUpdateServiceTest {
      * @return the screen and navigation result the mainline returns
      */
     private CardUpdateService.CardUpdateResult confirmSave(final CardUpdateRequest request) {
-        return service.processRequest(request, AID_PF05, CardUpdateService.EntryMode.REENTER);
+        return service.processRequest(request, openedSnapshot(request), AID_PF05, CardUpdateService.EntryMode.REENTER);
     }
 
     /**
@@ -550,7 +701,7 @@ final class CardUpdateServiceTest {
      * @return the screen result carrying the surviving return message
      */
     private CardUpdateService.CardUpdateResult validateOnly(final CardUpdateRequest request) {
-        return service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+        return service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
     }
 
     /**
@@ -639,7 +790,7 @@ final class CardUpdateServiceTest {
 
             final CardUpdateRequest request =
                     requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", "28");
-            service.updateCard(request);
+            service.updateCard(request, SUBJECT);
 
             verify(cardRepository).save(persisted.capture());
             assertThat(persisted.getValue().matchesVerificationValue(STORED_VERIFICATION_VALUE))
@@ -1175,7 +1326,7 @@ final class CardUpdateServiceTest {
                     ACCOUNT_ID_NUMERIC)).thenReturn(Optional.of(storedCard()));
 
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-            service.updateCard(request);
+            service.updateCard(request, SUBJECT);
 
             verify(cardRepository, times(1)).findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC);
             verify(cardRepository, times(1)).save(any(Card.class));
@@ -1234,7 +1385,7 @@ final class CardUpdateServiceTest {
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request, SUBJECT));
 
             assertThat(failure).hasMessage(MSG_COULD_NOT_LOCK).hasNoCause();
             assertThat(failure.getOutcome())
@@ -1257,7 +1408,7 @@ final class CardUpdateServiceTest {
 
             final CardUpdateRequest request =
                     requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", "28");
-            service.updateCard(request);
+            service.updateCard(request, SUBJECT);
 
             verify(cardRepository).save(persisted.capture());
             final Card written = persisted.getValue();
@@ -1290,7 +1441,7 @@ final class CardUpdateServiceTest {
          * the old day, which is why {@code :1471} may write it into the rewrite image at all - and why
          * {@code COCRDSL.CPY} declares no {@code EXPDAYI} for the read map to publish.
          *
-         * <p><strong>Finding, severity Major - remediated.</strong> The screen was the carrier and there is
+         * <p><strong>Finding, severity High - remediated.</strong> The screen was the carrier and there is
          * no screen, so the snapshot is. Trusting the request instead was destructive rather than merely
          * divergent: a client echoing back a detail read - which cannot publish a day it does not carry -
          * submitted none, and the {@code STRING} at {@code :1467-1474} composed an expiry with the day
@@ -1309,7 +1460,7 @@ final class CardUpdateServiceTest {
             for (final String submittedDay : new String[] {"28", null, "  "}) {
                 final CardUpdateRequest request =
                         requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", submittedDay);
-                service.updateCard(request);
+                service.updateCard(request, SUBJECT);
             }
 
             verify(cardRepository, times(3)).save(persisted.capture());
@@ -1430,7 +1581,7 @@ final class CardUpdateServiceTest {
                     null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(errorMessageOf(result))
                     .as("the blank account filter is reported before the non-numeric card filter")
@@ -1449,7 +1600,7 @@ final class CardUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(errorMessageOf(result)).isEqualTo(MSG_NO_INPUT_RECEIVED);
             verifyNoInteractions(cardRepository);
@@ -1467,7 +1618,7 @@ final class CardUpdateServiceTest {
                     null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(errorMessageOf(result))
                     .isEqualTo("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER")
@@ -1487,7 +1638,7 @@ final class CardUpdateServiceTest {
                     null, null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(errorMessageOf(result))
                     .isEqualTo("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER")
@@ -1615,7 +1766,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request));
+                            () -> service.updateCard(request, SUBJECT));
 
             assertThat(failure).hasMessage(MSG_NAME_NOT_PROVIDED).hasNoCause();
             assertThat(failure.getFieldName()).isEqualTo("cardholderName");
@@ -1635,7 +1786,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request));
+                            () -> service.updateCard(request, SUBJECT));
 
             assertThat(failure).hasMessage(MSG_NAME_MUST_BE_ALPHA);
             assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.INVALID);
@@ -1656,7 +1807,7 @@ final class CardUpdateServiceTest {
 
             final CardUpdateRequest request = requestWith(matchingSnapshot(), overLong,
                     CARD_STATUS_TOGGLED, STORED_MONTH, STORED_YEAR, STORED_DAY);
-            service.updateCard(request);
+            service.updateCard(request, SUBJECT);
 
             verify(cardRepository).save(persisted.capture());
             assertThat(persisted.getValue().getEmbossedName())
@@ -1759,7 +1910,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request));
+                            () -> service.updateCard(request, SUBJECT));
 
             assertThat(failure).hasMessage(MSG_STATUS_MUST_BE_YES_NO);
             assertThat(failure.getFieldName()).isEqualTo("cardStatusCode");
@@ -1870,7 +2021,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request));
+                            () -> service.updateCard(request, SUBJECT));
 
             assertThat(failure).hasMessage(MSG_MONTH_NOT_VALID);
             assertThat(failure.getFieldName()).isEqualTo("expiryMonth");
@@ -1979,16 +2130,18 @@ final class CardUpdateServiceTest {
         @DisplayName("moving the injected clock by eighty years changes no validation outcome")
         void movingTheInjectedClockChangesNoOutcome() {
             final CardUpdateService inThePast = new CardUpdateService(cardRepository,
-                    Clock.fixed(Instant.parse("1970-01-01T00:00:00Z"), ZoneOffset.UTC));
+                    Clock.fixed(Instant.parse("1970-01-01T00:00:00Z"), ZoneOffset.UTC),
+                    snapshotTokenService);
             final CardUpdateService inTheFuture = new CardUpdateService(cardRepository,
-                    Clock.fixed(Instant.parse("2050-12-31T23:59:59Z"), ZoneOffset.UTC));
+                    Clock.fixed(Instant.parse("2050-12-31T23:59:59Z"), ZoneOffset.UTC),
+                    snapshotTokenService);
             final CardUpdateRequest request = requestWith(matchingSnapshot(), "JOHN SMITH",
                     CARD_STATUS_TOGGLED, STORED_MONTH, "1950", STORED_DAY);
 
             final String past = errorMessageOf(
-                    inThePast.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER));
+                    inThePast.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER));
             final String future = errorMessageOf(
-                    inTheFuture.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER));
+                    inTheFuture.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER));
 
             assertThat(past).isEqualTo(future).isEmpty();
             verifyNoInteractions(cardRepository);
@@ -2309,7 +2462,7 @@ final class CardUpdateServiceTest {
                     null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(errorMessageOf(result)).isEqualTo(MSG_NO_ACCTCARD_COMBO);
             verify(cardRepository, never()).save(any(Card.class));
@@ -2329,7 +2482,7 @@ final class CardUpdateServiceTest {
                     null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(result.screen().getInformationMessage().strip()).isEqualTo(INFO_FOUND_CARDS);
             assertThat(result.changeAction()).isEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS);
@@ -2401,7 +2554,8 @@ final class CardUpdateServiceTest {
             // could-not-lock wording - and no read is issued against the card number on its own.
             final CardUpdateRequest missingAccountId = new CardUpdateRequest(null, null, null, null,
                     null, null, null, CARD_NUMBER, SUBMITTED_NAME, STORED_STATUS, STORED_MONTH,
-                    STORED_YEAR, STORED_DAY, null, null, null, null, matchingSnapshot(), null);
+                    STORED_YEAR, STORED_DAY, null, null, null, null,
+                    seal(matchingSnapshot(), null, CARD_NUMBER, SUBJECT), null);
 
             final CardUpdateService.CardUpdateResult result = confirmSave(missingAccountId);
 
@@ -2514,25 +2668,28 @@ final class CardUpdateServiceTest {
     class StatelessnessContract {
 
         /**
-         * The bean holds exactly two final instance fields - the repository and the clock - so nothing
-         * survives a request the way {@code WORKING-STORAGE} did. The as-displayed group travels on the
-         * request under transformation Rule 7, so no collaborator is needed to carry it between the two turns
-         * of the pseudo-conversation and none is held.
+         * The bean holds exactly three final instance fields - the repository, the clock and the sealer - so
+         * nothing survives a request the way {@code WORKING-STORAGE} did.
+         *
+         * <p>The count is the assertion, and each of the three is named. The as-displayed group travels on the
+         * request under transformation Rule 7, so no collaborator <em>carries</em> it between the two turns of
+         * the pseudo-conversation; the sealer is stateless and holds only a derived key, so it stores no
+         * request's data either. A fourth field, or a non-final one, would mean state had crept back in.</p>
          */
         @Test
-        @DisplayName("every instance field is final and there are exactly two collaborators")
-        void everyInstanceFieldIsFinalAndThereAreExactlyTwo() {
+        @DisplayName("every instance field is final and there are exactly three collaborators")
+        void everyInstanceFieldIsFinalAndThereAreExactlyThree() {
             final Field[] instanceFields = Arrays.stream(CardUpdateService.class.getDeclaredFields())
                     .filter(field -> !Modifier.isStatic(field.getModifiers()))
                     .toArray(Field[]::new);
 
-            assertThat(instanceFields).hasSize(2);
+            assertThat(instanceFields).hasSize(3);
             assertThat(instanceFields).allSatisfy(field ->
                     assertThat(Modifier.isFinal(field.getModifiers()))
                             .as("field %s must be final", field.getName())
                             .isTrue());
             assertThat(instanceFields).extracting(Field::getName)
-                    .containsExactlyInAnyOrder("cardRepository", "clock");
+                    .containsExactlyInAnyOrder("cardRepository", "clock", "snapshotTokenService");
         }
 
         /**
@@ -2600,9 +2757,9 @@ final class CardUpdateServiceTest {
                     null, null);
 
             final CardUpdateService.CardUpdateResult fromBlank =
-                    service.processRequest(request, "   ", CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), "   ", CardUpdateService.EntryMode.REENTER);
             final CardUpdateService.CardUpdateResult fromUnknown =
-                    service.processRequest(request, "DFHNOSUCHKEY", CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), "DFHNOSUCHKEY", CardUpdateService.EntryMode.REENTER);
 
             assertThat(fromUnknown.changeAction()).isEqualTo(fromBlank.changeAction());
             assertThat(errorMessageOf(fromUnknown)).isEqualTo(errorMessageOf(fromBlank));
@@ -2611,33 +2768,43 @@ final class CardUpdateServiceTest {
 
     /**
      * Pins the request contract taken from {@code app/cpy-bms/COCRDUP.CPY} - seventeen screen
-     * fields plus the snapshot group - without duplicating the shape tests of the model tier.
+     * fields plus the sealed snapshot and the submitted group - without duplicating the shape tests of the
+     * model tier.
      */
     @Nested
-    @DisplayName("COCRDUP.CPY - the seventeen screen fields plus the snapshot group")
+    @DisplayName("COCRDUP.CPY - the seventeen screen fields plus the sealed snapshot")
     class FieldContracts {
 
         /**
-         * The request carries exactly the seventeen input fields of {@code app/cpy-bms/COCRDUP.CPY} plus the two
-         * snapshot groups the stateless port requires.
+         * The request carries exactly the seventeen input fields of {@code app/cpy-bms/COCRDUP.CPY}, plus the
+         * one opaque member that carries the as-displayed snapshot and the one group that carries the
+         * submitted values.
+         *
+         * <p>Eighteen string components rather than seventeen, and that difference is the point: the
+         * eighteenth is the sealed snapshot, which is a token and not a screen field. It is a string because
+         * it is opaque - a structured group would be a group the caller could rewrite, and the comparison at
+         * {@code :1503-1508} exists precisely to detect a change the caller did not make.</p>
          */
         @Test
-        @DisplayName("the request carries seventeen screen components plus two detail groups")
-        void requestCarriesSeventeenScreenComponentsPlusTwoGroups() {
+        @DisplayName("the request carries seventeen screen components, the sealed snapshot and one group")
+        void requestCarriesSeventeenScreenComponentsPlusTheSealedSnapshot() {
             final RecordComponent[] components =
                     CardUpdateRequest.class.getRecordComponents();
 
             assertThat(components).hasSize(19);
             assertThat(Arrays.stream(components)
                     .filter(component -> component.getType() == String.class)
-                    .count())
-                    .as("COCRDUP.CPY generates exactly seventeen input fields")
-                    .isEqualTo(17L);
+                    .map(RecordComponent::getName)
+                    .toList())
+                    .as("COCRDUP.CPY generates seventeen input fields; the eighteenth string is the token")
+                    .hasSize(18)
+                    .contains("snapshot");
             assertThat(Arrays.stream(components)
                     .filter(component -> component.getType() == CardUpdateRequest.CardDetails.class)
                     .map(RecordComponent::getName)
                     .toList())
-                    .containsExactly("oldDetails", "newDetails");
+                    .as("only the SUBMITTED group is readable; the as-displayed one arrives sealed")
+                    .containsExactly("newDetails");
         }
 
         /**
@@ -2660,18 +2827,23 @@ final class CardUpdateServiceTest {
 
         /**
          * An absent snapshot is an unmet precondition rather than a silent skip, because without it the
-         * comparison of {@code 9300} could not be performed at all. Under the body-carried contract of
-         * transformation Rule 7, "absent" means the request omitted its {@code oldDetails} group.
+         * comparison of {@code 9300} could not be performed at all. Under the sealed contract of
+         * transformation Rule 7, "absent" means the request omitted its {@code snapshot} member.
+         *
+         * <p>The refusal names the missing token rather than the search keys, and that distinction is
+         * deliberate: the two remedies differ. A caller who sent no token must read the record and echo back
+         * what that read returned, which is a different instruction from filling in two identifiers. The
+         * outcome stays {@code CHANGES_NOT_CONFIRMED}, so the status a client sees is unchanged.</p>
          */
         @Test
-        @DisplayName("an absent oldDetails group is an unmet precondition, never a silent skip")
-        void absentSnapshotGroupIsAnUnmetPrecondition() {
-            final CardUpdateRequest request = changedNameRequest(null);
+        @DisplayName("an absent snapshot member is an unmet precondition, never a silent skip")
+        void absentSnapshotIsAnUnmetPrecondition() {
+            final CardUpdateRequest request = sealedRequest(null, SUBMITTED_NAME);
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request, SUBJECT));
 
-            assertThat(failure).hasMessage(MSG_PROMPT_FOR_SEARCH_KEYS).hasNoCause();
+            assertThat(failure).hasMessage(SnapshotTokenService.MISSING_TOKEN_MESSAGE).hasNoCause();
             assertThat(failure.getOutcome())
                     .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
             verifyNoInteractions(cardRepository);
@@ -2689,10 +2861,11 @@ final class CardUpdateServiceTest {
                     new CardUpdateRequest.CardData(null,
                             new CardUpdateRequest.ExpiraionDate(null, null, null), null));
 
-            final CardUpdateRequest request = changedNameRequest(hollow);
+            final CardUpdateRequest request = sealedRequest(
+                    seal(hollow, ACCOUNT_ID, CARD_NUMBER, SUBJECT), SUBMITTED_NAME);
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request, SUBJECT));
 
             assertThat(failure).hasMessage(MSG_PROMPT_FOR_SEARCH_KEYS);
             assertThat(failure.getOutcome())
@@ -2715,7 +2888,8 @@ final class CardUpdateServiceTest {
             final ConcurrentUpdateException failure = catchThrowableOfType(
                     ConcurrentUpdateException.class,
                     () -> service.updateCard(changedNameRequest(snapshotOf(
-                            "SOMEONE ELSE", STORED_YEAR, STORED_MONTH, STORED_DAY, STORED_STATUS))));
+                            "SOMEONE ELSE", STORED_YEAR, STORED_MONTH, STORED_DAY, STORED_STATUS)),
+                            SUBJECT));
 
             assertThat(failure.getOutcome())
                     .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
@@ -2723,25 +2897,33 @@ final class CardUpdateServiceTest {
         }
 
         /**
-         * The read half of the stateless substitution: {@code fetchSnapshotForUpdate} projects exactly the
-         * values {@code 9000-READ-DATA} snapshotted at {@code :1345-1367}, less the card verification value
-         * of {@code :294}, which is stored but has no read path. The expiry <strong>day</strong> is asserted
+         * The read half of the stateless substitution: {@code sealSnapshotForUpdate} seals exactly the values
+         * {@code 9000-READ-DATA} snapshotted at {@code :1345-1367}, less the card verification value of
+         * {@code :294}, which is stored but has no read path. The expiry <strong>day</strong> is asserted
          * because {@code app/cpy-bms/COCRDSL.CPY} declares no field for it, which makes this the only route
          * by which a client can obtain the operand {@code :1507} compares.
+         *
+         * <p>The card number is the one member the sealed payload omits, because {@code :1347} moves the
+         * <em>received</em> {@code CC-CARD-NUM} into {@code CCUP-OLD-CARDID} rather than reading it from the
+         * stored record; the write restores it from the request's own identity field. Asserting the recovered
+         * group through the same restore the write performs is therefore what pins the read-to-write
+         * agreement.</p>
          */
         @Test
-        @DisplayName("fetchSnapshotForUpdate projects every fetched value the record actually carries")
-        void fetchSnapshotForUpdateProjectsTheFetchedValues() {
+        @DisplayName("sealSnapshotForUpdate seals every fetched value the record actually carries")
+        void sealSnapshotForUpdateSealsTheFetchedValues() {
             // The READ half uses the account-scoped, read-only finder; the locking one belongs to the write
             // half. 9000-READ-DATA snapshots what the screen displays and holds no lock across the two turns,
             // which is exactly why the as-displayed values must travel to the caller and back at all.
             when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            final CardUpdateRequest.CardDetails projected =
-                    service.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER);
+            final String sealed = service.sealSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER, SUBJECT);
+            final CardUpdateRequest.CardDetails projected = openedSnapshot(sealedRequest(sealed));
 
-            assertThat(projected.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(projected.cardNumber())
+                    .as(":1347 takes the RECEIVED card number, so the write restores it from the request")
+                    .isEqualTo(CARD_NUMBER);
             assertThat(projected.cardData().cardholderName()).isEqualTo(STORED_NAME);
             assertThat(projected.cardData().cardStatusCode()).isEqualTo(STORED_STATUS);
             assertThat(projected.cardData().expiraionDate().expiryYear()).isEqualTo(STORED_YEAR);
@@ -2763,8 +2945,8 @@ final class CardUpdateServiceTest {
             when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            final CardUpdateRequest.CardDetails projected =
-                    service.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER);
+            final CardUpdateRequest.CardDetails projected = openedSnapshot(sealedRequest(
+                    service.sealSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER, SUBJECT)));
 
             assertThat(java.util.Arrays.stream(CardUpdateRequest.CardDetails.class.getRecordComponents())
                     .map(java.lang.reflect.RecordComponent::getName)
@@ -2777,13 +2959,13 @@ final class CardUpdateServiceTest {
         }
 
         /**
-         * A group from the read is the group the write accepts, end to end. It is the one test that proves the
-         * read and write halves agree on the shape simultaneously, which is what the sealed-token contract
-         * used to prove about the kind, record key and payload.
+         * A value from the read is the value the write accepts, end to end. It is the one test that proves the
+         * read and write halves agree on the operation kind, the record key, the principal and the payload
+         * shape simultaneously - the sealed value from the read is submitted verbatim, not re-sealed here.
          */
         @Test
-        @DisplayName("a group from the read is accepted by the write, and the row is saved")
-        void aGroupFromTheReadIsAcceptedByTheWrite() {
+        @DisplayName("a sealed value from the read is accepted by the write, and the row is saved")
+        void aSealedValueFromTheReadIsAcceptedByTheWrite() {
             // Both finders are stubbed, because this is the one test that spans both halves: the read
             // projects the group through the read-only account-scoped finder, and the write re-reads under
             // the lock.
@@ -2793,11 +2975,122 @@ final class CardUpdateServiceTest {
                     .thenReturn(Optional.of(storedCard()));
             when(cardRepository.save(any(Card.class))).thenAnswer(saved -> saved.getArgument(0));
 
-            final CardUpdateRequest.CardDetails projected =
-                    service.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER);
-            service.updateCard(changedNameRequest(projected));
+            final String sealed = service.sealSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER, SUBJECT);
+            service.updateCard(sealedRequest(sealed, SUBMITTED_NAME), SUBJECT);
 
             verify(cardRepository, times(1)).save(any(Card.class));
+        }
+
+        /**
+         * The sealed value discloses nothing. It is why the read publishes one opaque member rather than the
+         * group: the payload carries the cardholder name and the expiry date, and the request's own identity
+         * field carries the sixteen digits {@code CardResponse} otherwise masks.
+         */
+        @Test
+        @DisplayName("the sealed value carries no readable stored value")
+        void theSealedValueIsOpaque() {
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(storedCard()));
+
+            final String sealed = service.sealSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER, SUBJECT);
+
+            assertThat(sealed)
+                    .doesNotContain(STORED_NAME)
+                    .doesNotContain(CARD_NUMBER)
+                    .doesNotContain(STORED_VERIFICATION_VALUE);
+        }
+
+        /**
+         * A tampered value is refused as a rival write and nothing is saved, which is the property a readable
+         * group cannot have: authenticated encryption fails closed on a single altered byte.
+         */
+        @Test
+        @DisplayName("an edited sealed value is refused and the row is not saved")
+        void anEditedSealedValueIsRefused() {
+            final String sealed = seal(matchingSnapshot(), ACCOUNT_ID, CARD_NUMBER, SUBJECT);
+            // The FIRST character, deliberately. In an unpadded base64url string the last character can carry
+            // slack bits the decoder discards, so editing it need not change a single byte of the value.
+            final char[] characters = sealed.toCharArray();
+            characters[0] = characters[0] == 'A' ? 'B' : 'A';
+
+            final ConcurrentUpdateException failure = catchThrowableOfType(
+                    ConcurrentUpdateException.class,
+                    () -> service.updateCard(sealedRequest(new String(characters), SUBMITTED_NAME),
+                            SUBJECT));
+
+            assertThat(failure).hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
+            assertThat(failure.getOutcome())
+                    .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A value sealed for another operator does not open for this one, so a snapshot cannot be handed
+         * between principals.
+         */
+        @Test
+        @DisplayName("a value sealed for another principal is refused")
+        void aValueSealedForAnotherPrincipalIsRefused() {
+            final String foreign = seal(matchingSnapshot(), ACCOUNT_ID, CARD_NUMBER, OTHER_SUBJECT);
+
+            assertThatThrownBy(() -> service.updateCard(sealedRequest(foreign, SUBMITTED_NAME), SUBJECT))
+                    .isInstanceOf(ConcurrentUpdateException.class)
+                    .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A value sealed for another card cannot be transplanted onto this one, because both identifiers are
+         * bound as authenticated additional data rather than merely carried in the payload.
+         */
+        @Test
+        @DisplayName("a value sealed for another card is refused")
+        void aValueSealedForAnotherCardIsRefused() {
+            final String transplanted = seal(matchingSnapshot(), ACCOUNT_ID, "4111111111111119",
+                    SUBJECT);
+
+            assertThatThrownBy(() -> service.updateCard(sealedRequest(transplanted, SUBMITTED_NAME),
+                    SUBJECT))
+                    .isInstanceOf(ConcurrentUpdateException.class)
+                    .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A value older than its lifetime is refused rather than opened, so a snapshot cannot be replayed
+         * indefinitely against a row that has since moved.
+         */
+        @Test
+        @DisplayName("a sealed value older than its lifetime is refused")
+        void anExpiredSealedValueIsRefused() {
+            final String stale = sealerAt(FIXED_INSTANT.minusSeconds(SEAL_LIFETIME_SECONDS + 1))
+                    .seal(SNAPSHOT_KIND, recordKey(ACCOUNT_ID, CARD_NUMBER), SUBJECT,
+                            matchingSnapshot());
+
+            assertThatThrownBy(() -> service.updateCard(sealedRequest(stale, SUBMITTED_NAME), SUBJECT))
+                    .isInstanceOf(ConcurrentUpdateException.class)
+                    .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * Neither entry point may be reached without a principal. Both routes are declared authenticated in
+         * {@code SecurityConfig}, so an absent principal is a wiring defect and not a request outcome, which
+         * is why it is an {@link IllegalArgumentException} rather than a rendered {@code 400}.
+         */
+        @Test
+        @DisplayName("neither entry point accepts an absent principal")
+        void neitherEntryPointAcceptsAnAbsentPrincipal() {
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            for (final String absent : new String[] {null, "", "   "}) {
+                assertThatThrownBy(() -> service.updateCard(request, absent))
+                        .isInstanceOf(IllegalArgumentException.class);
+                assertThatThrownBy(
+                        () -> service.sealSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER, absent))
+                        .isInstanceOf(IllegalArgumentException.class);
+            }
+            verifyNoInteractions(cardRepository);
         }
 
         /**
@@ -2829,7 +3122,7 @@ final class CardUpdateServiceTest {
             final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
 
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-            service.updateCard(request);
+            service.updateCard(request, SUBJECT);
 
             verify(cardRepository).save(persisted.capture());
             assertThat(persisted.getValue().getEmbossedName()).hasSize(50);
@@ -2840,7 +3133,7 @@ final class CardUpdateServiceTest {
     }
 
     /**
-     * Pins the one-to-one correspondence between the 48 paragraph labels of
+     * Pins the one-to-one correspondence between the 45 own paragraph labels of
      * {@code app/cbl/COCRDUPC.cbl} and the private methods of the bean, including the retained no-ops.
      */
     @Nested
@@ -2963,7 +3256,8 @@ final class CardUpdateServiceTest {
         @DisplayName("the bean declares at least one method per source paragraph")
         void theBeanDeclaresAtLeastOneMethodPerSourceParagraph() {
             assertThat(declaredMethodNames().size())
-                    .as("COCRDUPC.cbl carries 48 paragraphs across its 1,560 lines")
+                    .as("COCRDUPC.cbl carries 48 Area-A label-shaped lines across its 1,560 lines, of "
+                            + "which 45 are PROCEDURE DIVISION paragraphs")
                     .isGreaterThanOrEqualTo(48);
         }
     }
@@ -2983,7 +3277,7 @@ final class CardUpdateServiceTest {
         @DisplayName("a null request is rejected by name on the screen entry point")
         void nullRequestIsRejectedOnTheScreenEntryPoint() {
             assertThatThrownBy(() ->
-                    service.processRequest(null, AID_ENTER, CardUpdateService.EntryMode.REENTER))
+                    service.processRequest(null, null, AID_ENTER, CardUpdateService.EntryMode.REENTER))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessage("request must not be null");
             verifyNoInteractions(cardRepository);
@@ -2995,7 +3289,7 @@ final class CardUpdateServiceTest {
         @Test
         @DisplayName("a null request is rejected by name on the update entry point")
         void nullRequestIsRejectedOnTheUpdateEntryPoint() {
-            assertThatThrownBy(() -> service.updateCard(null))
+            assertThatThrownBy(() -> service.updateCard(null, SUBJECT))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessage("request must not be null");
             verifyNoInteractions(cardRepository);
@@ -3010,7 +3304,7 @@ final class CardUpdateServiceTest {
         void nullEntryModeIsRejected() {
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
 
-            assertThatThrownBy(() -> service.processRequest(request, AID_ENTER, null))
+            assertThatThrownBy(() -> service.processRequest(request, openedSnapshot(request), AID_ENTER, null))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessage("entryMode must not be null");
             verifyNoInteractions(cardRepository);
@@ -3056,7 +3350,7 @@ final class CardUpdateServiceTest {
                     null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(errorMessageOf(result)).isEqualTo(MSG_ACCOUNT_NOT_PROVIDED);
             verifyNoInteractions(cardRepository);
@@ -3073,7 +3367,7 @@ final class CardUpdateServiceTest {
                     null, null, null);
 
             final CardUpdateService.CardUpdateResult result =
-                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+                    service.processRequest(request, openedSnapshot(request), AID_ENTER, CardUpdateService.EntryMode.REENTER);
 
             assertThat(errorMessageOf(result)).isEqualTo(MSG_CARD_NOT_PROVIDED);
             verifyNoInteractions(cardRepository);
@@ -3137,7 +3431,7 @@ final class CardUpdateServiceTest {
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request, SUBJECT));
 
             assertThat(failure.getAffectedRecord())
                     .isNotEqualTo(CARD_NUMBER)

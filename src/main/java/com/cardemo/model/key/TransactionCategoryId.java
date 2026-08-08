@@ -145,11 +145,10 @@ import jakarta.persistence.Embeddable;
  * three separate tables, it is not evidence of a shared type, and each key class declares its own columns
  * independently.
  *
- * <p><strong>Reconciled against the migration and the owning entity.</strong> An earlier revision of this
- * section recorded {@code src/main/resources/db/migration/V1__create_schema.sql} and
- * {@code com.cardemo.model.entity.TransactionCategory} as unavailable, on the ground that the {@code src}
- * tree did not yet exist when this class was authored; that is no longer true and the claim is withdrawn.
- * Both artefacts exist, and the contract above is derived from {@code app/cpy/CVTRA04Y.cpy} and
+ * <p><strong>Reconciled against the migration and the owning entity.</strong> Both
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} and
+ * {@code com.cardemo.model.entity.TransactionCategory} are on disk,
+ * and the contract above is derived from {@code app/cpy/CVTRA04Y.cpy} and
  * {@code app/catlg/LISTCAT.txt:L1475} and then confirmed against the authored SQL rather than asserted in
  * its absence - with one consequence. The migration was
  * reconciled against this contract and converged on it for every column except one: {@code tran_cat_cd},
@@ -167,10 +166,10 @@ import jakarta.persistence.Embeddable;
  * annotation such as Hibernate's {@code JdbcTypeCode} would be needed to reach {@code CHAR} and is
  * deliberately not used, because this class is restricted to the Jakarta Persistence API.
  *
- * <p><strong>Correction, severity Medium - what {@code columnDefinition} actually does.</strong> An
- * earlier revision of this documentation asserted that {@code columnDefinition} only influences generated
- * DDL, which Flyway owns here, and so cannot reconcile a type code mismatch. <em>That assertion is wrong
- * and is corrected here.</em> Measured on the pinned stack, Hibernate ORM 6.6.42.Final with the PostgreSQL
+ * <p><strong>Correction, severity Medium - what {@code columnDefinition} actually does.</strong> The
+ * assertion that {@code columnDefinition} only influences generated
+ * DDL, which Flyway owns here, and so cannot reconcile a type code mismatch, <em>is wrong</em>.
+ * Measured on the pinned stack, Hibernate ORM 6.6.42.Final with the PostgreSQL
  * dialect: the validator accepts a column when the dialect declares the expected and reported type codes
  * equivalent, <em>or</em> when the mapping's own type spelling, with parenthesised arguments stripped and
  * the result lowercased, equals the type name the database reports. {@code columnDefinition} is precisely

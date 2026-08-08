@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Service (migrated from CICS COBOL Program)
  * Function    : Main Menu for the Regular users
- * Source      : app/cbl/COMEN01C.cbl (282 lines, 7 paragraphs)
+ * Source      : app/cbl/COMEN01C.cbl (282 lines, 7 own paragraph labels)
  *               + app/cpy/COMEN02Y.cpy @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.

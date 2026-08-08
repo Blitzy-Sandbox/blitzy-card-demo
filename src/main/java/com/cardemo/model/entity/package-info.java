@@ -187,20 +187,22 @@
  *   <li><strong>Coverage.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor at the
  *       {@code verify} phase, with <strong>no exclusions</strong> for this package. The plugin version and
  *       the floor are pinned in {@code pom.xml}, which is the single authority for both; at this commit the
- *       plugin is {@code 0.8.12} - not the {@code 0.8.13} an earlier revision of this sentence claimed - with
+ *       plugin is {@code 0.8.12} - not {@code 0.8.13} - with
  *       its transitive ASM reader overridden to {@code 9.9} and the runtime agent to {@code 0.8.14}, and the
  *       floor property is {@code 0.80}. Coverage must come from meaningful
  *       assertions on field widths, precision and equality semantics. Padding the number by calling getters
  *       in a loop is not acceptable and defeats the purpose of the gate. This file is documentation only,
  *       contributes no executable lines, and so neither helps nor harms the figure.
- *       <strong>Four of the eleven</strong> entities carry a dedicated test class - {@code AccountTest},
- *       {@code CardTest}, {@code CustomerTest} and {@code UserSecurityTest}, all under
- *       {@code src/test/java/com/cardemo/unit/model}. The other seven have none yet, so per-entity coverage
- *       is uneven rather than absent, and those seven are the outstanding obligation. They are not
- *       untouched: every one of the eleven is constructed and asserted on from the service, repository and
- *       batch test classes that consume it, which is why the merged bundle clears the floor while these
- *       seven still lack a focused column-contract test. Counts move as the tree grows, so re-measure
- *       rather than quoting them.</li>
+ *       <strong>All eleven</strong> entities carry a dedicated test class named after them, under
+ *       {@code src/test/java/com/cardemo/unit/model} - {@code AccountTest}, {@code CardTest},
+ *       {@code CustomerTest}, {@code CardCrossReferenceTest}, {@code TransactionTest},
+ *       {@code DailyTransactionTest}, {@code TransactionCategoryBalanceTest},
+ *       {@code DisclosureGroupTest}, {@code TransactionTypeTest}, {@code TransactionCategoryTest} and
+ *       {@code UserSecurityTest}. The column contract is additionally asserted across entities by
+ *       {@code EntityContractTest}, {@code ReferenceEntityContractTest} and
+ *       {@code EntityBoundaryValidationTest}, and every one of the eleven is also constructed and asserted
+ *       on from the service, repository and batch test classes that consume it. Counts move as the tree
+ *       grows, so re-measure rather than quoting them.</li>
  *   <li><strong>Schema agreement, measured rather than asserted - 1 August 2026.</strong> The type-pairing
  *       claims made throughout this package are reproducible from this tree without a Spring context, and
  *       they were re-executed rather than inherited. Applying
@@ -426,8 +428,7 @@
  * <h2>The SQL column contract: all three migrations exist and agree</h2>
  *
  * <p><strong>{@code src/main/resources/db/migration/V1__create_schema.sql} exists</strong> and is the
- * authoritative SQL column contract for these eleven entities. An earlier revision of this paragraph said
- * the migration directory did not exist; that is no longer true and the claim is withdrawn. {@code V1}
+ * authoritative SQL column contract for these eleven entities. {@code V1}
  * declares all eleven tables, 87 columns with {@code NOT NULL} on every one, eleven primary keys, exactly
  * five {@code CHECK} constraints, exactly ten foreign keys and the four optimistic-lock version columns.
  * Its agreement with the field tables in this package's class documentation is not asserted from reading
@@ -435,9 +436,8 @@
  * cross-checks every table, primary-key column order and column width against the record-layout copybooks
  * in {@code app/cpy} through the {@code RecordLayoutCopybook} oracle.
  *
- * <p><strong>{@code V2__create_indexes.sql} and {@code V3__seed_data.sql} exist as well.</strong> An earlier
- * revision of this section said neither had ever existed and described both as planned work; that is no
- * longer true and the claim is withdrawn. {@code V1} does contain zero {@code CREATE INDEX} statements, but
+ * <p><strong>{@code V2__create_indexes.sql} and {@code V3__seed_data.sql} exist as well</strong>, and neither
+ * is planned work. {@code V1} does contain zero {@code CREATE INDEX} statements, but
  * that is a division of responsibility rather than a gap: indexes are owned by {@code V2}, which declares
  * exactly three non-unique B-tree indexes standing in for the three VSAM alternate indexes recorded in
  * {@code app/catlg/LISTCAT.txt} - {@code idx_card_acct_id} on {@code card(card_acct_id)} for
@@ -462,11 +462,11 @@
  * against a real PostgreSQL 16 with Flyway applying {@code V1} through {@code V3} first. The agreement this
  * section describes is therefore exercised on every such run, not merely asserted.
  *
- * <p><strong>Severity: Low, and informational rather than a finding.</strong> The module compiles, all
+ * <p><strong>Severity: Low - a disclosure rather than a defect.</strong> The module compiles, all
  * eleven entities are complete and internally consistent, the schema they validate against exists and
- * agrees with them, the indexes and seed rows exist, and a profile exists to boot with. What remains owed is
- * narrower and is stated where it belongs: a focused column-contract test for seven of the eleven entities,
- * recorded in the coverage bullet above.
+ * agrees with them, the indexes and seed rows exist, a profile exists to boot with, and every one of the
+ * eleven entities has both a dedicated test class and cross-entity column-contract coverage, as the coverage
+ * bullet above enumerates.
  *
  * <h2>Package level constraints</h2>
  *

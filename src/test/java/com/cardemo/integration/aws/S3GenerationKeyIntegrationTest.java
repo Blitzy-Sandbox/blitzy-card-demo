@@ -125,15 +125,15 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *
  * <dl>
  *   <dt>The production handoff: a key composed by the writer, carried in a context, resolved by the reader</dt>
- *   <dd><strong>Finding, severity High, RESOLVED.</strong> An earlier revision of this class established the
- *       convention and nothing else: every key it asserted was one it had built itself, from
+ *   <dd><strong>Finding, severity High.</strong> A class that establishes the
+ *       convention and nothing else - every key it asserts one it built itself, from
  *       {@link AbstractAwsIntegrationTest#generationPrefix(String, int)} or from this class's own
- *       {@code jobInstancePrefix}, and every resolution it asserted was
- *       {@link AbstractAwsIntegrationTest#currentGenerationKey(String, String)} - a listing this class
- *       performed. It imported no production writer and no production reader, so a regression in
+ *       {@code jobInstancePrefix}, and every resolution it asserts
+ *       {@link AbstractAwsIntegrationTest#currentGenerationKey(String, String)}, a listing it
+ *       performs - imports no production writer and no production reader, so a regression in
  *       {@code com.cardemo.batch.writers.TransactionWriter}'s key composition or in
  *       {@code com.cardemo.batch.readers.TransactionBackupReader}'s resolution precedence could land with
- *       every test in the class still green. That is false green: the emulator was being treated as the
+ *       every test in the class still green. That is false green: the emulator would be treated as the
  *       implementation under test rather than as the external boundary.
  *       <p><em>Remediation, applied:</em> {@code ProductionGenerationKeyHandoff} drives the production
  *       writer, reads the concrete key back out of the {@code ExecutionContext} the writer published it into,
@@ -214,9 +214,7 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * or socket is available the correct report is that the gate is <em>blocked</em>, never an untested pass. The
  * environment this class was authored and executed against supplies Docker Engine 29.7.0 with Compose
  * v5.3.1, and host {@code java} 25.0.3 and {@code mvn} 3.9.11 are both on the path, so Maven runs directly
- * on the host; an earlier note claiming the host toolchain was absent and that Maven had to run inside a
- * pinned container is withdrawn as stale. Severity of what that stale note left behind: <strong>Low</strong>
- * - a wrong instruction, never a wrong artefact.
+ * on the host, so no instruction to run Maven inside a pinned container applies here.
  *
  * <h2>3. Key configuration and defaults</h2>
  *
@@ -356,10 +354,11 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * needed to close it, because filling a gap with an invention is worse than leaving it open.
  *
  * <ol>
- *   <li><strong>The boundary-parity expected-output baseline is Not available.</strong> A search across
- *       expected, baseline, golden, system-output and per-data-set name patterns returned only data-set
- *       <em>definition</em> job control and zero captured data, and a byte-size sweep for 430-byte and
- *       133-byte artefacts returned nothing. <em>What is needed:</em> a captured 430-byte {@code DALYREJS}
+ *   <li><strong>The boundary-parity expected-output expectation <em>exists</em>; what is Not available is a captured
+ *       z/OS run to corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen
+ *       program's own output, derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and running it
+ *       against the frozen fixtures, with the derivation recorded beside it in {@code PROVENANCE.properties};
+ *       nothing there was produced by running this implementation. <em>What is still needed:</em> a captured 430-byte {@code DALYREJS}
  *       reject data set together with the resulting {@code TRANSACT}, {@code ACCTDATA} and
  *       {@code TCATBALF} images from a real {@code POSTTRAN} execution at a known input state.
  *       <strong>No baseline file is created here and none may be invented.</strong> A baseline produced by
@@ -431,11 +430,9 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      */
     private final int productionIdentifierDigits = 19;
 
-    // =================================================================================================
     // Named values. Instance fields, never static: Rule 1 Clause B forbids global mutable state, and the
     // harness permits no static field here beyond the two container holders it owns itself. Every one is
     // final, is a literal or is derived from a literal, and carries the locator that fixes it.
-    // =================================================================================================
 
     /**
      * Key prefix of the reject generation base.
@@ -504,11 +501,9 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      */
     private final int jobInstanceDigits = 10;
 
-    // =================================================================================================
     // The production handoff. These are the collaborators and named values the ProductionGenerationKeyHandoff
     // group needs so that a generation key is COMPOSED by the production writer and RESOLVED by the
     // production reader, with the emulator as the external boundary rather than as the subject.
-    // =================================================================================================
 
     /** The relation the writer inserts into; injected so the rows it creates can be removed again. */
     @Autowired
@@ -564,19 +559,7 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      */
     private final List<String> insertedTransactionIds = new ArrayList<>();
 
-    /**
-     * Sole constructor, used by the JUnit Platform.
-     *
-     * <p>Explicit and empty. Every collaborator is injected into the harness and reached through its
-     * accessors, so there is nothing for a constructor to do and nothing it may be given.
-     */
-    S3GenerationKeyIntegrationTest() {
-        super();
-    }
-
-    // =================================================================================================
     // Private helpers. Pure where they can be; each one names the property it exists to make provable.
-    // =================================================================================================
 
     /**
      * Creates this class's own versioned bucket, idempotently, and registers it for teardown.
@@ -737,11 +720,9 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
         return packed;
     }
 
-    // =================================================================================================
     // Production-handoff helpers. Each one WIRES a production collaborator or supplies data for it; not one
     // of them re-implements a key rule, a prefix rule or a resolution rule. That distinction is the whole
     // point of the group below: every key asserted there is a value production produced.
-    // =================================================================================================
 
     /**
      * Removes the rows the production writer inserted, exactly those, after each test.
@@ -871,11 +852,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     @Nested
     @DisplayName("(+1) - a next-generation write lands under a monotonically increasing prefix")
     class NextGenerationWrites {
-
-        /** Sole constructor, used by the JUnit Platform. */
-        NextGenerationWrites() {
-            super();
-        }
 
         /**
          * Three successive generations produce three strictly increasing prefixes.
@@ -1105,11 +1081,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     @DisplayName("(0) - a current-generation read resolves the lexicographically greatest prefix")
     class CurrentGenerationResolution {
 
-        /** Sole constructor, used by the JUnit Platform. */
-        CurrentGenerationResolution() {
-            super();
-        }
-
         /**
          * After three writes, the current generation is the third, by content and by key.
          */
@@ -1132,7 +1103,7 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
                     .isPresent()
                     .contains(generationObjectKey(rejectGenerationBase, latest, rejectObjectName));
             assertThat(get(bucket, current.orElseThrow()))
-                    .as("the resolved generation must hold the latest content, not an earlier generation's")
+                    .as("the resolved generation must hold the latest content, not a prior one's")
                     .isEqualTo(recordOf("REJECT-GENERATION-" + latest, REJECT_RECORD_LENGTH));
         }
 
@@ -1370,11 +1341,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     @Nested
     @DisplayName("byte-exact record geometry across the object-store boundary")
     class ByteExactRecordGeometry {
-
-        /** Sole constructor, used by the JUnit Platform. */
-        ByteExactRecordGeometry() {
-            super();
-        }
 
         /**
          * The transaction and daily-transaction image round-trips as exactly 350 bytes.
@@ -1724,11 +1690,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     @DisplayName("multi-record objects, decimal arithmetic and hostile keys")
     class MultiRecordObjectsAndUntrustedInput {
 
-        /** Sole constructor, used by the JUnit Platform. */
-        MultiRecordObjectsAndUntrustedInput() {
-            super();
-        }
-
         /**
          * A multi-record generation object is an exact multiple of its record length, at every width.
          *
@@ -1939,7 +1900,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // The production writer itself, driven end to end against the emulator.
     //
     // FINDING, SEVERITY HIGH - raised against this file and remediated here. Every generation assertion
@@ -1954,7 +1914,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     // duplicated this suite through the batch tier's harness are migrated here and that file retired, so
     // the tier starts one container set rather than two and the assertions live beside the generation
     // semantics they depend on.
-    // =================================================================================================
 
     @Nested
     @DisplayName("the production writer - real 19-digit generation keys, byte-exact geometry")
@@ -2222,11 +2181,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     @DisplayName("the production handoff - the writer's own key, carried through a context, read by the "
             + "production reader")
     class ProductionGenerationKeyHandoff {
-
-        /** Sole constructor, used by the JUnit Platform. */
-        ProductionGenerationKeyHandoff() {
-            super();
-        }
 
         /**
          * The key the production writer publishes is the key the object actually landed under.
@@ -2545,11 +2499,6 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     @Nested
     @DisplayName("streamed uploads that declare no content length, as the statement projection does")
     class StreamedUploadWithoutContentLength {
-
-        /** Sole constructor, used by the JUnit Platform. */
-        StreamedUploadWithoutContentLength() {
-            super();
-        }
 
         /**
          * A short body with no declared length round-trips byte for byte.

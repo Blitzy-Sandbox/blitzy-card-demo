@@ -250,6 +250,41 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * controller added without a rule fails closed. That direction is deliberate: the opposite default turns
  * every future omission into an unauthenticated endpoint.
  *
+ * <h2>What these rules do NOT do: there is no object-level authorization</h2>
+ *
+ * <p><strong>Every rule above authorises by ROLE. None scopes a request to the caller's own records.</strong>
+ * Read the ten {@code either role} entries literally: an authenticated standard user may retrieve or update
+ * <em>any</em> account, browse and update <em>any</em> card, read and create <em>any</em> transaction, and
+ * submit a bill payment or a report against an account that has nothing to do with them, by naming its
+ * identifier. Authentication establishes <em>that</em> the caller is an operator and <em>which kind</em>; it
+ * does not establish <em>whose</em> data they may touch, because nothing here decides that.
+ *
+ * <p>This is stated at length rather than left to be inferred from the absence of a check, because a reader
+ * who sees a security configuration this explicit about seventeen transactions will reasonably assume it is
+ * equally explicit about scope. It is not, and the gap is deliberate rather than overlooked.
+ *
+ * <p><strong>It is faithful.</strong> The source has no such check either: {@code app/cbl/COACTVWC.cbl} never
+ * consults {@code CDEMO-USER-ID}, so a signed-on 3270 operator viewed any account by typing its number, and
+ * the resource definition file gates transactions by nothing finer than the transaction identifier.
+ *
+ * <p><strong>And it is not implementable from the source.</strong> {@code app/cpy/CSUSR01Y.cpy} is an
+ * eighty-byte record of exactly six fields - identifier, first name, last name, password, a one-character
+ * type and twenty-three bytes of filler - and <em>not one of them references an account, a card or a
+ * customer</em>. There is therefore no user-to-resource relation anywhere in the frozen corpus to enforce,
+ * and inventing one would encode a business rule nobody stated: the ten seeded users are back-office
+ * operators, five of them administrators, and the customer file is the data they operate <em>on</em> rather
+ * than a directory of who they are.
+ *
+ * <p><strong>The consequence for deployment.</strong> Treat every authenticated principal as trusted with the
+ * entire data set. This is safe exactly where the legacy system was safe - a closed internal network with
+ * operator accounts issued by an administrator - and it must not be exposed to end customers, or to any
+ * population in which one authenticated user must not see another's data, until the control is built.
+ * <strong>Do not add a scoping predicate here on your own judgement.</strong> Four questions must be answered
+ * first - the authoritative user-to-resource relation, whether an administrator keeps unrestricted scope,
+ * whether an out-of-scope identifier answers {@code 403} or {@code 404}, and how the report and payment
+ * operations are scoped - and they are set out with their owners as {@code DL-RR-10} in
+ * {@code DECISION_LOG.md} and as {@code H-6} in {@code docs/validation-gates.md}.
+ *
  * <h2>The eighteenth transaction has no program and therefore no rule</h2>
  *
  * <p>{@code app/csd/CARDDEMO.CSD} defines eighteen transactions, not seventeen. The eighteenth is
@@ -578,8 +613,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       {@code 'Wrong Password. Try again ...'} at {@code :L241-L246}. The REST surface does not differentiate
  *       externally; the distinction survives as a typed exception and a structured log without the
  *       credential. This is a labelled deviation from parity, severity Medium, owned by
- *       {@code com.cardemo.service.auth.AuthenticationService} and owed an entry in the
- *       {@code DECISION_LOG.md}.</li>
+ *       {@code com.cardemo.service.auth.AuthenticationService} and recorded as boundary (2) of
+ *       {@code DL-DV-10} in {@code DECISION_LOG.md}.</li>
  *   </ul>
  *
  * <h2>Findings register</h2>
@@ -604,11 +639,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       the failure mode is a silent authorisation denial.</dd>
  *   <dt>Closed - the two controllers this policy names are now authored</dt>
  *   <dd>{@code com.cardemo.controller.AuthController} and {@code com.cardemo.controller.AdminController} both
- *       exist as of 4 August 2026, so the rules for {@value #PATH_SIGN_ON} and {@value #PATH_ADMIN} are
- *       verified against real base paths rather than asserted ahead of them. <strong>An earlier revision of
- *       this entry recorded both as {@code Not available}, with those two rules as asserted contracts.</strong>
- *       That was true when written and is withdrawn here. The evidence it relied on still holds and is now
- *       corroborated by the classes themselves: the sign-on route {@code POST /api/auth/signon} asserted at
+ *       exist, so the rules for {@value #PATH_SIGN_ON} and {@value #PATH_ADMIN} are
+ *       verified against real base paths rather than asserted ahead of them, and neither is
+ *       {@code Not available}. The evidence is the classes themselves: the sign-on route
+ *       {@code POST /api/auth/signon} asserted at
  *       {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java}, on the namespace convention
  *       the tree states of itself in
  *       {@code src/main/java/com/cardemo/controller/BillingController.java:309}, so no rule needed moving.
@@ -699,10 +733,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @EnableWebSecurity
 public class SecurityConfig {
 
-    // =============================================================================================
     // Configuration keys. Each spelling exists exactly once in this file, so that a property rename
     // is a one-line change and a failure message can always name the key it is complaining about.
-    // =============================================================================================
 
     /**
      * Property key holding the symmetric HMAC signing key.
@@ -721,11 +753,11 @@ public class SecurityConfig {
      * <strong>value is never named anywhere</strong> - not logged, not echoed, not summarised and not
      * digested.
      *
-     * <p>The spelling is the mandated one. This class previously named {@code JWT_SECRET}, matching what the
-     * rest of the tree had settled on first; the whole repository has since been renamed to this spelling in
-     * one change - the base profile, {@code com.cardemo.security.JwtTokenProvider}, the environment template,
+     * <p>The spelling is the mandated one, and it is one spelling everywhere: the base profile,
+     * {@code com.cardemo.security.JwtTokenProvider}, the environment template,
      * the container image documentation, the build file, the vulnerability-scan suppressions and the unit
-     * test that asserts the name. A partial rename is the one outcome to avoid, because a half-configured
+     * test that asserts the name all read {@code JWT_SIGNING_KEY} rather than {@code JWT_SECRET}. A partial
+     * rename is the one outcome to avoid, because a half-configured
      * application fails with a message that names a variable the operator has already set.
      */
     private static final String SIGNING_KEY_VARIABLE = "JWT_SIGNING_KEY";
@@ -746,10 +778,8 @@ public class SecurityConfig {
      */
     private static final String KEY_BCRYPT_STRENGTH = "carddemo.security.bcrypt.strength";
 
-    // =============================================================================================
     // Cryptographic invariants. These match com.cardemo.security.JwtTokenProvider exactly; a
     // divergence in either value would make every issued token unverifiable.
-    // =============================================================================================
 
     /**
      * The JWS algorithm, HS256, matching the algorithm the issuer signs with.
@@ -788,10 +818,8 @@ public class SecurityConfig {
      */
     private static final int REQUIRED_BCRYPT_STRENGTH = 10;
 
-    // =============================================================================================
     // Request paths. One constant per CICS transaction group, named for what it serves rather than for
     // the transaction identifier, with the identifier and its CSD line number in the documentation.
-    // =============================================================================================
 
     /**
      * Sign-on, transaction {@code CC00} at {@code app/csd/CARDDEMO.CSD:L378} - {@code COSGN00C}.
@@ -860,11 +888,9 @@ public class SecurityConfig {
      */
     private static final String PATH_ADMIN = "/api/admin/**";
 
-    // =============================================================================================
     // Management paths. Exactly the three endpoints application.yml exposes, plus the two health group
     // paths its group definitions create. Listed as separate constants rather than as an array, so that
     // no mutable static state exists anywhere in this class.
-    // =============================================================================================
 
     /** Aggregate health, answering status only because {@code show-details} is {@code never}. */
     private static final String PATH_HEALTH = "/actuator/health";
@@ -894,10 +920,8 @@ public class SecurityConfig {
      */
     private static final String PATH_PROMETHEUS = "/actuator/prometheus";
 
-    // =============================================================================================
     // Metrics scrape credential. Bound like every other secret in this class: from configuration, with
     // no committed default and no literal anywhere in the repository.
-    // =============================================================================================
 
     /**
      * Property naming the principal a metrics scraper presents.
@@ -927,11 +951,9 @@ public class SecurityConfig {
      */
     private static final String SCRAPE_AUTHORITY = "SCRAPE";
 
-    // =============================================================================================
     // The shared error envelope. Every refusal this class serialises carries the same members, in the
     // same order, as the body each @ExceptionHandler in com.cardemo.controller produces, so that one
     // client-side error handler covers the whole surface rather than one shape per rejection layer.
-    // =============================================================================================
 
     /**
      * The logger this class refuses through.
@@ -1092,10 +1114,8 @@ public class SecurityConfig {
      */
     private static final Set<String> BODYLESS_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
 
-    // =============================================================================================
     // Bound state. Three immutable values, all supplied by constructor injection. There is no field
     // @Autowired, no setter, no static mutable field and no service lookup anywhere in this class.
-    // =============================================================================================
 
     /**
      * The verification key, derived once at construction.
@@ -1320,19 +1340,17 @@ public class SecurityConfig {
      *       default - the security headers may never be written at all. Versions 6.5.0 through 6.5.8 are
      *       affected and 6.5.9 carries the fix; eager header writing is the documented mitigation for anyone
      *       who cannot move version.
-     *       <p><strong>This application is no longer on an affected version, and an earlier revision of this
-     *       clause said the opposite.</strong> It read "this application cannot move version", on the grounds
-     *       that {@code spring-boot-starter-parent} 3.5.11 resolves Spring Security 6.5.8 and that AAP section
-     *       0.8.4 forbids advancing a pinned coordinate unilaterally. That was measurably wrong at the time it
-     *       was read: {@code pom.xml} declares {@code <spring-security.version>6.5.11</spring-security.version>}
+     *       <p><strong>This application is not on an affected version.</strong> Reading it as one that
+     *       "cannot move version" - on the grounds that {@code spring-boot-starter-parent} 3.5.11 resolves
+     *       Spring Security 6.5.8 and that AAP section
+     *       0.8.4 forbids advancing a pinned coordinate unilaterally - is measurably wrong:
+     *       {@code pom.xml} declares {@code <spring-security.version>6.5.11</spring-security.version>}
      *       as a deliberate forward override of the 6.5.8 the parent manages - three releases past the fix,
      *       and recorded as a remediation in {@code owasp-suppressions.xml} ("CVE-2026-22732 9.1
      *       spring-security 6.5.8 -&gt; 6.5.11"). Section 0.8.4 governs the <em>pinned</em> coordinate, which
      *       is the parent;
      *       overriding a version the parent merely manages, in order to close a published advisory, is the
-     *       remedy that section asks for rather than a violation of it. The claim is withdrawn here rather
-     *       than quietly deleted, because a security clause that misstates the version it protects is worse
-     *       out of date than absent.
+     *       remedy that section asks for rather than a violation of it.
      *       <p><strong>The configuration is kept, and its justification changes from mitigation to
      *       defence in depth.</strong> The {@code HeaderWriterFilter} the headers configurer builds is
      *       post-processed with {@code setShouldWriteHeadersEagerly(true)}, which writes the headers on the way
@@ -1430,14 +1448,25 @@ public class SecurityConfig {
                         .authenticationEntryPoint(new ProblemDetailAuthenticationEntryPoint())
                         .accessDeniedHandler(new ProblemDetailAccessDeniedHandler()))
 
-                // The request-body bound, placed AFTER the header writer so a refusal still carries the
-                // security headers, and BEFORE the security context and the bearer filter so it applies to
-                // an anonymous request. See RequestBodyLimitFilter for why the position is the whole point.
+                // FINDING LOW-004, severity Low, RESOLVED. The two filters below are placed AFTER the header
+                // writer so a refusal still carries the security headers, and BEFORE AUTHORIZATION AND MVC
+                // BINDING so they apply to every request including an anonymous one. The measured chain is
+                // DisableEncodeUrl, WebAsyncManagerIntegration, SecurityContextHolder, JwtAuthentication,
+                // HeaderWriter, RequestBodyLimit, RequestMediaType, RequestCacheAware,
+                // SecurityContextHolderAwareRequest, AnonymousAuthentication, SessionManagement,
+                // ExceptionTranslation, Authorization - so these two run AFTER the bearer filter, not before
+                // it, which is what these comments used to claim.
+                //
+                // The purpose is unaffected and the position is still the whole point. The bearer filter does
+                // not REFUSE anything: it populates the security context when a token is present and passes
+                // an anonymous request straight through. Refusal for want of authorization happens last, at
+                // AuthorizationFilter, and MVC argument resolution happens after the chain entirely. Both
+                // bounds therefore still screen an unauthenticated caller - the sign-on route being the one
+                // that most needs it - and still screen it before any body is deserialized.
                 .addFilterAfter(new RequestBodyLimitFilter(), HeaderWriterFilter.class)
                 // The media-type screen, placed AFTER the body bound so the two refusals are ordered
-                // size-then-shape, and likewise after the header writer and before the bearer filter so an
-                // anonymous request is screened too. See RequestMediaTypeFilter for why screening here is
-                // what stops an unusable Content-Type reaching argument resolution.
+                // size-then-shape. See RequestMediaTypeFilter for why screening here is what stops an
+                // unusable Content-Type reaching argument resolution.
                 .addFilterAfter(new RequestMediaTypeFilter(), RequestBodyLimitFilter.class)
                 .addFilterAfter(jwtAuthenticationFilter, SecurityContextHolderFilter.class)
                 .authorizeHttpRequests(authorize -> authorize
@@ -1602,11 +1631,9 @@ public class SecurityConfig {
         return decoder;
     }
 
-    // =============================================================================================
     // Validation helpers. All private and all static, so the constructor cannot leak a partially
     // constructed instance and no subclass can weaken a check. Each one names the property it is
     // complaining about and the remedy; none of them reports a value that could be sensitive.
-    // =============================================================================================
 
     /**
      * Validates the signing key and converts it to an immutable verification key, erasing the working copy.
@@ -1874,7 +1901,7 @@ public class SecurityConfig {
 
             this.challenge.commence(request, response, authenticationException);
 
-            // FINDING C-01, severity CRITICAL. The request URI used to be logged here. This entry point is
+            // FINDING C-01, severity BLOCKER. The request URI used to be logged here. This entry point is
             // reached by definition BEFORE authentication, so the path and query string are text an anonymous
             // caller chooses, and the masking in src/main/resources/logback-spring.xml redacts labelled values
             // only - a bare card number or government identifier in a path segment survived verbatim. The
@@ -1894,7 +1921,7 @@ public class SecurityConfig {
     /**
      * The metrics scrape challenge: an HTTP Basic challenge that answers inside the problem envelope.
      *
-     * <p><strong>Finding, severity Minor - remediated here.</strong> {@code /actuator/prometheus} answered
+     * <p><strong>Finding, severity Medium - remediated here.</strong> {@code /actuator/prometheus} answered
      * {@code 401} to every caller in an environment where no scrape credential is configured, which is the
      * correct, fail-closed outcome. What was wrong was the <em>answer</em>: Spring's default body, carrying
      * {@code timestamp}, {@code status}, {@code error} and {@code path} and none of {@code errorCode},
@@ -1961,7 +1988,7 @@ public class SecurityConfig {
             response.setStatus(HttpStatus.UNAUTHORIZED.value());
             response.setHeader(HttpHeaders.WWW_AUTHENTICATE, CHALLENGE_HEADER_VALUE);
 
-            // FINDING C-01, severity CRITICAL. request.getRequestURI() used to supply the first placeholder.
+            // FINDING C-01, severity BLOCKER. request.getRequestURI() used to supply the first placeholder.
             // It is caller-chosen text on a pre-authentication boundary, so it could carry a protected value
             // past a masking layer that redacts labelled values only. The constant below names the one route
             // this chain governs, which is strictly more informative than the raw URI and cannot be shaped by
@@ -2013,7 +2040,7 @@ public class SecurityConfig {
 
             response.setStatus(HttpStatus.FORBIDDEN.value());
 
-            // FINDING C-01, severity CRITICAL. The method and the raw URI used to supply the first two
+            // FINDING C-01, severity BLOCKER. The method and the raw URI used to supply the first two
             // placeholders. Both are caller-chosen; the constant below names the one route this chain governs
             // and cannot be shaped by a caller. See the entry point above for the full reasoning.
             LOG.warn("Refused an authenticated metrics scrape of {} with {}. Neither the required"
@@ -2055,7 +2082,7 @@ public class SecurityConfig {
 
             this.challenge.handle(request, response, accessDeniedException);
 
-            // FINDING C-01, severity CRITICAL. The request URI used to be logged here. Authentication has
+            // FINDING C-01, severity BLOCKER. The request URI used to be logged here. Authentication has
             // succeeded by this point, but the path and query string are still caller-chosen text, and an
             // authenticated standard user probing an administrator route is exactly the caller most likely to
             // put a protected value into one. Same substitution as the entry point above: the correlation
@@ -2121,9 +2148,19 @@ public class SecurityConfig {
      * <p><strong>Position in the chain is load-bearing.</strong> Registered after
      * {@link org.springframework.security.web.header.HeaderWriterFilter} so a refusal still carries
      * {@code X-Content-Type-Options} and {@code X-Frame-Options}, and before
-     * {@link SecurityContextHolderFilter} and the bearer filter so it governs anonymous requests - the only
-     * ones that can reach the sign-on route. Moving it after authentication would exempt exactly the caller it
-     * exists to bound.
+     * {@link org.springframework.security.web.access.intercept.AuthorizationFilter} and MVC binding so it
+     * governs every request - anonymous ones included, those being the only ones that can reach the sign-on
+     * route. Moving it after authorization, or leaving the bound to argument resolution, would exempt exactly
+     * the caller it exists to bound.
+     *
+     * <p><strong>Finding LOW-004, severity Low, resolved:</strong> this paragraph said "before
+     * {@code SecurityContextHolderFilter} and the bearer filter". It is not. The measured order is
+     * {@code SecurityContextHolderFilter}, {@code JwtAuthenticationFilter}, {@code HeaderWriterFilter}, this
+     * filter, {@link RequestMediaTypeFilter}, and {@code AuthorizationFilter} last - so this filter runs
+     * <em>after</em> the bearer filter. The guarantee survives the correction because the bearer filter
+     * refuses nothing: it populates the security context when a token is present and passes an anonymous
+     * request through untouched, and the refusal for want of authorization is the last filter in the chain.
+     * What the position actually buys is therefore stated as what it is.
      *
      * <p>The response is {@code 413 Payload Too Large} carrying the shared problem envelope that
      * {@link SecurityConfig#writeProblemDetail} composes - the same shape every controller and both security
@@ -2364,8 +2401,11 @@ public class SecurityConfig {
      * Registered after {@link RequestBodyLimitFilter} so an oversized body is still refused as oversized
      * rather than as an unusable media type, after
      * {@link org.springframework.security.web.header.HeaderWriterFilter} so a refusal still carries the
-     * default security headers, and before the bearer filter so it governs anonymous requests - the sign-on
-     * route being the one that most needs it.
+     * default security headers, and before
+     * {@link org.springframework.security.web.access.intercept.AuthorizationFilter} and MVC binding so it
+     * governs anonymous requests too - the sign-on route being the one that most needs it. Finding LOW-004:
+     * this said "before the bearer filter", which the measured chain contradicts; see the corresponding
+     * paragraph on {@link RequestBodyLimitFilter} for the order and for why the guarantee is unchanged.
      */
     private static final class RequestMediaTypeFilter extends OncePerRequestFilter {
 
@@ -2392,7 +2432,7 @@ public class SecurityConfig {
             final boolean absent = declared == null || declared.isBlank();
 
             if (mayCarryBody(request) && (absent ? carriesBodyContent(request) : !isReadable(declared))) {
-                // FINDING C-01, severity CRITICAL. The raw header value used to be logged here, on the
+                // FINDING C-01, severity BLOCKER. The raw header value used to be logged here, on the
                 // reasoning that caller-supplied text belongs on a masked stream rather than in a response
                 // body. That reasoning is wrong in one decisive respect: this filter runs BEFORE the bearer
                 // filter, so an entirely unauthenticated caller chooses the bytes, and Content-Type is a
@@ -2482,7 +2522,7 @@ public class SecurityConfig {
         /**
          * Reduces a declared media type to one of a closed set of verdicts.
          *
-         * <p><strong>Finding C-01, severity Critical.</strong> This method exists so that the refusal record
+         * <p><strong>Finding C-01, severity Blocker.</strong> This method exists so that the refusal record
          * can name <em>why</em> a request was refused without naming <em>what</em> the request declared. The
          * three refusals of {@link #isReadable(String)} were already distinct decisions; making them a
          * returned value rather than three early {@code false} returns means the log line and the screen share
@@ -2533,7 +2573,7 @@ public class SecurityConfig {
     /**
      * The closed set of outcomes {@link RequestMediaTypeFilter} reaches for one declared media type.
      *
-     * <p><strong>Finding C-01, severity Critical.</strong> An enum rather than a set of string constants,
+     * <p><strong>Finding C-01, severity Blocker.</strong> An enum rather than a set of string constants,
      * because the point of the remediation is that the logged value cannot be attacker-shaped: the refusal
      * record carries one of exactly five names, all of them fixed at compile time, in place of a free-text
      * header a wholly unauthenticated caller chooses. Cardinality is bounded by the type, not by discipline.

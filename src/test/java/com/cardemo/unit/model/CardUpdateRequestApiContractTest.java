@@ -150,7 +150,10 @@ final class CardUpdateRequestApiContractTest {
     /** Input-field count of the update map, group {@code CCRDUPAI}, {@code app/cpy-bms/COCRDUP.CPY}. */
     private static final int MAP_FIELDS = 17;
 
-    /** The two WORKING-STORAGE snapshot groups the stateless contract has to carry. */
+    /**
+     * The two WORKING-STORAGE snapshot carriers the stateless contract has to hold: the edited group as a
+     * group, and the as-displayed group as one sealed opaque string.
+     */
     private static final int SNAPSHOT_GROUPS = 2;
 
     /**
@@ -234,16 +237,23 @@ final class CardUpdateRequestApiContractTest {
     /**
      * Builds a request carrying only the two snapshot groups, every screen field being absent.
      *
-     * @param oldDetails the old snapshot, or {@code null} for an absent group
+     * @param snapshot the sealed as-displayed snapshot, or {@code null} for an absent one
      * @param newDetails the new snapshot, or {@code null} for an absent group
      * @return the constructed request
      */
-    private static CardUpdateRequest requestWithSnapshots(final CardDetails oldDetails,
+    private static CardUpdateRequest requestWithSnapshots(final String snapshot,
             final CardDetails newDetails) {
 
         return new CardUpdateRequest(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, oldDetails, newDetails);
+                null, null, null, null, null, null, null, snapshot, newDetails);
     }
+
+    /**
+     * A stand-in sealed snapshot. Its bytes are never opened by these tests - this file is about the wire
+     * shape, and the sealing itself belongs to {@code SnapshotTokenServiceTest} - so an opaque literal is
+     * exactly as representative as a genuinely sealed value and needs no key.
+     */
+    private static final String SEALED_SNAPSHOT = "c2VhbGVkLXNuYXBzaG90LXN0YW5kLWlu";
 
     /**
      * Returns the declared size constraint of a record component, read from the backing field.
@@ -363,7 +373,7 @@ final class CardUpdateRequestApiContractTest {
                 + "with the two groups after them and not interleaved")
         void theComponentsAppearInMapOrder() {
             final List<String> expected = new ArrayList<>(SCREEN_COMPONENTS);
-            expected.add("oldDetails");
+            expected.add("snapshot");
             expected.add("newDetails");
 
             assertThat(componentNames(CardUpdateRequest.class)).containsExactlyElementsOf(expected);
@@ -382,11 +392,11 @@ final class CardUpdateRequestApiContractTest {
         }
 
         @Test
-        @DisplayName("the two snapshot components are the only non-textual ones, and both are the "
-                + "same type because the two COBOL groups are declared identically")
+        @DisplayName("the edited group is the only non-textual component, the as-displayed group having "
+                + "become one opaque sealed string")
         void theSnapshotComponentsShareOneType() throws NoSuchFieldException {
-            assertThat(CardUpdateRequest.class.getDeclaredField("oldDetails").getType())
-                    .isEqualTo(CardDetails.class);
+            assertThat(CardUpdateRequest.class.getDeclaredField("snapshot").getType())
+                    .isEqualTo(String.class);
             assertThat(CardUpdateRequest.class.getDeclaredField("newDetails").getType())
                     .isEqualTo(CardDetails.class);
         }
@@ -432,7 +442,7 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("both snapshot groups are declared, so the stateless comparison has its inputs")
         void bothSnapshotGroupsAreDeclared() {
             assertThat(componentNames(CardUpdateRequest.class))
-                    .contains("oldDetails", "newDetails");
+                    .contains("snapshot", "newDetails");
         }
 
         @Test
@@ -505,13 +515,34 @@ final class CardUpdateRequestApiContractTest {
         }
 
         @Test
-        @DisplayName("both group members are marked for cascading, or the leaf constraints would "
-                + "never fire")
+        @DisplayName("the edited group is marked for cascading, or the leaf constraints would never fire, "
+                + "while the sealed member carries a length bound instead of a cascade")
         void bothGroupMembersAreCascaded() throws NoSuchFieldException {
-            assertThat(CardUpdateRequest.class.getDeclaredField("oldDetails")
-                    .getAnnotation(Valid.class)).isNotNull();
             assertThat(CardUpdateRequest.class.getDeclaredField("newDetails")
                     .getAnnotation(Valid.class)).isNotNull();
+            // The sealed member is one opaque string, so there is nothing to cascade into; what it needs is a
+            // bound, so that an arbitrarily long value never reaches the base64 decoder or the cipher.
+            assertThat(CardUpdateRequest.class.getDeclaredField("snapshot")
+                    .getAnnotation(Valid.class)).isNull();
+            assertThat(CardUpdateRequest.class.getDeclaredField("snapshot")
+                    .getAnnotation(Size.class)).isNotNull();
+            assertThat(CardUpdateRequest.class.getDeclaredField("snapshot")
+                    .getAnnotation(Size.class).max())
+                    .isEqualTo(CardUpdateRequest.MAX_SNAPSHOT_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a sealed snapshot longer than the declared bound is refused before it can reach the "
+                + "cipher")
+        void anOverLongSealedSnapshotIsRefused() {
+            final CardUpdateRequest request = requestWithSnapshots(
+                    "A".repeat(CardUpdateRequest.MAX_SNAPSHOT_LENGTH + 1), null);
+
+            final Set<ConstraintViolation<CardUpdateRequest>> violations = VALIDATOR.validate(request);
+
+            assertThat(violations).hasSize(1);
+            assertThat(violations.iterator().next().getPropertyPath().toString())
+                    .isEqualTo("snapshot");
         }
 
         @Test
@@ -528,20 +559,19 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("an over-wide leaf three levels down is reported by the validator, with the "
                 + "violation path naming every level")
         void anOverWideLeafIsReportedWithItsFullPath() {
-            final CardUpdateRequest request = requestWithSnapshots(
+            final CardUpdateRequest request = requestWithSnapshots(null,
                     new CardDetails(null, null,
-                            new CardData(null, new ExpiraionDate("20266", null, null), null)),
-                    null);
+                            new CardData(null, new ExpiraionDate("20266", null, null), null)));
 
             final Set<ConstraintViolation<CardUpdateRequest>> violations = VALIDATOR.validate(request);
 
             assertThat(violations).hasSize(1);
             assertThat(violations.iterator().next().getPropertyPath().toString())
-                    .isEqualTo("oldDetails.cardData.expiraionDate.expiryYear");
+                    .isEqualTo("newDetails.cardData.expiraionDate.expiryYear");
         }
 
         @Test
-        @DisplayName("the new group is validated as well as the old, both being cascaded")
+        @DisplayName("the new group is validated three levels down, the cascade reaching every leaf")
         void theNewGroupIsValidatedToo() {
             // Re-vehicled onto an over-wide expiry year after finding F13 removed the verification leaf
             // whose width constraint used to trigger here. The probe is stronger for it: an empty group
@@ -563,7 +593,7 @@ final class CardUpdateRequestApiContractTest {
                 + "omitted, which is the only shape a client may send")
         void aPopulatedPairRaisesNoViolation() {
             assertThat(VALIDATOR.validate(
-                    requestWithSnapshots(populatedSnapshot(), populatedSnapshot()))).isEmpty();
+                    requestWithSnapshots(SEALED_SNAPSHOT, populatedSnapshot()))).isEmpty();
         }
 
         @Test
@@ -580,7 +610,7 @@ final class CardUpdateRequestApiContractTest {
             final CardDetails empty = new CardDetails("", "",
                     new CardData("", new ExpiraionDate("", "", ""), ""));
 
-            assertThat(VALIDATOR.validate(requestWithSnapshots(empty, empty))).isEmpty();
+            assertThat(VALIDATOR.validate(requestWithSnapshots("", empty))).isEmpty();
         }
     }
 
@@ -602,21 +632,21 @@ final class CardUpdateRequestApiContractTest {
         @Test
         @DisplayName("the JSON property carries the source's spelling on the way in")
         void theJsonPropertyCarriesTheSourceSpellingInbound() throws Exception {
-            final String json = "{\"oldDetails\":{\"cardData\":{\"expiraionDate\":"
+            final String json = "{\"newDetails\":{\"cardData\":{\"expiraionDate\":"
                     + "{\"expiryYear\":\"2026\",\"expiryMonth\":\"11\",\"expiryDay\":\"30\"}}}}";
 
             final CardUpdateRequest bound = mapper.readValue(json, CardUpdateRequest.class);
 
-            assertThat(bound.oldDetails().cardData().expiraionDate().expiryYear()).isEqualTo("2026");
-            assertThat(bound.oldDetails().cardData().expiraionDate().expiryMonth()).isEqualTo("11");
-            assertThat(bound.oldDetails().cardData().expiraionDate().expiryDay()).isEqualTo("30");
+            assertThat(bound.newDetails().cardData().expiraionDate().expiryYear()).isEqualTo("2026");
+            assertThat(bound.newDetails().cardData().expiraionDate().expiryMonth()).isEqualTo("11");
+            assertThat(bound.newDetails().cardData().expiraionDate().expiryDay()).isEqualTo("30");
         }
 
         @Test
         @DisplayName("the JSON property carries the source's spelling on the way out")
         void theJsonPropertyCarriesTheSourceSpellingOutbound() throws Exception {
             final String json = mapper.writeValueAsString(
-                    requestWithSnapshots(populatedSnapshot(), null));
+                    requestWithSnapshots(SEALED_SNAPSHOT, populatedSnapshot()));
 
             assertThat(json).contains("\"expiraionDate\"").doesNotContain("expirationDate");
         }
@@ -625,7 +655,7 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("the corrected spelling is rejected rather than ignored, so a well-meaning "
                 + "caller cannot defeat the comparison silently")
         void theCorrectedSpellingIsRejected() {
-            final String json = "{\"oldDetails\":{\"cardData\":{\"expirationDate\":{}}}}";
+            final String json = "{\"newDetails\":{\"cardData\":{\"expirationDate\":{}}}}";
 
             assertThatThrownBy(() -> mapper.readValue(json, CardUpdateRequest.class))
                     .hasRootCauseInstanceOf(IllegalArgumentException.class);
@@ -667,7 +697,7 @@ final class CardUpdateRequestApiContractTest {
             // discarding it, which is the failure mode that teaches a caller the wrong contract. The
             // nested group's unknown-property guard refuses it outright instead.
             assertThatThrownBy(() -> mapper.readValue(
-                    "{\"oldDetails\":{\"cvvCode\":\"123\"}}", CardUpdateRequest.class))
+                    "{\"newDetails\":{\"cvvCode\":\"123\"}}", CardUpdateRequest.class))
                     .hasRootCauseInstanceOf(IllegalArgumentException.class)
                     .rootCause()
                     .hasMessageContaining("CardDetails")
@@ -679,7 +709,7 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("the verification value never appears on the way out, not even as a key")
         void theVerificationValueNeverAppearsOutbound() throws Exception {
             final String json = mapper.writeValueAsString(
-                    requestWithSnapshots(populatedSnapshot(), populatedSnapshot()));
+                    requestWithSnapshots(SEALED_SNAPSHOT, populatedSnapshot()));
 
             // Now structural rather than behavioural: no component exists to serialise. The assertion is
             // kept because it is the property a reader of the API cares about, and because it would fail
@@ -697,7 +727,7 @@ final class CardUpdateRequestApiContractTest {
             final String name = "JANE DOE";
             final CardUpdateRequest request = new CardUpdateRequest(null, null, null, "COCRDUPC",
                     null, null, "00000000001", pan, name, "Y", "12", "2027", "31", null, null, null,
-                    null, populatedSnapshot(), populatedSnapshot());
+                    null, SEALED_SNAPSHOT, populatedSnapshot());
 
             assertThat(request.toString())
                     .isEqualTo("CardUpdateRequest[accountId=00000000001, programName=COCRDUPC]")
@@ -795,10 +825,12 @@ final class CardUpdateRequestApiContractTest {
         @ParameterizedTest(name = "an unknown property at {0} is rejected by a strict mapper")
         @ValueSource(strings = {
             "{\"bogus\":\"x\"}",
-            "{\"oldDetails\":{\"bogus\":\"x\"}}",
+            "{\"oldDetails\":{\"accountId\":\"00000000001\"}}",
+            "{\"newDetails\":{\"bogus\":\"x\"}}",
             "{\"newDetails\":{\"cardData\":{\"bogus\":\"x\"}}}",
-            "{\"oldDetails\":{\"cardData\":{\"expiraionDate\":{\"bogus\":\"x\"}}}}"})
-        @DisplayName("an unknown property is rejected at every level of the payload")
+            "{\"newDetails\":{\"cardData\":{\"expiraionDate\":{\"bogus\":\"x\"}}}}"})
+        @DisplayName("an unknown property is rejected at every level of the payload, including a "
+                + "hand-built as-displayed group, which this contract no longer accepts")
         void anUnknownPropertyIsRejectedAtEveryLevel(final String json) {
             assertThatThrownBy(() -> strict.readValue(json, CardUpdateRequest.class))
                     .hasRootCauseInstanceOf(IllegalArgumentException.class);
@@ -807,9 +839,10 @@ final class CardUpdateRequestApiContractTest {
         @ParameterizedTest(name = "an unknown property at {0} is rejected by a lenient mapper too")
         @ValueSource(strings = {
             "{\"bogus\":\"x\"}",
-            "{\"oldDetails\":{\"bogus\":\"x\"}}",
+            "{\"oldDetails\":{\"accountId\":\"00000000001\"}}",
+            "{\"newDetails\":{\"bogus\":\"x\"}}",
             "{\"newDetails\":{\"cardData\":{\"bogus\":\"x\"}}}",
-            "{\"oldDetails\":{\"cardData\":{\"expiraionDate\":{\"bogus\":\"x\"}}}}"})
+            "{\"newDetails\":{\"cardData\":{\"expiraionDate\":{\"bogus\":\"x\"}}}}"})
         @DisplayName("the rejection survives a mapper that has been told to ignore unknown "
                 + "properties, which is the whole point of making it local")
         void theRejectionSurvivesALenientMapper(final String json) {
@@ -847,15 +880,16 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("a payload made only of declared properties binds without complaint")
         void aWellFormedPayloadBinds() throws Exception {
             final String json = "{\"accountId\":\"00000000001\",\"expiryDay\":\"31\","
-                    + "\"oldDetails\":{\"accountId\":\"00000000001\","
+                    + "\"snapshot\":\"" + SEALED_SNAPSHOT + "\","
+                    + "\"newDetails\":{\"accountId\":\"00000000001\","
                     + "\"cardData\":{\"cardStatusCode\":\"Y\"}}}";
 
             final CardUpdateRequest bound = strict.readValue(json, CardUpdateRequest.class);
 
             assertThat(bound.accountId()).isEqualTo("00000000001");
             assertThat(bound.expiryDay()).isEqualTo("31");
-            assertThat(bound.oldDetails().cardData().cardStatusCode()).isEqualTo("Y");
-            assertThat(bound.newDetails()).isNull();
+            assertThat(bound.snapshot()).isEqualTo(SEALED_SNAPSHOT);
+            assertThat(bound.newDetails().cardData().cardStatusCode()).isEqualTo("Y");
         }
     }
 
@@ -946,10 +980,10 @@ final class CardUpdateRequestApiContractTest {
             // than an exception raised during binding. Asserting the count keeps a silently dropped
             // constraint visible.
             final Set<ConstraintViolation<CardUpdateRequest>> violations =
-                    VALIDATOR.validate(requestWithSnapshots(snapshot, null));
+                    VALIDATOR.validate(requestWithSnapshots(null, snapshot));
             assertThat(violations).hasSize(1);
             assertThat(violations).extracting(violation -> violation.getPropertyPath().toString())
-                    .containsOnly("oldDetails.cardNumber");
+                    .containsOnly("newDetails.cardNumber");
         }
     }
 }

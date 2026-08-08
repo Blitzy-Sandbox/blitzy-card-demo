@@ -461,8 +461,8 @@ class CardReaderTest {
             reader.update(context);
 
             assertThat(context.getLong(CONTEXT_KEY_RECORDS_READ)).isEqualTo(2L);
-            // The card number is NOT checkpointed, and that is the whole of finding M-04. An earlier revision
-            // asserted the opposite. CardReader.update() writes the row count and nothing else, because a
+            // The card number is NOT checkpointed, and that is the whole of finding M-04. The reader's
+            // update() writes the row count and nothing else, because a
             // primary account number placed in an execution context is persisted to the job repository, where
             // it outlives the run and is readable by anything that can read the schema. The scan resumes
             // instead by re-probing the relation for the key at the checkpointed ordinal, which needs no
@@ -568,7 +568,7 @@ class CardReaderTest {
             reader.update(rewritten);
             // A checkpoint taken before the next row is emitted carries the row count forward and still no
             // key: the resume position is recovered by re-probing the relation at that ordinal, so there is
-            // nothing to restore and nothing to leak. An earlier revision asserted the key was preserved.
+            // nothing to restore and nothing to leak. Asserting the key is preserved would assert the leak.
             assertThat(rewritten.getLong(CONTEXT_KEY_RECORDS_READ))
                     .as("the row count is what survives, and it is enough to resume from")
                     .isEqualTo(2L);
@@ -655,7 +655,7 @@ class CardReaderTest {
     }
 
     @Nested
-    @DisplayName("6. BLOCKER-CRITICAL: the verb inventory is OPEN, READ and CLOSE only")
+    @DisplayName("6. BLOCKER: the verb inventory is OPEN, READ and CLOSE only")
     class VerbInventory {
 
         @Test

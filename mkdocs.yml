@@ -1,3 +1,31 @@
+# ******************************************************************
+# * Program     : mkdocs.yml
+# * Application : CardDemo
+# * Type        : MkDocs site configuration (Backstage TechDocs source)
+# * Function    : Declares the published documentation set, the Mermaid
+# *               custom fence that renders the diagrams, and the validation
+# *               policy that turns an omitted page from a silent INFO notice
+# *               into a strict-build failure.
+# * Source      : catalog-info.yaml (backstage.io/techdocs-ref: dir:.) and
+# *               diagrams/** - the legacy architecture illustrations whose
+# *               Mermaid successors this file publishes @ 7756d89
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
 site_name: 'blitzy-card-demo'
 # Backstage TechDocs publishes from this nav (catalog-info.yaml sets
 # `backstage.io/techdocs-ref: dir:.`), so every document under docs/ must
@@ -9,10 +37,8 @@ site_name: 'blitzy-card-demo'
 # raises that notice to a warning, which --strict then promotes to a failure;
 # it is the only automatic detection this silent-failure path has, so do not
 # remove it.
-# This is not hypothetical. api-contracts.md, architecture-before-after.md and
-# validation-gates.md were each on disk but unpublished for exactly this reason
-# before they were added above. Verify with: mkdocs build --strict (expect 0
-# warnings), which the validation block below is what makes meaningful.
+# Verify with: mkdocs build --strict (expect 0 warnings), which the validation
+# block below is what makes meaningful.
 # DECISION_LOG.md and TRACEABILITY_MATRIX.md are deliberately absent: they
 # are root evidence artifacts outside docs_dir, linked from README.md, and
 # a `../` entry would not resolve here. Do not add or duplicate them.
@@ -52,7 +78,7 @@ markdown_extensions:
 # Detection for the silent-failure path described at the nav block above.
 #
 # MkDocs defaults validation.nav.omitted_files to info, and --strict acts on
-# warnings, so before this block an omitted page passed a strict build in
+# warnings, so without this block an omitted page passes a strict build in
 # silence - warning-free, not merely error-free. Raising it to warn is what
 # makes `mkdocs build --strict` fail on the omission rather than only on a
 # broken link. The remaining settings close the same class of gap from the

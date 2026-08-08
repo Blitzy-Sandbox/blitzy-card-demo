@@ -1,4 +1,5 @@
 /*
+ * ******************************************************************
  * Program     : StatementWriter.java
  * Application : CardDemo
  * Type        : Spring Batch ItemWriter
@@ -9,7 +10,7 @@
  *               app/cbl/CBSTM03A.CBL :L45 FD-STMTFILE-REC X(80), :L47 FD-HTMLFILE-REC X(100),
  *               :L293 OPEN OUTPUT STMT-FILE HTML-FILE, :L339 CLOSE STMT-FILE HTML-FILE;
  *               app/cpy/COSTM01.CPY (32-byte TRNX-KEY + 318 = 350) @ 7756d89
- *
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -24,6 +25,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
+ * ******************************************************************
  */
 package com.cardemo.batch.writers;
 
@@ -132,11 +134,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>One object pair per statement, not per account</h2>
  *
- * <p><b>Finding F-01, severity Major, RESOLVED.</b> The key composed here identifies a <em>statement</em>:
+ * <p><b>Finding F-01, severity High.</b> The key composed here identifies a <em>statement</em>:
  * account, then statement month, then generation, then the statement's ordinal within the step execution.
- * It previously stopped at the generation, which identified an account-month instead - and an account-month
+ * Stopping at the generation identifies an account-month instead - and an account-month
  * carries as many statements as the account has cards. Twelve accounts with two cross-reference rows each
- * therefore lost twelve statements to twelve overwrites, with storage reporting success for every write and
+ * would then lose twelve statements to twelve overwrites, with storage reporting success for every write and
  * the run finishing {@code COMPLETED}. Several cards on one account is a designed state, not a corner case:
  * {@code CARDXREF.VSAM.AIX} and {@code CARDDATA.VSAM.AIX} are non-unique alternate indexes on the account
  * identifier ({@code app/catlg/LISTCAT.txt:L254-L270}), and the source's own driving loop emits one
@@ -145,8 +147,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@link #requireStatementKeyIsUnwritten(String)} for the guard that refuses a repeated key rather than
  * trusting the shape.
  *
- * <p>The account and month prefixes are unchanged, so a consumer still filters on them; what changed is that
- * an account-month prefix may now hold several statements, exactly as the source's single sequential dataset
+ * <p>The account and month prefixes carry the same meaning as ever, so a consumer still filters on them; an
+ * account-month prefix simply holds several statements, exactly as the source's single sequential dataset
  * held several statements for one account.
  *
  * <h2>Generation data group translation</h2>
@@ -288,9 +290,7 @@ public class StatementWriter
     /** Diagnostic logger. No statement content ever reaches it: see the emission methods. */
     private static final Logger LOG = LoggerFactory.getLogger(StatementWriter.class);
 
-    // ---------------------------------------------------------------------------------------------
     // Record geometry. Both widths are fixed by the program's own record areas.
-    // ---------------------------------------------------------------------------------------------
 
     /** {@code 01 FD-STMTFILE-REC PIC X(80)}, {@code app/cbl/CBSTM03A.CBL:L45}. */
     private static final int TEXT_RECORD_LENGTH = StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH;
@@ -305,9 +305,7 @@ public class StatementWriter
      */
     private static final Charset RECORD_CHARSET = StandardCharsets.ISO_8859_1;
 
-    // ---------------------------------------------------------------------------------------------
     // Logical file identities and diagnostics.
-    // ---------------------------------------------------------------------------------------------
 
     /** The text output's DD name, {@code app/jcl/CREASTMT.JCL:L87}. */
     public static final String STMTFILE_DD_NAME = "STMTFILE";
@@ -327,9 +325,7 @@ public class StatementWriter
     /** {@code ABEND-CULPRIT}, the program whose failure this is, {@code app/cpy/CSMSG02Y.cpy}. */
     private static final String ABEND_CULPRIT = "CBSTM03A";
 
-    // ---------------------------------------------------------------------------------------------
     // Object storage: key composition, validation and metadata.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * Root key segment for every statement object.
@@ -353,20 +349,20 @@ public class StatementWriter
     /**
      * Key segment carrying the statement's ordinal within the run, which is what makes every key unique.
      *
-     * <p><b>Finding F-01, severity Major, RESOLVED here: a statement was silently overwritten.</b> Until this
-     * segment existed the key was a function of the account, the statement month and the generation and of
-     * nothing else, so it identified an <em>account-month</em> rather than a <em>statement</em>. That is only
+     * <p><b>Finding F-01, severity High: without this segment a statement is silently overwritten.</b> A key
+     * that is a function of the account, the statement month and the generation and of
+     * nothing else identifies an <em>account-month</em> rather than a <em>statement</em>. That is only
      * the same thing while an account has exactly one card, and an account having several is a first-class
      * state of this data model, not an edge case: {@code CARDXREF.VSAM.AIX} and {@code CARDDATA.VSAM.AIX} are
      * <b>non-unique</b> alternate indexes on the account identifier
      * ({@code app/catlg/LISTCAT.txt:L254-L270}), the emit step's driving read returns one cross-reference row
      * per card, and {@code app/cbl/COCRDLIC.cbl} exists precisely to list the several cards of one account.
-     * With twelve of fifty accounts carrying two cross-reference rows, sixty-two statements were composed and
-     * only fifty pairs survived: the second statement of an account replaced the first, storage reported
-     * success for both writes, and the run finished {@code COMPLETED} with no warning anywhere. Silent loss of
-     * customer output is the worst failure mode this class can have, so the remedy is structural rather than
-     * advisory - see {@link #requireStatementKeyIsUnwritten(String)} for the guard that makes a repeat
-     * impossible rather than merely unlikely.
+     * With twelve of fifty accounts carrying two cross-reference rows, sixty-two statements are composed and
+     * only fifty pairs would survive: the second statement of an account replacing the first, storage
+     * reporting success for both writes, and the run finishing {@code COMPLETED} with no warning anywhere.
+     * Silent loss of customer output is the worst failure mode this class can have, so the remedy is structural
+     * rather than advisory - see {@link #requireStatementKeyIsUnwritten(String)} for the guard that makes a
+     * repeat impossible rather than merely unlikely.
      *
      * <p><b>Why the ordinal, and not the card number.</b> The natural key of a statement is the
      * cross-reference row, whose key is the sixteen-digit card number - but a card number is a primary account
@@ -544,14 +540,14 @@ public class StatementWriter
      * Job-execution-context entry holding how many statement objects this job instance created, as a
      * {@code Long}.
      *
-     * <p><b>Finding, severity High, RESOLVED twice - and the second resolution replaced the first.</b> The
-     * original defect was that the step published only into the <em>step</em> execution context, whose two
-     * entries hold one text key and one HTML key and are overwritten on every flush; a step producing
-     * statements for fifty accounts therefore left only the last account's pair behind. The first remediation
-     * appended <em>every</em> created key into the job execution context as an indexed entry. That made the
-     * record complete but made it unbounded: the job execution context is serialised to the job repository on
-     * every commit, so its size grew with the number of accounts, which is exactly the whole-run retention
-     * this class must not do.
+     * <p><b>Finding, severity High: neither the step context alone nor an unbounded list is the answer.</b>
+     * Publishing only into the <em>step</em> execution context, whose two
+     * entries hold one text key and one HTML key and are overwritten on every flush, leaves a step producing
+     * statements for fifty accounts with only the last account's pair. Appending <em>every</em> created key
+     * into the job execution context as an indexed entry makes the record complete and unbounded: the job
+     * execution context is serialised to the job repository on
+     * every commit, so its size would grow with the number of accounts, which is exactly the whole-run
+     * retention this class must not do.
      *
      * <p>This entry holds the <em>count</em> only, which is one number
      * whatever the account count, and the authoritative record of which objects exist is the statement root
@@ -563,22 +559,20 @@ public class StatementWriter
      * <p>The two step-scoped entries are kept, still naming the latest pair, for a listener running inside
      * the step.
      *
-     * <p><b>Finding F-01, severity Major, RESOLVED: the published figure now counts distinct objects.</b> The
+     * <p><b>Finding F-01, severity High: the published figure counts distinct objects.</b> The
      * tally is incremented once per object created, which is only the number of objects that <em>exist</em> if
-     * no two of them share a key. Before {@link #KEY_STATEMENT_SEGMENT} that condition did not hold: a run
-     * over sixty-two cross-reference rows spanning fifty accounts published 124 while the bucket held 100,
-     * so the entry over-reported by exactly the number of statements it had silently destroyed - and the one
-     * figure an operator would have checked to notice the loss was the figure that concealed it. Every key a
-     * step composes now carries that step's strictly increasing statement ordinal, so two objects cannot share
+     * no two of them share a key. Without {@link #KEY_STATEMENT_SEGMENT} that condition fails: a run
+     * over sixty-two cross-reference rows spanning fifty accounts would publish 124 while the bucket held 100,
+     * so the entry would over-report by exactly the number of statements it had silently destroyed - and the
+     * one figure an operator would check to notice the loss would be the figure that concealed it. Every key a
+     * step composes carries that step's strictly increasing statement ordinal, so two objects cannot share
      * a key, so each increment counts an object that is still there. The property is asserted rather than
      * assumed: {@link #requireStatementKeyIsUnwritten(String)} refuses a key that does not advance, which
      * turns any future regression into a failed step instead of a quiet over-count.
      */
     public static final String CONTEXT_KEY_OBJECT_KEYS_COUNT = "carddemo.statement.object.keys.count";
 
-    // ---------------------------------------------------------------------------------------------
     // Injected collaborators. Every one arrives by constructor; none is constructed here.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * Object-storage operations. Injected; never constructed here, and never pointed at an endpoint here.
@@ -601,9 +595,7 @@ public class StatementWriter
     /** The application's single time source, from which the statement month is derived once per step. */
     private final Clock clock;
 
-    // ---------------------------------------------------------------------------------------------
     // Per-execution state. Safe because the bean is step scoped: see the class documentation.
-    // ---------------------------------------------------------------------------------------------
 
     /** The accumulated text records of the statement currently open, undelimited. */
     private final StringBuilder textRecords = new StringBuilder();
@@ -717,9 +709,7 @@ public class StatementWriter
         this.stepStatementMonth = YearMonth.now(clock).format(STATEMENT_MONTH_FORMAT);
     }
 
-    // =============================================================================================
     // The ItemWriter contract: one object pair per statement.
-    // =============================================================================================
 
     /**
      * Persists every statement in the chunk, one text object and one markup object each.
@@ -778,10 +768,8 @@ public class StatementWriter
         // spring.batch.item.write, per step and per job, which is decomposable.
     }
 
-    // =============================================================================================
     // The per-statement output lifecycle. Public because a step may drive it directly - the statement
     // job's tasklet variant does - and because it is the observable counterpart of OPEN and CLOSE.
-    // =============================================================================================
 
     /**
      * Opens the two statement outputs, using the generation captured from the enclosing job.
@@ -997,9 +985,7 @@ public class StatementWriter
         return this.stepStatementMonth;
     }
 
-    // =============================================================================================
     // Step lifecycle. The generation and the statement month are captured once, at the start.
-    // =============================================================================================
 
     /**
      * Captures the job instance identifier as the generation, and the statement month from the clock.
@@ -1094,9 +1080,7 @@ public class StatementWriter
     }
 
 
-    // =============================================================================================
     // Guards, key composition and the storage boundary.
-    // =============================================================================================
 
     /**
      * Validates an account identifier destined for an object-key segment.
@@ -1258,7 +1242,7 @@ public class StatementWriter
     /**
      * Refuses a composed key that this step execution has already written.
      *
-     * <p><b>Finding F-01, severity Major: this is the guard that makes a silent overwrite impossible.</b> The
+     * <p><b>Finding F-01, severity High: this is the guard that makes a silent overwrite impossible.</b> The
      * key shape of {@link #KEY_STATEMENT_SEGMENT} already prevents a collision, because the ordinal it carries
      * strictly increases and is never reused - but "prevented by construction" is a property of today's
      * construction, and the failure it prevents is the loss of customer output with a {@code COMPLETED} status
@@ -1438,7 +1422,7 @@ public class StatementWriter
             // is the classification an operator needs, and the throwable itself is preserved as the cause of the
             // exception raised immediately below, so the root cause survives in full and nothing is swallowed.
             //
-            // Finding m-03, severity Minor. Not logging it here was never the whole defence, because the cause
+            // Finding m-03, severity Medium. Not logging it here was never the whole defence, because the cause
             // travels: the framework logs a failed step's exception itself, and Spring Batch writes the rendered
             // stack of that same throwable into BATCH_STEP_EXECUTION.EXIT_MESSAGE, which no appender rule can
             // reach. The cause handed on is therefore sanitised - see sanitizedCause, which preserves the type,
@@ -1457,12 +1441,10 @@ public class StatementWriter
         }
     }
 
-    // =====================================================================================================
-    // Finding m-03, severity Minor: the object-key boundary. Declared here, next to their only callers,
+    // Finding m-03, severity Medium: the object-key boundary. Declared here, next to their only callers,
     // rather than in the constant block above, because two of the three derive from KEY_ROOT,
     // KEY_ACCOUNT_SEGMENT and ACCOUNT_ID_DIGITS and a static initialiser may not reference a constant
     // declared later in the file.
-    // =====================================================================================================
 
     /**
      * The account segment of a composed statement key, with the segment label captured and the digits not.
@@ -1470,7 +1452,7 @@ public class StatementWriter
      * <p>Anchored on the whole literal {@code statements/account=} rather than on {@code account=} alone, and
      * bounded at {@value #ACCOUNT_ID_DIGITS} digits, which is the exact width
      * {@link #requireAccountIdSegment(String)} admits. Both choices keep this a <em>key</em> rule rather than
-     * a digit rule: a bare {@code accountId=00000000011} in a batch diagnostic does not match it, and neither
+     * a digit rule: a bare {@code accountId=<11 digits>} in a batch diagnostic does not match it, and neither
      * does an eleven-digit segment of any other object key.
      */
     private static final Pattern STATEMENT_KEY_ACCOUNT_SEGMENT = Pattern.compile(
@@ -1497,7 +1479,7 @@ public class StatementWriter
     /**
      * Removes the account digits from every statement key occurring in a piece of text.
      *
-     * <p><b>Finding m-03, severity Minor, RESOLVED.</b> A statement key is
+     * <p><b>Finding m-03, severity Medium, RESOLVED.</b> A statement key is
      * {@code statements/account=<11 digits>/month=<uuuu-MM>/generation=<19 digits>/statement=<19 digits>/}
      * plus the object name, so the key <em>is</em> an account-and-month disclosure wherever it is rendered.
      * This class already never names a key in a message or a log line, but an object-store failure carries

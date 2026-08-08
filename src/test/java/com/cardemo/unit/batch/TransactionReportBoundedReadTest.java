@@ -98,22 +98,25 @@ import org.springframework.transaction.PlatformTransactionManager;
 import software.amazon.awssdk.services.s3.S3Client;
 
 /**
- * The bounded-resource contract of the two report-job steps that used to read a whole generation.
+ * The bounded-resource contract of the two report-job steps that read a generation.
  *
  * <h2>What this proves, and why the existing suites could not</h2>
  *
- * <p><strong>Finding M-08, severity Major.</strong> {@code executeStep05r} used to call a helper that
- * accumulated the entire {@code TRANSACT.BKUP} generation into a {@code List<byte[]>}, then filtered it with
- * {@code removeIf} and sorted it in place; {@code printCategoryBalances} used the same helper on the
- * {@code TCATBALF.BKUP} generation and then built the whole report in one {@code StringBuilder}. Both inputs
+ * <p><strong>Finding M-08, severity High.</strong> Neither {@code executeStep05r} nor
+ * {@code printCategoryBalances} may call a helper that
+ * accumulates an entire generation into a {@code List<byte[]>} - the first over {@code TRANSACT.BKUP}, then
+ * filtering it with {@code removeIf} and sorting it in place; the second over the
+ * {@code TCATBALF.BKUP} generation, then building the whole report in one {@code StringBuilder}. Both inputs
  * are unbounded - the transaction cluster grows with the business and the category-balance cluster grows with
- * every account, type and category triple - so peak memory was the whole dataset and a large run ended in an
+ * every account, type and category triple - so peak memory would be the whole dataset and a large run would
+ * end in an
  * {@code OutOfMemoryError}, which is an abort of the job virtual machine rather than a step failure with a
  * reason code.
  *
  * <p>Neither the processor suite nor the real-infrastructure job suite can catch that, because the functional
  * result is identical either way: the same bytes reach the same key, and the corpus fixture is 300 records so
- * it always passed. What separates the two implementations is <em>how much is live at once</em>, which is
+ * both pass. What separates a bounded implementation from an unbounded one is <em>how much is live at
+ * once</em>, which is
  * observable only in the interaction. Every test here therefore asserts on the interaction: how many pages
  * were requested and with what bounds, whether the superseded whole-object read happens at all, and whether
  * the ordering the source declares is verified rather than achieved by making the input resident.

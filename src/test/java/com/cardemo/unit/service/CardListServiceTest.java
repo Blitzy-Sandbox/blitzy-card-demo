@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : CardListServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
@@ -25,7 +25,7 @@
  *               app/cpy/CVACT02Y.cpy    (CARD-RECORD, RECLN 150, key X(16))
  *               app/cpy-bms/COCRDLI.CPY (45 input fields, PAGENOI X(3))
  *               app/csd/CARDDEMO.CSD    (CCLI -> COCRDLIC) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -40,7 +40,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -476,14 +476,12 @@ final class CardListServiceTest {
     @Mock
     private CardRepository cardRepository;
 
-    // ============================================================================================
     // FIXTURE BUILDERS
     //
     // Card numbers are synthetic sixteen-digit sequence keys that begin with a zero, so none can be
     // a real primary account number - no issuer identification number starts with zero - and none
     // satisfies the Luhn check. Rule 1 Clause D still applies to them: no card number reaches a log,
     // an assertion description or an exception message anywhere below.
-    // ============================================================================================
 
     /**
      * Builds one {@code CARD-RECORD} of {@code app/cpy/CVACT02Y.cpy}.
@@ -760,10 +758,8 @@ final class CardListServiceTest {
         return numbers;
     }
 
-    // ============================================================================================
     // PHASE 1 - THE SEVEN-ROW PAGE IS A PARITY CONTRACT, NOT A TUNABLE
     // app/cbl/COCRDLIC.cbl:177-178
-    // ============================================================================================
 
     @Test
     @DisplayName("A full page returns exactly 7 rows - WS-MAX-SCREEN-LINES VALUE 7 at :177-178")
@@ -893,10 +889,8 @@ final class CardListServiceTest {
         assertThat(ROW_WIDTH * SCREEN_LINES).isEqualTo(196);
     }
 
-    // ============================================================================================
     // PHASE 2 - THE COUNTER-INTUITIVE SENTINELS
     // app/cbl/COCRDLIC.cbl:237-248, :230-235
-    // ============================================================================================
 
     @Test
     @DisplayName("CA-LAST-PAGE-SHOWN is 0 and CA-LAST-PAGE-NOT-SHOWN is 9 - the inversion")
@@ -1091,10 +1085,8 @@ final class CardListServiceTest {
         assertThat(result.page.getPageNumber()).isEqualTo(FIRST_PAGE);
     }
 
-    // ============================================================================================
     // PHASE 3 - FORWARD AND BACKWARD BROWSE
     // app/cbl/COCRDLIC.cbl:1123-1261 and :1264-1374
-    // ============================================================================================
 
     @Test
     @DisplayName("Paging forward advances from the LAST key of the previous page")
@@ -1270,10 +1262,8 @@ final class CardListServiceTest {
         verify(cardRepository, never()).findByAccountIdOrderByCardNumberAsc(any(), any(Pageable.class));
     }
 
-    // ============================================================================================
     // PHASE 4 - 9500-FILTER-RECORDS IS AN AND OF TWO INDEPENDENT GUARDS
     // app/cbl/COCRDLIC.cbl:1382-1409. Four combinations, each its own test.
-    // ============================================================================================
 
     @Test
     @DisplayName("Filter combination 1 of 4: neither filter supplied - every record passes")
@@ -1430,10 +1420,8 @@ final class CardListServiceTest {
         assertThat(result.page.isNextPageAvailable()).isTrue();
     }
 
-    // ============================================================================================
     // PHASE 5 - THREE-VALUED FILTER FLAGS AND THE BYTE-EXACT LITERALS
     // app/cbl/COCRDLIC.cbl:1003-1032 and :1036-1069
-    // ============================================================================================
 
     @Test
     @DisplayName("Account flag state 1 of 3 - BLANK: an all-zeros filter suppresses the filter")
@@ -1576,10 +1564,8 @@ final class CardListServiceTest {
         verifyNoInteractions(cardRepository);
     }
 
-    // ============================================================================================
     // PHASE 6 - THE BMS FIELD CONTRACT HAS AN ASYMMETRIC FIRST ROW
     // app/cpy-bms/COCRDLI.CPY - 45 input fields, no CRDSTP1I
-    // ============================================================================================
 
     @Test
     @DisplayName("Row 1 projects 4 BMS fields and rows 2 to 7 project 5 - there is no CRDSTP1I")
@@ -1682,10 +1668,8 @@ final class CardListServiceTest {
         verify(cardRepository, atLeastOnce()).findAllByOrderByCardNumberAsc(any(Pageable.class));
     }
 
-    // ============================================================================================
     // PHASE 7 - PARAGRAPH CORRESPONDENCE
     // Every source label maps 1:1 to a private Java method, exit paragraphs included.
-    // ============================================================================================
 
     @Test
     @DisplayName("The bean declares one private method per COBOL paragraph, exits included")
@@ -1775,10 +1759,8 @@ final class CardListServiceTest {
         assertThat(nested).containsExactlyInAnyOrder("CardListRequest", "CardListResult");
     }
 
-    // ============================================================================================
     // TRANSFER OF CONTROL - the XCTL targets, and the browse that must not run
     // app/cbl/COCRDLIC.cbl:384-397 (PF3), :560-577 (S and U)
-    // ============================================================================================
 
     @Test
     @DisplayName("Selecting S transfers to the card-detail program without browsing")
@@ -1963,10 +1945,8 @@ final class CardListServiceTest {
         assertThat(result.rowSelectableFlags).isEqualTo("YYYNNNN");
     }
 
-    // ============================================================================================
     // RULE 1 CLAUSE A - HOSTILE AND BOUNDARY INPUT
     // "Security by default: treat inputs as untrusted, avoid unsafe defaults."
-    // ============================================================================================
 
     @Test
     @DisplayName("A null request is rejected with a clear message, not a NullPointerException")
@@ -2238,10 +2218,8 @@ final class CardListServiceTest {
         assertThat(result.page.getRows()).hasSize(SCREEN_LINES);
     }
 
-    // ============================================================================================
     // RULE 1 CLAUSE B - ERROR HANDLING: TYPE, MESSAGE AND CAUSE
     // "no swallowing exceptions; wrap with context and preserve root cause."
-    // ============================================================================================
 
     @Test
     @DisplayName("A store failure surfaces as a typed file exception carrying context AND the cause")
@@ -2280,10 +2258,8 @@ final class CardListServiceTest {
         assertThat(validation).isInstanceOf(CardDemoException.class);
     }
 
-    // ============================================================================================
     // RULE 1 CLAUSE D - SECRET AND PII HYGIENE
     // "No secrets in code, logs, tests, or config." The card number is sensitive.
-    // ============================================================================================
 
     @Test
     @DisplayName("No diagnostic string the service produces carries a card number")

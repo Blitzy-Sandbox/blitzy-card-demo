@@ -151,8 +151,9 @@ import org.springframework.data.jpa.repository.Query;
  * {@code DECISION_LOG.md} plus a row in {@code TRACEABILITY_MATRIX.md}. Deleting any of them would fail
  * a stated acceptance criterion (the paragraph map that gate 7 verifies) to satisfy a stylistic one. This
  * list is scoped to <em>this program</em> and is deliberately not a global census: the tree-wide register is
- * enumerated by locator in {@code com.cardemo}'s package documentation and its size is derived on every run
- * by {@code GateVerificationTest} as {@code dispositions.justifiedNoOps}. The instances that belong to
+ * published row by row in {@code DECISION_LOG.md} section 15, and its size is derived on every run by
+ * {@code GateVerificationTest} as {@code dispositions.registeredParityNoOps}, which that harness asserts
+ * equal to the register in both directions. The instances that belong to
  * {@code CBACT04C} are covered here:
  * <ol>
  * <li><b>The canonical instance.</b> {@code 1400-COMPUTE-FEES} at {@code app/cbl/CBACT04C.cbl:L518}-{@code :L520}
@@ -407,9 +408,7 @@ class InterestCalculationProcessorTest {
         logger.setLevel(originalLevel);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Fixture builders
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Builds one 50-byte {@code TRAN-CAT-BAL-RECORD}.
@@ -501,7 +500,11 @@ class InterestCalculationProcessorTest {
                 .thenReturn(Optional.of(disclosureGroup(GROUP_ID, rate)));
     }
 
-    /** @return every message the processor emitted, on its class logger and on its parity logger alike. */
+    /**
+     * Reads back what the processor logged during the call under test.
+     *
+     * @return every message the processor emitted, on its class logger and on its parity logger alike.
+     */
     private List<String> loggedMessages() {
         return appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
     }
@@ -1385,7 +1388,7 @@ class InterestCalculationProcessorTest {
     }
 
     @Nested
-    @DisplayName("9. 1300-B-WRITE-TX: the synthesised interest transaction of :L473-L516")
+    @DisplayName("9. 1300-B-WRITE-TX: the synthesised interest transaction of :L473-L515")
     class SynthesisedTransaction {
 
         @Test
@@ -1436,6 +1439,7 @@ class InterestCalculationProcessorTest {
          * piece of per-run state the processor carries - the record count, the accumulator, the control-break
          * key, the first-time flag and the two loaded records. Every mutable field must be an instance field;
          * only immutable constants may be {@code static}.
+         * @throws NoSuchFieldException if {@code tranIdSuffix} is no longer declared on the processor.
          */
         @Test
         @DisplayName("WS-TRANID-SUFFIX and every other mutable field are instance state, never static")
@@ -2145,6 +2149,8 @@ class InterestCalculationProcessorTest {
          * {@code CHAR(10)} column matches or misses depending on the column type and the comparison
          * semantics, so a bare probe is the kind of fault that passes on one substrate and silently abends
          * every account on another.
+         * @throws NoSuchMethodException if {@code findDefaultGroupRate} is no longer declared on the
+         *      disclosure-group repository.
          */
         @Test
         @DisplayName("the DEFAULT retry probes the padded PIC X(10) image, never the bare literal")
@@ -2245,6 +2251,8 @@ class InterestCalculationProcessorTest {
          * {@code XREFFIL1} is never referenced by the program at all. The read therefore goes through the
          * base cluster's own alternate key, and the Java lookup is an account-keyed finder on the
          * cross-reference repository - which is what this asserts.
+         * @throws NoSuchMethodException if {@code findFirstByAccountIdOrderByCardNumberAsc} is no
+         *      longer declared on the cross-reference repository.
          */
         @Test
         @DisplayName("the cross reference is read by account through the alternate-key finder")

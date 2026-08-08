@@ -157,12 +157,10 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *   <li><strong>It declares no queue listener.</strong> The consumer that replaces the JES2 internal reader
  *       is owned by {@link com.cardemo.config.BatchConfig}, which declares exactly one {@code @SqsListener}
  *       over this queue and launches the report job from it. Re-derive with
- *       {@code grep -rn "@SqsListener" src/main/java}, which finds that one declaration and no other. Two
- *       earlier revisions of this entry are withdrawn: one recorded
- *       {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} as the owner, which is wrong because that
- *       class's own contract requires zero {@code @SqsListener} declarations in it, and one recorded that
- *       nothing drained the queue at all, which was true when written and is no longer. The bean below is a
- *       producer with a live consumer.</li>
+ *       {@code grep -rn "@SqsListener" src/main/java}, which finds that one declaration and no other.
+ *       Naming {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} as the owner would be wrong, because
+ *       that class's own contract requires zero {@code @SqsListener} declarations in it; and nothing drains
+ *       the queue is wrong too. The bean below is a producer with a live consumer.</li>
  *   <li><strong>It derives no object keys.</strong> The generation-reference translation is specified here and
  *       implemented by the job classes, which bind directly the six {@code carddemo.aws.s3.gdg-prefixes.*}
  *       entries a Java job actually writes, and by {@code com.cardemo.config.BatchConfig}, which centralises
@@ -483,8 +481,7 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * {@code fail-on-unknown-properties} for exactly this reason, and the consumer binds the body with the
  * Spring-managed mapper so those settings apply on the receiving side too. And the consumer that replaces the
  * JES2 internal reader is owned by {@link com.cardemo.config.BatchConfig}, not by this class and not by
- * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which an earlier revision of this paragraph named
- * and whose own contract forbids a listener in it.
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, whose own contract forbids a listener in it.
  *
  * <p>The producer replaces the block at {@code app/cbl/CORPT00C.cbl:L517-L523} - {@code EXEC CICS WRITEQ TD},
  * {@code QUEUE ('JOBS')}, {@code FROM (JCL-RECORD)}, {@code LENGTH (LENGTH OF JCL-RECORD)},
@@ -588,11 +585,15 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       {@code localstack-init/init-aws.sh}; it is idempotent.</dd>
  *
  *   <dt>Startup aborts saying an endpoint host is not permitted, or that an endpoint is not set</dt>
- *   <dd>Intended, and it is the guarantee working. Point the three endpoint properties at the emulator - the
- *       base profile's default addresses the compose topology, and a test registers the container's mapped
- *       address. There is no live-AWS mode to switch into. Note that the SDK also honours a global endpoint
- *       environment variable, so exporting one while the integration tier is running would redirect
- *       container-backed clients onto the shared emulator; prefer per-profile configuration.</dd>
+ *   <dd>Intended, and it is the guarantee working. The base profile binds all three endpoint properties to
+ *       {@code AWS_ENDPOINT_URL} and gives that variable <strong>no literal default</strong>, so an unset
+ *       value aborts by name rather than resolving to a guess; the {@code local} profile is what supplies a
+ *       developer default addressing the compose topology, and a test registers the container's mapped
+ *       address. (An earlier revision of this entry said the <em>base</em> profile carried that default. It
+ *       does not, and the claim is withdrawn - the absence of a default is itself the control.) There is no
+ *       live-AWS mode to switch into. Note that the SDK also honours a global endpoint environment variable,
+ *       so exporting one while the integration tier is running would redirect container-backed clients onto
+ *       the shared emulator; prefer per-profile configuration.</dd>
  *
  *   <dt>Startup aborts saying a credential property is not set, or that the access key looks live</dt>
  *   <dd>Also intended. Both credential properties must be present so that a static provider displaces the
@@ -718,11 +719,9 @@ public class AwsConfig {
             KEY_GDG_PREFIX_TRANSACT_COMBINED,
             KEY_GDG_PREFIX_TRANSACT_DALY);
 
-    // =============================================================================================
     // Emulator-only binding. The keys below are read by the startup guard rather than injected,
     // because the guard has to run before any client bean exists and therefore before this class is
     // instantiated. See requireEmulatorOnlyBindings for why that ordering is the whole point.
-    // =============================================================================================
 
     /** Per-service endpoint override keys, in the order the guard reports them. */
     private static final List<String> KEYS_SERVICE_ENDPOINT = List.of(
@@ -869,13 +868,13 @@ public class AwsConfig {
     /**
      * Whole-call deadline in seconds, {@value}, for the notification client alone.
      *
-     * <p><strong>Finding M-08, severity Medium, RESOLVED by this constant.</strong> The notification client used
-     * to share {@value #API_CALL_TIMEOUT_SECONDS} seconds with the object and queue clients, and that value is
-     * sized for the batch writers - which move whole generations - not for a courtesy. The one caller,
+     * <p><strong>Why the notification client does not share the common budget.</strong> Sharing
+     * {@value #API_CALL_TIMEOUT_SECONDS} seconds with the object and queue clients applies a value
+     * sized for the batch writers - which move whole generations - to a courtesy. The one caller,
      * {@code com.cardemo.service.report.ReportSubmissionService}, publishes the notification <em>synchronously
      * on the request thread</em> and deliberately treats a failure as non-fatal, reproducing
      * {@code // NOTIFY=&SYSUID} at {@code app/cbl/CORPT00C.cbl:L85-L86}, which JES2 performs after read-in and
-     * which the source has no error path for. So an unreachable topic could hold an <em>already successful</em>
+     * which the source has no error path for. So an unreachable topic would hold an <em>already successful</em>
      * submission open for the full thirty seconds before being logged and discarded: the slowest thing on the
      * path would be the one part of it that does not matter.
      *
@@ -1402,7 +1401,7 @@ public class AwsConfig {
     /**
      * The single queue payload contract, shared by the publisher and by the listener container.
      *
-     * <p><strong>Finding C-01, severity Critical, RESOLVED here.</strong> The library's own converter bean
+     * <p><strong>Why the library's own converter bean may not be used as supplied.</strong> It
      * carries a payload <em>type</em> header - the constant is {@code JavaType} - which it writes on every
      * outbound message whose payload is not already text, and resolves on every inbound message with
      * {@link Class#forName(String)}. Two defects followed from that, and they compound.
@@ -1537,9 +1536,8 @@ public class AwsConfig {
      *
      * <p>This bean publishes. It declares no listener: the consumer that replaces the JES2 internal reader is
      * owned by {@link com.cardemo.config.BatchConfig}, which drains this queue and launches the report job
-     * from it. Two earlier revisions of this paragraph are withdrawn - one named
-     * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} as the owner, and one recorded that nothing
-     * drained the queue. On a send failure
+     * from it - not {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, whose own contract forbids a
+     * listener, and not nothing at all. On a send failure
      * {@code com.cardemo.service.report.ReportSubmissionService} reproduces the legacy screen text
      * {@code Unable to Write TDQ (JOBS)...} - three trailing dots - from
      * {@code app/cbl/CORPT00C.cbl:L531-L532}, byte for byte.
@@ -1748,13 +1746,13 @@ public class AwsConfig {
      * Applies a <strong>shorter</strong> policy to the notification client, whose topic resolution and single
      * publish are both read-mostly courtesies rather than parts of any parity contract.
      *
-     * <p><strong>Finding M-08, severity Medium, RESOLVED here.</strong> This client used to share
-     * {@link #applyBoundedPolicy(SdkClientBuilder)} with the object and queue clients, so a courtesy
-     * notification carried the batch tier's {@value #API_CALL_TIMEOUT_SECONDS}-second budget. Its one caller
+     * <p><strong>Why this client does not share {@link #applyBoundedPolicy(SdkClientBuilder)}.</strong>
+     * Sharing it with the object and queue clients would give a courtesy
+     * notification the batch tier's {@value #API_CALL_TIMEOUT_SECONDS}-second budget. Its one caller
      * publishes synchronously on the request thread and treats a failure as non-fatal, so an unreachable topic
-     * delayed an already-successful submission for that whole budget before the failure was logged and
-     * discarded. It now carries {@value #NOTIFICATION_API_CALL_TIMEOUT_SECONDS} seconds - see
-     * {@link #NOTIFICATION_API_CALL_TIMEOUT_SECONDS} for why the budget is corrected here rather than by
+     * would delay an already-successful submission for that whole budget before the failure was logged and
+     * discarded. It carries {@value #NOTIFICATION_API_CALL_TIMEOUT_SECONDS} seconds instead - see
+     * {@link #NOTIFICATION_API_CALL_TIMEOUT_SECONDS} for why the budget is set here rather than by
      * introducing a thread.
      *
      * <p>It carries the same credential assertion as the other two, for the reason given on
@@ -1771,15 +1769,13 @@ public class AwsConfig {
         return AwsConfig::applyNotificationPolicy;
     }
 
-    // =================================================================================================
     // THE QUEUE'S OWN ATTRIBUTES ARE NOT VERIFIED FROM HERE, AND THAT IS THE CONTRACT.
     //
-    // Finding CFG-001, severity High, RESOLVED here. This class used to declare an ApplicationRunner,
-    // cardDemoFifoQueueContractVerifier, which resolved the queue and read its attributes immediately after
-    // context refresh. It was network traffic performed as part of application startup, in the one class
-    // whose stated design keeps refresh free of it, and the AAP's contract for this class allows neither a
-    // runner nor any Java-side provisioning. The two mechanisms that own the check both predate it and both
-    // do more than it could:
+    // No ApplicationRunner may be declared here to resolve the queue and read its attributes after context
+    // refresh - a cardDemoFifoQueueContractVerifier, say. That is network traffic performed as part of
+    // application startup, in the one class whose stated design keeps refresh free of it, and the AAP's
+    // contract for this class allows neither a runner nor any Java-side provisioning. The two mechanisms that
+    // own the check both do more than such a runner could:
     //
     //   * localstack-init/init-aws.sh CREATES the queue with FifoQueue true and ContentBasedDeduplication
     //     false and converges an existing queue onto those attributes. It can act on a divergence; a startup
@@ -1796,7 +1792,6 @@ public class AwsConfig {
     // never publishes a report, refusing to exist because one piece of infrastructure it does not own is
     // misconfigured. The constructor still refuses a name that is not the logical name plus the .fifo suffix,
     // which is the half of the contract this class can settle without a network call.
-    // =================================================================================================
 
     /**
      * Applies the explicit deadlines and the bounded retry strategy to one client builder, preserving
@@ -1842,7 +1837,7 @@ public class AwsConfig {
     /**
      * Applies one pair of deadlines and the bounded retry mode, preserving everything already configured.
      *
-     * <p><strong>Finding I-01, informational, DOCUMENTED here.</strong> The retry mode selected below is a
+     * <p><strong>Finding I-01, severity Low, DOCUMENTED here.</strong> The retry mode selected below is a
      * transport-level retry, and a transport-level retry of a request whose <em>response</em> was lost sends
      * the same request again. For the object and queue clients that is invisible: an object write is keyed and
      * idempotent, and a queue send carries an explicit deduplication identifier that makes the second attempt
@@ -2774,9 +2769,9 @@ public class AwsConfig {
      * an identity. Without this interceptor the identity this application mints at its own edge would stop
      * there, and an object write or a queue publish would carry none at all.
      *
-     * <p><strong>Finding M-07, severity Medium, RESOLVED here.</strong> The correlation header alone names an
-     * identifier that only this repository knows how to read, so it correlated <em>logs</em> across the boundary
-     * without establishing trace <em>parentage</em> anywhere. Every outbound request now also carries
+     * <p><strong>Why the correlation header alone is not enough.</strong> It names an
+     * identifier that only this repository knows how to read, so it correlates <em>logs</em> across the boundary
+     * without establishing trace <em>parentage</em> anywhere. Every outbound request therefore also carries
      * {@link CorrelationIdFilter#TRACE_PARENT_HEADER}, composed by
      * {@link CorrelationIdFilter#currentTraceParent()} from the same identifiers the log records carry, which is
      * the form every OpenTelemetry and Micrometer Tracing consumer extracts without being configured to. The

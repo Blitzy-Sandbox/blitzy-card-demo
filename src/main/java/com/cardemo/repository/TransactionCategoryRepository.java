@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionCategoryRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -10,7 +10,7 @@
  *               app/jcl/TRANCATG.jcl:L36, L40-L41 KEYS(6 0) RECORDSIZE(60 60));
  *               record layout app/cpy/CVTRA04Y.cpy:L4-L9; ABSENT from
  *               app/csd/CARDDEMO.CSD (batch-only proof) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -25,7 +25,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 
@@ -217,26 +217,24 @@ import org.springframework.stereotype.Repository;
  *   <li>The integration surface is correspondingly the batch tier: this repository is to be exercised
  *       through the transaction report job against a Testcontainers PostgreSQL 16 instance, not
  *       through the REST surface, because the REST surface has no path that reaches it.
- *       {@link com.cardemo.batch.jobs.TransactionReportJob} is now authored, so that report-job surface
- *       exists rather than being one the tests are merely <em>to</em> take; an earlier revision of this bullet
- *       recorded it as still absent and that claim is withdrawn.
- *       {@code src/test/java/com/cardemo/integration} does exist now, and
+ *       {@link com.cardemo.batch.jobs.TransactionReportJob} is authored, so that report-job surface
+ *       exists rather than being one the tests are merely <em>to</em> take, and
+ *       {@code src/test/java/com/cardemo/integration} exists, where
  *       {@code RepositorySchemaAndFinderIntegrationTest} exercises this repository against a containerised
- *       PostgreSQL 16 instance, so it is no longer true that no tier reaches it at all. An earlier revision
- *       recorded both as absent.</li>
+ *       PostgreSQL 16 instance. Both are reached.</li>
  *   </ul>
  *
  * <h2>Method surface: three inherited operations, nothing declared</h2>
  *
- * <p>Rule 1 clause B forbids dead code, and this package carries <b>no exemption</b> from it: the
- * three intentionally retained legacy no-ops that the parity mandate protects all live elsewhere —
- * the empty fee paragraph {@code 1400-COMPUTE-FEES} at {@code app/cbl/CBACT04C.cbl:L518-L520},
- * whose body is the comment "To be implemented" followed by {@code EXIT}; the assigned but never
- * consumed reject code at {@code app/cbl/CBTRN02C.cbl:L556}, where
- * {@code MOVE 109 TO WS-VALIDATION-FAIL-REASON} sits on an already validated path; and the
- * redundant index assignment in {@code app/cbl/CBSTM03A.CBL:L316-L338}. Clause B therefore applies
- * here at full strength, and every operation below is inherited from {@link JpaRepository} and left
- * undeclared, so no signature in this file can outlive its caller.
+ * <p>Rule 1 clause B forbids dead code, and this package carries <b>no exemption</b> from it. The
+ * locator-keyed register of intentionally retained legacy no-ops is {@code DL-CR-01} in
+ * {@code DECISION_LOG.md}; it declares no total, and <b>no row of it points into this package</b> —
+ * {@code NOOP-CBACT04C-1400} is the empty fee paragraph at {@code app/cbl/CBACT04C.cbl:L518-L520},
+ * {@code NOOP-CBTRN02C-109} is the assigned but never consumed reject code at
+ * {@code app/cbl/CBTRN02C.cbl:L556}, and {@code NOOP-CBSTM03A-CRJMP} is the redundant index
+ * assignment at {@code app/cbl/CBSTM03A.CBL:L324}, all of which live in the batch tier. Clause B
+ * therefore applies here at full strength, and every operation below is inherited from
+ * {@link JpaRepository} and left undeclared, so no signature in this file can outlive its caller.
  *
  * <p>One program in the twenty eight program corpus opens this cluster, and it is the sole
  * {@code COPY CVTRA04Y} site: {@code app/cbl/CBTRN03C.cbl:L108}, the transaction detail report. Its
@@ -447,24 +445,20 @@ import org.springframework.stereotype.Repository;
  * overriding the Boot managed version property rather than by importing a second bill of materials,
  * and only the prefixed artefact identifiers resolve at that version.
  *
- * <p><b>Verified on 1 August 2026, and what is still owed.</b> Two things were established by execution.
+ * <p><b>Verified by execution, and by whom.</b> Three things are established rather than asserted.
  * The schema and the mapping agree: applying {@code src/main/resources/db/migration/V1__create_schema.sql}
  * into a throwaway schema on a PostgreSQL 16.10 instance produced 11 tables, 10 foreign keys and 5 check
  * constraints, and bootstrapping Hibernate 6.6.42.Final over all eleven annotated entities against it with
  * {@code hibernate.hbm2ddl.auto=validate} reported no mismatch, which covers
  * {@code transaction_category} and this interface's two identifier components. And the reference set is
  * the size the fixture dictates: {@code app/data/ASCII/trancatg.txt} holds exactly 18 records of 60 bytes.
- * <b>Not available:</b> everything that needs a Spring Data proxy - that {@code findAll()} returns those 18
- * rows through this interface, that {@code id.tranTypeCd} and {@code id.tranCatCd} sort the set into VSAM
- * key order, that a transposed or absent pair yields an empty {@code Optional}, and that {@code findById}
- * emits a bound-parameter row-value predicate over both key components. An earlier revision of this
- * paragraph said no repository or integration tier existed and no {@code application*.yml} either; both
- * halves are false and are withdrawn - {@code src/test/java/com/cardemo/unit/repository} and
- * {@code src/test/java/com/cardemo/integration/repository} both exist, the latter holding the
- * Testcontainers base, and all four profiles are present. What remains is that no concrete integration
- * subclass binds this interface yet, so no Spring Data proxy has been created against a real dialect.
- * What is needed: a test extending that base and seeded from the fixture, which would also confirm that
- * the predicate touches no column of the seventeen byte layout discussed in the High finding above.
+ * And the Spring Data proxy itself is exercised against a real dialect:
+ * {@code src/test/java/com/cardemo/integration/repository/TransactionCategoryRepositoryTest} extends the
+ * Testcontainers base and binds this interface, asserting that the seed loaded exactly eighteen categories,
+ * that a freshly built identifier resolves the first and the last of them, that a composite key outside the
+ * seeded space yields an empty {@code Optional} rather than throwing, that the eighteen keys are eighteen
+ * distinct values, that the ordered read reproduces the fixture's own sequence from {@code 01/0001} to
+ * {@code 07/0001}, and that an unknown type code is refused by the foreign key rather than accepted.
  *
  * <p><b>Common failure modes.</b> A startup failure naming a missing column on
  * {@code transaction_category} means the migration spelled a column differently from
@@ -481,14 +475,11 @@ import org.springframework.stereotype.Repository;
  *
  * <h2>Clause F disclosure: stated gaps and their measured state</h2>
  *
- * <p>Rule 1 clause F requires that missing information be stated plainly rather than assumed. Two
- * items were recorded as <b>Not available</b> when this interface was authored. The first has since
- * been closed by measurement and is recorded as closed rather than quietly dropped:
+ * <p>Rule 1 clause F requires that missing information be stated plainly rather than assumed. One item below
+ * is a statement of what is present, so that no reader takes it for missing; the second is genuinely absent:
  *
  * <ol>
- *   <li><b>All three Flyway migrations are present.</b> An earlier revision of this bullet recorded
- *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as non-existent; that is no longer
- *       true and the claim is withdrawn.
+ *   <li><b>All three Flyway migrations are present.</b>
  *       {@code V1__create_schema.sql} declares {@code CREATE TABLE transaction_category},
  *       {@code V2} adds no index to it, and {@code V3} seeds its 18 rows.
  *       Because {@code ddl-auto: validate} makes the match mandatory rather than advisory, the

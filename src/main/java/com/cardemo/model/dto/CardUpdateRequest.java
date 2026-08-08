@@ -44,11 +44,12 @@ import jakarta.validation.constraints.Size;
  * field. Every width below is transcribed from its PIC clause rather than inferred, so the payload round-trips
  * to the same bytes the legacy map accepted.
  *
- * <p>Two further components, {@code oldDetails} and {@code newDetails}, are <em>not</em> screen
- * fields and are deliberately excluded from that census of 17. They transcribe the WORKING-STORAGE
+ * <p>Two further components, {@code snapshot} and {@code newDetails}, are <em>not</em> screen
+ * fields and are deliberately excluded from that census of 17. They carry the WORKING-STORAGE
  * snapshot groups of {@code app/cbl/COCRDUPC.cbl}, whose widths come from that program's own
- * declarations at lines 291 to 313 rather than from the map. The reason they are carried on the
- * wire at all is developed below.</p>
+ * declarations at lines 291 to 313 rather than from the map - {@code newDetails} as the group itself, and
+ * {@code snapshot} as one sealed opaque string standing in for {@code CCUP-OLD-DETAILS}. The reason they are
+ * carried on the wire at all, and the reason one of them is sealed, are developed below.</p>
  *
  * <p><strong>DISTINCTION 4 - the expiry day exists here and nowhere in the detail map.</strong>
  * {@code app/cpy-bms/COCRDUP.CPY:96} declares {@code 02 EXPDAYI PIC X(2).}, so {@code expiryDay}
@@ -118,8 +119,14 @@ import jakarta.validation.constraints.Size;
  * {@code 'Record changed by some one else. Please review'} ({@code :207-208}) when they differ.
  * Under CICS the captured group survives from display to submit inside the pseudo-conversational
  * task state; over HTTP nothing survives between two requests, so the snapshot has to travel in
- * the request body. Both groups are therefore modelled below as {@code oldDetails} and
- * {@code newDetails}, mirroring the source hierarchy leaf for leaf.</p>
+ * the request body. It travels <strong>sealed</strong>, as the single opaque {@code snapshot} member: the
+ * value {@code GET /api/cards/detail} returned, echoed back unchanged. There is no readable
+ * {@code oldDetails} member on this contract, and the reason is that a group the caller can rewrite is not a
+ * snapshot at all - replacing it with the live row makes {@code 9300-CHECK-CHANGE-IN-REC} unconditionally
+ * true, so the guarantee it exists to provide would hold only for callers who chose not to defeat it.
+ * {@code com.cardemo.security.SnapshotTokenService} seals the group with AES-256-GCM bound to the operation,
+ * the two identifiers, the authenticated principal and an expiry, and the update service opens it server-side.
+ * The edited group is modelled below as {@code newDetails}, mirroring the source hierarchy leaf for leaf.</p>
  *
  * <p><strong>The store-level version column is retained and is not a substitute.</strong> A
  * version counter detects <em>that</em> a row changed; the source detects <em>which business
@@ -284,8 +291,8 @@ import jakarta.validation.constraints.Size;
  * makes the unknown-property rejection below effective; no third-party dependency is introduced.</p>
  *
  * <p><strong>Inputs.</strong> All 17 screen components, each nullable and each bounded by its PIC
- * width, plus the two snapshot groups {@code oldDetails} and {@code newDetails}, each nullable,
- * each cascaded with {@code @Valid} and each bounded leaf by leaf.
+ * width, plus the sealed {@code snapshot} member and the edited group {@code newDetails}, both nullable, the
+ * group cascaded with {@code @Valid} and bounded leaf by leaf and the sealed member bounded by length.
  * <strong>Outputs.</strong> The canonical accessors, plus a redacted {@code toString()} on this
  * type and on all three nested types.
  * <strong>Side effects.</strong> None; this is an immutable, purely structural carrier that
@@ -296,7 +303,7 @@ import jakarta.validation.constraints.Size;
  * module with {@code ./mvnw clean verify}, under {@code -Xlint:all -Werror}, so any warning here fails
  * the build. Its unit tests belong in {@code src/test/java/com/cardemo/unit/model} rather than
  * alongside it, and {@code CardUpdateRequestTest} is present there; the type is additionally referenced
- * from four test classes. An earlier revision said neither existed; that is false and is withdrawn.
+ * from four test classes, so neither the class nor its coverage is absent.
  * One pitfall is worth stating for whoever extends them: a {@code @Size} constraint
  * declared on a record component is <em>not</em> readable through
  * {@code RecordComponent.getAnnotation}, because the constraint's own target list omits record
@@ -316,7 +323,7 @@ import jakarta.validation.constraints.Size;
  *   <li>An out-of-domain {@code cardStatusCode} is carried through rather than rejected at
  *       binding time, so the service emits the source's own message instead of a framework
  *       deserialization error.</li>
- *   <li>A leaf of {@code oldDetails} or {@code newDetails} longer than the width its COBOL
+ *   <li>A leaf of {@code newDetails} longer than the width its COBOL
  *       declaration gives it fails {@code @Size} during the {@code @Valid} cascade, naming the
  *       leaf and its permitted width and never echoing the value - which matters most for the card
  *       number.</li>
@@ -343,13 +350,13 @@ import jakarta.validation.constraints.Size;
  *       {@code ACCTSIDI PIC 99999999999} at {@code app/cpy-bms/COACTVW.CPY:60} is an input field despite
  *       being numeric. This is part of the arithmetic behind the 441 figure, and the specification's
  *       per-map entry now reads 37.</li>
- *   <li><strong>Blocker, resolved</strong> - stateless concurrency. An earlier revision of this
- *       type omitted the snapshot groups and left change detection to the store-level version
+ *   <li><strong>Blocker</strong> - stateless concurrency. Omitting the snapshot groups and leaving
+ *       change detection to the store-level version
  *       column alone, on the reasoning that {@code app/cpy-bms/COCRDUP.CPY} declares no snapshot
- *       field. The reasoning was sound about the map and wrong about the contract: the map bounds
+ *       field, is sound about the map and wrong about the contract: the map bounds
  *       the <em>screen</em> fields, whereas {@code 9300-CHECK-CHANGE-IN-REC} at
  *       {@code app/cbl/COCRDUPC.cbl:1498-1521} compares business field values that a stateless
- *       server cannot otherwise retain between the display and the submit. Remediation, applied
+ *       server cannot otherwise retain between the display and the submit. Applied
  *       here: carry both groups as immutable, width-bounded, {@code @Valid}-cascaded members, and
  *       keep the version column as the second layer.</li>
  *   <li>No unresolved Blocker or High severity finding applies to this file.</li>
@@ -372,9 +379,13 @@ import jakarta.validation.constraints.Size;
  * @param errorMessage {@code ERRMSGI}, {@code PIC X(80)}, {@code app/cpy-bms/COCRDUP.CPY:108}.
  * @param functionKeys {@code FKEYSI}, {@code PIC X(21)}, {@code app/cpy-bms/COCRDUP.CPY:114}.
  * @param functionKeysContinued {@code FKEYSCI}, {@code PIC X(18)}, {@code app/cpy-bms/COCRDUP.CPY:120}.
- * @param oldDetails {@code 05 CCUP-OLD-DETAILS}, {@code app/cbl/COCRDUPC.cbl:291-301}. Not a screen field:
- *     the snapshot that {@code 9000-READ-DATA} captures at {@code :1343-1370} and that
- *     {@code 9300-CHECK-CHANGE-IN-REC} compares at {@code :1503-1508}. May be {@code null}.
+ * @param snapshot the sealed {@code 05 CCUP-OLD-DETAILS} of {@code app/cbl/COCRDUPC.cbl:291-301}. Not a
+ *     screen field: it carries, as one opaque authenticated string, the snapshot that
+ *     {@code 9000-READ-DATA} captures at {@code :1343-1370} and that {@code 9300-CHECK-CHANGE-IN-REC}
+ *     compares at {@code :1503-1508}. Echoed back from {@code GET /api/cards/detail} unaltered - it is an
+ *     authentication tag over specific bytes, so any change at all makes it fail to open. May be
+ *     {@code null}, which the service reports as an unconfirmed change rather than comparing against
+ *     nothing.
  * @param newDetails {@code 05 CCUP-NEW-DETAILS}, {@code app/cbl/COCRDUPC.cbl:303-313}. Not a screen field:
  *     {@code 1100-RECEIVE-MAP} derives every leaf but the CVV code from the map at {@code :586-635}.
  *     May be {@code null}.
@@ -450,10 +461,16 @@ public record CardUpdateRequest(
         @Size(max = 18, message = "functionKeysContinued must be at most 18 characters")
         String functionKeysContinued,
 
-        // 05 CCUP-OLD-DETAILS. app/cbl/COCRDUPC.cbl:291-301 - not a screen field. The snapshot
-        //    9000-READ-DATA captures at :1343-1370 and 9300-CHECK-CHANGE-IN-REC compares at
-        //    :1503-1508. @Valid is required or the leaf constraints never fire.
-        @Valid CardDetails oldDetails,
+        // 05 CCUP-OLD-DETAILS. app/cbl/COCRDUPC.cbl:291-301 - not a screen field, and not a readable group
+        //    either: it travels as one sealed opaque string. The snapshot 9000-READ-DATA captures at
+        //    :1343-1370 and 9300-CHECK-CHANGE-IN-REC compares at :1503-1508 is recovered from it by the
+        //    service. The bound is a shape check on an untrusted body member, not a domain rule: the sealed
+        //    form is base64url(nonce || AES-256-GCM(JSON envelope)) over eight fixed-width leaves, so a
+        //    longer value did not come from this server and is refused before it reaches the cipher.
+        @Size(max = MAX_SNAPSHOT_LENGTH,
+                message = "snapshot must not exceed 4096 characters; a longer value was not issued by this"
+                        + " server")
+        String snapshot,
 
         // 05 CCUP-NEW-DETAILS. app/cbl/COCRDUPC.cbl:303-313 - not a screen field. 1100-RECEIVE-MAP
         //    derives every leaf this type declares from the map at :586-635; the legacy leaf it did NOT
@@ -461,12 +478,26 @@ public record CardUpdateRequest(
         @Valid CardDetails newDetails) {
 
     /**
+     * Upper bound on the sealed snapshot member, in characters.
+     *
+     * <p>Not a domain rule and not tuned to a measurement: the sealed form is
+     * {@code base64url(12-byte nonce || AES-256-GCM ciphertext and tag)} over a JSON envelope holding eight
+     * fixed-width leaves, so a value this server issued cannot come near this bound. It exists so that an
+     * arbitrarily long string is refused by bean validation before it reaches the base64 decoder and the
+     * cipher, which is the boundary check Rule 1 Clause B requires of an untrusted body member. It matches
+     * {@code AccountUpdateRequest.MAX_SNAPSHOT_LENGTH} so that one client-facing rule covers both
+     * surfaces.</p>
+     */
+    public static final int MAX_SNAPSHOT_LENGTH = 4096;
+
+    /**
      * Returns a deliberately redacted rendering that exposes only the account identifier and the program name.
      *
-     * <p>The two snapshot groups are omitted as well. Each carries its own copy of the card number and
-     * the embossed name, and each has its own redacted rendering; excluding
-     * them here rather than delegating keeps this method's output bounded and removes any
-     * possibility that a future change to a nested rendering widens what this one emits.</p>
+     * <p>The edited group is omitted as well. It carries its own copy of the card number and the embossed
+     * name, and it has its own redacted rendering; excluding it here rather than delegating keeps this
+     * method's output bounded and removes any possibility that a future change to a nested rendering widens
+     * what this one emits. The sealed member is omitted for the same boundedness reason, and it discloses
+     * nothing in any case.</p>
      *
      * <p>Every field below is passed through {@link ApiMasking#forDiagnostics(String)}. All of them are
      * declared {@code String} and all arrive from a JSON request body, so a caller controls their bytes; a CR
@@ -527,8 +558,9 @@ public record CardUpdateRequest(
      * Leaf for leaf, at the same levels and the same PIC widths, the only difference between them is
      * the {@code OLD} or {@code NEW} infix in the COBOL data names. Declaring two Java types would
      * duplicate eight widths and invite them to drift apart; the enclosing components
-     * {@code oldDetails} and {@code newDetails} carry the distinction that matters, which is the
-     * role each group plays rather than its shape.</p>
+     * {@code snapshot} and {@code newDetails} carry the distinction that matters, which is the
+     * role each group plays rather than its shape - one sealed and server-issued, one submitted and
+     * validated.</p>
      *
      * <p><strong>The nesting is the source's nesting, and it is load-bearing.</strong> The account
      * identifier and the card number sit directly under the group at {@code :292-293} - as did the

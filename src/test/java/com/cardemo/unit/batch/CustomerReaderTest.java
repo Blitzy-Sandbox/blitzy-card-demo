@@ -650,7 +650,7 @@ class CustomerReaderTest {
     }
 
     @Nested
-    @DisplayName("6. BLOCKER-CRITICAL: the verb inventory is OPEN, READ and CLOSE only")
+    @DisplayName("6. BLOCKER: the verb inventory is OPEN, READ and CLOSE only")
     class VerbInventory {
 
         @Test
@@ -772,7 +772,7 @@ class CustomerReaderTest {
 
             reader.open(context);
 
-            // An earlier revision asserted the message rendered the key as nine unsigned digits. CustomerReader
+            // The message must not render the key as nine unsigned digits. CustomerReader
             // withholds it instead: :1270 announces the restart and states that the last emitted key is
             // "deliberately not named here", which is the same minimisation that removed CUST-ID from the
             // per-row diagnostics of :688 and :841. The parameterisation is kept and inverted - whatever the

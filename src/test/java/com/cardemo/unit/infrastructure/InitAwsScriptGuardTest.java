@@ -923,7 +923,7 @@ class InitAwsScriptGuardTest {
         @Test
         @DisplayName("the FIFO queue is created with an explicit visibility timeout, not the service default")
         void theQueueCarriesAnExplicitVisibilityTimeout() {
-            // FINDING M-02, severity Major. The queue was created with only FifoQueue and
+            // FINDING M-02, severity High. The queue was created with only FifoQueue and
             // ContentBasedDeduplication set, so its invisibility window was the service default of 30
             // seconds while the job the message triggers runs for minutes. The message therefore became
             // visible again mid-run and was redelivered against its own still-running job.
@@ -966,9 +966,9 @@ class InitAwsScriptGuardTest {
         @Test
         @DisplayName("the topic requires at least one subscription: zero is fatal, not verified")
         void theTopicRequiresASubscriber() {
-            // FINDING M-04, severity Major. The hook used to assert a count of ZERO subscriptions, which
+            // FINDING M-04, severity High. The hook must not assert a count of ZERO subscriptions, which
             // is the one state in which SNS accepts every publish and discards it. Operator notification
-            // was therefore inert while every publish reported success.
+            // would then be inert while every publish reported success.
             final String source = source();
 
             assertThat(source)
@@ -989,11 +989,21 @@ class InitAwsScriptGuardTest {
         @Test
         @DisplayName("the subscription is read before it is written, so repeated runs do not accumulate copies")
         void theSubscriptionIsIdempotent() {
-            // Regression guard for a defect introduced by the M-04 fix itself and caught by running the
-            // hook three times against a live edge. AWS documents Subscribe as returning the existing
-            // subscription for a repeated topic/protocol/endpoint triple, but the LocalStack edge this
-            // script targets creates a second one - so a second compose cycle produced two subscriptions
-            // and two copies of every notification, a third produced three, and so on.
+            // Guard on the ordering inside the M-04 fix, which is what makes the hook converge whether or
+            // not the edge deduplicates a repeated subscribe.
+            //
+            // This comment previously justified the guard by asserting that the LocalStack edge creates a
+            // second subscription for a repeated topic/protocol/endpoint triple, so that each compose cycle
+            // added a copy of every notification. That does not reproduce on the pinned
+            // localstack/localstack:4.14.0 image: a repeated triple returns the existing subscription ARN
+            // and the count stays at one, which is the behaviour AWS documents for Subscribe. The claim is
+            // withdrawn rather than restated here or in the script.
+            //
+            // The assertions below are unchanged, because what they check was never the disputed part.
+            // Conformance on this point belongs to the emulator image rather than to the API, so an image
+            // bump can change it with nothing in this repository changing; reading the set before writing
+            // costs one list call and removes the dependency on that answer entirely. The count itself is
+            // asserted from outside, by the provisioned-inventory step of .github/workflows/build.yml.
             final String body = extract("ensure_notification_subscription() {", "\n}\n");
 
             assertThat(body)

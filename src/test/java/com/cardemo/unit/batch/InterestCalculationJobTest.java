@@ -307,7 +307,7 @@ class InterestCalculationJobTest {
         @Test
         @DisplayName("the generation's one object carries no ordinal, because there is no second object")
         void generationObjectCarriesNoOrdinal() throws Exception {
-            // FINDING C-03, severity Critical. app/jcl/INTCALC.jcl:L37-L41 allocates SYSTRAN(+1) as one
+            // FINDING C-03, severity Blocker. app/jcl/INTCALC.jcl:L37-L41 allocates SYSTRAN(+1) as one
             // sequential dataset, so the catalogued generation is one object and needs nothing to
             // distinguish it from a sibling. The absent ordinal is that invariant made visible.
             assertThat(generationObject(42L))
@@ -647,7 +647,7 @@ class InterestCalculationJobTest {
                 assertThat(je.getExecutionContext().getString("carddemo.systran.generation.prefix"))
                         .isEqualTo("gdg/systran/0000000000000000077");
 
-                // FINDING C-03, severity Critical. A chunk stages a PART; it does not create an object of
+                // FINDING C-03, severity Blocker. A chunk stages a PART; it does not create an object of
                 // the generation. The generation is one sequential dataset, catalogued once at close, so
                 // no generation key exists yet - and asserting one here is what made the old contract look
                 // correct while a two-chunk run produced a generation the reader refuses to read.
@@ -860,9 +860,9 @@ class InterestCalculationJobTest {
         }
 
         @Test
-        @DisplayName("MINOR: an APPL-AOK guard logs the bare operation, never the abend reason")
+        @DisplayName("MEDIUM: an APPL-AOK guard logs the bare operation, never the abend reason")
         void aSuccessfulGuardNamesTheOperationOnly() throws Exception {
-            // FINDING, severity Minor, REGRESSION GUARD. The guard is handed an abend reason for its failure
+            // FINDING, severity Medium, REGRESSION GUARD. The guard is handed an abend reason for its failure
             // branch - "OPEN FAILED", "CLOSE FAILED" - and its success branch used to log that same constant,
             // so a healthy open emitted "TCATBALF OPEN FAILED completed with status 00". IF APPL-AOK CONTINUE
             // at app/cbl/CBACT04C.cbl:L330 does nothing at all, so nothing here may claim a failure.
@@ -878,7 +878,7 @@ class InterestCalculationJobTest {
         }
 
         @Test
-        @DisplayName("MINOR: the failure branch keeps the reason, which is what the abend was written for")
+        @DisplayName("MEDIUM: the failure branch keeps the reason, which is what the abend was written for")
         void theFailureBranchKeepsTheReason() throws Exception {
             assertThatThrownBy(() -> invokePrivate("guardFileOperation",
                     new Class<?>[] {String.class, String.class, String.class, String.class, Throwable.class},
@@ -1282,7 +1282,7 @@ class InterestCalculationJobTest {
     // ------------ 14. close reports; settle catalogues or deletes (C-03, C-05)
 
     /**
-     * Findings C-03 and C-05, both Critical.
+     * Findings C-03 and C-05, both Blocker.
      *
      * <p>{@code app/jcl/INTCALC.jcl:L37}-{@code :L41} allocates the output
      * {@code DISP=(NEW,CATLG,DELETE)}, one sequential dataset per run. Two consequences were missing. The

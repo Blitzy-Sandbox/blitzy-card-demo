@@ -10,7 +10,7 @@
  *               bean here, so that the date service, the file-access
  *               matrix, the file-status decision and the lookup tables
  *               live in one place each rather than at every call site.
- * Source      : app/cbl/CSUTLDTC.cbl (157 lines, 2 paragraphs; CALL 'CSUTLDTC' and the LE CEEDAYS date service) @
+ * Source      : app/cbl/CSUTLDTC.cbl (157 lines, 2 own paragraph labels; CALL 'CSUTLDTC' and the LE CEEDAYS date service) @
  *               7756d89
  * Source      : app/cpy/CSUTLDPY.cpy (375 lines, 14 paragraphs) and app/cpy/CSUTLDWY.cpy (89 lines, work area) @
  *               7756d89
@@ -20,9 +20,9 @@
  *               7756d89
  * Source      : app/cbl/CBSTM03B.CBL:L30-L53 (FILE-CONTROL), :L83-L97 (the four WORKING-STORAGE FILE STATUS groups) @
  *               7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L142-L144 (the universal I/O guard idiom), :L714-L731 (9910-DISPLAY-IO-STATUS) @
+ * Source      : app/cbl/CBTRN02C.cbl:L142-L144 (the universal I/O guard idiom), :L714-L727 (9910-DISPLAY-IO-STATUS) @
  *               7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L467-L500 (2700-UPDATE-TCATBAL - '00' OR '23' both accepted) @ 7756d89
+ * Source      : app/cbl/CBTRN02C.cbl:L467-L501 (2700-UPDATE-TCATBAL - '00' OR '23' both accepted) @ 7756d89
  * Source      : app/cpy/CSLKPCDY.cpy (1,318 lines, data only; five 88-level lookup tables) @ 7756d89
  * Source      : app/cbl/COACTUPC.cbl:L602, :L2296-L2298, :L2493-L2495, :L2535-L2542 (the lookup call sites) @ 7756d89
  * ******************************************************************
@@ -90,7 +90,7 @@
  *
  * <p><strong>Three sites are exceptions, and a blanket rule breaks all three.</strong> A record-not-found status is
  * an accepted control path - not an error - at the category-balance upsert
- * ({@code app/cbl/CBTRN02C.cbl:L467-L500}, which accepts {@code '00'} <em>or</em> {@code '23'} before dispatching
+ * ({@code app/cbl/CBTRN02C.cbl:L467-L501}, which accepts {@code '00'} <em>or</em> {@code '23'} before dispatching
  * to create or rewrite) and at the disclosure-group rate lookup (which accepts either before substituting the
  * literal default group and retrying, where the retry accepts only success, so a missing default row abends). And
  * at every {@code CBSTM03B} call site a return code of {@code '04'} is accepted alongside {@code '00'}
@@ -98,7 +98,7 @@
  * refusing {@code '04'} abends the third.
  *
  * <p>The four-character rendering is itself a contract. {@code 9910-DISPLAY-IO-STATUS}
- * ({@code app/cbl/CBTRN02C.cbl:L714-L731}) emits exactly four characters: when the status is non-numeric or its
+ * ({@code app/cbl/CBTRN02C.cbl:L714-L727}) emits exactly four characters: when the status is non-numeric or its
  * first byte is {@code '9'}, that byte is copied through and the second expanded from a binary field into three
  * digits; otherwise the field is four zeros with the two status characters at positions three and four. So a status
  * of {@code '23'} renders as {@code FILE STATUS IS: NNNN0023}, in which the four {@code N} characters are
@@ -120,7 +120,8 @@
  * source cannot produce it. The bean is consequently <strong>{@code @JobScope}</strong>, which reproduces the
  * source's own lifetime exactly - survival within one run, isolation between runs. This is an explicit exception to
  * Rule 1 Clause B's preference against retained mutable state, justified by the parity mandate, and it is
- * <strong>owed an entry in {@code DECISION_LOG.md}</strong>, which is authored at the repository root.
+ * <strong>held as {@code DL-PP-13} in {@code DECISION_LOG.md}</strong>, which is authored at the
+ * repository root.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -216,8 +217,8 @@
  *       second status mapper or a per-call-site copy of a lookup table defeats the entire purpose of this
  *       package.</li>
  *   <li><strong>One documented exception to the no-retained-state preference:</strong> {@code FileService}'s status
- *       registers, scoped to a job, justified at their own declaration with the source proof, and owed an entry in
- *       the {@code DECISION_LOG.md}. Nothing else here retains anything.</li>
+ *       registers, scoped to a job, justified at their own declaration with the source proof, and held as
+ *       {@code DL-PP-13} in the {@code DECISION_LOG.md}. Nothing else here retains anything.</li>
  *   <li><strong>One private method per COBOL paragraph, never consolidated</strong>, each carrying a Javadoc
  *       citation to its source label. That correspondence is what makes the scope-coverage gate provable by
  *       inspection rather than by assertion.</li>

@@ -1,25 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   ******************************************************************
-  * Program      : pom.xml
-  * Application  : CardDemo
-  * Type         : Apache Maven build configuration (Java 25 LTS, Spring Boot 3.5.11)
-  * Function     : Sole build descriptor for the CardDemo modular monolith. It
-  *                compiles, tests, measures, scans and packages exactly ONE
-  *                executable Spring Boot JAR from the Java sources under src/,
-  *                and it is simultaneously the validation gate dependency
-  *                file: the zero warning compile, the line coverage floor, the
-  *                toolchain floors and the dependency vulnerability scan are
-  *                all asserted from here.
-  * Source       : samples/jcl/BATCMP.jcl (batch COBOL compile),
-  *                samples/jcl/CICCMP.jcl (CICS COBOL compile),
-  *                samples/jcl/BMSCMP.jcl (BMS map assembly),
-  *                samples/proc/BUILDBAT.prc, samples/proc/BUILDBMS.prc and
-  *                samples/proc/BUILDONL.prc @ 7756d89 - the frozen z/OS build
-  *                tooling this file supersedes conceptually, none of which is
-  *                ported; app/jcl/CBADMCDJ.jcl @ 7756d89 installs the CICS
-  *                resource definitions and has no build analogue, being
-  *                superseded at runtime by the Spring Security configuration
+  * Program     : pom.xml
+  * Application : CardDemo
+  * Type        : Apache Maven build configuration (Java 25 LTS, Spring Boot 3.5.11)
+  * Function    : Sole build descriptor for the CardDemo modular monolith. It
+  *               compiles, tests, measures, scans and packages exactly ONE
+  *               executable Spring Boot JAR from the Java sources under src/,
+  *               and it is simultaneously the validation gate dependency
+  *               file: the zero warning compile, the line coverage floor, the
+  *               toolchain floors and the dependency vulnerability scan are
+  *               all asserted from here.
+  * Source      : samples/jcl/BATCMP.jcl (batch COBOL compile),
+  *               samples/jcl/CICCMP.jcl (CICS COBOL compile),
+  *               samples/jcl/BMSCMP.jcl (BMS map assembly),
+  *               samples/proc/BUILDBAT.prc, samples/proc/BUILDBMS.prc and
+  *               samples/proc/BUILDONL.prc @ 7756d89 - the frozen z/OS build
+  *               tooling this file supersedes conceptually, none of which is
+  *               ported; app/jcl/CBADMCDJ.jcl @ 7756d89 installs the CICS
+  *               resource definitions and has no build analogue, being
+  *               superseded at runtime by the Spring Security configuration
   ******************************************************************
   * Copyright Amazon.com, Inc. or its affiliates.
   * All Rights Reserved.
@@ -57,16 +57,17 @@
 
   Key configuration and defaults, all overridable on the command line
     jacoco.line.coverage.minimum   0.80   merged line coverage floor
-    owasp.failBuildOnCVSS          7      fail on High and Critical findings
+    owasp.failBuildOnCVSS          7      fail at or above CVSS 7 (the range
+                                          CVSS labels High and Critical)
     testcontainers.version         2.0.3  see the module rename note below
     dependency-check.skip          false  plugin default, so the scan always
                                           runs. Note the hyphen: the property is
                                           dependency-check.skip, NOT
                                           dependency.check.skip, which the plugin
                                           silently ignores.
-                                          WHERE THE SCAN ACTUALLY RUNS, corrected
-                                          6 August 2026 by reading the workflow and
-                                          the Dockerfile rather than describing
+                                          WHERE THE SCAN ACTUALLY RUNS, established
+                                          by reading the workflow and the
+                                          Dockerfile rather than by describing
                                           them. CI runs it UNSKIPPED: the verify
                                           job of .github/workflows/build.yml runs
                                           ./mvnw clean verify in its step named
@@ -88,15 +89,6 @@
                                           scan is bound to, running test-compile
                                           and then clean package, so verify-bound
                                           goals simply do not execute there.
-                                          An earlier revision of this line said the
-                                          main CI job passed
-                                          -Ddependency-check.skip=true and that a
-                                          dedicated CI job owned the scan. Both
-                                          halves were false and are withdrawn
-                                          rather than reworded, because a reader who
-                                          believed them would look for evidence in a
-                                          job that does not exist and would read a
-                                          green verify run as not having scanned.
 
   Vulnerability scan prerequisites, and what a skipped scan does NOT mean
     The scan needs local NVD data under
@@ -216,7 +208,7 @@
                                               packages to pass the gate.
     "One or more dependencies were identified
      with vulnerabilities that have a CVSS
-     score greater than or equal to 7"        a genuine High or Critical finding
+     score greater than or equal to 7"        a genuine finding at or above CVSS 7
                                               in the pinned dependency set. Fix
                                               or document it with a severity and
                                               a remediation; do not skip the
@@ -473,7 +465,45 @@
     -->
     <jacoco.asm.version>9.9</jacoco.asm.version>
     <jacoco.agent.runtime.version>0.8.14</jacoco.agent.runtime.version>
+    <!--
+      A GOVERNED PIN, NOT A DEFAULT: do not advance this without the owner step
+      recorded in DECISION_LOG.md DL-CR-09. docs/technical-specifications.md
+      0.6.1.1 pins org.owasp:dependency-check-maven at exactly this version and
+      0.8.4 states that pinned versions are honoured as given, with any divergence
+      recorded rather than resolved unilaterally.
+      The distance is disclosed rather than closed. Measured 7 August 2026 from
+      repo1.maven.org maven-metadata.xml, the upstream release is 13.0.0 and 13
+      releases stand between it and this pin: 12.1.1 through 12.1.9, 12.2.0
+      through 12.2.2, then 13.0.0. This version is still published and resolves,
+      so the pin is honourable rather than merely stale.
+      Why staleness here is not the risk it looks like: the advisory FEED is not
+      carried in the plugin. The engine downloads it into
+      ~/.m2/repository/org/owasp/dependency-check-data/ at scan time, which is why
+      this pinned engine reports findings published long after its own release. The
+      engine version governs analyser coverage, report shape and the feed PROTOCOL
+      it speaks, and that last one is the live exposure: a feed side change this
+      engine cannot speak would show as the scan failing to update its data. That
+      is a future availability risk, not a present false negative claim.
+      A move requires: owner approval, then clean verify WITHOUT
+      -Ddependency-check.skip=true, then re-measuring the dependency count, the
+      suppressed match count and every active finding, then reconciling
+      owasp-suppressions.xml because a new engine may match suppressions
+      differently and turn a suppressed entry live. BuildProvenanceTest asserts
+      this exact value and the presence of DL-CR-09 together, so the pin cannot
+      move without the entry moving with it.
+    -->
     <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
+    <!--
+      The HTTP transport dependency-check-maven 12.1.0 uses to refresh the
+      advisory feed. Overridden at plugin scope because 12.1.0 resolves
+      httpclient5 5.4.2, which carries CVE-2025-27820 (CVSS 8.1) in hostname and
+      domain verification, fixed in 5.4.3. These are the exact versions
+      spring-boot-maven-plugin already resolves in this same build, so the trio
+      is proven compatible here and needs no new artefact downloaded. See the
+      full justification at the plugin declaration itself.
+    -->
+    <dependency-check.httpclient5.version>5.5.2</dependency-check.httpclient5.version>
+    <dependency-check.httpcore5.version>5.3.6</dependency-check.httpcore5.version>
     <spring-boot-maven-plugin.version>3.5.11</spring-boot-maven-plugin.version>
     <!--
       maven-site-plugin is the one lifecycle plugin that Maven 3.9.11 binds
@@ -568,9 +598,10 @@
           CVSS 7.5 request smuggling via an invalid chunk extension and
           CVE-2026-41284 CVSS 7.5 unthrottled resource allocation, all reaching
           the HTTP/1.1 connector this application serves on. Fixed in 10.1.56.
-          10.1.57 IS THE END OF THIS LINE TODAY, and one record is open against it:
-          CVE-2026-66299, CVSS 7.5, disposition 4 in the residual register below.
-          Its fix is 10.1.58, which is not published - measured 6 August 2026 from
+          10.1.57 IS THE HIGHEST PUBLISHED RELEASE OF THIS LINE as measured on
+          7 August 2026, and one record is open against it: CVE-2026-66299,
+          CVSS 7.5, disposition 4 in the residual register below.
+          Its fix is 10.1.58, which is not published - measured 7 August 2026 from
           Central's maven-metadata.xml, where the 10.1 line ends at 10.1.57 - so
           this pin cannot yet be advanced. Raise it to 10.1.58 or later as soon as
           that release exists and delete the matching suppression entry; a forward
@@ -584,12 +615,11 @@
 
       FOUR FURTHER OVERRIDES, on the same mechanism, closing the remainder of
       the scan's applicable findings. Together with the four above these took the
-      unsuppressed count from 37 unique CVEs across 11 dependencies to two, and
-      today to ONE - re-measured 6 August 2026 as one active row out of 166
-      dependencies scanned, the count having gone briefly back up to two when the
-      NVD feed newly attributed CVE-2026-66299 to Tomcat and back down when that
-      record was shown not to apply. The register below records both movements,
-      because a count that only ever improves is a count nobody re-measured:
+      unsuppressed count from 37 unique CVEs across 11 dependencies down to ONE -
+      measured 7 August 2026 as one active row out of 166 dependencies scanned.
+      The register below records the movement in both directions, up as well as
+      down, because a count that only ever improves is a count nobody
+      re-measured:
 
         hibernate-validator 8.0.3.Final -> 8.0.5.Final
         commons-lang3       3.17.0      -> 3.20.0
@@ -616,12 +646,10 @@
       CVEs - and with the suppressions gone, that is enforced rather than merely
       asserted.
 
-      AN EARLIER REVISION OF THIS COMMENT SAID THE OPPOSITE - that the file was
-      not edited and still carried these entries, left in place deliberately. That
-      was measurably wrong and directly contradicted the deletion record in
-      owasp-suppressions.xml itself; it is withdrawn here rather than quietly
-      overwritten, because the two files disagreeing about which artefact holds
-      the risk is worse than either being out of date alone.
+      THE INVARIANT: a forward pin and a suppression entry must never both be in
+      place for one record. A pin that remediates a finding removes that finding's
+      entry from owasp-suppressions.xml in the same change, so the two files can
+      never disagree about which artefact holds the risk.
     -->
     <spring-security.version>6.5.11</spring-security.version>
     <spring-framework.version>6.2.19</spring-framework.version>
@@ -659,16 +687,30 @@
       RESIDUAL VULNERABILITIES - four CVEs are reported against this pinned stack
       and none is remediated here. They are recorded rather than suppressed
       silently. Their dispositions are NOT the same, and the difference matters:
-      the first is a CPE false positive, the second and third are genuinely
-      applicable advisories whose fix is blocked by the pinned parent, and the
-      fourth is an advisory whose vulnerable component is provably absent from the
-      artefacts it is attributed to.
+      the first is a CPE false positive; the second and third are VERSION MATCHES
+      whose fix is blocked by the pinned parent AND whose deciding prerequisite
+      from the official advisory is absent from this deployment, each stated and
+      measured on its own record below; and the fourth is an advisory whose
+      vulnerable component is provably absent from the artefacts it is attributed
+      to.
+      TWO AXES, NEVER CONFLATED. Each record states APPLICABILITY, which is a
+      version-range fact about the resolved coordinate, and DEPLOYED EXPOSURE,
+      which is a configuration fact about this application, separately - the
+      reading owasp-suppressions.xml defines under HOW TO READ THIS FILE. An
+      earlier revision labelled records 2 and 3 simply "APPLICABLE", which a reader
+      reasonably takes as a claim of live exposure; both advisories require a
+      prerequisite this deployment does not have, so that label overstated the
+      evidence. The scan handling was and remains conservative: a version match is
+      never dismissed on a configuration argument alone, so record 2 keeps its
+      time-boxed suppression and record 3 keeps no suppression at all. Only the
+      classification changed.
 
       HOW EACH ONE LEAVES THE GATE GREEN, measured rather than asserted - the
       reproduce command and the reading are recorded in owasp-suppressions.xml:
       the first is withdrawn from the active set by a Tier 1 IDENTIFIER
       suppression, because a wrong CPE is not a risk acceptance; the second is a
-      time boxed Tier 4 acceptance carrying compensating controls; the fourth is
+      time boxed Tier 4 acceptance, kept time boxed even though its prerequisite is
+      absent, and carrying compensating controls beyond that absence; the fourth is
       withdrawn by a Tier 2 jar listing, because a vulnerability in code that is
       not in the artefact is not exposure; and the third is what remains in the
       ACTIVE set, scoring CVSS 6.7 MEDIUM, below the failBuildOnCVSS 7 threshold.
@@ -712,29 +754,71 @@
 
       2. CVE-2026-22731, CVSS 8.1 as scored by NVD, 8.2 by the vendor -
          org.springframework.boot:spring-boot
-         APPLICABLE. An Actuator health-group additional-path authentication
-         bypass, FIXED IN SPRING BOOT 3.5.12. The advisory's prose reads "from
-         3.5 before 3.5.11" while its machine readable affected range is 3.5.0 to
-         before 3.5.12; the scan matches on the machine readable range, which is
-         why the resolved 3.5.11 jar is reported at all. Spring Boot's own
-         version is the parent coordinate that AAP 0.6.1.1 pins and 0.8.4
-         protects, and it is not expressed as an overridable property, so it
-         remains a time boxed acceptance in owasp-suppressions.xml with its
-         compensating controls stated there.
+         APPLICABLE (VERSION MATCH). DEPLOYED EXPOSURE: NOT PRESENT. An Actuator
+         health-group additional-path authentication bypass, FIXED IN SPRING BOOT
+         3.5.12. The advisory's prose reads "from 3.5 before 3.5.11" while its
+         machine readable affected range is 3.5.0 to before 3.5.12; the scan
+         matches on the machine readable range, which is why the resolved 3.5.11
+         jar is reported at all - and that match is the whole of what APPLICABLE
+         claims here, on the two-axis reading owasp-suppressions.xml now defines
+         under HOW TO READ THIS FILE.
+         The advisory's deciding prerequisite is an additional-path on a health
+         group that collides with a secured application endpoint, and this
+         application configures none: both groups declare include only and are
+         served under the standard /actuator/health/{group} paths, while
+         application endpoints live under /api/**. MEASURED, not asserted - a
+         case-and-separator-insensitive scan for the property over all four
+         profiles plus docker-compose.yml, .env.example, the Dockerfile and the CI
+         workflow returns zero non-comment hits, and
+         BuildProvenanceTest#noHealthGroupAdditionalPathIsConfiguredWhileTheBypassEntryLives
+         fails the build if that stops being true while the record stands.
+         Spring Boot's own version is the parent coordinate that AAP 0.6.1.1 pins
+         and 0.8.4 protects, and it is not expressed as an overridable property, so
+         it remains a time boxed acceptance in owasp-suppressions.xml. The
+         acceptance is retained DESPITE the absent prerequisite, deliberately: one
+         property in one file restores it, which is a weaker guarantee than an
+         absent class or an absent integration, so the expiry and the mandatory
+         re-examination stay. An earlier revision of this record said only
+         "APPLICABLE", which read as a claim of live exposure that the evidence did
+         not support; that reading is withdrawn and the handling is unchanged.
 
       3. CVE-2026-40977, CVSS 6.7 MEDIUM - org.springframework.boot:spring-boot
-         APPLICABLE, AND THE ONLY FINDING LEFT IN THE ACTIVE SET once 4 below is
-         withdrawn on its jar-listing evidence - one active row out of 166
-         dependencies scanned, measured 6 August 2026. A PID file
-         write that follows symlinks at a predictable default path, FIXED IN
-         SPRING BOOT 3.5.14. It carries NO suppression entry, by choice: at 6.7 it
-         is under the gate on its own score, so nothing has to be waived for the
-         build to pass and the record stays visible in every report. Fixable only by advancing the
-         parent, for the same reason as 2. That release is published, so the fix
-         exists - it is the pin, not availability, that blocks it. Where a
-         review's suggested resolution allows advancing the parent and the
-         specification does not, the specification governs and the conflict is
-         disclosed here.
+         APPLICABLE (VERSION MATCH). DEPLOYED EXPOSURE: NOT PRESENT. Still THE
+         ONLY FINDING LEFT IN THE ACTIVE SET once 4 below is withdrawn on its
+         jar-listing evidence - one active row out of 166 dependencies scanned,
+         measured 6 August 2026 and reproduced 7 August. A PID file write that
+         follows symlinks at a predictable default path, FIXED IN SPRING BOOT
+         3.5.14.
+         The advisory is scoped to applications that WRITE a PID file, which in
+         Spring Boot means registering
+         org.springframework.boot.context.ApplicationPidFileWriter as an
+         application listener - it is not registered by default and there is no
+         property that turns it on. This application does not register it, and
+         writes no PID file: com.cardemo.CardDemoApplication#main is a bare
+         SpringApplication.run with no addListeners call, no listener is declared
+         in META-INF/spring.factories or as a bean, no profile sets spring.pid.*,
+         and the delivered image runs the JAR as PID 1 under the container runtime
+         rather than tracking a pidfile. The code path the advisory describes is
+         therefore never entered. That absence is what DEPLOYED EXPOSURE: NOT
+         PRESENT records, and it is held true by
+         BuildProvenanceTest#noPidFileWriterIsRegisteredWhileTheSymlinkRecordStands.
+         It carries NO suppression entry, by choice, and the reason is now stated
+         on both axes: at 6.7 it is under the gate on its own score, so nothing has
+         to be waived for the build to pass and the record stays visible in every
+         report - suppressing it would hide a version match that is worth seeing.
+         Fixable only by advancing the parent, for the same reason as 2. That
+         release is published, so the fix exists - it is the pin, not availability,
+         that blocks it. Where a review's suggested resolution allows advancing the
+         parent and the specification does not, the specification governs and the
+         conflict is disclosed here.
+         INVALIDATION TRIGGERS - any one of these makes the exposure PRESENT:
+         registering ApplicationPidFileWriter (or WebServerPortFileWriter, which
+         has the same shape) on SpringApplication; declaring either as a bean or in
+         a spring.factories listener list; or setting a PID-file path through
+         spring.pid.file or the PIDFILE environment variable. An earlier revision of
+         this record said only "APPLICABLE", which read as a claim of live exposure
+         that the evidence did not support; that reading is withdrawn and, since
+         there was nothing suppressed here to relax, nothing about the gate changes.
          To close 2 and 3: an explicit decision to move the pinned parent to
          3.5.14 or later - the earliest single release carrying both fixes, since
          3.5.12 carries only the first - taken by whoever owns that pin, followed
@@ -1627,13 +1711,10 @@
         analyzer that IS enabled cannot complete, the build fails instead of
         producing a partial report.
 
-        WHAT CAN STOP THIS GOAL WITHOUT A skip ELEMENT BEING PRESENT, corrected
-        6 August 2026 - and the correction is reassuring rather than alarming. An
-        earlier revision of this paragraph named two things: the user property, and
-        offline mode, asserting that "an offline build never reaches this goal at
-        all, so a green offline build is not evidence that the scan passed". The
-        second half is false, and measurably so. The goal declares
-        requiresOnline=true in the plugin's own descriptor - read from
+        WHAT CAN STOP THIS GOAL WITHOUT A skip ELEMENT BEING PRESENT, measured
+        7 August 2026. Offline mode is NOT one of them, which is reassuring rather
+        than alarming: the goal declares requiresOnline=true in the plugin's own
+        descriptor - read from
         META-INF/maven/plugin.xml inside dependency-check-maven-12.1.0.jar, where
         both check and aggregate carry it with defaultPhase verify - so Maven
         refuses the goal offline instead of passing over it:
@@ -1642,8 +1723,8 @@
         therefore CANNOT be green with this goal bound; it fails loudly, which is
         the behaviour a gate should have. That leaves exactly ONE way to reach a
         green build without the scan having run: passing the user property named
-        above. So the honest warning is narrower than the old one and points
-        somewhere real - check the command line, not the network state.
+        above. So the warning to act on points at the command line, not at the
+        network state.
 
         The .NET assembly analyzer is disabled because CardDemo is a Java only
         project: without a dotnet runtime that analyzer only emits an
@@ -1694,23 +1775,40 @@
         add a skip to turn it green: both suppress the measurement rather than
         the cause.
 
-        (2) THIS GATE DOES NOT SEE THE BUILD PLUGIN GRAPH.
-        dependency-check-maven scans project dependencies; the plugins that
-        compile, test, measure and package the project are resolved by Maven
+        (2) THIS GATE DOES NOT SEE THE BUILD PLUGIN GRAPH - NOW COVERED
+        ELSEWHERE. dependency-check-maven scans project dependencies; the plugins
+        that compile, test, measure and package the project are resolved by Maven
         itself and are never presented to the analyzer, so a vulnerable plugin
-        dependency passes this gate silently. One consequence has been closed
+        dependency passed this gate silently. One consequence was closed
         directly: maven-site-plugin is the only plugin coordinate the AAP leaves
         unpinned, and it is raised from the default 3.12.1 to 3.22.0 at the
         property above, which retires the Doxia 1.x sub graph. The remaining
         plugin roots, including dependency-check-maven 12.1.0 itself, are pinned
         by AAP sections 0.6.1.1 and 0.6.1.2 and fall under entry (1).
-        To cover it: enumerate the graph with mvn -B dependency:resolve-plugins,
-        then scan those coordinates in a dedicated job, either with the
-        dependency-check command line tool pointed at the resolved plugin
-        artefacts or with a throwaway POM that declares them as dependencies.
-        Adding a scanning plugin to THIS build was rejected: it would introduce
-        a plugin coordinate the AAP does not sanction, enlarging the very
-        surface being measured.
+
+        THE GAP ITSELF IS NO LONGER OPEN. The remedy this entry used to describe
+        in the future tense is implemented, exactly as described: the graph is
+        enumerated with dependency:resolve-plugins and scanned in a dedicated job
+        rather than by a plugin added here, because adding a scanning plugin to
+        THIS build would introduce a plugin coordinate the AAP does not sanction,
+        enlarging the very surface being measured. See
+        .github/plugin-graph/scan_plugin_graph.py, its evidence file
+        .github/plugin-graph/dispositions.json, and the plugin-graph-scan job in
+        .github/workflows/build.yml. That gate fails on any HIGH or CRITICAL
+        finding without a written, expiring disposition, and also fails when a
+        disposition expires or stops matching anything.
+
+        Why it stopped being hypothetical: the gap concealed a defect in the
+        scanner's OWN data path. This plugin resolved
+        httpclient5 5.4.2, which carries CVE-2025-27820 at CVSS 8.1 in hostname
+        and domain verification, on the code path that fetches the advisory feed -
+        so the component supplying every dependency verdict in this build was
+        fetching those verdicts over a transport that could be induced to accept
+        the wrong peer, and the failure mode of that is a clean report rather
+        than an error. It is corrected by the plugin-scoped override declared at
+        this plugin's own <dependencies> block above, and the new gate verifies
+        that override against the plugin's real class realm so its removal fails
+        the build instead of silently restoring the exposure.
 
         (3) DUPLICATE CLASS PATHS ON THE COMPILE AND RUNTIME GRAPH. Disclosed
         for completeness rather than actioned, because removing a transitive is a
@@ -1734,6 +1832,71 @@
         <groupId>org.owasp</groupId>
         <artifactId>dependency-check-maven</artifactId>
         <version>${dependency-check-maven.version}</version>
+        <!--
+          THE SCANNER'S OWN HTTP TRANSPORT, OVERRIDDEN AT PLUGIN SCOPE.
+
+          Measured, not inferred. `dependency:resolve-plugins` resolves 294
+          plugin and plugin-transitive coordinates for this build, and exactly two
+          of them are HTTP clients:
+
+            org.owasp:dependency-check-maven:12.1.0        -> httpclient5 5.4.2
+            org.springframework.boot:spring-boot-maven-plugin:3.5.11
+                                                          -> httpclient5 5.5.2
+
+          httpclient5 5.4.2 carries CVE-2025-27820 / GHSA-73m2-qfq3-56cx, CVSS
+          8.1, a hostname and domain verification defect fixed in 5.4.3. Queried
+          against OSV: 5.4.2 reports that advisory, 5.4.3 and 5.5.2 report none.
+
+          Why this one matters more than its score. The affected code is not
+          incidental to the plugin - it is the plugin's data path. Dependency
+          Check refreshes the advisory feed through open-vulnerability-clients,
+          whose NvdCveClient builds default asynchronous HttpClient5 clients. So
+          the component whose verdict every other dependency claim in this build
+          rests on was fetching that verdict over a transport that could be
+          induced to accept the wrong peer. A scanner that can be fed
+          attacker-chosen advisory data does not fail loudly; it returns a clean
+          report. That is why this is corrected rather than merely disclosed.
+
+          WHY 5.5.2 AND NOT 5.4.3. Both clear the advisory, and the reviewer's
+          floor is 5.4.3, so either satisfies it. 5.5.2 is chosen because
+          spring-boot-maven-plugin in THIS build already resolves exactly this
+          trio, which makes it a version proven to work here rather than merely
+          believed to; because it is consequently already in the local repository,
+          so an offline build needs no new artefact; and because pinning to it
+          collapses the two httpclient5 versions previously present in the plugin
+          graph into ONE, which reduces the surface instead of merely patching it.
+
+          The httpcore5 pair is declared alongside for consistency, NOT because
+          either version is vulnerable - 5.3.3 and 5.3.6 both report clean on OSV.
+          It is declared so the transport trio is the exact set that is known to
+          work together, rather than whichever combination nearest-wins produces.
+
+          THE AAP PIN IS PRESERVED. AAP section 0.6.1.1 pins
+          org.owasp:dependency-check-maven to 12.1.0 and section 0.8.4 requires
+          pinned versions be honoured as given, so the plugin ROOT is untouched.
+          This is a transitive override inside that pinned plugin's own
+          classpath - the narrowest change that removes the defect without
+          moving a sanctioned pin. Dependency Check 12.2.2 resolves HttpClient
+          5.6.1 and would close this at the root, but moving the root is a pin
+          move requiring approval; it is registered as a residual risk instead.
+        -->
+        <dependencies>
+          <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+            <version>${dependency-check.httpclient5.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.apache.httpcomponents.core5</groupId>
+            <artifactId>httpcore5</artifactId>
+            <version>${dependency-check.httpcore5.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.apache.httpcomponents.core5</groupId>
+            <artifactId>httpcore5-h2</artifactId>
+            <version>${dependency-check.httpcore5.version}</version>
+          </dependency>
+        </dependencies>
         <configuration>
           <failBuildOnCVSS>${owasp.failBuildOnCVSS}</failBuildOnCVSS>
           <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
@@ -1915,8 +2078,9 @@
         target/, which is ignored, so nothing is published and no artefact is
         added to the deliverable set.
 
-        VERIFIED: zero errors and zero warnings across all 131 files of
-        src/main/java on javadoc 25.0.3. Relaxing doclint, lowering show or
+        VERIFIED: zero errors and zero warnings across every file of src/main/java
+        on javadoc 25.0.3, re-measured after each change rather than stated as a
+        fixed file count. Relaxing doclint, lowering show or
         setting failOnWarnings to false each defeats the gate and none may be
         done to make a documentation defect pass.
       -->

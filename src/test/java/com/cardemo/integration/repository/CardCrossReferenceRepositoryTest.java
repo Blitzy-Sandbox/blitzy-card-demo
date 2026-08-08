@@ -413,10 +413,12 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  * either would manufacture a false oracle.
  *
  * <ol>
- *   <li><strong>The end-to-end boundary parity baseline is Not available.</strong> No captured legacy output
- *       exists anywhere in this repository; searches across expected, baseline, golden, {@code .out} and
- *       system-output name patterns, and across the reject, report, statement and HTML dataset names, return
- *       only dataset <em>definition</em> members and no captured data. What is needed to close it: a captured
+ *   <li><strong>The end-to-end boundary parity expectation exists; what is Not available is a captured z/OS run to
+ *       corroborate it.</strong> {@code src/test/resources/parity/gate1/} holds the frozen program's own output --
+ *       {@code TRANSACT.expected}, {@code ACCTDATA.expected}, {@code TCATBALF.expected}, {@code DALYREJS.expected}
+ *       and {@code CBTRN02C.sysout.expected} -- derived by compiling {@code app/cbl/CBTRN02C.cbl} unmodified and
+ *       running it against the frozen fixtures, with the harness and the derivation recorded beside them in
+ *       {@code PROVENANCE.properties}. What is needed to close it: a captured
  *       430-byte {@code DALYREJS} reject dataset from a real {@code POSTTRAN} run at a known input state,
  *       together with the resulting {@code TRANSACT}, {@code ACCTDATA} and {@code TCATBALF} images.
  *       Therefore <strong>this class creates no baseline file and fabricates no expected bytes</strong>;

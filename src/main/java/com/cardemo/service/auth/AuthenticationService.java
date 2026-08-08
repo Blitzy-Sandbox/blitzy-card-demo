@@ -6,7 +6,7 @@
  * Function    : Sign-on authentication: credential normalisation, BCrypt
  *               verification and JWT issuance, replacing the CICS sign-on
  *               screen program and its COMMAREA identity handshake.
- * Source      : app/cbl/COSGN00C.cbl (260 lines, 6 paragraphs) @ 7756d89
+ * Source      : app/cbl/COSGN00C.cbl (260 lines, 6 own paragraph labels) @ 7756d89
  * Source      : app/cbl/COSGN00C.cbl:L132-L136 (UPPER-CASE BOTH identifier and
  *               password), :L223 (SEC-USR-PWD = WS-USER-PWD compare) @ 7756d89
  * Source      : app/cbl/COSGN00C.cbl:L209-L257 (READ-USER-SEC-FILE),

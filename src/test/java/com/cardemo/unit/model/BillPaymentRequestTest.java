@@ -415,8 +415,8 @@ final class BillPaymentRequestTest {
      * <p>The algorithm is inherently racy: two concurrent payments read the same maximum and compute the
      * same successor. It is retained exactly as written, because parity is the contract - a database
      * sequence would generate different values and a collision is meant to surface as a duplicate-key
-     * failure from the primary key, which is what the source's own duplicate handling did. It is owed
-     * an entry in the {@code DECISION_LOG.md}.</p>
+     * failure from the primary key, which is what the source's own duplicate handling did. It is held as
+     * {@code DL-PP-04} in the {@code DECISION_LOG.md}.</p>
      *
      * @param highestOnFile the identifier the browse returned, or {@code null} for the end-of-file case
      * @return the next identifier, sixteen characters and zero padded so leading zeros survive
@@ -1109,6 +1109,11 @@ final class BillPaymentRequestTest {
     @DisplayName("6. The transaction the confirmed payment derives, literal for literal")
     final class DerivedTransaction {
 
+        /**
+         * Posts the confirmed full-balance payment this group asserts the derived transaction of.
+         *
+         * @return the posting, carrying the transaction the service composed.
+         */
         private Posting confirmedPayment() {
             return pay(new BigDecimal("194.00"), "4111111111111111", "0000000000000042",
                     FixedClockProvider.canonicalClock());
@@ -1278,7 +1283,7 @@ final class BillPaymentRequestTest {
                             + "212-217 is racy exactly as written. It is kept, because a database "
                             + "sequence would generate different values and break the parity baseline; "
                             + "the collision is meant to surface as a duplicate-key failure from the "
-                            + "primary key. Owed an entry in the DECISION_LOG.md")
+                            + "primary key. Held as DL-PP-04 in DECISION_LOG.md")
                     .isEqualTo(first);
         }
 

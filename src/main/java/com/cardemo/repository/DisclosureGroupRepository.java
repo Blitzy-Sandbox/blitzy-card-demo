@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : DisclosureGroupRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -11,10 +11,10 @@
  *               (app/catlg/LISTCAT.txt:L896 DATA-component attribute line;
  *               app/jcl/DISCGRP.jcl:L36, L40-L41 KEYS(16 0) RECORDSIZE(50 50));
  *               record layout app/cpy/CVTRA02Y.cpy:L4-L10; rate lookup
- *               app/cbl/CBACT04C.cbl:L415-L460 (1200-GET-INTEREST-RATE and
- *               1200-A-GET-DEFAULT-INT-RATE); ABSENT from app/csd/CARDDEMO.CSD
+ *               app/cbl/CBACT04C.cbl:L415-L440 (1200-GET-INTEREST-RATE) and
+ *               :L443-L460 (1200-A-GET-DEFAULT-INT-RATE); ABSENT from app/csd/CARDDEMO.CSD
  *               (batch-only proof) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -29,7 +29,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 

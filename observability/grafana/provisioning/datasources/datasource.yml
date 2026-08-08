@@ -1,36 +1,40 @@
 # ******************************************************************
-# * Component    : datasource.yml
-# * Application  : CardDemo
-# * Type         : Grafana Datasource Provisioning
-# * Function     : Provisions the single Prometheus datasource so the CardDemo
-# *                dashboard resolves with no manual configuration, which is
-# *                what makes the integration sign-off gate demonstrable.
-# *                Mounted read-only into the `grafana` service of the
-# *                repository-root docker-compose.yml, where Grafana reads it
-# *                from /etc/grafana/provisioning/datasources/datasource.yml
-# *                at start-up. This is the only datasource definition in the
-# *                project.
-# * Serves       : src/main/java/com/cardemo/observability/MetricsConfig.java,
-# *                which declares the four named application instruments -
-# *                four counters (records processed, records rejected tagged
-# *                by reject code, authentication attempts tagged by outcome,
-# *                and the running transaction-amount total tagged by sign,
-# *                whose credit-minus-debit difference is the signed net). This
-# *                file names none of them - see the ownership boundary below.
-# * Replaces     : The DISPLAY-only batch instrumentation of the frozen COBOL
-# *                corpus, at commit 7756d89. app/cbl/CBTRN02C.cbl:L227 emits
-# *                DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and
-# *                app/cbl/CBTRN02C.cbl:L228 emits
-# *                DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT - two
-# *                spaces before the colon on the rejected line and one on the
-# *                processed line, which is part of the emitted text. The two
-# *                counters are incremented at :L206 and :L214 and written to
-# *                SYSOUT exactly once, after every file has closed;
-# *                app/cbl/CBACT04C.cbl reports the same way. There is no
-# *                history and no way to observe a run in flight.
-# * Note         : No COBOL analogue exists. Grafana provisioning is new
-# *                capability, mandated by the observability requirement of
-# *                Rule 1 Clause A rather than by any legacy behaviour.
+# * Program     : datasource.yml
+# * Application : CardDemo
+# * Type        : Grafana Datasource Provisioning
+# * Function    : Provisions the single Prometheus datasource so the CardDemo
+# *               dashboard resolves with no manual configuration, which is
+# *               what makes the integration sign-off gate demonstrable.
+# *               Mounted read-only into the `grafana` service of the
+# *               repository-root docker-compose.yml, where Grafana reads it
+# *               from /etc/grafana/provisioning/datasources/datasource.yml
+# *               at start-up. This is the only datasource definition in the
+# *               project.
+# * Serves      : src/main/java/com/cardemo/observability/MetricsConfig.java,
+# *               which declares the four named application instruments -
+# *               four counters (records processed, records rejected tagged
+# *               by reject code, authentication attempts tagged by outcome,
+# *               and the running transaction-amount total tagged by sign,
+# *               whose credit-minus-debit difference is the signed net). This
+# *               file names none of them - see the ownership boundary below.
+# * Replaces    : The DISPLAY-only batch instrumentation of the frozen COBOL
+# *               corpus, at commit 7756d89. app/cbl/CBTRN02C.cbl:L227 emits
+# *               DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and
+# *               app/cbl/CBTRN02C.cbl:L228 emits
+# *               DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT - two
+# *               spaces before the colon on the rejected line and one on the
+# *               processed line, which is part of the emitted text. The two
+# *               counters are incremented at :L206 and :L214 and written to
+# *               SYSOUT exactly once, after every file has closed;
+# *               app/cbl/CBACT04C.cbl reports the same way. There is no
+# *               history and no way to observe a run in flight.
+# * Note        : No COBOL analogue exists. Grafana provisioning is new
+# *               capability, mandated by the observability requirement of
+# *               Rule 1 Clause A rather than by any legacy behaviour.
+# * Source      : app/cbl/CBTRN02C.cbl:L184-L186, :L206, :L214 and :L227-L228
+# *               @ 7756d89 - the counter declarations, their increments and
+# *               the single end-of-run DISPLAY pair that are the whole of the
+# *               reporting this dashboard datasource supersedes
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.

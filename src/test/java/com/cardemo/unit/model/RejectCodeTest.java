@@ -235,8 +235,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the mandate to preserve control flow one to one genuinely collide. Parity governs, and the standard is
  * satisfied by its own wording: what it bars is dead code and deferred work carrying <em>no owner or
  * tracking reference</em>. This constant carries both. It is cited to its exact source lines here and on
- * the constant itself, owed a named-decision entry in the {@code DECISION_LOG.md}, and owed a row in
- * {@code TRACEABILITY_MATRIX.md} among the {@code CBTRN02C} fidelity hot spots. It is tracked, justified
+ * the constant itself, held as the named decision {@code DL-PP-03} in the {@code DECISION_LOG.md} under the
+ * governing conflict resolution {@code DL-CR-01}, and carried as a row in {@code TRACEABILITY_MATRIX.md}
+ * among the {@code CBTRN02C} fidelity hot spots. It is tracked, justified
  * and reviewable - a documented faithful reproduction of a reachable but unconsumed assignment in the
  * system of record, not abandoned residue.
  *
@@ -1062,15 +1063,14 @@ class RejectCodeTest {
      * bears 103. Severity: High. Remediation: none - preserve and log. See also AAP section 0.7.2.6.
      *
      * OWNERSHIP OF THE BEHAVIOURAL ASSERTION - read this before adding a test here.
-     * -------------------------------------------------------------------------
-     * An earlier revision of this suite asserted the overwrite through a private static
-     * replayLookupAcctPredicates(boolean, boolean) helper that re-implemented both IF blocks inside
-     * this test file and then asserted against its own output. That is a false green: the assertions
-     * stayed green no matter what production did, because production was never invoked. They would
-     * have passed unchanged if the real validator guarded the second block with
+     * The overwrite may not be asserted here through a private static
+     * replayLookupAcctPredicates(boolean, boolean) helper that re-implements both IF blocks inside
+     * this test file and then asserts against its own output. That is a false green: such assertions
+     * stay green no matter what production does, because production is never invoked. They would
+     * pass unchanged if the real validator guarded the second block with
      * if (reason == 0), retained 102, emitted two trailers, or omitted the expiry branch entirely -
-     * the three exact regressions the tests appeared to be protecting against. The helper and its
-     * five dependent tests were therefore deleted rather than kept as reassurance.
+     * the three exact regressions the tests would appear to be protecting against. No such helper
+     * belongs in this file.
      *
      * The control flow belongs to com.cardemo.batch.processors.TransactionPostingProcessor, which
      * owns 1500-VALIDATE-TRAN, 1500-A-LOOKUP-XREF and 1500-B-LOOKUP-ACCT. Its own suite is the only
@@ -1080,11 +1080,11 @@ class RejectCodeTest {
      *   (over limit, not expired)     -> 0102,
      *   (within limit, expired)       -> 0103,
      *   (within limit, not expired)   -> no reject at all.
-     * That class is not present at this checkpoint and is outside this checkpoint's scope, so the
-     * assertion is recorded here as owned elsewhere rather than faked here.
+     * That suite is com.cardemo.unit.batch.TransactionPostingProcessorTest, whose ExpiryFallThrough
+     * group drives the processor over all four combinations, so the assertion is owned there rather
+     * than faked here.
      *
      * WHAT THIS TYPE CAN PROVE, AND DOES PROVE BELOW.
-     * ----------------------------------------------
      * RejectCode is the reason code catalogue, not the control flow. Its own contribution to the
      * overwrite behaviour is structural: it must make the two-codes-at-once state unrepresentable,
      * and it must render the surviving code as exactly one 80 byte trailer. Both are asserted

@@ -237,8 +237,8 @@ import org.springframework.dao.DuplicateKeyException;
  * {@code :L556} and never reads it, because {@code 2800} runs only inside the already-validated path, the
  * reject write and the counter increment live exclusively in the {@code ELSE} arm at {@code :L213-L215},
  * and {@code :L208} clears the field on the next iteration. Parity governs, and clause B is satisfied on
- * its own terms - it prohibits artefacts <em>without a tracking reference</em>, and this one is owed
- * an entry in the {@code DECISION_LOG.md}, a row in the
+ * its own terms - it prohibits artefacts <em>without a tracking reference</em>, and this one is held as
+ * {@code DL-PP-03} in the {@code DECISION_LOG.md}, with its rows in the
  * {@code TRACEABILITY_MATRIX.md}, the source locator in the Javadoc
  * of every test that touches it, and an explicit intentional-retention marker. Deleting the constant
  * would break the paragraph map that the scope-coverage gate verifies.
@@ -373,10 +373,8 @@ class TransactionPostingProcessorTest {
         logger.setLevel(originalLevel);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Fixture builders. Each one produces a record that satisfies every guard the entity declares, so a
     // test that wants one field absent removes it explicitly through setField and the intent stays legible.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Builds a fully populated staged record. Every field is present because the entity's own guards
@@ -440,7 +438,11 @@ class TransactionPostingProcessorTest {
         return new CardCrossReference(CARD_NUMBER, 123456789L, ACCOUNT_ID);
     }
 
-    /** @return the composite key {@code categoryBalanceKey} must compose for the fixtures. */
+    /**
+     * Composes the {@code TCATBALF} key the fixtures share.
+     *
+     * @return the composite key {@code categoryBalanceKey} must compose for the fixtures.
+     */
     private static TransactionCategoryBalanceId fixtureKey() {
         return new TransactionCategoryBalanceId(ACCOUNT_ID, TYPE_CD, CAT_CD);
     }
@@ -539,7 +541,11 @@ class TransactionPostingProcessorTest {
         }
     }
 
-    /** @return every message this class's logger received, formatted as an appender would see it. */
+    /**
+     * Reads back what the processor logged during the call under test.
+     *
+     * @return every message this class's logger received, formatted as an appender would see it.
+     */
     private List<String> loggedMessages() {
         return appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
     }
@@ -2104,7 +2110,7 @@ class TransactionPostingProcessorTest {
         @Test
         @DisplayName("the ACCOUNT REWRITE abend attributes itself, because :L545-L560 has no guard to borrow")
         void theAccountRewriteAbendDoesNotBorrowTheGuardsAuthority() {
-            // FINDING, severity Minor, REGRESSION GUARD. The unclassified tail used to be one fixed sentence
+            // FINDING, severity Medium, REGRESSION GUARD. The unclassified tail used to be one fixed sentence
             // for all three call sites, ending "so the guard in app/cbl/CBTRN02C.cbl reaches PERFORM
             // 9999-ABEND-PROGRAM". On this path that sentence is false and contradicts both the source and
             // this class's own Javadoc: 2800-UPDATE-ACCOUNT-REC at app/cbl/CBTRN02C.cbl:L545-L560 tests no
@@ -2900,10 +2906,10 @@ class TransactionPostingProcessorTest {
      * properties, this is a unit suite over hand-built single records, and a unit test that folded 300 fixture
      * rows through the processor to total them would be an end-to-end test wearing a unit test's name.
      *
-     * <p>An earlier revision gave a different reason - that the totals were "model-sensitive" because a
+     * <p>The reason is <b>not</b> that the totals are "model-sensitive" because a
      * stateless single pass and a faithful stateful model, the latter re-reading the account at
      * {@code :L393-L395} while {@code :L547-L551} mutates its accumulators, "produce different totals".
-     * <b>That reason is withdrawn.</b> {@code 2800-UPDATE-ACCOUNT-REC} ends in
+     * <b>That reasoning does not hold.</b> {@code 2800-UPDATE-ACCOUNT-REC} ends in
      * {@code REWRITE FD-ACCTFILE-REC} at {@code :L561}, and a VSAM {@code REWRITE} replaces the record in the
      * cluster, so the re-read returns the mutated accumulators: the stateless reading is a misreading of
      * {@code REWRITE} rather than a rival model. Exactly one faithful model exists,
@@ -2957,7 +2963,11 @@ class TransactionPostingProcessorTest {
             crossReferences = FixtureLoader.load(FixtureLoader.Fixture.CARD_XREF);
         }
 
-        /** @return every distinct card number the staged daily transactions reference. */
+        /**
+         * Derives the card set from the staged fixture rather than restating it.
+         *
+         * @return every distinct card number the staged daily transactions reference.
+         */
         private Set<String> dailyTransactionCardNumbers() {
             Set<String> cards = new TreeSet<>();
             for (int record = 0; record < dailyTransactions.recordCount(); record++) {

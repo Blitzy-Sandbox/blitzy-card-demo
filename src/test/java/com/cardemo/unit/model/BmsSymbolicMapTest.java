@@ -50,10 +50,10 @@ import org.junit.jupiter.params.provider.MethodSource;
  *
  * <p>This class exists because the oracle is load-bearing. Five DTO test classes assert screen-field widths
  * and field counts by reading the frozen copybooks through it rather than by restating the Java constants
- * under test, and an oracle that under-reports would make all of those assertions vacuously agreeable. An
- * earlier revision of the oracle did exactly that: its field pattern matched only {@code PIC X(n)}, so it
- * silently dropped {@code app/cpy-bms/COACTVW.CPY:60}, the one input field in the whole corpus declared with
- * a numeric picture, and reported 36 fields for a member that declares 37.
+ * under test, and an oracle that under-reports would make all of those assertions vacuously agreeable. A
+ * field pattern matching only {@code PIC X(n)} does exactly that: it
+ * silently drops {@code app/cpy-bms/COACTVW.CPY:60}, the one input field in the whole corpus declared with
+ * a numeric picture, and reports 36 fields for a member that declares 37.
  *
  * <p>The assertions here are therefore deliberately independent of the oracle's own logic wherever that is
  * possible. Field counts are checked against the number of {@code COMP PIC S9(4)} length fields, which the
@@ -169,7 +169,7 @@ final class BmsSymbolicMapTest {
     }
 
     @Nested
-    @DisplayName("2. The numeric picture that an earlier revision dropped")
+    @DisplayName("2. The numeric picture an X-only pattern drops")
     final class NumericPicture {
 
         @Test
@@ -217,8 +217,8 @@ final class BmsSymbolicMapTest {
         @Test
         @DisplayName("fieldNames follows the copybook, not a hash order")
         void fieldNamesFollowsTheCopybook() {
-            // A regression guard. An earlier revision built the map with Map.copyOf, whose iteration order is
-            // unspecified, which silently destroyed the order this accessor promises.
+            // A regression guard. Building the map with Map.copyOf, whose iteration order is
+            // unspecified, silently destroys the order this accessor promises.
             assertThat(BmsSymbolicMap.of("COTRN00").fieldNames())
                     .startsWith("TRNNAMEI", "TITLE01I", "CURDATEI", "PGMNAMEI", "TITLE02I", "CURTIMEI",
                             "PAGENUMI", "TRNIDINI")

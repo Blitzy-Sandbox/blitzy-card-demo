@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : DailyTransactionRepository.java
  * Application : CardDemo
  * Type        : Spring Data JPA Repository Interface
@@ -18,7 +18,7 @@
  *               app/cbl/CBTRN02C.cbl (1000-DALYTRAN-GET-NEXT) with read-only
  *               pre-flight app/cbl/CBTRN01C.cbl; ABSENT from
  *               app/csd/CARDDEMO.CSD (batch-only proof) @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -32,7 +32,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.repository;
 
@@ -515,9 +515,8 @@ import org.springframework.stereotype.Repository;
  * both stamps {@code CHAR(26)}, no foreign key, no version column and no index. So that contract
  * is a reproduction rather than a specification, and it is retained here because
  * {@code ddl-auto} is {@code validate} and any disagreement fails context startup outright
- * rather than degrading quietly. An earlier revision of this paragraph said
- * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} did not yet exist; that is no longer
- * true and the claim is withdrawn. {@code V2} creates no index for this table, as required.
+ * rather than degrading quietly. Neither {@code V2__create_indexes.sql} nor
+ * {@code V3__seed_data.sql} is missing. {@code V2} creates no index for this table, as required.
  * {@code V3} seeds 300 rows of 350 bytes each from
  * {@code app/data/ASCII/dailytran.txt}, a file of exactly 105,300 bytes, which is 300 records of
  * 350 bytes plus one line terminator each, assigning {@code ingest_seq} as the one-based row

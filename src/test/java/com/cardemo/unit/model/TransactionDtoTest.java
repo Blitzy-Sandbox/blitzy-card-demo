@@ -1845,14 +1845,12 @@ class TransactionDtoTest {
         }
     }
 
-    // --------------------------------------------------------------------------------------------------------
     // Fixtures and helpers.
     //
     // The canonical constructor takes twenty-four components, so it is invoked in exactly one place and every
     // scenario is expressed as an override of one baseline. Baseline values are drawn from record one of
     // app/data/ASCII/dailytran.txt wherever the corpus supplies one, and the card number is deliberately all
     // zeros: a synthetic value that cannot resemble a real primary account number.
-    // --------------------------------------------------------------------------------------------------------
 
     /**
      * The twenty-two text components of {@link TransactionDto}, in canonical constructor order.
@@ -2038,6 +2036,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A fully populated detail response, the baseline the assertions vary from.
+     *
      * @return a fully populated detail response, carrying no row array
      */
     private static TransactionDto detail() {
@@ -2045,6 +2045,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A detail response carrying one chosen amount pair.
+     *
      * @param amount the display-masked amount
      * @param amountValue the arithmetic companion
      * @return a detail response carrying that amount
@@ -2056,6 +2058,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A detail response carrying one chosen description.
+     *
      * @param description the description to carry
      * @return a detail response carrying that description
      */
@@ -2064,6 +2068,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A detail response carrying one chosen source value.
+     *
      * @param source the ten character source value to carry
      * @return a detail response carrying that source
      */
@@ -2072,6 +2078,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A detail response carrying one chosen originating date.
+     *
      * @param date the ten character originating date to carry
      * @return a detail response carrying that date
      */
@@ -2080,6 +2088,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A detail response carrying one chosen retrieved identifier.
+     *
      * @param transactionId the retrieved identifier to carry
      * @return a detail response carrying that identifier, distinct from the typed search key
      */
@@ -2088,6 +2098,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A detail response carrying one chosen card number and identifier.
+     *
      * @param cardNumber the card number to carry
      * @param transactionId the identifier to carry
      * @return a detail response carrying both
@@ -2100,6 +2112,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A detail response carrying one chosen merchant triple.
+     *
      * @param name the merchant name to carry
      * @param city the merchant city to carry
      * @param zip the merchant postal code to carry
@@ -2114,6 +2128,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A list response with a chosen number of the ten screen slots filled.
+     *
      * @param populatedRows how many of the ten screen slots to fill
      * @return a list response with that many rows populated
      */
@@ -2128,6 +2144,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * A list response carrying one chosen page number.
+     *
      * @param pageNumber the eight character page number to carry
      * @return a list response carrying that page number and one populated row
      */
@@ -2140,6 +2158,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * The shared builder every factory above delegates to.
+     *
      * @param typeCode the type code to carry
      * @param amount the display-masked amount to carry
      * @param amountValue the arithmetic companion
@@ -2155,6 +2175,8 @@ class TransactionDtoTest {
     }
 
     /**
+     * One populated list row, addressed by its screen ordinal.
+     *
      * @param ordinal the one-based row ordinal
      * @return a populated list row whose description fits the narrower row width
      */

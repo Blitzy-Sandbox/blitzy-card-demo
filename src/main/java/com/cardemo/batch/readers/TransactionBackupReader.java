@@ -242,13 +242,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@link com.cardemo.batch.jobs.TransactionReportJob} constructs it with {@code new} - once inside STEP01R
  * and once inside STEP10R - which is the single, explicit ownership model for this type.
  *
- * <p><b>Finding F-008, severity Medium, remediated here.</b> An earlier revision carried {@code @Component}
- * and {@code @StepScope} on the class and {@code @Value} on five constructor parameters <em>while</em> the
- * owning job constructed it with {@code new}. Nothing injected the bean - a repository-wide search finds no
- * other reference to this type in {@code src/main/java} - so the container published a definition no
- * production path ever resolved, and the annotations documented a binding that never occurred. Two ownership
- * models for one type is the defect; this is the resolution, and the alternative was considered and rejected
- * on two counts:
+ * <p><b>No bean definition may be added here, and the reasons are load-bearing.</b> Carrying
+ * {@code @Component} and {@code @StepScope} on the class and {@code @Value} on five constructor parameters
+ * <em>while</em> the owning job constructs it with {@code new} publishes a definition nothing injects - a
+ * repository-wide search finds no other reference to this type in {@code src/main/java} - so the container
+ * would hold a definition no production path ever resolves and the annotations would document a binding that
+ * never occurs. Two ownership models for one type is the defect. The scoped-bean alternative additionally
+ * fails on two counts:
  * <ul>
  *   <li><b>One scoped definition could not serve both call sites.</b> STEP01R needs
  *       {@code repository} with the {@code TRANSACT.BKUP} prefix and no promoted key; STEP10R needs
@@ -269,8 +269,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * static mutable state</b>, which is the property {@code TransactionReportProcessorScopeIsolationTest}
  * asserts for both this reader and the report processor. The {@code Job} and its {@code Step}s are declared
  * by {@link com.cardemo.batch.jobs.TransactionReportJob}, which is authored, and are sequenced by
- * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is authored as well; an earlier revision
- * described that orchestrator as planned, and that qualification is withdrawn.
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is authored as well - both are present in
+ * this branch, and neither is planned.
  *
  * <h2>How to run, build and test</h2>
  *
@@ -339,8 +339,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code ${AWS_ENDPOINT_URL}} with no default in the base, {@code test} and {@code prod} profiles, so an
  *       unset variable fails the context at startup, and defaulted to the LocalStack edge only in
  *       {@code application-local.yml} - so <b>no live-cloud path is structurally reachable</b> and no
- *       credential is handled here. An earlier revision of this item said the override existed only in the
- *       {@code local} and {@code test} profiles; that is withdrawn.</li>
+ *       credential is handled here.</li>
  * </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -466,7 +465,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * {@code app/proc/TRANREPT.prc:L21 STEP01R} as its origin, so the fallback and the declared value
      * cannot disagree.
      * <p>
-     * <strong>Finding m-02, severity Minor, RESOLVED - and this constant was one character wrong.</strong> It
+     * <strong>Finding m-02, severity Medium, RESOLVED - and this constant was one character wrong.</strong> It
      * read {@code gdg/transact-bkup/}, with a trailing separator, while the profile declares
      * {@code gdg/transact-bkup} without one. The two therefore <em>did</em> disagree, and only a unit test
      * that omits the profile ever saw the difference, which is exactly why it survived. The shared grammar of
@@ -483,10 +482,10 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      *
      * <p>It names an <b>argument</b> and not a property, because there is no property: the substrate is fixed
      * by the DD the calling step reproduces, so a profile key for it would be a second, contradictory source
-     * of truth for a value the JCL already determines. An earlier revision declared
-     * {@code carddemo.batch.transaction-backup-reader.source} in {@code application.yml} and bound it with
-     * {@code @Value}, but the owning job always overrode it by passing its own literal, so the key was read
-     * by nothing - part of finding F-008. Both key and binding are gone.
+     * of truth for a value the JCL already determines. A key such as
+     * {@code carddemo.batch.transaction-backup-reader.source} bound with {@code @Value} would be read by
+     * nothing, because the owning job always passes its own literal, so neither the key nor the binding may be
+     * introduced.
      */
     private static final String ARGUMENT_SOURCE = "the configuredSource constructor argument";
 
@@ -572,13 +571,11 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /** {@code DISPLAY 'ABENDING PROGRAM'}, the literal at {@code app/cbl/CBTRN02C.cbl:L708}. */
     private static final String ABENDING_PROGRAM_MESSAGE = "ABENDING PROGRAM";
 
-    // ----------------------------------------------------------------------------------------------------
     // Record geometry, app/cpy/CVTRA05Y.cpy:L2 and :L5-L18. Compile-time constants and deliberately not
     // configuration: a settable byte contract would let a deployment break parity by editing a profile.
     // Offsets are ONE-BASED and INCLUSIVE, matching the copybook, the SYMNAMES deck at
     // app/proc/TRANREPT.prc:L39-L40 and every citation in this file. They are converted to Java's
     // zero-based half-open form in exactly one place, in fixedWidthField.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The record length, 350 characters.
@@ -737,7 +734,6 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      */
     private static final int MAX_OBJECT_KEY_LENGTH = 1024;
 
-    // ----------------------------------------------------------------------------------------------------
     // Trailing-sign overpunch table for app/cpy/CVTRA05Y.cpy. The sign of a zoned-decimal field is carried
     // by its LAST character, which encodes both the sign and the final digit. THIS CLASS IS THE CANONICAL
     // OWNER of this decode for the CVTRA05Y layout:
@@ -745,7 +741,6 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     // decodeSignedTransactionAmount rather than re-implementing it, which is why that method is
     // package-private. One codec per record layout, colocated with the reader that owns that layout, is the
     // repository convention; DailyTransactionReader owns the identically-shaped app/cpy/CVTRA06Y.cpy.
-    // ----------------------------------------------------------------------------------------------------
 
     /** The overpunch code for positive zero, <code>&#123;</code>. */
     private static final char OVERPUNCH_POSITIVE_ZERO = '{';
@@ -774,13 +769,11 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /** The digit the two zero overpunch codes stand for. */
     private static final char DIGIT_ONE = '1';
 
-    // ----------------------------------------------------------------------------------------------------
     // Record separators. Named here in order to be REFUSED, not consumed. app/proc/TRANREPT.prc:L29
     // allocates this generation DCB=(LRECL=350,RECFM=FB,BLKSIZE=0), which is undelimited, so on the
     // object-storage path a separator byte is a data defect rather than a row boundary. Line-oriented
     // ingestion of app/data/ASCII/*.txt belongs to the seed migration and to test fixtures, which read those
     // files as text by name; it is deliberately not a mode of this reader. See rejectRecordSeparator.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Line feed, refused after a complete record image on the {@code object-storage} path. */
     private static final char LINE_FEED = '\n';
@@ -791,10 +784,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /** The value {@link java.io.Reader#read()} returns at end of stream. */
     private static final int END_OF_STREAM = -1;
 
-    // ----------------------------------------------------------------------------------------------------
     // WORKING-STORAGE counterparts. No COBOL program exists for this step, so the shape is borrowed from
     // the corpus-wide guard idiom of app/cbl/CBTRN02C.cbl:L131-L148 and cited as borrowed.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01) VALUE 'N'} in its initial state ({@code app/cbl/CBTRN02C.cbl:L146}). */
     private static final String END_OF_FILE_NO = "N";
@@ -912,10 +903,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         OBJECT_STORAGE
     }
 
-    // ----------------------------------------------------------------------------------------------------
     // Collaborators and configuration, injected through the constructor and never reassigned. No field is
     // annotated @Autowired and there is no setter injection.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The transaction-table access point. Read-only: the only methods reached are the two ordered keyset
@@ -987,11 +976,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      */
     private final String promotedGenerationObjectKey;
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor state. Every field below is the Java counterpart of a WORKING-STORAGE item and is therefore an
     // INSTANCE field: never static, never shared. The step scope gives each step execution its own
     // instance.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01)}. Held as its literal {@code 'N'} or {@code 'Y'} value. */
     private String endOfFile = END_OF_FILE_NO;
@@ -1143,12 +1130,10 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         this.promotedGenerationObjectKey = blankToNull(promotedGenerationObjectKey);
     }
 
-    // ====================================================================================================
     // The ItemStream lifecycle. There is no COBOL mainline to reproduce, because no COBOL program exists
     // for this step: app/proc/TRANREPT.prc:L21 delegates to app/proc/REPROC.prc:L21 EXEC PGM=IDCAMS, whose
     // whole logic is the single control card at app/ctl/REPROCT.ctl:L15. The open-read-close skeleton and
     // the guard idiom are therefore borrowed from the corpus-wide batch shape and cited as borrowed.
-    // ====================================================================================================
 
     /**
      * Opens the backup generation, resolving its object key exactly once and never again.
@@ -1355,9 +1340,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         return resolvedGenerationObjectKey;
     }
 
-    // ====================================================================================================
     // GENERATION RESOLUTION. The single most consequential method in this class.
-    // ====================================================================================================
 
     /**
      * Resolves the concrete generation object key, once, in a fixed precedence.
@@ -1441,11 +1424,11 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * generations so the diagnostic can name the selected one by ordinal rather than by key; <b>no sort
      * utility is invoked and no process is spawned</b>.
      * <p>
-     * <b>The listing is paged.</b> Finding H-07, severity High, RESOLVED: an earlier revision called
-     * {@code S3Operations.listObjects}, which issues one {@code ListObjectsV2} request and returns only that
-     * page. Past one page of keys under the base the maximum was therefore taken over an arbitrary subset, so
-     * "the current generation" silently resolved to a stale one and the report was produced from an old backup
-     * while looking entirely healthy. Every page is now walked.
+     * <b>The listing is paged, and one request is not a listing.</b> {@code S3Operations.listObjects} issues
+     * a single {@code ListObjectsV2} request and returns only that page, so past one page of keys under the
+     * base the maximum would be taken over an arbitrary subset: "the current generation" would silently
+     * resolve to a stale one and the report would be produced from an old backup while looking entirely
+     * healthy. Every page is walked.
      * <p>
      * <b>An absent generation is a failure, not an empty read, and the distinction is deliberate.</b>
      * {@code app/proc/TRANREPT.prc} creates the generation at {@code :L27-L31} and only then reads it at
@@ -1521,13 +1504,13 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /**
      * Confines a carried generation key to this reader's own generation namespace before it is logged or read.
      * <p>
-     * <b>Finding M-11, severity Medium, RESOLVED.</b> A key arriving from an execution context is
-     * <em>untrusted input</em>: the batch metadata tables are writable by anything holding the datasource, and
-     * the promoted value is injected straight from {@code jobExecutionContext}. An earlier revision took it
-     * verbatim, logged it and read it, so a substituted value could redirect this step's read to any other
-     * object in the same bucket - the report generations, the statement work objects or another base's backups -
-     * and the report would be produced from that content without a word of complaint. Worse, the value reached a
-     * log line unfiltered, so a carriage return in it could forge a log entry.
+     * <b>A key arriving from an execution context is <em>untrusted input</em>.</b> The batch metadata tables
+     * are writable by anything holding the datasource, and the promoted value is injected straight from
+     * {@code jobExecutionContext}. Taking it verbatim to log and to read would let a substituted value
+     * redirect this step's read to any other object in the same bucket - the report generations, the statement
+     * work objects or another base's backups - and the report would be produced from that content without a
+     * word of complaint. An unfiltered value reaching a log line additionally lets a carriage return in it
+     * forge a log entry.
      * <p>
      * Five conditions, all necessary, checked before anything is emitted or read:
      * <ol>
@@ -1621,9 +1604,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         return generationObjectKey == null ? "n/a" : "resolved";
     }
 
-    // ====================================================================================================
     // OPEN. Borrowed shape: app/cbl/CBTRN02C.cbl:L236-L252, since this step has no program of its own.
-    // ====================================================================================================
 
     /**
      * Opens the input and applies the two-way guard of the corpus-wide open idiom
@@ -1758,9 +1739,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
                 LOGICAL_FILE, Long.valueOf(recordsRead));
     }
 
-    // ====================================================================================================
     // READ. Borrowed shape: the three-way sequential-read guard of app/cbl/CBTRN02C.cbl:L345-L369.
-    // ====================================================================================================
 
     /**
      * Reads the next record and applies the three-way sequential-read guard
@@ -1940,13 +1919,11 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         return STATUS_SUCCESS;
     }
 
-    // ====================================================================================================
     // Fixed-width stream primitives. RECFM=FB semantics and nothing else: exactly RECORD_LENGTH characters
     // per record and NO terminator at all, so the object length is a whole multiple of RECORD_LENGTH. A
     // separator byte is REFUSED rather than tolerated - see rejectRecordSeparator. RECORD LENGTH IS
     // PRESERVED BYTE-EXACTLY AT THE OBJECT-STORAGE BOUNDARY: no re-blocking, no re-encoding, no trimming,
     // no padding.
-    // ====================================================================================================
 
     /**
      * Reads exactly {@value #RECORD_LENGTH} characters and refuses any separator that follows them.
@@ -1960,8 +1937,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * <b>The stream is undelimited and a separator byte is a hard failure.</b>
      * {@code app/proc/TRANREPT.prc:L29} allocates {@code TRANSACT.BKUP} with
      * {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}, so the generation is a whole number of
-     * {@value #RECORD_LENGTH}-byte records and nothing else. See {@link #rejectRecordSeparator()} for why
-     * the optional-terminator tolerance this method used to carry has been withdrawn.
+     * {@value #RECORD_LENGTH}-byte records and nothing else. See {@link #rejectRecordSeparator()} for why no
+     * optional-terminator tolerance is permitted on this path.
      * <p>
      * <b>The exact-multiple rule is enforced by construction rather than by a separate length probe.</b> A
      * short final read is a geometry failure naming the observed length, and a full read followed by a
@@ -2014,13 +1991,12 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * Refuses a record separator following a complete record image, leaving the stream positioned at the
      * first character of the next record.
      * <p>
-     * <b>The tolerance this method replaces was a defect, not a convenience.</b> An earlier revision
-     * consumed a lone {@code \n}, a {@code \r\n} pair or a lone {@code \r} after every record, on the grounds
-     * that an ASCII fixture carries one per row and that a terminator shape should not be assumed. The effect
-     * was that corrupt generation geometry became indistinguishable from valid input: a generation written by
-     * something other than this application, or truncated mid-transfer, would be consumed as though every
-     * record after the first stray byte were correctly aligned, and the report would be produced over
-     * shifted fields under a success status.
+     * <b>Tolerating a separator here would be a defect, not a convenience.</b> Consuming a lone {@code \n}, a
+     * {@code \r\n} pair or a lone {@code \r} after every record - on the grounds that an ASCII fixture carries
+     * one per row and that a terminator shape should not be assumed - makes corrupt generation geometry
+     * indistinguishable from valid input: a generation written by something other than this application, or
+     * truncated mid-transfer, would be consumed as though every record after the first stray byte were
+     * correctly aligned, and the report would be produced over shifted fields under a success status.
      * <p>
      * {@code app/proc/TRANREPT.prc:L29} allocates this generation with
      * {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}. {@code RECFM=FB} is undelimited by definition, the
@@ -2107,10 +2083,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         }
     }
 
-    // ====================================================================================================
     // POSITION-AWARE DECODE OF app/cpy/CVTRA05Y.cpy. Every extraction goes through fixedWidthField, so every
     // one of them is bounds checked against the actual image length before any substring is taken.
-    // ====================================================================================================
 
     /**
      * Decodes one {@value #RECORD_LENGTH}-character {@code TRAN-RECORD} image into an entity.
@@ -2447,9 +2421,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         return value;
     }
 
-    // ====================================================================================================
     // CLOSE. Borrowed shape: app/cbl/CBTRN02C.cbl:L582-L598.
-    // ====================================================================================================
 
     /**
      * Releases the input and applies the same two-way guard the corpus applies to a {@code CLOSE}
@@ -2506,9 +2478,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         }
     }
 
-    // ====================================================================================================
-    // ABEND and STATUS RENDERING. Borrowed shapes: app/cbl/CBTRN02C.cbl:L707-L711 and :L714-L731.
-    // ====================================================================================================
+    // ABEND and STATUS RENDERING. Borrowed shapes: app/cbl/CBTRN02C.cbl:L707-L711 and :L714-L727.
 
     /**
      * Builds the abend that terminates the step, reproducing {@code 9999-ABEND-PROGRAM}
@@ -2559,7 +2529,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
 
     /**
      * Renders a file status as the legacy diagnostic line, reproducing {@code 9910-DISPLAY-IO-STATUS}
-     * ({@code app/cbl/CBTRN02C.cbl:L714-L731}).
+     * ({@code app/cbl/CBTRN02C.cbl:L714-L727}).
      * <p>
      * The paragraph has two branches. When {@code IO-STATUS} is not numeric or its first byte is {@code '9'}
      * ({@code :L715-L716}), byte one is copied into position one and byte two is widened into three digits
@@ -2590,12 +2560,10 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         return fileStatusMapper.displayIoStatus(fileStatus);
     }
 
-    // ====================================================================================================
     // RESTART SUPPORT and CONSTRUCTION-TIME VALIDATION. Every validator is private static, so the constructor
     // can call it without invoking an overridable method: that would publish a partially constructed
     // reference, which -Xlint:all -Werror reports as this-escape, and the class cannot be final because the
     // step scope proxies by subclassing.
-    // ====================================================================================================
 
     /**
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead
@@ -2708,7 +2676,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * @throws IllegalArgumentException if the value is absent, blank or malformed
      */
     private static String requireGenerationPrefix(final String configured) {
-        // FINDING m-02, severity Minor, RESOLVED. This method used to accept any value, strip its whitespace
+        // FINDING m-02, severity Medium, RESOLVED. This method used to accept any value, strip its whitespace
         // and append a separator if one was missing - so a value with a leading separator, a doubled
         // separator, a traversal segment or a control character passed, and a value that already ended in a
         // separator was silently accepted in a second spelling. The grammar is now shared with the five other

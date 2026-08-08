@@ -489,7 +489,6 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
 @Configuration
 public class HealthIndicators {
 
-    // =============================================================================================
     // Published name registry.
     //
     // These are public because they are a cross-file contract rather than an implementation detail:
@@ -497,7 +496,6 @@ public class HealthIndicators {
     // health contract should cite a symbol instead of retyping a literal that must not drift. Every
     // constant is a final reference to an immutable String, so the class still holds no static
     // mutable state.
-    // =============================================================================================
 
     /**
      * Bean name of the S3 indicator, and therefore the source of the {@code s3} health component
@@ -524,9 +522,7 @@ public class HealthIndicators {
      */
     public static final String SQS_HEALTH_COMPONENT_NAME = "sqs";
 
-    // =============================================================================================
     // Detail keys. The complete, closed set of keys either indicator can place in a health body.
-    // =============================================================================================
 
     /** Detail key carrying the symbolic component name, {@code s3} or {@code sqs}. */
     public static final String DETAIL_COMPONENT = "component";
@@ -620,11 +616,9 @@ public class HealthIndicators {
      */
     public static final String DETAIL_ELAPSED_MILLIS = "elapsedMillis";
 
-    // =============================================================================================
     // Closed reason vocabulary. Public because these values are observable output, so a test should
     // assert against a symbol. Every value is a short symbolic token that can carry no diagnostic
     // payload by construction.
-    // =============================================================================================
 
     /**
      * The configured bucket or queue name resolved to an empty value, so there is nothing to probe.
@@ -693,10 +687,8 @@ public class HealthIndicators {
      */
     public static final String REASON_ERROR = "error";
 
-    // =============================================================================================
     // Property keys, held as constants so the value bound and the key reported on a misconfiguration
     // can never drift apart.
-    // =============================================================================================
 
     /** Property key supplying the batch input bucket, which replaces the DALYTRAN staging dataset. */
     private static final String PROPERTY_BATCH_INPUT_BUCKET = "carddemo.aws.s3.batch-input-bucket";
@@ -724,7 +716,6 @@ public class HealthIndicators {
     private static final String PROPERTY_REPORT_QUEUE_LOGICAL_NAME =
             "carddemo.aws.sqs.report-queue-logical-name";
 
-    // =============================================================================================
     // Probe budgets. Every remote call either completes inside the budget of the contributor that
     // issued it or is abandoned; no call is unbounded, and no call can borrow time from another
     // contributor. The three figures below are derived from container evidence, not chosen.
@@ -741,7 +732,6 @@ public class HealthIndicators {
     // budget that remains at the moment it is issued, so adding a verification call can never extend
     // the contributor's worst case. This is what makes the M-08 attribute checks free in wall-clock
     // terms - they consume slack, never additional budget.
-    // =============================================================================================
 
     /**
      * Total budget for one invocation of the object-storage contributor, in milliseconds, shared
@@ -799,15 +789,15 @@ public class HealthIndicators {
     /**
      * The value each <em>gating</em> queue attribute must hold for readiness.
      *
-     * <p>Finding H-08, severity High. Readiness used to require {@code ContentBasedDeduplication} to
-     * be {@code true}, on the reading that it was what let the publisher send without computing a
-     * deduplication identifier. That had it backwards: the body of a report message is the report name
+     * <p>Finding H-08, severity High. Requiring {@code ContentBasedDeduplication} to
+     * be {@code true} for readiness, on the reading that it is what lets the publisher send without computing
+     * a deduplication identifier, has it backwards: the body of a report message is the report name
      * and two dates, so content-based deduplication collapses two legitimate submissions of the same
      * period, while {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} in {@code app/csd/CARDDEMO.CSD}
      * appends every write.
      *
-     * <p>An intermediate revision then inverted the requirement and refused readiness unless the
-     * attribute was {@code false}. That is not right either, and the reason is what readiness is
+     * <p>Inverting the requirement and refusing readiness unless the
+     * attribute is {@code false} is not right either, and the reason is what readiness is
      * <em>for</em>: it answers whether traffic should be routed here. The publisher supplies an
      * explicit {@code MessageDeduplicationId} on every submission, and an explicit identifier takes
      * precedence over the body hash - confirmed against the emulator, where two identical bodies sent
@@ -1072,11 +1062,9 @@ public class HealthIndicators {
                 this.sqsAsyncClient, this.reportQueueName, this.reportQueueLogicalName);
     }
 
-    // =============================================================================================
     // Shared private static helpers. Static so that neither the constructor nor a nested indicator
     // can invoke an overridable instance method, which keeps the class free of any `this` escape and
     // keeps every helper a pure function of its arguments.
-    // =============================================================================================
 
     /**
      * Canonicalises a bound configuration value so that every downstream decision is made against

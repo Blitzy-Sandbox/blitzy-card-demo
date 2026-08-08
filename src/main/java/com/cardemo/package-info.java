@@ -105,9 +105,7 @@
  *       {@code app/cpy/**} and the 17 BMS symbolic maps of {@code app/cpy-bms/**}. The thirteen DTOs above
  *       target are per-endpoint request and response records that keep an entity from being serialised onto
  *       the wire; {@code InventoryCountGateTest} asserts the figure 29 against the directory, which is what
- *       keeps this row from drifting. <strong>An earlier revision published 26 and said the gate asserted
- *       26</strong>; both figures are withdrawn - the gate reads 29 and did so before this sentence was
- *       corrected.</li>
+ *       keeps this row from drifting rather than being taken on trust.</li>
  *   <li>{@code com.cardemo.repository} - 11 interfaces. Spring Data JPA over the 10 VSAM KSDS clusters
  *       catalogued in {@code app/catlg/LISTCAT.txt} plus the daily transaction staging dataset. Three
  *       derived finders replace the three alternate indexes.</li>
@@ -122,23 +120,23 @@
  *       <strong>all 17 operations</strong>. REST adapters for the 17 sourced CICS transactions. The
  *       reconciliation is {@code AuthController} 1, {@code MenuController} 2, {@code AccountController} 2,
  *       {@code CardController} 3, {@code TransactionController} 3, {@code BillingController} 1,
- *       {@code ReportController} 1 and {@code AdminController} 4 at {@code /api/admin/*}, which is 17. The eighteenth CSD transaction, {@code CDV1}, fronts
+ *       {@code ReportController} 1 and {@code AdminController} 4 at {@code /api/admin/*}, which is 17. The
+ *       eighteenth CSD transaction, {@code CDV1}, fronts
  *       {@code COCRDSEC}, whose source is absent from the repository, so no endpoint exists for
  *       it.</li>
  *   <li>{@code com.cardemo.batch} - a container package with four leaves: {@code jobs}
  *       <strong>6 present / 6 target, complete</strong>, {@code processors} 5, {@code readers}
  *       <strong>7 present / 7 target, complete</strong>, {@code writers} 3. Spring Batch replacing the JCL job
- *       stream, the DFSORT specifications and the IDCAMS control cards. <strong>An earlier revision published
- *       3 of 6 jobs and 6 of 7 readers</strong>; both figures are withdrawn - the last two jobs and the last
- *       reader were authored before that sentence was corrected, and the two leaf documents name every one of
- *       them.</li>
+ *       stream, the DFSORT specifications and the IDCAMS control cards. Each of the four leaves carries its
+ *       own document naming every job, processor, reader and writer individually, so this roll-up never has to
+ *       be trusted on its own.</li>
  *   <li>{@code com.cardemo.exception} - 9 classes. A typed hierarchy replacing COBOL {@code FILE STATUS}
  *       inspection and CICS response code branching, including the abend payload of
  *       {@code app/cpy/CSMSG02Y.cpy}.</li>
  *   <li>{@code com.cardemo.observability} - <strong>4 classes</strong>. Correlation, metrics, health and the
  *       templated-URI observation convention that keeps request metrics off a path-variable cardinality
  *       explosion. This is capability the legacy corpus <strong>entirely lacks</strong>, so it is new work
- *       rather than a translation. An earlier revision published 3 and is withdrawn.</li>
+ *       rather than a translation.</li>
  *   </ul>
  *
  * <p>The single class in this root package is the application entry point,
@@ -147,77 +145,54 @@
  *
  * <h2>Directory shape: what remains, and where the file totals live</h2>
  *
- * <p><strong>Finding M-10, severity Medium, RESOLVED.</strong> This section previously carried a
- * hand-maintained target arithmetic - 118 production classes plus 14 package documents for 132 files - beside
- * a list of thirteen remaining classes, and neither had kept pace with the work while the bullets above were
- * being updated one at a time. The result was a root inventory that contradicted its own subpackage list: the
- * bullets named a delivered controller layer that the arithmetic still counted as planned. Both figures were
- * also wrong in the understating direction, which is the damaging one for an evidence artefact, because a
- * reader concludes that authored, tested code does not exist.
- *
  * <p><strong>Nothing in the subpackage list above remains to be authored.</strong> Every package is complete
- * against its target, measured with the same command as the bullets. Four successive revisions of this
- * paragraph are withdrawn, and they are listed rather than deleted because each named a delivered type as
- * pending and a reader who saw one needs to know it was wrong: the first named thirteen remaining classes, the
- * second named {@code batch.jobs.TransactionReportJob} and {@code batch.readers.CombinedTransactionReader},
- * the third named {@code batch.jobs.CombineTransactionsJob} and {@code batch.jobs.BatchPipelineOrchestrator},
- * and each in turn reported the controller layer or the service layer as unfinished after it was done. All of
- * those types are on disk. <strong>Understating delivered work is the damaging direction for an evidence
- * artefact</strong>, because a reader concludes that authored, tested code does not exist, which is precisely
- * what happened here four times; that is why this paragraph now states the invariant - complete against target
- * - and defers the numbers to the gate that measures them, {@code InventoryCountGateTest}.
+ * against its target, measured with the same command as the bullets. This section states that invariant and
+ * defers every number to the gate that measures it, {@code InventoryCountGateTest}, because
+ * <strong>understating delivered work is the damaging direction for an evidence artefact</strong>: a reader
+ * concludes that authored, tested code does not exist and goes looking for something that is on disk.
  *
- * <p><strong>Whole-tree file totals are deliberately not restated here.</strong> A total changes with every
- * file added anywhere beneath this package, so it goes stale faster than any other figure in this document and
- * carries the least information per character. A reader who needs one is better served by the command that
- * produces it - {@code find src/main/java -name '*.java' | wc -l}, and the same with
+ * <p><strong>Whole-tree file totals are deliberately not restated here.</strong> A hand-maintained total of
+ * production classes plus package documents changes with every file added anywhere beneath this package, so it
+ * goes stale faster than any other figure in this document, it goes stale silently because nothing recomputes
+ * it, and it carries the least information per character. A reader who needs one is better served by the
+ * command that produces it - {@code find src/main/java -name '*.java' | wc -l}, and the same with
  * {@code -name 'package-info.java'} for the package documents - than by a number that was true once. The
  * per-package counts in the bullets above are kept because they are stable, they orient a reader, and
  * {@code InventoryCountGateTest} fails the build if they drift. Section 0.4.5.1 of
  * {@code docs/technical-specifications.md} remains the single authoritative dated inventory and governs over
  * any count quoted in a Javadoc comment.
  *
- * <p><strong>The fourteen-location census of package documentation is withdrawn.</strong> An earlier revision of
- * this paragraph asserted that exactly 14 such files existed "at exactly these locations and nowhere else",
- * naming {@code com/cardemo}, {@code config}, {@code security}, {@code model/entity}, {@code model/key},
- * {@code model/enums}, {@code model/dto}, {@code repository}, {@code service}, {@code controller},
- * {@code batch}, {@code batch/jobs}, {@code exception} and {@code observability}. That is no longer accurate in
- * either direction - the nine {@code service} leaves and the three further {@code batch} leaves each carry their
- * own document, and {@code batch} itself carries a layer document alongside them - and a hand-maintained list of
- * locations is exactly the kind of claim that drifted before. A second revision, which said {@code batch}
- * carried no document, is withdrawn with the first. It is replaced by the invariant rather than by a corrected list: one
- * document per package that contains a type, plus the bounded allow-list of intermediate packages described
- * below, asserted by {@code PackageDocumentationInventoryTest}. Measure it rather than quoting it, with
+ * <p><strong>No fixed census of package-documentation locations is published here.</strong> A hand-written list
+ * of locations goes stale the moment a leaf package is added, and it goes stale without failing anything, so
+ * the shape is stated as an invariant instead: one document per package that contains a type, plus the bounded
+ * allow-list of intermediate packages described below, asserted by
+ * {@code PackageDocumentationInventoryTest}. Measure it rather than quoting it, with
  * {@code find src/main/java -name 'package-info.java' | wc -l}.
  *
- * <p><strong>Dated readings, offered as a sample and not as a specification.</strong> Measured on
- * <strong>6 August 2026</strong> at commit {@code 1363f49}: <strong>132 types, 26 packages containing a type,
- * and therefore 26 {@code package-info.java} files</strong>, for <strong>158 {@code .java} files</strong> in
- * total. Two earlier readings are historical and are superseded rather than deleted - 124 types with 25
- * documents for 149 files on 4 August 2026, and 105 types with 24 documents on 3 August 2026. Every one of the
- * three was accurate when taken, which is the whole reason a reading in a Javadoc comment carries its date and
- * a reader re-measures rather than quotes:
+ * <p><strong>One dated reading, offered as a sample and not as a specification.</strong> Measured on
+ * <strong>7 August 2026</strong> at commit {@code 9702da5}: <strong>133 types, 26 packages containing a type,
+ * and therefore 26 {@code package-info.java} files</strong>, for <strong>159 {@code .java} files</strong> in
+ * total. A reading in a Javadoc comment carries its date precisely because it is a sample of one moment, and a
+ * reader who needs the current figure re-measures rather than quoting this one:
  *
  * <pre>{@code find src/main/java -name '*.java' ! -name package-info.java | wc -l
  * find src/main/java -name package-info.java | wc -l
  * }</pre>
  *
- * <p>Two constraints on the shape do survive as rules, because neither is a count. The first governs the three
- * intermediate packages {@code com/cardemo/model}, {@code com/cardemo/service} and {@code com/cardemo/batch},
- * none of which contains a type, so none receives a document under the bijection above and each one's leaves
- * document themselves. <strong>{@code com/cardemo/service} and {@code com/cardemo/batch} are the two
- * deliberate exceptions</strong>, held in {@code PackageDocumentationInventoryTest}'s
- * {@code DOCUMENTED_CONTAINERS} allow-list; two earlier revisions of this paragraph are withdrawn, the first
- * naming all three as carrying no document and the second naming only {@code service} as the exception.
- * {@code service} carries a layer document because it spans nine leaves and 21 beans
- * translated from 17 separate COBOL programs, and one toolchain, one configuration contract, one exception
- * vocabulary and one paragraph-correspondence mandate bind all 21; repeating those in nine leaves is the
- * duplication Clause C forbids, and stating them nowhere fails Clause E for the layer. The exception is bounded
- * rather than open: {@code PackageDocumentationInventoryTest} holds both in an explicit allow-list, asserts
- * that every listed package really is type-less and really is documented, and still rejects every other
- * type-less package - so {@code model} remains undocumented by rule and not by accident. {@code batch} earns
- * the same exception for the same reason, spanning four leaves whose job, processor, reader and writer roles
- * only make sense as one pipeline. The second
+ * <p>Two constraints on the shape do survive as rules, because neither is a count. The first governs the two
+ * intermediate packages {@code com/cardemo/model} and {@code com/cardemo/service}, neither of which contains a
+ * type, so neither receives a document under the bijection above and each one's leaves document themselves.
+ * <strong>{@code com/cardemo/service} is the single deliberate exception</strong>, and it is the only entry in
+ * {@code PackageDocumentationInventoryTest}'s {@code DOCUMENTED_CONTAINERS} allow-list. It carries a layer
+ * document because it spans nine leaves and 21 beans translated from 17 separate COBOL programs, and one
+ * toolchain, one configuration contract, one exception vocabulary and one paragraph-correspondence mandate
+ * bind all 21; repeating those in nine leaves is the duplication Clause C forbids, and stating them nowhere
+ * fails Clause E for the layer. The exception is bounded rather than open: the allow-list is asserted to hold
+ * only packages that really are type-less and really are documented, and every other type-less package is
+ * still rejected, so {@code model} remains undocumented by rule and not by accident.
+ * {@code com/cardemo/batch} needs no exception at all, because it holds a type of its own -
+ * {@code com.cardemo.batch.GenerationPrefixContract}, the batch layer's shared object-key namespace contract -
+ * and so earns its document under the bijection exactly as a leaf does. The second
  * constraint is that <strong>no {@code README} or other Markdown file may be added anywhere under
  * {@code src/main/java}</strong>: the package documentation files are the module documentation, and Markdown
  * there would be a second, unmaintained copy of it.
@@ -226,8 +201,8 @@
  *
  * <ul>
  *   <li>17 CICS screen programs to a target of 21 service beans behind 8 controllers exposing 17
- *       operations. This mapping states the migration design; for what is authored versus planned see
- *       the present/target counts in the subpackage list above.</li>
+ *       operations. This mapping states the migration design; the present and target counts in the subpackage
+ *       list above are where a delivered figure differs from a designed one.</li>
  *   <li>10 VSAM KSDS clusters and 3 alternate indexes to 11 JPA entities, 3 Flyway migrations and 3 B-tree
  *       indexes over PostgreSQL 16.</li>
  *   <li>The JCL job stream to a 5 stage Spring Batch pipeline. JCL {@code COND} gating becomes a
@@ -302,9 +277,8 @@
  *       key - the only documentation-adjacent key it does publish is
  *       {@code dangling-doc-comments}. Rule 1 Clause B's prohibition on an unused import is therefore
  *       enforced at review, and malformed Javadoc is caught by a <strong>separate doclint gate</strong> rather
- *       than by the compiler. An earlier revision of this entry added that no Javadoc plugin was bound in
- *       {@code pom.xml}; that is no longer accurate and the claim is withdrawn -
- *       {@code maven-javadoc-plugin} is bound at {@code verify} as the execution {@code doclint-gate}, running
+ *       than by the compiler: {@code maven-javadoc-plugin} is bound at {@code verify} as the execution
+ *       {@code doclint-gate}, running
  *       {@code javadoc-no-fork} with {@code doclint} set to {@code all} and {@code failOnWarnings} true, so
  *       malformed documentation fails the build in the ordinary course of {@code clean verify}.</li>
  *   <li><strong>Tests.</strong> Surefire runs the unit tier with the integration and end to end trees excluded
@@ -314,8 +288,9 @@
  *       covered ratio at {@code verify}, with no core package exclusions and no getter only padding. The
  *       threshold is a {@code pom.xml} property and must never be lowered there; where a run needs to proceed
  *       below it, that is done on the command line only.</li>
- *   <li><strong>Security scan.</strong> {@code org.owasp:dependency-check-maven} fails the build on high or
- *       critical findings. Its skip property is hyphenated - {@code -Ddependency-check.skip=true} - and
+ *   <li><strong>Security scan.</strong> {@code org.owasp:dependency-check-maven} fails the build on any
+ *       finding at or above CVSS 7 - the range the CVSS specification labels high and critical, which is an
+ *       external rating rather than one of this project's four finding severities. Its skip property is hyphenated - {@code -Ddependency-check.skip=true} - and
  *       skipping it suppresses <em>only</em> the vulnerability scan, which needs network access to the
  *       vulnerability feed and is slow on a cold cache.</li>
  *   </ul>
@@ -337,15 +312,15 @@
  *
  * <p><strong>Profiles.</strong> A base profile plus three overlays. {@code local} adds the LocalStack
  * endpoint override and points at the compose PostgreSQL; {@code test} is the Testcontainers backed profile;
- * {@code prod} is least privilege with every secret externalised. The base profile and {@code prod} carry
- * <strong>no AWS endpoint override at all</strong>, so a live AWS fallback is not merely discouraged, it is
- * structurally impossible.
+ * {@code prod} is least privilege with every secret externalised. The base profile and {@code prod} bind the
+ * AWS endpoint override to a bare {@code ${AWS_ENDPOINT_URL}} with <strong>no literal default</strong>, so a
+ * silent fall-through to a live AWS endpoint is not merely discouraged: an unset variable fails placeholder
+ * resolution at startup instead.
  *
  * <p><strong>Batch jobs do not auto run.</strong> {@code spring.batch.job.enabled} is {@code false}, so
  * starting the application does not post transactions. Launching is explicit. The two launch paths are
  * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the SQS listener that replaces the JES2
- * internal reader, and <strong>both are authored</strong>. Two earlier revisions are withdrawn: the first said
- * neither was authored, the second said the listener was "still owed". It is
+ * internal reader, and <strong>both are authored</strong>. The listener is
  * {@code BatchConfig.ReportJobQueueListener.drainReportJobQueue}, the one {@code @SqsListener} declaration in
  * this tree, and it launches the <strong>transaction report job</strong> - not the whole pipeline - carrying the
  * submitted start and end dates as job parameters. It is conditional on the report-queue property, so it runs
@@ -368,14 +343,14 @@
  * {@code ${JWT_SIGNING_KEY}} with <strong>no default, no example and no fallback</strong>, so an absent or
  * invalid value fails fast at context refresh. {@code carddemo.security.jwt.issuer} is
  * {@code ${JWT_ISSUER:carddemo}} and {@code carddemo.security.jwt.expiration-minutes} is
- * {@code ${JWT_EXPIRATION_MINUTES:30}}. Two spellings here were corrected in one repository-wide change and
- * are worth naming, because a note quoting either superseded form is describing a contract that no longer
- * exists. The signing-key variable was {@code JWT_SECRET}, which the tree had standardised on before the
- * mandated spelling was published; it is now {@code JWT_SIGNING_KEY} everywhere - code, all four profiles,
+ * {@code ${JWT_EXPIRATION_MINUTES:30}}. Two neighbouring spellings are wrong and are worth naming, because a
+ * note quoting either is describing a contract that does not
+ * exist. The signing-key variable is <em>not</em> {@code JWT_SECRET}: it is
+ * {@code JWT_SIGNING_KEY} everywhere - code, all four profiles,
  * {@code .env.example}, {@code pom.xml}, {@code owasp-suppressions.xml} and {@code Dockerfile} - so there is
- * still exactly one way to configure the key and none of the drift that fail fast exists to prevent. The
- * lifetime was {@code carddemo.security.jwt.expiration-seconds} bound from {@code ${JWT_EXPIRATION_SECONDS}}
- * with a 3,600-second default, which is <em>double</em> the approved thirty-minute bearer window; it is now
+ * exactly one way to configure the key and none of the drift that fail fast exists to prevent. The
+ * lifetime is <em>not</em> {@code carddemo.security.jwt.expiration-seconds} bound from {@code ${JWT_EXPIRATION_SECONDS}}
+ * with a 3,600-second default, which would be <em>double</em> the approved thirty-minute bearer window; it is
  * expressed in minutes with a 30-minute default, and the conversion to a {@link java.time.Duration} happens in
  * exactly one place, {@code com.cardemo.security.JwtTokenProvider}. The lifetime and the issuer are non-secret
  * metadata, which is why they carry documented defaults where the signing key deliberately carries none.
@@ -410,8 +385,7 @@
  * resolves a genuine conflict in the source, where the report group is declared {@code LIMIT(5)} in one JCL
  * member and {@code LIMIT(10)} in another. <strong>The endpoint override is declared in all four profiles,
  * there are no credential defaults anywhere, and all AWS interaction targets LocalStack with zero live
- * credentials.</strong> An earlier revision of this sentence said the override existed only in the
- * {@code local} and {@code test} profiles; that is withdrawn. The base, {@code test} and {@code prod} profiles
+ * credentials.</strong> The base, {@code test} and {@code prod} profiles
  * each bind the three service endpoints to a bare {@code ${AWS_ENDPOINT_URL}} <em>with no default</em>, so the
  * value is required and an unset variable fails placeholder resolution at startup; only
  * {@code application-local.yml} supplies a default, and it is the LocalStack edge. Requiring the value is what
@@ -567,28 +541,34 @@
  * every deliberately preserved quirk with its source locator, and {@code TRACEABILITY_MATRIX.md} maps all 28
  * programs paragraph by paragraph. A present-tense claim about either is therefore a true statement, and the
  * decision itself additionally stays in the docstring of the file it governs, which is the one place it cannot
- * drift from the code it explains. <strong>An earlier revision of this paragraph called both of them
- * "scheduled artefacts that do not exist in this branch"</strong> and forbade any file from saying a decision
- * was recorded <em>in</em> either of them; that premise has reversed and the prohibition is withdrawn here rather than left
- * to be discovered file by file.
+ * drift from the code it explains. A file may therefore state that a decision is recorded <em>in</em> either
+ * register, and {@code EvidenceHonestyTest} enforces the converse: no comment may describe either one as
+ * planned, scheduled or not yet written, because understating delivered evidence sends a reader looking for a
+ * record that is on disk.
  *
- * <p><strong>The residual of that period has been swept, in one pass rather than piecemeal.</strong> The
- * forward-reference phrasing the withdrawn convention required - "owed an entry in the planned
- * {@code DECISION_LOG.md}" - stood at 103 sites across 42 files. The <em>obligation</em> each expresses is
- * unaffected and is usually still accurate, because an existing register is not by itself evidence that a given
- * entry has been written into it; the word <em>planned</em> was the part that had become false. Every one of
- * those sites now reads "owed an entry in {@code DECISION_LOG.md}", and the nineteen sites that additionally
- * asserted one or both registers to be absent, unavailable or not yet authored were rewritten individually,
- * each withdrawing its own former claim in writing rather than deleting it. It was done as a single pass
- * because a partial sweep would leave the tree disagreeing with itself, which is worse than a uniformly dated
- * phrasing. Verify with {@code grep -rc "planned {@literal @}code DECISION_LOG" src/}, which must report no
- * match outside the guard classes that quote the phrasing in order to forbid it.
+ * <p><strong>Every site cites the entry that holds its justification, and none says an entry is
+ * outstanding.</strong> A comment that says an entry is <em>owed</em> tells a reader the justification is
+ * unwritten, so a reader who acts on it goes looking for something absent instead of reading the decision that
+ * exists. Each site therefore names
+ * a stable identifier - {@code DL-CR-01} for a construct retained because deleting it would change observable
+ * behaviour, {@code DL-PP-13} for a low-severity source behaviour reproduced rather than normalised,
+ * {@code DL-CR-09} for a place where the plan or a brief disagrees with the frozen corpus and the corpus wins,
+ * and the specific {@code DL-MS-*}, {@code DL-PP-*}, {@code DL-LD-*} and {@code DL-DV-*} identifiers
+ * elsewhere. That citation is what discharges the obligation, because the identifier is permanent and
+ * resolvable rather than a promise. Verify with
+ * {@code grep -rni "owed an entr" src/main src/test} - the {@code -i} matters, because a case-sensitive
+ * grep silently misses every capitalised occurrence - which must report no match outside the guard class
+ * that quotes the phrasing in order to forbid it and this sentence, which names the command.
  *
- * <p><strong>The retained-for-parity register is enumerated here by locator, and its size is derived rather
- * than declared.</strong> A construct is "retained for parity" when it would otherwise read as dead code and is
- * kept only because deleting it would change observable behaviour or break the paragraph map. Three sites carry
- * that status <strong>as at this commit</strong>, each identified by a stable locator so it can be checked
- * individually:
+ * <p><strong>The retained-for-parity register lives in {@code DECISION_LOG.md} section 15, and its size is
+ * derived rather than declared.</strong> A construct is "retained for parity" when it would otherwise read as
+ * dead code and is kept only because deleting it would change observable behaviour or break the paragraph map.
+ * That register holds one row per member - identifier, {@code app/} locator, reference status and reason - under
+ * a mechanical membership rule, and the gate harness asserts the register and the tree are the same set in both
+ * directions, so an unregistered member fails the build. The three sites below are the ones the code-quality
+ * clause and the parity mandate are <em>argued</em> over. They are enumerated here, and enumerated
+ * <strong>as at this commit</strong>, because each is cited from this tree by locator and has to be checkable
+ * individually. They are not the register, and an earlier revision of this paragraph read as though they were:
  *
  * <ul>
  *   <li><strong>{@code RejectCode}</strong> - {@code app/cbl/CBTRN02C.cbl:L545-L560}. Its fifth constant is
@@ -600,11 +580,12 @@
  * </ul>
  *
  * <p><strong>Three is a measurement, not a closed total, and this sentence deliberately does not fix it.</strong>
- * An earlier revision read "Exactly three sites carry that retained-for-parity status", which asserted a
- * permanently closed global count that no mechanism enforced and that a fourth genuine site would have made
- * false without anything noticing. The census is instead <em>derived from the marked sites themselves</em> by
+ * The spelling "Exactly three sites carry that retained-for-parity status" is forbidden anywhere in this tree
+ * and appears here only as a quotation, because it asserts a permanently closed global count that no mechanism
+ * enforces and that a fourth genuine site would make false without anything noticing. The census is instead
+ * <em>derived from the marked sites themselves</em> by
  * {@code src/test/java/com/cardemo/e2e/GateVerificationTest.java}, which writes it as
- * {@code dispositions.justifiedNoOps} into {@code target/gate-verification/gate-verification-summary.properties}
+ * {@code dispositions.registeredParityNoOps} into {@code target/gate-verification/gate-verification-summary.properties}
  * on every run. Add or remove a marked site and that number changes without this paragraph having to be edited;
  * what this paragraph owes is the <em>enumeration by locator</em> above, which is what makes each entry
  * auditable. A preserved COBOL {@code CONTINUE}, a preserved asymmetry and a preserved absent guard are
@@ -690,12 +671,6 @@
  *   <li><strong>Medium.</strong> The card cross reference alternate index sits at <strong>{@code AXRKP 25}</strong>
  *       ({@code app/catlg/LISTCAT.txt:L486}), an offset omitted upstream. The three alternate index offsets
  *       are 16, 25 and 304.</li>
- *   <li><strong>Low, CLOSED.</strong> The {@code Source} banner line of
- *       {@code src/main/java/com/cardemo/model/dto/package-info.java} recorded the superseded
- *       {@code 460 input fields} figure as a statement of fact. An earlier revision of this entry left the
- *       finding open with the note "noted rather than edited"; that is no longer true and the note is
- *       withdrawn. The banner now reads {@code 441 input fields, of which COACTVW contributes 37}, so the
- *       whole package - banner line and prose alike - carries one figure.</li>
  *   <li><strong>Low.</strong> {@code catalog-info.yaml:L35} declares {@code type: website} for what is a
  *       REST and Actuator backend with no browser rendered interface at all. Remediation: {@code service}.
  *       Noted rather than edited, since it predates the migration and is unrelated to it.</li>
@@ -717,13 +692,12 @@
  *       one: at the earlier point nothing has yet been written, while at the later point the account rewrite
  *       has already occurred. Scoping both writes into one transaction reproduces both branches with no
  *       conditional logic, which is why no Java statement corresponds to the rollback verb.</li>
- *   <li><strong>Correction.</strong> An earlier revision of this list claimed the interest job "performs its
- *       final account flush on the end of data condition, supplying the update the source's unreachable branch
- *       never performs". It does not, and it must not: supplying an update the source never performs is a
- *       behaviour change, and on top of the control-break flush it can double-apply the last account. The
- *       unreachable branch at {@code app/cbl/CBACT04C.cbl:L219-L220} is authoritative, so the last account in
- *       key order receives no accrued interest and keeps stale cycle accumulators - exactly as in the legacy
- *       system. {@code com.cardemo.batch.processors.InterestCalculationProcessor},
+ *   <li><strong>Not a deviation, and stated here because it reads like one.</strong> The interest job performs
+ *       <strong>no</strong> final account flush on the end-of-data condition. Supplying an update the source
+ *       never performs would be a behaviour change, and on top of the control-break flush it can double-apply
+ *       the last account. The unreachable branch at {@code app/cbl/CBACT04C.cbl:L219-L220} is authoritative, so
+ *       the last account in key order receives no accrued interest and keeps stale cycle accumulators - exactly
+ *       as in the legacy system. {@code com.cardemo.batch.processors.InterestCalculationProcessor},
  *       {@code com.cardemo.batch.jobs.InterestCalculationJob} and
  *       {@code com.cardemo.repository.TransactionCategoryBalanceRepository} all state this, and
  *       {@code InterestCalculationJobTest} asserts it.</li>
@@ -732,20 +706,17 @@
  * <p><strong>Retained for parity</strong> - artefacts that look like dead code and are deliberately kept.
  *
  * <p>What legitimises each one is recorded <strong>at its own declaration first</strong>: the COBOL locator, a
- * proof of reachability, an explicit intentional-no-op marker, and an acknowledgement that it is
- * <strong>owed</strong> an entry in {@code DECISION_LOG.md} and a row in {@code TRACEABILITY_MATRIX.md}. Both
- * registers are authored at the repository root, so naming either in the present tense is a true statement.
- * Two earlier revisions of this sentence are withdrawn: the first asserted that each artefact was already
- * cited and already tracked in both files while neither file existed, and the second - written to correct it -
- * said neither file existed at this commit, which stopped being true once both were authored. The declaration
- * remains the primary record because it is the one place that cannot drift from the code it explains.
+ * proof of reachability, an explicit intentional-no-op marker, and the identifier of the entry in
+ * {@code DECISION_LOG.md} and the row in {@code TRACEABILITY_MATRIX.md} that carry its justification. Both
+ * registers are authored at the repository root, so naming either in the present tense is a true statement. The
+ * declaration remains the primary record because it is the one place that cannot drift from the code it
+ * explains.
  *
- * <p>The list below is a <strong>reading aid, not a register and not a count</strong>. Several package
- * documentation files each used to carry their own tally of this set and they disagreed - three in
- * {@code com.cardemo.security} and {@code com.cardemo.repository}, five in {@code com.cardemo.exception} - which
- * is what a census maintained by hand in unrelated comments decays into. Severity of what that left in place:
- * <strong>High</strong>. Those tallies are withdrawn, no global cardinality is asserted anywhere, and the
- * per-artefact marker is authoritative over anything written here.
+ * <p>The list below is a <strong>reading aid, not a register and not a count</strong>. No package
+ * documentation file asserts a tally of this set, and none may: a census maintained by hand in several
+ * unrelated comments decays into a set of figures that disagree with one another, because nothing recomputes
+ * any of them. No global cardinality is asserted anywhere, and the per-artefact marker at each declaration is
+ * authoritative over anything written here.
  *
  * <ul>
  *   <li>{@code 1400-COMPUTE-FEES} at {@code app/cbl/CBACT04C.cbl:L518-L520} - a comment and an
@@ -826,7 +797,7 @@
  * mandate requires preserving reachable no-ops so the paragraph map stays provable. These collide at identifiable
  * sites, listed under retained for parity above. <strong>Parity governs</strong>, and Clause B is satisfied by a
  * different mechanism: the clause forbids dead code and deferred work <em>without an owner or tracking
- * reference</em>, and every retained artefact is cited, owed an entry in the {@code DECISION_LOG.md} and
+ * reference</em>, and every retained artefact is cited, covered by {@code DL-CR-01} in the {@code DECISION_LOG.md} and
  * {@code TRACEABILITY_MATRIX.md}, and marked in code with an explicit intentional no-op comment. Deleting them would
  * produce a tree that is marginally cleaner and demonstrably less traceable, failing a stated acceptance criterion to
  * satisfy a stylistic one. That is why apparent dead code exists in this tree, and why it must not be tidied away.

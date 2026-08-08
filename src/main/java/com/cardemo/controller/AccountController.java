@@ -99,8 +99,9 @@ import com.cardemo.service.account.AccountViewService;
  * {@code com.cardemo.service.account.AccountUpdateService}, which carry the paragraph-level
  * correspondence to the two COBOL programs.</p>
  *
- * <p>{@code app/cbl/COACTUPC.cbl} is the largest program in the corpus at 4,236 lines and 88 paragraph
- * labels; {@code app/cbl/COACTVWC.cbl} is 941 lines and 38 paragraph labels. Neither is paginated, so
+ * <p>{@code app/cbl/COACTUPC.cbl} is the largest program in the corpus at 4,236 lines and 85 own
+ * paragraph labels, 87 mapped; {@code app/cbl/COACTVWC.cbl} is 941 lines and 35 own, 37 mapped. In both
+ * cases the two extra mapped methods come from {@code COPY 'CSSTRPFY'}. Neither is paginated, so
  * no page number and no next-page flag appears on either operation - and none could, because
  * {@code app/cpy/COCOM01Y.cpy} declares no such field.</p>
  *
@@ -228,7 +229,7 @@ import com.cardemo.service.account.AccountViewService;
  *     <td>{@code 412 Precondition Failed} with a problem detail</td>
  *     <td>The snapshot precondition failed: outcome {@code DATA_CHANGED_BEFORE_UPDATE}, detail
  *         {@code Record changed by some one else. Please review}. Re-read the account, resubmit with the
- *         fresh snapshot as {@code oldDetails}, and re-apply the edits. Do not retry blindly - the
+ *         fresh sealed value as {@code snapshot}, and re-apply the edits. Do not retry blindly - the
  *         snapshot is the guarantee.</td>
  *   </tr>
  *   <tr>
@@ -302,11 +303,13 @@ import com.cardemo.service.account.AccountViewService;
  * {@code EXEC CICS SYNCPOINT ROLLBACK} at {@code :L4099-L4101}.</p>
  *
  * <p><strong>Trap 3 - the snapshot travels verbatim or the endpoint breaks on every request.</strong>
- * {@code com.cardemo.model.dto.AccountUpdateRequest} carries both an {@code oldDetails} and a
+ * {@code com.cardemo.model.dto.AccountUpdateRequest} carries both a sealed {@code snapshot} member and a
  * {@code newDetails} group, mirroring {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:L669} and
  * {@code ACUP-NEW-DETAILS} at {@code :L757}. That is structural rather than optional: the target is
  * stateless, so the snapshot the change detection compares against cannot live on the server between
- * requests. The date-of-birth comparison at {@code :L4174-L4179} is the proof that no normalisation is
+ * requests. It is sealed rather than readable so that the caller carries it without being able to read or
+ * rewrite it, and what the service opens is byte for byte what the read projected - which is the whole reason
+ * the offsets below cannot go wrong. The date-of-birth comparison at {@code :L4174-L4179} is the proof that no normalisation is
  * permissible - the live customer record holds a dash-separated date and is read at offsets
  * {@code (1:4)}, {@code (6:2)} and {@code (9:2)}, whereas the snapshot field
  * {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD} is declared {@code PIC X(08)} at {@code :L746} with a
@@ -729,23 +732,20 @@ public class AccountController {
 
     /**
      * The problem-detail property carrying the correlation identifier of the failing request.
-     * <p>
-     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
-     * file-status values that used to be returned to the client are now written only to the log, and this
-     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
-     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
-     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
-     * attacker holding the response body cannot.
+     *
+     * <p>It is the hinge of the posture the package documentation states: the same value
+     * {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the withheld detail from the log
+     * while a caller holding only the response body cannot.
      */
     private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
     /**
      * The value substituted when no correlation identifier is in the diagnostic context.
-     * <p>
-     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
-     * handler here has passed through it, so this is unreachable in the server. It exists because a
-     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
-     * {@code null} member and make the body's shape depend on how it was produced.
+     *
+     * <p>Unreachable in the server, because {@code CorrelationIdFilter} runs at
+     * {@code HIGHEST_PRECEDENCE} ahead of every handler here. It exists so that a handler invoked
+     * directly by a unit test still produces a body of the same shape.
      */
     private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
@@ -760,13 +760,22 @@ public class AccountController {
      * the lookup chain found nothing, and a referential constraint refused a write. A caller that wants one
      * rule for every endpoint reads the envelope code; a caller written against this resource reads this one.
      * <p>
-     * Both replace the {@code recordType}, {@code recordKey}, {@code constraintName} and {@code relation}
-     * properties this class used to publish. Each of those described the server's internals to the caller: two
-     * named a relation of the schema, one named a database constraint, and one echoed the key that was not
-     * found. A caller that must branch on the outcome needs a value it can switch on and that the server
-     * promises not to change - which a constraint name is emphatically not - and the operator's need for the
-     * specific relation, constraint and key is met by the log, where the correlation identifier ties the entry
-     * to this exact response. The fixed detail those relays were replaced by is
+     * <b>It is an account-resource extension and is published as one.</b> No other controller sets it, so a
+     * caller must not expect it on any other path, and {@code docs/api-contracts.md} lists it - with both of
+     * its values and the two statuses it appears on - among the account operations rather than among the
+     * members every error body carries. Documenting it there rather than deleting it here is the deliberate
+     * choice between the two: the refinement is genuinely narrower than the envelope code, the two paths that
+     * set it are the two a client written against this resource branches on, and both values are asserted by
+     * controller tests, so the member is a contract that exists rather than an accident to be tidied away.
+
+     * <p>
+     * Both stand in place of {@code recordType}, {@code recordKey}, {@code constraintName} and
+     * {@code relation} properties, none of which may be published from here. Each of those would describe the
+     * server's internals to the caller: two would name a relation of the schema, one a database constraint,
+     * and one would echo the key that was not found. A caller that must branch on the outcome needs a value it
+     * can switch on and that the server promises not to change - which a constraint name is emphatically not -
+     * and the operator's need for the specific relation, constraint and key is met by the log, where the
+     * correlation identifier ties the entry to this exact response. The fixed detail carried instead is
      * {@value #NOT_FOUND_PROBLEM_DETAIL}: {@code AccountViewService} maps an empty repository result to the
      * file status {@code '23'} and hands it to {@code FileStatusMapper}, which composes a message naming the
      * operation, the alternate-index path and the legacy status, and relaying that returned all three to any
@@ -900,11 +909,13 @@ public class AccountController {
      * distinct states all the way through, per the {@code OK}/{@code NOT-OK}/{@code BLANK} model that
      * {@code app/cpy/CSSETATY.cpy} establishes. Identity arrives only as the authenticated principal.</p>
      *
-     * <p><strong>Outputs.</strong> {@code 200 OK} carrying {@code com.cardemo.model.dto.AccountDto}, the
-     * thirty-seven-component projection of mapset {@code COACTVW}, with every monetary member rendered
-     * on the legacy display mask of {@code ACURBALI PIC X(15)}. Money is decimal throughout, never a
-     * binary floating-point type. On failure, a problem detail as tabulated in section 4 of the class
-     * documentation; on an unusable identity, {@code 401} with an empty body.</p>
+     * <p><strong>Outputs.</strong> {@code 200 OK} carrying
+     * {@code com.cardemo.model.dto.AccountViewResponse}: twenty-two of the thirty-seven components of mapset
+     * {@code COACTVW}, plus the sealed {@code snapshot} the matching update requires. The nine protected
+     * display components are withheld, as the section below sets out. Every monetary member is rendered on the
+     * legacy display mask of {@code ACURBALI PIC X(15)}; money is decimal throughout, never a binary
+     * floating-point type. On failure, a problem detail as tabulated in section 4 of the class documentation;
+     * on an unusable identity, {@code 401} with an empty body.</p>
      *
      * <p><strong>Side effects.</strong> None that a client can observe beyond the read itself. The
      * service opens a read-only transaction and walks three datasets in a fixed order -
@@ -941,26 +952,31 @@ public class AccountController {
      * {@code AccountViewResponse.WITHHELD_COMPONENTS} so the contract is machine-checkable rather than
      * merely documented.</p>
      *
-     * <p><strong>The response is also the source of the update's snapshot.</strong> Transformation Rule 7
-     * carries {@code ACUP-OLD-DETAILS} of {@code app/cbl/COACTUPC.cbl:L669} in the request body of the
-     * matching {@code PUT}, because a stateless server keeps no COMMAREA between the two turns of the
-     * pseudo-conversation. It travels here as the {@code oldDetails} component - the very type the
-     * {@code PUT} binds - and a client echoes it back unaltered. It is the group and not flat fields on
-     * purpose: {@code :L4174-L4179} reads the date of birth from the live record at offsets {@code 1},
-     * {@code 6} and {@code 9} and from the snapshot at {@code 1}, {@code 5} and {@code 7}, because the live
-     * value is dash-separated and the snapshot value is not, so a group reassembled from displayed text
-     * would differ on every request. That component is the one place the nine protected values do appear,
-     * because the comparison consumes all twenty-nine. The write is guarded twice and neither guard
-     * substitutes for the other: the field-by-field comparison of {@code :L4109-L4193}, and the
-     * {@code @Version} column that detects any concurrent write to either row.</p>
+     * <p><strong>The response is also the source of the update's snapshot, and it is sealed.</strong>
+     * Transformation Rule 7 carries {@code ACUP-OLD-DETAILS} of {@code app/cbl/COACTUPC.cbl:L669} in the
+     * request body of the matching {@code PUT}, because a stateless server keeps no COMMAREA between the two
+     * turns of the pseudo-conversation. It travels here as the {@code snapshot} component: one opaque
+     * base64url string that {@code com.cardemo.security.SnapshotTokenService} produced with AES-256-GCM, bound
+     * to this operation, this account identifier, the requesting principal and an expiry. A client echoes it
+     * back unaltered as the {@code snapshot} member of the {@code PUT} body and never reads it.
+     * <strong>The nine protected values do not appear on this response in any form.</strong> Sealing is what
+     * makes that possible while the comparison still consumes all twenty-nine: {@code :L4174-L4179} reads the
+     * date of birth from the live record at offsets {@code 1}, {@code 6} and {@code 9} and from the snapshot at
+     * {@code 1}, {@code 5} and {@code 7}, because the live value is dash-separated and the snapshot value is
+     * not, so a group reassembled from displayed text would differ on every request - and what is sealed here
+     * and opened there is byte for byte what the read projected, so nothing is ever reassembled. The write is
+     * guarded twice and neither guard substitutes for the other: the field-by-field comparison of
+     * {@code :L4109-L4193} against a snapshot whose provenance is now proven, and the {@code @Version} column
+     * that detects any concurrent write to either row.</p>
      *
      * @param accountId the contents of screen field {@code ACCTSIDI}, passed to the service verbatim;
      * may be blank, which the service rejects rather than this method.
      * @param authentication the principal Spring Security resolved, which may be null when the request
-     * bypassed the filter chain.
-     * @return {@code 200} with the minimized account response and the as-displayed group a subsequent
-     * update echoes back as {@code oldDetails}, or {@code 401} with an empty body when the request carries
-     * no usable identity
+     * bypassed the filter chain. Its name is the subject the sealed snapshot is bound to, so a snapshot
+     * issued here will not open for another operator.
+     * @return {@code 200} with the minimized account response and the sealed snapshot a subsequent update
+     * echoes back as {@code snapshot}, or {@code 401} with an empty body when the request carries no usable
+     * identity
      */
     @GetMapping(ACCOUNT_PATH)
     public ResponseEntity<AccountViewResponse> viewAccount(
@@ -975,15 +991,19 @@ public class AccountController {
 
         final AccountDto account = this.retrieveAccount(accountId);
 
-        // The group the matching update must echo back. It is produced by the UPDATE service, because
-        // ACUP-OLD-DETAILS belongs to app/cbl/COACTUPC.cbl, and it is returned as the group itself rather
-        // than as flat fields because the comparison at :4109-4193 is representation-sensitive: a client
-        // that reassembled it from displayed text would get the date of birth wrong on every request, the
-        // live record being dash-separated at offsets 1/6/9 and the snapshot unseparated at 1/5/7.
-        final AccountUpdateRequest.OldDetails oldDetails = this.acquireUpdateSnapshot(accountId);
-        final AccountViewResponse response = AccountViewResponse.of(account, oldDetails);
+        // The sealed snapshot the matching update must echo back. It is produced by the UPDATE service,
+        // because ACUP-OLD-DETAILS belongs to app/cbl/COACTUPC.cbl, and it is sealed rather than published:
+        // nine of its twenty-nine members are the protected values this response withholds as display
+        // components, and a group the caller could rewrite would not be evidence of what was displayed. What
+        // the caller receives is one opaque string bound to this operation, this account, this principal and
+        // an expiry; the update service opens it and compares the recovered group. That also keeps the
+        // comparison at :4109-4193 exact, since nothing is ever reassembled from displayed text - the live
+        // record is dash-separated at offsets 1/6/9 and the snapshot unseparated at 1/5/7, and a rebuild
+        // would differ on every request.
+        final String snapshot = this.acquireUpdateSnapshot(accountId, authentication.getName());
+        final AccountViewResponse response = AccountViewResponse.of(account, snapshot);
 
-        LOG.debug("Served transaction {} program {} from mapset COACTVW with the as-displayed group",
+        LOG.debug("Served transaction {} program {} from mapset COACTVW with the sealed as-displayed snapshot",
                 VIEW_TRANSACTION_ID, VIEW_PROGRAM);
         return ResponseEntity.ok(response);
     }
@@ -994,7 +1014,7 @@ public class AccountController {
      * <p><strong>Purpose.</strong> Applies an edited account together with its customer record, exactly
      * as {@code app/cbl/COACTUPC.cbl} did over mapset {@code COACTUP}. Transaction {@code CAUP} is
      * defined at {@code app/csd/CARDDEMO.CSD:L306} against {@code PROGRAM(COACTUPC)} at {@code :L308}.
-     * At 4,236 lines and 88 paragraph labels that program is the largest in the corpus, and all of it
+     * At 4,236 lines and 85 own paragraph labels that program is the largest in the corpus, and all of it
      * lives in {@code com.cardemo.service.account.AccountUpdateService}; this method makes exactly one
      * call into it. The seven-step write sequence, the change-detection comparison, the case regime and
      * the transaction boundary are described in sections 5 and 6 of the class documentation and are
@@ -1003,27 +1023,32 @@ public class AccountController {
      * <p><strong>Inputs.</strong> A JSON body binding to
      * {@code com.cardemo.model.dto.AccountUpdateRequest}: the fifty-four input fields of
      * {@code app/cpy-bms/COACTUP.CPY} plus the {@code newDetails} group that mirrors
-     * {@code ACUP-NEW-DETAILS} at {@code app/cbl/COACTUPC.cbl:L757}, <strong>and</strong> the
-     * {@code oldDetails} group that mirrors {@code ACUP-OLD-DETAILS} at {@code :L669}. Both groups travel in
-     * the body because transformation Rule 7 makes the request stateless: {@code WS-THIS-PROGCOMMAREA} at
+     * {@code ACUP-NEW-DETAILS} at {@code app/cbl/COACTUPC.cbl:L757}, <strong>and</strong> the sealed
+     * {@code snapshot} member that carries {@code ACUP-OLD-DETAILS} at {@code :L669}. Both travel in the body
+     * because transformation Rule 7 makes the request stateless: {@code WS-THIS-PROGCOMMAREA} at
      * {@code :L652} held the snapshot between the two turns of the pseudo-conversation and a stateless
-     * server has nowhere to put it, so the caller returns the group the preceding read projected. The write
-     * is guarded twice over and neither guard substitutes for the other - the field-by-field comparison of
-     * {@code :L4109-L4193} over all twenty-nine values, and the {@code @Version} column that detects any
-     * concurrent write to either row.</p>
+     * server has nowhere to put it, so the caller returns the value the preceding read issued. The snapshot
+     * is <em>sealed</em> rather than readable, and there is no {@code oldDetails} member on this contract: a
+     * group the caller could rewrite would make the comparison unconditionally true and the lost-update
+     * guarantee would be no guarantee, and nine of its members are protected personal data that may not be
+     * published on the preceding read. The write is guarded twice over and neither guard substitutes for the
+     * other - the field-by-field comparison of {@code :L4109-L4193} over all twenty-nine values of a snapshot
+     * this server issued, and the {@code @Version} column that detects any concurrent write to either
+     * row.</p>
      *
      * <p><strong>Everything that does travel, travels verbatim.</strong> Nothing
-     * in this method trims, strips, pads, folds case on, re-formats, re-orders or date-parses either
-     * group, or any member of either group: Trap 3 in the class documentation proves why, and the
-     * decisive evidence is the date-of-birth comparison at {@code :L4174-L4179}, where the live record is
-     * read at offsets {@code (1:4)}, {@code (6:2)}, {@code (9:2)} and the snapshot - declared
-     * {@code PIC X(08)} compact at {@code :L746} with its {@code REDEFINES} at {@code :L747-L751} - is
-     * read at {@code (1:4)}, {@code (5:2)}, {@code (7:2)}. Normalising either side would report a change
-     * on every single request and make the operation permanently unusable. The bean-validation
-     * constraints are the DTO's own: the FICO band of {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH
-     * 850} at {@code :L848-L849} binds {@code newDetails} alone, and {@code oldDetails} carries no
-     * constraint at all because a snapshot records what was displayed rather than what is acceptable. No
-     * validation is added here that would contradict that.</p>
+     * in this method trims, strips, pads, folds case on, re-formats, re-orders or date-parses the edited
+     * group, any member of it, or the sealed member: Trap 3 in the class documentation proves why for the
+     * former, and the latter is an authentication tag over specific bytes, so any alteration whatsoever makes
+     * it fail to open. The decisive evidence for the group is the date-of-birth comparison at
+     * {@code :L4174-L4179}, where the live record is read at offsets {@code (1:4)}, {@code (6:2)},
+     * {@code (9:2)} and the snapshot - declared {@code PIC X(08)} compact at {@code :L746} with its
+     * {@code REDEFINES} at {@code :L747-L751} - is read at {@code (1:4)}, {@code (5:2)}, {@code (7:2)}.
+     * Normalising either side would report a change on every single request and make the operation permanently
+     * unusable. The bean-validation constraints are the DTO's own: the FICO band of
+     * {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at {@code :L848-L849} binds {@code newDetails}
+     * alone, and the sealed member carries only a length bound, because a snapshot records what was displayed
+     * rather than what is acceptable. No validation is added here that would contradict that.</p>
      *
      * <p>One request parameter, {@value #CONFIRM_PARAMETER}, carries the confirmation. The gate at
      * {@code :L2602-L2603} fires only when the change action is
@@ -1081,9 +1106,14 @@ public class AccountController {
      * overridden.</p>
      *
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 428} when the confirmation was not
-     * asserted, carrying {@value #NOT_CONFIRMED_PROMPT}; nothing was written. {@code 400} naming
-     * {@code oldDetails} when the body omits that group, because the comparison then has nothing to compare
-     * against and skipping it would forfeit the guarantee the source provides. {@code 423} for
+     * asserted, carrying {@value #NOT_CONFIRMED_PROMPT}; nothing was written. {@code 428} also when the
+     * confirmation was asserted but the body carries no {@code snapshot} member, because the comparison then
+     * has nothing to compare against and skipping it would forfeit the guarantee the source provides - the
+     * remedy is to obtain one, which is why it is reported as unconfirmed rather than as bad input.
+     * {@code 412} when a {@code snapshot} was presented and did not open: it was altered, truncated, issued
+     * for another account, issued to another operator, or has expired. All of those report identically and
+     * deliberately so, since telling them apart is an oracle; the server log names which it was.
+     * {@code 423} for
      * {@code COULD_NOT_LOCK_ACCOUNT}, nothing written, safe to retry. {@code 412} for
      * {@code DATA_CHANGED_BEFORE_UPDATE}, raised when the record changed under the caller between the read
      * and the write. Re-read, re-apply the edits over the values that read returned, and do not retry
@@ -1098,21 +1128,22 @@ public class AccountController {
      * whenever that happens.</p>
      *
      * @param request the symbolic map of {@code app/cpy-bms/COACTUP.CPY} carrying the {@code newDetails}
-     * edits; validated against the DTO's own width and range contracts and then passed to the service
-     * unaltered. It must <em>not</em> carry an {@code oldDetails} group.
+     * edits and the sealed {@code snapshot} member; validated against the DTO's own width and range contracts
+     * and then passed to the service unaltered. There is no {@code oldDetails} member on this contract, so a
+     * body that carries one is refused by the mapper's unknown-property check.
      * @param confirmToken the explicit replacement for attention identifier {@code CCARD-AID-PFK05},
      * matched exactly against {@code true} and {@code false}; null means absent and therefore not
      * confirmed, and no alias is accepted.
      * @param authentication the principal Spring Security resolved, which may be null when the request
-     * bypassed the filter chain.
+     * bypassed the filter chain. Its name is the subject the sealed snapshot must have been issued to, so a
+     * snapshot obtained by another operator will not open here.
      * @return {@code 200} with the API-native update response, or {@code 401} with an empty body when the
      * request carries no usable identity
      * @throws ConcurrentUpdateException with outcome {@code CHANGES_NOT_CONFIRMED} when the confirmation
      * was not asserted or no snapshot was presented, which this class maps to {@code 428} without
      * attempting a write, and with {@code DATA_CHANGED_BEFORE_UPDATE} mapped to {@code 412} when a
      * presented snapshot does not verify
-     * @throws ValidationException when the body carries an {@code oldDetails} group, or when the
-     * confirmation parameter is present and is neither exact token
+     * @throws ValidationException when the confirmation parameter is present and is neither exact token
      */
     @PutMapping
     public ResponseEntity<AccountUpdateResponse> updateAccount(
@@ -1134,7 +1165,7 @@ public class AccountController {
                     ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED, NOT_CONFIRMED_PROMPT);
         }
 
-        final AccountUpdateResult result = this.applyAccountUpdate(request);
+        final AccountUpdateResult result = this.applyAccountUpdate(request, authentication.getName());
 
         warnOnUnreportedCustomerLock(result);
 
@@ -1176,19 +1207,21 @@ public class AccountController {
      * Delegates to the account-update service exactly once and returns its result.
      *
      * <p>The request instance is passed by reference and is neither copied nor rewritten, which is what
-     * keeps {@code oldDetails} and {@code newDetails} byte-identical to what the caller submitted. The
-     * catch clauses behave exactly as described on {@link #retrieveAccount}, with
+     * keeps the sealed {@code snapshot} member and {@code newDetails} byte-identical to what the caller
+     * submitted - and the sealed member has to be byte-identical, being an authentication tag over specific
+     * bytes. The catch clauses behave exactly as described on {@link #retrieveAccount}, with
      * {@code app/cbl/COACTUPC.cbl}'s program name as the abend culprit.</p>
      *
-     * @param request the symbolic map carrying both detail groups, passed on unaltered.
+     * @param request the symbolic map carrying the edited group and the sealed snapshot, passed on unaltered.
+     * @param subject the authenticated principal the sealed snapshot must have been issued to.
      * @return the update result, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private AccountUpdateResult applyAccountUpdate(final AccountUpdateRequest request) {
+    private AccountUpdateResult applyAccountUpdate(final AccountUpdateRequest request, final String subject) {
 
         try {
-            return this.accountUpdateService.updateAccount(request);
+            return this.accountUpdateService.updateAccount(request, subject);
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
         } catch (final RuntimeException unexpected) {
@@ -1198,26 +1231,30 @@ public class AccountController {
     }
 
     /**
-     * Obtains the {@code ACUP-OLD-DETAILS} group for one account.
+     * Obtains the sealed {@code ACUP-OLD-DETAILS} snapshot for one account.
      *
-     * <p>Delegates once to the update service, which owns the group. The catch clauses behave exactly as on
-     * {@link #retrieveAccount}: a typed failure is rethrown so the declared status mapping applies, and
-     * anything else becomes an abend with its cause preserved.</p>
+     * <p>Delegates once to the update service, which owns the group and seals it. Sealing belongs to the
+     * service rather than here because the service is what reads the group, and sealing it at the moment it is
+     * produced is what makes "the group this server projected" and "the group this token carries" the same
+     * bytes. The catch clauses behave exactly as on {@link #retrieveAccount}: a typed failure is rethrown so
+     * the declared status mapping applies, and anything else becomes an abend with its cause preserved.</p>
      *
-     * <p>The failure is <em>not</em> suppressed. Returning a null group on a failed acquisition would answer
+     * <p>The failure is <em>not</em> suppressed. Returning null on a failed acquisition would answer
      * {@code 200} with a response a client cannot update from, which is the very gap this method closes;
      * the two services read the same three-dataset chain, so a filter this one refuses is a filter the view
      * would have refused as well.</p>
      *
      * @param accountFilter the contents of screen field {@code ACCTSIDI}, passed on verbatim.
-     * @return the as-displayed group, never null
+     * @param subject the authenticated principal the snapshot is issued to, taken from the resolved
+     * {@code Authentication} and never from the request body.
+     * @return the sealed as-displayed snapshot, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private AccountUpdateRequest.OldDetails acquireUpdateSnapshot(final String accountFilter) {
+    private String acquireUpdateSnapshot(final String accountFilter, final String subject) {
 
         try {
-            return this.accountUpdateService.fetchSnapshotForUpdate(accountFilter);
+            return this.accountUpdateService.sealSnapshotForUpdate(accountFilter, subject);
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
         } catch (final RuntimeException unexpected) {
@@ -1778,11 +1815,9 @@ public class AccountController {
      * inconsistency as a High-severity finding on this seam, and it is the same defect on every route in this
      * package that binds a body.
      *
-     * <p><strong>Why it is declared here rather than centrally.</strong> The envelope is per-controller by
-     * design: the title names the resource, so a single advice class could not produce it without being told
-     * which controller it was answering for. This package declares no {@code @ControllerAdvice} and no shared
-     * base class, and this method keeps that property - it carries {@code @ExceptionHandler} only and is
-     * scoped to this controller alone, exactly like the typed mappers above it.
+     * <p><strong>Why it is declared here rather than centrally.</strong> Stated for the whole package in
+     * {@code com.cardemo.controller}'s package documentation; this handler keeps that property, carrying
+     * {@code @ExceptionHandler} only and answering for this controller alone.
      *
      * <p><strong>What the body does not contain.</strong> No rejected value, no field name, no constraint
      * message, no exception class and no discriminator; {@link #BIND_FAILURE_PROBLEM_DETAIL} records why each
@@ -1818,18 +1853,11 @@ public class AccountController {
      * Maps a request body the framework could not read onto {@code 400 Bad Request} with this controller's
      * own envelope.
      *
-     * <p>Claims the one exception the framework folds three conditions into, all of which occur before the
-     * mapped method is entered: a body that is not well-formed JSON, a body carrying a property outside the
-     * schema, and a request with no body where {@code @RequestBody} requires one. Each was previously answered
-     * by the framework's default handling, in a shape no client-side handler written against this package's
-     * envelope could read - the second half of the same High-severity finding.
-     *
-     * <p>The status is {@code 400} rather than {@code 415} or {@code 422}: the caller addressed the right
-     * operation with the right media type and sent something this operation cannot accept, which is precisely
-     * a bad request. Answering it identically to a bean-validation refusal is deliberate, and the two are told
-     * apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line.
-     *
-     * <p>This method is not request-mapped and is neither of the two operations.
+     * <p>Which three framework conditions fold into this one exception, why the status is {@code 400}
+     * rather than {@code 415} or {@code 422}, and why the handler is declared per controller rather than
+     * centrally are stated for the whole package in {@code com.cardemo.controller}'s package
+     * documentation. The two refusals are told apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than
+     * by the status line, and this method is not request-mapped, so it is neither of the two operations.
      *
      * @param unreadable the framework's read failure, whose message and cause chain are deliberately kept out
      *                   of the body and emitted at {@code DEBUG} only.
@@ -1859,18 +1887,11 @@ public class AccountController {
     /**
      * Stamps the two properties every error body carries, and returns the same instance for chaining.
      *
-     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
-     * handler cannot omit the envelope by accident: the {@code return} statement reads
-     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
-     * into that shape.
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so the
+     * envelope cannot be omitted by accident.
      *
-     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
-     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
-     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
-     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
-     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
-     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
-     * nothing is swallowed.
+     * <p>What the envelope discloses and what it withholds is the {@code CWE-209} posture stated for the
+     * whole package in {@code com.cardemo.controller}'s package documentation.
      *
      * @param problem the body under construction; must not be null.
      * @param errorCode one of the {@code ERROR_CODE_*} constants.

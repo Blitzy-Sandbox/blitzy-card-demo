@@ -62,34 +62,32 @@ import org.junit.jupiter.api.Test;
  * reads as speculation when it is in fact reconciled against real DDL. {@link NoStaleAbsenceClaims} forbids
  * the assertion for any artefact the test can see on disk.
  *
- * <p><strong>Claims about a document that did not exist.</strong> {@code DECISION_LOG.md} and
- * {@code TRACEABILITY_MATRIX.md} were both scheduled artefacts absent from this branch, yet hundreds of sites
- * said a decision was "recorded in" or "tracked in" one of them. That sent a reader to nothing. The convention
- * was a forward reference - "tracked <em>for</em>", never "tracked <em>in</em>" - with the decision itself in
- * the docstring of the file it governs. {@link NoClaimsOnAbsentEvidence} forbade the present-tense form and
- * re-checked the premise, so that if a document were ever authored the gate itself would demand revision.
+ * <p><strong>Claims about a document that does not exist.</strong> Saying that a decision is "recorded in"
+ * or "tracked in" a scheduled artefact sends a reader to nothing. The convention for that state is a forward
+ * reference - "tracked <em>for</em>", never "tracked <em>in</em>" - with the decision itself in
+ * the docstring of the file it governs. {@link NoClaimsOnAbsentEvidence} forbids the present-tense form for
+ * any name still on the absent set and re-checks the premise, so authoring a document makes the gate itself
+ * demand revision.
  *
- * <p><strong>That revision has since been demanded twice, and taken both times.</strong>
- * {@code DECISION_LOG.md} was authored first and its premise row inverted: the gate asserts that it
- * <em>exists</em>, which is what stops this guard passing by accident if the file is later deleted.
- * {@code TRACEABILITY_MATRIX.md} has now been authored too, so <strong>the absent set is empty</strong> and
- * no name is forbidden in the present tense any longer. Emptiness is asserted explicitly rather than left
+ * <p>Both {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} are authored, so the premise row for
+ * each asserts that it <em>exists</em>, which is what stops this guard passing by accident if either file is
+ * later deleted. <strong>The absent set is therefore empty</strong> and
+ * no name is forbidden in the present tense. Emptiness is asserted explicitly rather than left
  * implicit, and both names are asserted present, so the narrowing cannot be mistaken for a name having been
  * quietly dropped: deleting either register fails this gate immediately.
  *
- * <p><strong>The forward references have since been reworded, in one mechanical pass.</strong> An earlier
- * revision of this paragraph left roughly 198 of them in place on the grounds that they under-claim rather
- * than over-claim; that reasoning is withdrawn. Understating delivered evidence is the damaging direction for
- * an evidence artefact, because a reader concludes that authored work does not exist, and the qualifier
- * <em>planned</em> had become simply false. 103 sites across 42 files dropped the qualifier and 19 that
- * additionally asserted one or both registers absent were rewritten individually, each withdrawing its own
- * former claim in writing. It was one pass rather than a trickle precisely because
- * {@code CONTRIBUTING.md} asks a change to stay focused: a half-swept tree disagrees with itself, which is a
- * worse review burden than a single uniform correction. {@link NoStaleAbsenceClaims#neitherRegisterIsCalledPlannedOrAbsent()}
+ * <p><strong>A forward reference to an authored register is equally wrong.</strong> Leaving one in place on
+ * the grounds that it under-claims rather than over-claims is not a defence: understating delivered evidence
+ * is the damaging direction for an evidence artefact, because a reader concludes that authored work does not
+ * exist, and the qualifier <em>planned</em> is simply false while both files are on disk. A correction of that
+ * kind belongs in one pass rather than a trickle, because {@code CONTRIBUTING.md} asks a change to stay
+ * focused and a half-swept tree disagrees with itself, which is a worse review burden than a single uniform
+ * correction. {@link NoStaleAbsenceClaims#neitherRegisterIsCalledPlannedOrAbsent()}
  * is what keeps the qualifier from returning.
  *
- * <p><strong>An unbounded register.</strong> "Retained for parity" was applied to five sites in one place
- * and three in another. The term means something precise - a reachable no-op or unused constant that exists
+ * <p><strong>An unbounded register.</strong> "Retained for parity" must not be applied loosely - five sites
+ * in one place and three in another is the shape of that drift. The term means something precise - a reachable
+ * no-op or unused constant that exists
  * only so the paragraph map stays provable - and a preserved COBOL {@code CONTINUE} or a preserved asymmetry
  * is not one. {@link BoundedRetainedRegister} requires the register to be enumerated by locator and its size
  * to be derived from the marked sites rather than declared as a closed total.
@@ -783,11 +781,10 @@ final class DocumentationConsistencyTest {
         @DisplayName("the root package documentation states once, for the whole tree, where the record lives")
         void theConventionIsStatedOnce() {
             final String rootDoc = String.join(" ", lines("src/main/java/com/cardemo/package-info.java"));
-            // The assertion inverted with the premise. It used to require the root document to say the two
-            // registers were "scheduled artefacts that do not" exist, which was the correct statement while
-            // that was true and became a guard enforcing a falsehood the moment both were authored. It now
-            // requires the opposite: that the root document states they ARE present, and still states where
-            // the decision itself lives so the other files do not each have to qualify every mention.
+            // Two halves, and both have to be present for the convention to be usable. The first is where the
+            // record lives, which is what lets every other file name a register without qualifying the
+            // mention. The second is the standing prohibition that goes with it, because permission alone
+            // leaves the opposite spelling - a register described as planned or not yet written - reachable.
             assertThat(rootDoc)
                     .as(
                             "one authoritative statement is what keeps the other 78 files from each having "
@@ -797,9 +794,10 @@ final class DocumentationConsistencyTest {
                     .contains("in the docstring of the file it");
             assertThat(rootDoc)
                     .as(
-                            "the withdrawn prohibition must be withdrawn in writing, not silently deleted, "
-                                    + "or a reader who remembers it cannot tell whether it still applies")
-                    .contains("scheduled artefacts that do not exist in this branch");
+                            "the permission has to be stated with the prohibition that bounds it, or a file "
+                                    + "may cite a register in one sentence and call it unwritten in the next")
+                    .contains("recorded <em>in</em> either")
+                    .contains("planned, scheduled or not yet written");
             for (final String document : AUTHORED_EVIDENCE_DOCUMENTS) {
                 assertThat(ROOT.resolve(document))
                         .as("%s is the premise of the statement above", document)
@@ -878,14 +876,14 @@ final class DocumentationConsistencyTest {
     /**
      * F19 - the retained-parity register is enumerated by locator and its census is derived, not declared.
      *
-     * <p><strong>This guard used to enforce the defect it now forbids.</strong> It required the root package
+     * <p><strong>This guard must not require the defect it forbids.</strong> Requiring the root package
      * document to contain the sentence "Exactly three sites carry that retained-for-parity status" - a
-     * permanently closed global total that nothing derived and that a fourth genuine site would have falsified
-     * silently, because the only thing holding the number was a sentence. What actually needs guarding is
-     * different and stronger: that every register entry is <em>identified by a stable locator</em> so it can be
-     * audited individually, and that the count is presented as a <em>measurement of this commit</em> whose
-     * authority is the mechanism that derives it - {@code dispositions.justifiedNoOps}, which
-     * {@code com.cardemo.e2e.GateVerificationTest} writes from the marked sites themselves.
+     * permanently closed global total that nothing derives and that a fourth genuine site would falsify
+     * silently, because the only thing holding the number would be a sentence - is that very defect. What
+     * needs guarding is different and stronger: that every register entry is <em>identified by a stable
+     * locator</em> so it can be audited individually, and that the count is presented as a <em>measurement of
+     * this commit</em> whose authority is the mechanism that derives it - {@code dispositions.registeredParityNoOps},
+     * which {@code com.cardemo.e2e.GateVerificationTest} writes from the marked sites themselves.
      */
     @Nested
     @DisplayName("the retained-parity register is enumerated by locator, with a derived rather than fixed census")
@@ -922,7 +920,7 @@ final class DocumentationConsistencyTest {
                                     + "this commit and name what measures it")
                     .contains("as at this commit")
                     .contains("is a measurement, not a closed total")
-                    .contains("dispositions.justifiedNoOps");
+                    .contains("dispositions.registeredParityNoOps");
             // The withdrawn sentence has to survive as a QUOTATION and must not survive as an assertion. A
             // plain doesNotContain cannot tell those apart and fired on the withdrawal itself, which would
             // have forced the correction to delete the wording it withdraws - the failure mode
@@ -958,22 +956,40 @@ final class DocumentationConsistencyTest {
         @Test
         @DisplayName("no file asserts a closed global total for the register")
         void noFileAssertsAClosedTotal() {
-            // Widened from "a number other than three" to "any closed total, including three". The earlier
-            // pattern let the defect through by construction: it forbade every count except the one being
-            // wrongly asserted.
+            // Two families of spelling are forbidden, and both are needed. The first states the total inline
+            // and is caught on its own words wherever it appears. The second declares the register shut at a
+            // number - the closure verb followed by a numeral - and is only a defect when the sentence is
+            // about the retained-parity register, because the same words legitimately describe a genuinely
+            // fixed set elsewhere: the Flyway migration set really is three files, and saying so in
+            // com.cardemo.config.BatchConfig is a fact about V1, V2 and V3 rather than a claim about no-ops.
+            // So the closure family is gated on a subject keyword occurring in the same line.
             final Pattern closedTotal = Pattern.compile(
                     "(tree has (two|three|four|five|six|seven) of them|"
                             + "exactly (two|three|four|five|six|seven) (sites? carry|retained[- ]parity)|"
                             + "(two|three|four|five|six|seven) retained parity artefacts)",
                     Pattern.CASE_INSENSITIVE);
+            final Pattern closureVerb = Pattern.compile(
+                    "(is|are) closed at (two|three|four|five|six|seven)"
+                            + "|closes? (it |them |the (set|register|list) )?at "
+                            + "(two|three|four|five|six|seven)",
+                    Pattern.CASE_INSENSITIVE);
+            final Pattern registerSubject =
+                    Pattern.compile("no-op|noop|retained[- ]parity|retained artefact", Pattern.CASE_INSENSITIVE);
             final List<String> offences = new ArrayList<>();
             for (final Path path : scannedFiles()) {
                 final String relative = ROOT.relativize(path).toString();
                 final List<String> content = lines(relative);
                 for (int index = 0; index < content.size(); index++) {
-                    final Matcher matcher = closedTotal.matcher(content.get(index));
-                    if (matcher.find() && !everyOccurrenceIsQuoted(content.get(index), matcher.group())) {
+                    final String line = content.get(index);
+                    final Matcher matcher = closedTotal.matcher(line);
+                    if (matcher.find() && !everyOccurrenceIsQuoted(line, matcher.group())) {
                         offences.add(relative + ":" + (index + 1) + "  " + matcher.group());
+                    }
+                    final Matcher closure = closureVerb.matcher(line);
+                    if (closure.find()
+                            && registerSubject.matcher(line).find()
+                            && !everyOccurrenceIsQuoted(line, closure.group())) {
+                        offences.add(relative + ":" + (index + 1) + "  " + closure.group());
                     }
                 }
             }
@@ -1274,7 +1290,10 @@ final class DocumentationConsistencyTest {
                             "carddemo.batch.jobs.tranrept.name");
         }
 
-        /** Concatenates every profile so a prose mention can be located. */
+        /**
+         * Concatenates every profile so a prose mention can be located.
+         * @return every profile document concatenated.
+         */
         private static String profileText() {
             final StringBuilder text = new StringBuilder();
             for (final Path profile : profiles()) {
@@ -1283,7 +1302,10 @@ final class DocumentationConsistencyTest {
             return text.toString();
         }
 
-        /** The four profile documents, in a stable order. */
+        /**
+         * The four profile documents, in a stable order.
+         * @return the four profile documents.
+         */
         private static List<Path> profiles() {
             final Path resources = ROOT.resolve("src/main/resources");
             return List.of(
@@ -1369,7 +1391,12 @@ final class DocumentationConsistencyTest {
             return keys;
         }
 
-        /** Counts one character, avoiding a regex for a single-character tally. */
+        /**
+         * Counts one character, avoiding a regex for a single-character tally.
+         * @param text the text to scan.
+         * @param target the character to count.
+         * @return how many times it occurs.
+         */
         private static int count(final String text, final char target) {
             int total = 0;
             for (int index = 0; index < text.length(); index++) {
@@ -1380,7 +1407,10 @@ final class DocumentationConsistencyTest {
             return total;
         }
 
-        /** Every Java file under the main source tree. */
+        /**
+         * Every Java file under the main source tree.
+         * @return every main-tree Java source.
+         */
         private static List<Path> mainJavaSources() {
             try (Stream<Path> walk = Files.walk(ROOT.resolve("src/main/java"))) {
                 return walk.filter(Files::isRegularFile)
@@ -1392,7 +1422,11 @@ final class DocumentationConsistencyTest {
             }
         }
 
-        /** Reads one file as UTF-8. */
+        /**
+         * Reads one file as UTF-8.
+         * @param path the file to read.
+         * @return its contents.
+         */
         private static String readFile(final Path path) {
             try {
                 return Files.readString(path, StandardCharsets.UTF_8);
@@ -1571,18 +1605,29 @@ final class DocumentationConsistencyTest {
             return routes;
         }
 
-        /** Maps a mapping-annotation prefix to its HTTP method. */
+        /**
+         * Maps a mapping-annotation prefix to its HTTP method.
+         * @param annotationPrefix the mapping annotation without its {@code Mapping} suffix.
+         * @return the HTTP method it declares.
+         */
         private static String verbOf(final String annotationPrefix) {
             return annotationPrefix.toUpperCase(Locale.ROOT);
         }
 
-        /** Strips block and line comments, so a javadoc example cannot be mistaken for a mapping. */
+        /**
+         * Strips block and line comments, so a javadoc example cannot be mistaken for a mapping.
+         * @param source the Java source text.
+         * @return the same text with comments removed.
+         */
         private static String withoutComments(final String source) {
             final String withoutBlocks = source.replaceAll("(?s)/\\*.*?\\*/", "");
             return withoutBlocks.replaceAll("(?m)^\\s*//.*$", "");
         }
 
-        /** The eight controller sources, excluding the package document. */
+        /**
+         * The eight controller sources, excluding the package document.
+         * @return the eight controller sources.
+         */
         private static List<Path> controllerSources() {
             try (Stream<Path> walk = Files.list(ROOT.resolve("src/main/java/com/cardemo/controller"))) {
                 return walk.filter(Files::isRegularFile)
@@ -1594,7 +1639,11 @@ final class DocumentationConsistencyTest {
             }
         }
 
-        /** Reads one file as UTF-8. */
+        /**
+         * Reads one file as UTF-8.
+         * @param path the file to read.
+         * @return its contents.
+         */
         private static String readFile(final Path path) {
             try {
                 return Files.readString(path, StandardCharsets.UTF_8);
@@ -1691,7 +1740,10 @@ final class DocumentationConsistencyTest {
                     .doesNotContain(PROGRAMLESS_FEATURE);
         }
 
-        /** The traceability matrix, read once per test. */
+        /**
+         * The traceability matrix, read once per test.
+         * @return the matrix text.
+         */
         private static String readMatrix() {
             try {
                 return Files.readString(ROOT.resolve("TRACEABILITY_MATRIX.md"), StandardCharsets.UTF_8);
@@ -1731,7 +1783,12 @@ final class DocumentationConsistencyTest {
     private static final Pattern EXECUTABLE_TEST = Pattern.compile(
             "@(?:Test|ParameterizedTest|RepeatedTest)\\b[\\s\\S]*?\\bvoid\\s+(\\w+)\\s*\\(");
 
-    /** A parsed citation: the test file relative to {@link #TEST_BASE}, and the method inside it. */
+    /**
+     * A parsed citation: the test file relative to {@link #TEST_BASE}, and the method inside it.
+     * @param rowId the matrix row the citation was read from.
+     * @param file the test source, relative to {@link #TEST_BASE}.
+     * @param method the test method inside that source.
+     */
     private record Citation(String rowId, String file, String method) {
     }
 
@@ -1797,7 +1854,10 @@ final class DocumentationConsistencyTest {
                     .contains("<file>::<method>");
         }
 
-        /** Every `file::method` pair published in the matrix's Test column, in document order. */
+        /**
+         * Every `file::method` pair published in the matrix's Test column, in document order.
+         * @return the citations, in document order.
+         */
         private List<Citation> citations() {
             final List<Citation> found = new ArrayList<>();
             for (final String line : lines("TRACEABILITY_MATRIX.md")) {
@@ -1820,7 +1880,11 @@ final class DocumentationConsistencyTest {
             return found;
         }
 
-        /** The executable test method names declared in one test source. */
+        /**
+         * The executable test method names declared in one test source.
+         * @param relativeTestFile the test source, relative to the test base directory.
+         * @return the executable test method names it declares.
+         */
         private List<String> executableTests(final String relativeTestFile) {
             final String source = String.join("\n", lines(TEST_BASE + relativeTestFile));
             final List<String> names = new ArrayList<>();

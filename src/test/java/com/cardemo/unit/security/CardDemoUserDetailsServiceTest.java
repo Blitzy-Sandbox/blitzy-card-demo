@@ -134,12 +134,12 @@ class CardDemoUserDetailsServiceTest {
      * A synthetic credential, generated per run, standing in for the seeded plaintext.
      *
      * <p><strong>Why generated rather than written down.</strong> All ten principals of
-     * {@code app/jcl/DUSRSECJ.jcl} carry one shared plaintext, and an earlier revision of this class named
+     * {@code app/jcl/DUSRSECJ.jcl} carry one shared plaintext, and this class must not name
      * that value as a constant. Nothing about this class needs the real value: what is under test is the
      * upper-casing of both fields and the BCrypt verification, and a generated credential exercises both
-     * identically. Naming it, by contrast, put a working credential for the shipped demo seed into a tracked
-     * file - and it defeated the security gate's own "no plaintext anywhere" claim, which is the finding this
-     * closes. Rule 1 clause D admits no sample exception.
+     * identically. Naming it, by contrast, would put a working credential for the shipped demo seed into a
+     * tracked file - and would defeat the security gate's own "no plaintext anywhere" claim.
+     * Rule 1 clause D admits no sample exception.
      *
      * <p>Eight upper-case characters, because {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy}
      * is eight bytes and the source upper-cases what it receives; the width and the case are the properties

@@ -11,7 +11,7 @@
  *               becomes one typed queue message. Note the monthly range
  *               is the full current calendar month, first day through
  *               last day, and not month-to-date.
- * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 paragraphs) @ 7756d89
+ * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 own paragraph labels) @ 7756d89
  * Source      : app/cbl/CORPT00C.cbl:L80-L127 (the job deck as 80-byte literals, redefined as an array of card
  *               images) @ 7756d89
  * Source      : app/cbl/CORPT00C.cbl:L498-L508 (the submission loop; the terminating card IS written before exit) @
@@ -174,10 +174,9 @@
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}, and the
  *       queue-publication path additionally in {@code src/test/java/com/cardemo/integration/aws} against the
- *       emulator. <strong>Measured 4 August 2026:</strong> {@code ReportSubmissionServiceTest} covers this
- *       service, so the package is exercised by name. <strong>An earlier revision recorded it as having no
- *       test class and contributing zero covered lines</strong>; that was true when written and is withdrawn
- *       here. The assertions it named as required are the ones now made: the monthly range ending today rather than at month end; the yearly range spanning
+ *       emulator. {@code ReportSubmissionServiceTest} covers this
+ *       service, so the package is exercised by name rather than having no test class. It asserts: the monthly
+ *       range ending today rather than at month end; the yearly range spanning
  *       the whole current year; each of the six custom components validated individually; all four confirmation
  *       outcomes distinguishable, with the invalid one quoting the offending value; the published message carrying
  *       the report name and both dates; and the queue-write failure message reproduced verbatim.</li>

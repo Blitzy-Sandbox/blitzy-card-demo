@@ -63,8 +63,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * shipped configuration <em>text</em> indirects both to the environment and supplies no committed credential -
  * the same shape {@code JwtTokenLifetimeContractTest} uses for the signing key.
  *
- * <p>What it cannot prove is that the ceiling is <em>in effect</em>. That distinction is not academic, and an
- * earlier revision of this class understated it by describing a running-context test as proving "only that the
+ * <p>What it cannot prove is that the ceiling is <em>in effect</em>. That distinction is not academic, and it
+ * is understated by describing a running-context test as proving "only that the
  * context started under whatever values the test environment happened to carry". A running context proves
  * considerably more than that: it can read {@code lock_timeout} back out of a pooled session and it can hold two
  * sessions open and contend a row. Both are now done, in
@@ -278,10 +278,10 @@ final class DataTierPrincipalContractTest {
             assertThat(live)
                     .as("""
                             A ':' inside any of the four placeholders reintroduces exactly the defect this \
-                            closes. The base and local profiles once read \
-                            ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}} as a transition aid, and while that \
-                            existed an ABSENT variable - the default state of every deployment not yet told \
-                            about these roles - silently reconnected the runtime as the cluster bootstrap \
+                            closes. Reading \
+                            ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}} as a transition aid means an ABSENT \
+                            variable - the default state of every deployment not yet told \
+                            about these roles - silently reconnects the runtime as the cluster bootstrap \
                             SUPERUSER. Nothing reported it, because falling back is indistinguishable from \
                             succeeding. %s must fail instead.""", resourceName)
                     .doesNotContain(APP_USER_VARIABLE + ":")
@@ -699,9 +699,9 @@ final class DataTierPrincipalContractTest {
             // The services guard all four names with `:?` and carry no `:-` default, so each name has
             // exactly ONE source and the role that gets created cannot differ from the role the
             // application authenticates as. What has to be asserted is therefore that the script reads
-            // the SAME variable rather than a default of its own: an earlier revision defaulted the two
-            // names inside the script while the app service defaulted them to POSTGRES_USER, so the
-            // provisioning step created two roles nobody used and every request ran as the superuser.
+            // the SAME variable rather than a default of its own: defaulting the two
+            // names inside the script while the app service defaults them to POSTGRES_USER makes the
+            // provisioning step create two roles nobody uses while every request runs as the superuser.
             for (final String variable : List.of(APP_USER_VARIABLE, MIGRATION_USER_VARIABLE)) {
                 assertThat(Pattern.compile("\\\\getenv\\s+\\w+\\s+" + Pattern.quote(variable))
                                 .matcher(content)

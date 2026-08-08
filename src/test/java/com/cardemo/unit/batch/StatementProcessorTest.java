@@ -350,9 +350,7 @@ class StatementProcessorTest {
         logger.setLevel(originalLevel);
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Fixture builders
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Builds a base 350-byte transaction record and projects it exactly as
@@ -456,7 +454,11 @@ class StatementProcessorTest {
         return processor.process(new CardCrossReference(CARD_LOW, 1L, 1L));
     }
 
-    /** @return every message this class's logger received. */
+    /**
+     * Reads back what the processor logged during the call under test.
+     *
+     * @return every message this class's logger received.
+     */
     private List<String> loggedMessages() {
         return appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
     }
@@ -2158,12 +2160,11 @@ class StatementProcessorTest {
          * gone; AAP 0.7.6.3 labels the removal a deliberate deviation and the legacy figures stay published as
          * named constants.
          *
-         * <p><b>Finding BAT-002, severity High, resolved here.</b> This class used to assert the opposite of
-         * what it asserts now. Two authored ceilings stood in {@link StatementProcessor} - one per run, one per
-         * card group, both a million - and a run above either was refused with an abend. That was a business
-         * rule with no source: the corpus refuses no run by record count, and the table it did have overran
-         * rather than failing, so the refusal reproduced neither the number nor the behaviour. Removing a
-         * legacy ceiling and then legislating a new one is not parity, and the review said so.
+         * <p><b>Why no authored ceiling may stand in {@link StatementProcessor}.</b> Two such ceilings - one
+         * per run, one per card group, both a million - refusing a larger run with an abend would be a
+         * business rule with no source: the corpus refuses no run by record count, and the table it does have
+         * overruns rather than failing, so such a refusal would reproduce neither the number nor the
+         * behaviour. Removing a legacy ceiling and then legislating a new one is not parity.
          *
          * <p>What remains is the WARN of group 4, so the divergence from historical capacity is still visible
          * in the log, and the control break itself, which keeps one card group resident rather than the run.
@@ -2889,7 +2890,7 @@ class StatementProcessorTest {
 
             assertThat(abend.getAbendCode())
                     .as("app/cbl/CBSTM03A.CBL:L921-L923 has no MOVE 999 TO ABCODE, unlike"
-                            + " app/cbl/CBTRN02C.cbl:L707-L710, so ABEND-CODE PIC X(4) stays as declared")
+                            + " app/cbl/CBTRN02C.cbl:L707-L711, so ABEND-CODE PIC X(4) stays as declared")
                     .isNotEqualTo(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE))
                     .isNotNull()
                     .isBlank();
@@ -2954,14 +2955,13 @@ class StatementProcessorTest {
          * <em>and</em> keeps the originating throwable reachable, so a read failure remains traceable to
          * whatever actually broke.
          *
-         * <p><strong>Finding, severity Medium, RESOLVED.</strong> An earlier revision of this method carried
-         * this name while asserting only that <em>some</em> exception was thrown, that its message was not
-         * blank, and that the log line appeared. It never called {@code getCause()}, so the one property its
-         * name claimed was the one property it did not establish - and a processor that caught the failure and
-         * rethrew a brand-new exception with the cause dropped would have passed it.
+         * <p>Asserting under this name only that <em>some</em> exception is thrown, that its message is not
+         * blank and that the log line appears would leave the one property the name claims unestablished:
+         * without a {@code getCause()} assertion, a processor that caught the failure and rethrew a brand-new
+         * exception with the cause dropped would pass.
          *
-         * <p>It could not have been fixed by adding an assertion to the arrangement it used, and that is the
-         * substance of the defect rather than an excuse for it: a status is not a throwable, and
+         * <p>Nor can the gap be closed by adding an assertion to a stubbed status, and that is the
+         * substance of it: a status is not a throwable, and
          * {@code FileStatusMapper.fileServiceAbend} composes its exception with {@code null} as the cause, so
          * an arrangement expressed purely as status {@code '35'} has no root cause to preserve. The
          * arrangement therefore had to change too - {@code FakeDataset.failKeyedWith} makes the keyed read
@@ -3592,6 +3592,8 @@ class StatementProcessorTest {
         private int sequentialReadCount;
 
         /**
+         * Binds this fake to one DD name.
+         *
          * @param dd the DD this fake is bound to
          */
         FakeDataset(final FileService.Dd dd) {
@@ -3716,17 +3718,29 @@ class StatementProcessorTest {
             closeStatus = status;
         }
 
-        /** @return how many times this dataset was opened. */
+        /**
+         * The open tally the DD-lifecycle assertions read.
+         *
+         * @return how many times this dataset was opened.
+         */
         int openCount() {
             return openCount;
         }
 
-        /** @return how many times this dataset was closed. */
+        /**
+         * The close tally the DD-lifecycle assertions read.
+         *
+         * @return how many times this dataset was closed.
+         */
         int closeCount() {
             return closeCount;
         }
 
-        /** @return how many sequential reads this dataset served. */
+        /**
+         * The sequential-read tally the browse assertions read.
+         *
+         * @return how many sequential reads this dataset served.
+         */
         int sequentialReadCount() {
             return sequentialReadCount;
         }

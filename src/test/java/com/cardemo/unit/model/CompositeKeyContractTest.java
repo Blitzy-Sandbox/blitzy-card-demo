@@ -276,7 +276,7 @@ class CompositeKeyContractTest {
         @DisplayName("the two width rules are distinct: a ceiling on the group id, exact on the type code")
         void theTwoWidthRulesAreDeliberatelyDifferent() {
             assertThatNoException()
-                    .as("app/cbl/CBACT04C.cbl:L415-L460 retries the rate lookup with the bare literal "
+                    .as("app/cbl/CBACT04C.cbl:L443-L460 retries the rate lookup with the bare literal "
                             + "DEFAULT rather than with ten padded bytes, so a ceiling is the correct "
                             + "rule for DIS-ACCT-GROUP-ID and an exact check there would reject the "
                             + "source's own fallback")

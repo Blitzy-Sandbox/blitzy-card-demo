@@ -11,11 +11,12 @@
  *               the control break key, the first-time flag, the cross
  *               reference, the two header dates and the stale amount -
  *               so two overlapping executions sharing one instance
- *               would mix one report's totals into another's. Finding
- *               F-008: both classes once carried @Component @StepScope
- *               while TransactionReportJob built them with new, so the
- *               bean definitions were never resolved and the
- *               annotations documented a binding that never happened.
+ *               would mix one report's totals into another's. Under
+ *               finding F-008 neither class may carry @Component or
+ *               @StepScope while TransactionReportJob constructs it
+ *               with new: nothing would resolve the bean definitions
+ *               and the annotations would document a binding that
+ *               never happens.
  *               These tests assert the annotations are absent, that
  *               neither class is a component-scan candidate, that
  *               neither holds static mutable state, and that
@@ -103,14 +104,14 @@ import org.springframework.stereotype.Component;
  * Verifies the ownership model of {@link TransactionReportProcessor} and
  * {@link TransactionBackupReader}, and that each report execution is isolated from every other.
  *
- * <p><strong>What changed, and why the assertions changed with it.</strong> Both classes once carried
- * {@code @Component} and {@code @StepScope} while their only consumer,
- * {@code com.cardemo.batch.jobs.TransactionReportJob}, constructed them with {@code new}. Nothing ever
- * resolved either bean, so the container published two definitions no production path used and the
- * annotations described a lifecycle that never ran - two ownership models for one type, which is finding
- * <strong>F-008</strong>. The annotations are removed and the job is the declared single owner, so an earlier
- * revision of this class asserting {@code @Component}, {@code @StepScope} and the presence of a
- * {@code scopedTarget.} bean definition was asserting the defect. Those assertions are inverted here.
+ * <p><strong>The ownership model, and why the assertions take this shape.</strong> Neither class may carry
+ * {@code @Component} or {@code @StepScope} while its only consumer,
+ * {@code com.cardemo.batch.jobs.TransactionReportJob}, constructs it with {@code new}: nothing would resolve
+ * either bean, so the container would publish two definitions no production path uses and the annotations
+ * would describe a lifecycle that never runs - two ownership models for one type, which is finding
+ * <strong>F-008</strong>. The job is the declared single owner, so asserting {@code @Component},
+ * {@code @StepScope} or the presence of a {@code scopedTarget.} bean definition would be asserting the
+ * defect. This class asserts their absence instead.
  *
  * <p><strong>Why the isolation guarantee still needs a test.</strong> Removing a scope only moves the
  * guarantee; it does not weaken it, <em>provided</em> two things hold. First, the owner must construct one

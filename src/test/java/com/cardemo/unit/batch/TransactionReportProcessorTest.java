@@ -494,7 +494,11 @@ class TransactionReportProcessorTest {
         stubCrossReference(CARD_B, ACCOUNT_B);
     }
 
-    /** @return every message this class's logger received. */
+    /**
+     * Reads back what the processor logged during the call under test.
+     *
+     * @return every message this class's logger received.
+     */
     private List<String> loggedMessages() {
         return appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
     }

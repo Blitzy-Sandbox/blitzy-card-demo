@@ -159,12 +159,13 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
  * constant is deliberately <em>not</em> restated anywhere in this file; the abend assertions check the
  * expanded status that reaches the abend payload instead.
  *
- * <p><strong>Two things are stated as unavailable rather than approximated.</strong> First, the
- * boundary-parity baseline is <em>Not available</em>. No captured legacy output exists anywhere in this
- * repository to compare a run against - a search for expected-output, baseline, golden, {@code .out} and
- * {@code sysout} artefacts finds only dataset <em>definition</em> job control and no recorded data. What
- * would be needed is one captured run of {@code app/cbl/CBACT04C.cbl} over a known input state, taken from
- * the system of record. A baseline regenerated from this implementation would show only that the
+ * <p><strong>Two things are stated as unavailable rather than approximated.</strong> First, there is no
+ * boundary-parity expectation for <em>this</em> job: the committed oracle under
+ * {@code src/test/resources/parity/gate1/} is derived from {@code app/cbl/CBTRN02C.cbl}, the posting
+ * program, and covers no interest output, while under {@code app/} a search for expected-output, baseline,
+ * golden, {@code .out} and {@code sysout} artefacts finds only dataset <em>definition</em> job control and
+ * no recorded data. So an interest baseline is <em>Not available</em>, and what would be needed is one
+ * captured run of {@code app/cbl/CBACT04C.cbl} over a known input state, taken from the system of record. A baseline regenerated from this implementation would show only that the
  * implementation agrees with itself, so none is written here and no expected bytes are invented. Second, the
  * unavailable-file status {@code '35'} is <em>Not available</em> as a behaviour to pin: neither that literal
  * nor the response code it corresponds to occurs anywhere in the COBOL corpus, so there is no source
@@ -1018,10 +1019,8 @@ class InterestCalculationJobTest extends AbstractBatchIntegrationTest {
                 .isEqualTo(lastSeededAccountId);
     }
 
-    // =================================================================================================
     // Helpers. Each exists because two or more tests need it; none hides an assertion a test should own,
     // and none holds state.
-    // =================================================================================================
 
     /**
      * Launches the job under test with the parameter {@code app/jcl/INTCALC.jcl:22} supplies.

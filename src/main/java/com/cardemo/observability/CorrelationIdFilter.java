@@ -84,13 +84,14 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * Because it is new capability, <strong>no part of it may be justified as "preserved for parity"</strong>,
  * and it contains no intentional no-op.
  *
- * <p>No global tally of retained no-ops is stated here. An earlier revision named "the three documented
- * sites"; that count is withdrawn, because several files each maintained their own tally by hand and they did
- * not agree - one said three and another five - which is what a hand-maintained census in a comment always
- * decays into. Severity of what that left in place: <strong>High</strong>. The governing rule instead is
+ * <p>No global tally of retained no-ops is stated here, and none may be added - not "the three documented
+ * sites", and not a corrected figure. A hand-maintained census in a comment decays: several files each keeping
+ * their own tally is how one comes to say three while another says five, with nothing to catch the
+ * disagreement. Severity of leaving such a tally in place: <strong>High</strong>. The governing rule instead
+ * is
  * per-artefact: <strong>a retained no-op is justified at its own declaration</strong>, where it must carry its
  * COBOL locator, a proof of reachability, an explicit intentional-no-op marker, and an acknowledgement that it
- * is owed an entry in the {@code DECISION_LOG.md}. The only claim this class makes is the local one:
+ * cites {@code DL-CR-01} in the {@code DECISION_LOG.md}. The only claim this class makes is the local one:
  * nothing in {@code com.cardemo.observability} carries such a marker, so anything here resembling dead code is
  * dead code.
  *
@@ -110,9 +111,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p><strong>Direct citation for {@code EIBTRNID}: Not available. Severity: Medium.</strong> What would be
  * needed to verify it is an {@code EIBTRNID} reference somewhere under {@code app/cbl/**} - and
  * <strong>there is none</strong>. A repository-wide search at {@code 7756d89} returns zero occurrences
- * inside {@code app/}, and the complete EIB field census of {@code app/cbl/**} is only
- * {@code EIBCALEN} (49 sites) and {@code EIBAID} (16 sites); there is no {@code EIBTRNID}, no
- * {@code EIBDATE} and no {@code EIBTIME}. No {@code app/...:Lnnn} locator is fabricated for it here,
+ * inside {@code app/}, and the complete EIB field census under {@code app/} is only two fields -
+ * {@code EIBCALEN} at 49 occurrences and {@code EIBAID} at 44, of which 16 are in {@code app/cbl/**} and
+ * the remaining 28 in the procedural copybook {@code app/cpy/CSSTRPFY.cpy}; there is no {@code EIBTRNID},
+ * no {@code EIBDATE}, no {@code EIBTIME} and no {@code EIBTRMID}. No {@code app/...:Lnnn} locator is fabricated for it here,
  * because a false citation is itself an evidence defect under Rule 1 Clause F. The severity is Medium
  * rather than High because the unverifiable citation affects documentation provenance only: it changes
  * nothing about this filter's behaviour.
@@ -131,7 +133,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <li>{@code EIBCALEN}, 49 sites, which gates COMMAREA presence. For example
  *       {@code app/cbl/COCRDLIC.cbl:L295} declares the COMMAREA as
  *       {@code OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN}.</li>
- *   <li>{@code EIBAID}, 16 sites, the attention identifier, evaluated from
+ *   <li>{@code EIBAID}, 44 sites across 13 files - 16 in the twelve programs that test it and 28 in the
+ *       procedural copybook they copy in - the attention identifier, evaluated from
  *       {@code app/cpy/CSSTRPFY.cpy:L22} onward ({@code WHEN EIBAID IS EQUAL TO DFHENTER}, then
  *       {@code DFHCLEAR}, {@code DFHPA1}, {@code DFHPA2}, {@code DFHPF1} and the rest).</li>
  *   <li>{@code app/cbl/COMEN01C.cbl:L153} - {@code XCTL PROGRAM(...)} carrying
@@ -201,11 +204,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * and the resulting 401 or 403 would be logged without one. But the ceiling is only half the constraint. Boot
  * also registers {@code ServerHttpObservationFilter} at {@code Ordered.HIGHEST_PRECEDENCE + 1}, and that filter
  * is what opens the server observation and with it the span this class tags. Running at
- * {@link Ordered#HIGHEST_PRECEDENCE} - as an earlier revision did - therefore ran <em>before</em> the span
- * existed, so {@link Tracer#currentSpan()} returned {@code null} on every request, no span was ever tagged and
- * the trace and span identifiers never reached the diagnostic context. Nothing failed and nothing was logged
- * about it, because a null span is a legitimate state this class handles deliberately; the symptom was an
- * always-empty {@code traceId} that read as "tracing is off". Severity: <strong>High</strong>. The window
+ * {@link Ordered#HIGHEST_PRECEDENCE} would therefore run <em>before</em> the span
+ * exists, so {@link Tracer#currentSpan()} would return {@code null} on every request, no span would be tagged
+ * and the trace and span identifiers would never reach the diagnostic context. Nothing would fail and nothing
+ * would be logged about it, because a null span is a legitimate state this class handles deliberately; the
+ * symptom is an
+ * always-empty {@code traceId} that reads as "tracing is off". Severity: <strong>High</strong>. The window
  * between the two registrations is exactly one order value wide, and {@link #ORDER} sits inside it.
  *
  * <h2>Stateless by construction: no session, no server-side state</h2>
@@ -269,9 +273,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p><strong>That guarantee stops at a thread boundary, and at a process boundary it never held at all.</strong>
  * Across an executor hand-off, an asynchronous dispatch, a parallel stream or a Spring Batch worker thread the
  * context does not propagate automatically; and an outbound HTTP request carries no diagnostic context
- * whatsoever, because a thread-local is not a wire format. An earlier revision named the second of these as
- * something the AWS configuration would do and provided nothing for it to do it with, which left the identifier
- * ending at the edge of this process. Severity: <strong>High</strong>.
+ * whatsoever, because a thread-local is not a wire format. Naming the second of these as
+ * something the AWS configuration does, while providing nothing for it to do it with, leaves the identifier
+ * ending at the edge of this process. Severity of that: <strong>High</strong>.
  *
  * <p>Two published methods close both boundaries, and they are the whole propagation surface:
  *
@@ -560,13 +564,13 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
     /**
      * The W3C Trace Context header name, {@value} - lowercase, as that specification requires.
      *
-     * <p><strong>Finding M-07, severity Medium.</strong> Outbound propagation used to carry only this
+     * <p><strong>Finding M-07, severity Medium.</strong> Outbound propagation that carries only this
      * application's own {@value #CORRELATION_ID_HEADER}, plus a pair of bespoke {@code X-Trace-Id} and
-     * {@code X-Span-Id} message headers on the report publish. Those three name identifiers; none of them
-     * <em>establishes parentage</em>, because no consumer outside this repository knows to look for them. A
+     * {@code X-Span-Id} message headers on the report publish, names identifiers without
+     * <em>establishing parentage</em>, because no consumer outside this repository knows to look for them. A
      * downstream that receives them starts a fresh, unparented trace, so the very hop the tracing exists to
      * show - the request that produced a queue message, joined to the batch run that consumed it - is the one
-     * hop that could not be reconstructed. {@code traceparent} is the interoperable form: every OpenTelemetry
+     * hop that cannot be reconstructed. {@code traceparent} is the interoperable form: every OpenTelemetry
      * and Micrometer Tracing consumer extracts it without being told to.
      *
      * <p>It is a published contract constant, declared once here alongside the diagnostic-context keys it is

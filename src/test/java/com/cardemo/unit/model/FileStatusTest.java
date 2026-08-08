@@ -316,6 +316,8 @@ final class FileStatusTest {
             "counter", "timer", "tracer", "span", "metric");
 
     /**
+     * Composes the rejection message the enumeration is required to raise, verbatim.
+     *
      * @param offendingValue the value that was rejected, rendered as {@code null} when it was null
      * @return the complete expected message, never {@code null}
      */

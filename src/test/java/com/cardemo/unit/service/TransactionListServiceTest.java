@@ -1,5 +1,5 @@
 /*
- * ****************************************************************************
+ * ******************************************************************
  * Program     : TransactionListServiceTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
@@ -13,13 +13,13 @@
  *               the edited amount mask of :56 including its deliberate loss of
  *               a ninth integer digit, and the rule that a full card number
  *               never reaches a log, a projection or an exception message.
- * Source      : app/cbl/COTRN00C.cbl (699 lines, 16 paragraphs)
+ * Source      : app/cbl/COTRN00C.cbl (699 lines, 16 own paragraph labels)
  *               app/cpy-bms/COTRN00.CPY   (59 input fields, PAGENUMI X(8) :60)
  *               app/cpy/CVTRA05Y.cpy      (TRAN-RECORD, TRAN-AMT S9(09)V99)
  *               app/cpy/COCOM01Y.cpy      (47 lines, no pagination fields)
  *               app/cbl/CBACT04C.cbl:1-21 (the banner reproduced above)
  *               CONTRIBUTING.md:33-34, NOTICE @ 7756d89
- * ****************************************************************************
+ * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
  *
@@ -34,7 +34,7 @@
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
- * ****************************************************************************
+ * ******************************************************************
  */
 package com.cardemo.unit.service;
 
@@ -324,7 +324,7 @@ final class TransactionListServiceTest {
 
     /**
      * The four-character rendering of {@link #IO_FAILURE_STATUS}. The {@code '9x'} arm of
-     * {@code 9910-DISPLAY-IO-STATUS} at {@code app/cbl/CBTRN02C.cbl:L714-L731} copies the first byte
+     * {@code 9910-DISPLAY-IO-STATUS} at {@code app/cbl/CBTRN02C.cbl:L714-L727} copies the first byte
      * through and expands the second into three digits of its <em>binary</em> value, so the
      * {@code '0'} byte becomes {@code 048} rather than {@code 000}.
      */
@@ -404,22 +404,45 @@ final class TransactionListServiceTest {
 
     // ------------------------------------------------------------------ fixtures
 
-    /** Renders {@code n} as a sixteen-character {@code TRAN-ID PIC X(16)} value. */
+    /**
+     * Renders {@code n} as a sixteen-character {@code TRAN-ID PIC X(16)} value.
+     * @param n the ordinal to render.
+     * @return the sixteen-character identifier.
+     */
     private static String id(final int n) {
         return String.format(Locale.ROOT, "%016d", n);
     }
 
+    /**
+     * Builds one transaction with the canonical amount, description and originating timestamp.
+     *
+     * @param n the ordinal the sixteen-character identifier is derived from.
+     * @return the transaction.
+     */
     private static Transaction tx(final int n) {
         return tx(n, new BigDecimal("123.45"), "DESCRIPTION " + n, ORIG_TS);
     }
 
+    /**
+     * Builds one transaction, varying the three fields a case needs to vary.
+     *
+     * @param n the ordinal the sixteen-character identifier is derived from.
+     * @param amount the {@code TRAN-AMT}.
+     * @param description the {@code TRAN-DESC}.
+     * @param origTs the {@code TRAN-ORIG-TS}.
+     * @return the transaction.
+     */
     private static Transaction tx(final int n, final BigDecimal amount, final String description,
             final String origTs) {
         return new Transaction(id(n), "01", 5, "POS       ", description, amount, 123L,
                 "ACME", "SEATTLE", "12345-0001", CARD, origTs, PROC_TS);
     }
 
-    /** {@code count} records with ascending keys, as an ascending browse window would yield. */
+    /**
+     * {@code count} records with ascending keys, as an ascending browse window would yield.
+     * @param count how many records the window holds.
+     * @return the records, ascending by key.
+     */
     private static List<Transaction> ascending(final int count) {
         final List<Transaction> rows = new ArrayList<>();
         for (int n = 1; n <= count; n++) {
@@ -428,7 +451,12 @@ final class TransactionListServiceTest {
         return rows;
     }
 
-    /** {@code count} records descending from {@code highest}, as a backward browse would yield. */
+    /**
+     * {@code count} records descending from {@code highest}, as a backward browse would yield.
+     * @param highest the key the window starts from.
+     * @param count how many records the window holds.
+     * @return the records, descending by key.
+     */
     private static List<Transaction> descendingFrom(final int highest, final int count) {
         final List<Transaction> rows = new ArrayList<>();
         for (int n = 0; n < count; n++) {
@@ -437,24 +465,40 @@ final class TransactionListServiceTest {
         return rows;
     }
 
-    /** Stubs the inclusive ascending finder, the bound ENTER uses because it never primes. */
+    /**
+     * Stubs the inclusive ascending finder, the bound ENTER uses because it never primes.
+     * @param rows the rows the inclusive ascending finder is to return.
+     */
     private void stubInclusive(final List<Transaction> rows) {
         when(repository.findByTransactionIdGreaterThanEqualOrderByTransactionIdAsc(any(), any()))
                 .thenReturn(new SliceImpl<>(rows));
     }
 
-    /** Stubs the exclusive ascending finder, the bound PF8 uses because it primes past the anchor. */
+    /**
+     * Stubs the exclusive ascending finder, the bound PF8 uses because it primes past the anchor.
+     * @param rows the rows the exclusive ascending finder is to return.
+     */
     private void stubExclusive(final List<Transaction> rows) {
         when(repository.findByTransactionIdGreaterThanOrderByTransactionIdAsc(any(), any()))
                 .thenReturn(new SliceImpl<>(rows));
     }
 
-    /** Stubs the descending finder, the bound PF7 uses. */
+    /**
+     * Stubs the descending finder, the bound PF7 uses.
+     * @param rows the rows the descending finder is to return.
+     */
     private void stubDescending(final List<Transaction> rows) {
         when(repository.findByTransactionIdLessThanOrderByTransactionIdDesc(any(), any()))
                 .thenReturn(new SliceImpl<>(rows));
     }
 
+    /**
+     * Builds a selection column carrying one flag in one slot and nothing in the other nine.
+     *
+     * @param oneBasedSlot the row slot the flag sits in, one through ten.
+     * @param flag the selection character to place there.
+     * @return the ten selection values, in slot order.
+     */
     private static List<String> selectors(final int oneBasedSlot, final String flag) {
         final String[] flags = new String[PAGE_SIZE];
         Arrays.fill(flags, "");
@@ -462,6 +506,11 @@ final class TransactionListServiceTest {
         return Arrays.asList(flags);
     }
 
+    /**
+     * The ten identifiers a full first page renders, ascending.
+     *
+     * @return the identifiers of records one through ten.
+     */
     private static List<String> displayedIds() {
         final List<String> ids = new ArrayList<>();
         for (int n = 1; n <= PAGE_SIZE; n++) {
@@ -470,6 +519,11 @@ final class TransactionListServiceTest {
         return ids;
     }
 
+    /**
+     * The ten empty identifiers a page with no rows renders.
+     *
+     * @return ten empty strings, one per row slot.
+     */
     private static List<String> blankIds() {
         final List<String> ids = new ArrayList<>();
         for (int n = 0; n < PAGE_SIZE; n++) {
@@ -478,6 +532,12 @@ final class TransactionListServiceTest {
         return ids;
     }
 
+    /**
+     * Projects the rendered page onto its identifiers, so a row order is asserted without row noise.
+     *
+     * @param screen the rendered screen.
+     * @return the identifier of each of the ten row slots, in slot order.
+     */
     private static List<String> rowIds(final TransactionListScreen screen) {
         final List<String> ids = new ArrayList<>();
         for (final TransactionDto.TransactionListRow row : screen.page().getRows()) {
@@ -486,30 +546,51 @@ final class TransactionListServiceTest {
         return ids;
     }
 
-    /** Submits an ENTER turn carrying only a search key, from the initial browse position. */
+    /**
+     * Submits an ENTER turn carrying only a search key, from the initial browse position.
+     * @param searchKey the sixteen-character key the turn carries, blank for none.
+     * @return the rendered screen.
+     */
     private TransactionListScreen enter(final String searchKey) {
         return service.submitScreen(AttentionIdentifier.ENTER, searchKey, List.of(), List.of(),
                 TransactionListState.initial());
     }
 
-    /** Submits a PF8 turn from a carried position. */
+    /**
+     * Submits a PF8 turn from a carried position.
+     * @param state the carried browse position the PF8 turn resumes from.
+     * @return the rendered screen.
+     */
     private TransactionListScreen pageForward(final TransactionListState state) {
         return service.submitScreen(AttentionIdentifier.PF8, null, List.of(), List.of(), state);
     }
 
-    /** Submits a PF7 turn from a carried position. */
+    /**
+     * Submits a PF7 turn from a carried position.
+     * @param state the carried browse position the PF7 turn resumes from.
+     * @return the rendered screen.
+     */
     private TransactionListScreen pageBackward(final TransactionListState state) {
         return service.submitScreen(AttentionIdentifier.PF7, null, List.of(), List.of(), state);
     }
 
-    /** Renders one single-row page and returns the screen, for the projection assertions. */
+    /**
+     * Renders one single-row page and returns the screen, for the projection assertions.
+     * @param amount the row's signed amount.
+     * @param description the row's hundred-character description.
+     * @param origTs the row's twenty-six-character originating timestamp.
+     * @return the rendered single-row screen.
+     */
     private TransactionListScreen single(final BigDecimal amount, final String description,
             final String origTs) {
         stubInclusive(List.of(tx(1, amount, description, origTs)));
         return service.openList();
     }
 
-    /** Captures the anchor key the service passed to the inclusive ascending finder. */
+    /**
+     * Captures the anchor key the service passed to the inclusive ascending finder.
+     * @return the anchor key captured from the inclusive ascending finder.
+     */
     private String capturedInclusiveKey() {
         final ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(repository).findByTransactionIdGreaterThanEqualOrderByTransactionIdAsc(key.capture(),
@@ -1864,12 +1945,20 @@ final class TransactionListServiceTest {
             assertThat(TransactionDto.LIST_ROW_FIELD_COUNT).isEqualTo(5);
         }
 
-        /** Renders one amount through the service and returns the edited string it produced. */
+        /**
+         * Renders one amount through the service and returns the edited string it produced.
+         * @param amount the signed amount to render.
+         * @return the edited string the service produced for it.
+         */
         private String amountOf(final BigDecimal amount) {
             return single(amount, "DESC", ORIG_TS).page().getRows().get(0).amount();
         }
 
-        /** Renders one originating timestamp through the service and returns the projected date. */
+        /**
+         * Renders one originating timestamp through the service and returns the projected date.
+         * @param origTs the twenty-six-character originating timestamp to render.
+         * @return the ten-character projected date the service produced.
+         */
         private String dateOf(final String origTs) {
             return single(new BigDecimal("1.00"), "DESC", origTs).page().getRows().get(0)
                     .transactionDate();

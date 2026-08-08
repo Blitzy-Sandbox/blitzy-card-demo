@@ -5,7 +5,7 @@
  * Type        : Spring Service Bean (online)
  * Function    : Account update - dual-dataset write with snapshot
  *               change detection for CICS transaction CAUP.
- * Source      : app/cbl/COACTUPC.cbl (4,236 lines, 88 paragraphs) @ 7756d89
+ * Source      : app/cbl/COACTUPC.cbl (4,236 lines, 85 own / 87 mapped paragraph labels) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -57,6 +57,7 @@ import com.cardemo.model.entity.Customer;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
+import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.shared.DateValidationService;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.service.shared.ValidationLookupService;
@@ -270,9 +271,10 @@ import com.cardemo.service.shared.ValidationLookupService;
  * <h2>6. Preserved-defect register</h2>
  *
  * <p>These are faults of the system of record. Behavioural parity is the contract of this migration, so each is
- * <strong>reproduced, not repaired</strong>. Each is tracked here, and is owed an entry in the
- * {@code DECISION_LOG.md} and a row in the {@code TRACEABILITY_MATRIX.md}, which is what distinguishes
- * it from the untracked dead code Rule 1 Clause B forbids.
+ * <strong>reproduced, not repaired</strong>. Each is tracked here and held in
+ * {@code DECISION_LOG.md} under a {@code DL-LD-*} identifier, with its rows in
+ * {@code TRACEABILITY_MATRIX.md}, which is what distinguishes it from the untracked dead code
+ * Rule 1 Clause B forbids.
  *
  * <ul>
  *   <li><strong>D1 - BLOCKER, correctness. A customer-lock failure is reported as success.</strong>
@@ -321,7 +323,8 @@ import com.cardemo.service.shared.ValidationLookupService;
  *       {@code COPY 'CSSTRPFY'} at {@code :4199}, is the final Area A construct of the
  *       program.</strong> Verified by reading {@code :4227-4236}: after {@code :4232} only the
  *       terminating period at {@code :4233} and a version comment remain. The widely repeated claim
- *       that {@code :4199} is last is wrong and is owed a correction in the {@code DECISION_LOG.md}.</li>
+ *       that {@code :4199} is last is wrong, and the correction is registered as
+ *       {@code CIT-COACTUPC-LAST-AREA-A} under {@code DL-CR-09} in the {@code DECISION_LOG.md}.</li>
  *   <li><strong>D7 - LOW, hygiene. Three declared condition names are never referenced.</strong>
  *       {@code DID-NOT-FIND-ACCTCARD-COMBO} ({@code :515}), {@code XREF-READ-ERROR} ({@code :525})
  *       and {@code CODING-TO-BE-DONE} ({@code :527}) each occur exactly once, at their declaration.
@@ -349,8 +352,8 @@ import com.cardemo.service.shared.ValidationLookupService;
  * <h2>7. Mechanism substitutions</h2>
  *
  * <p>Each of these replaces a legacy construct with a framework mechanism. None changes behaviour, and
- * each is owed an entry in the {@code DECISION_LOG.md} so that a reviewer comparing the two sources does not
- * conclude something was lost.
+ * each is held in the {@code DECISION_LOG.md} under a {@code DL-MS-*} identifier, so that a reviewer
+ * comparing the two sources does not conclude something was lost.
  *
  * <ul>
  *   <li><strong>One transaction reproduces the asymmetric rollback.</strong> The source rolls back
@@ -450,11 +453,9 @@ public class AccountUpdateService {
      */
     private static final Logger LOG = LoggerFactory.getLogger(AccountUpdateService.class);
 
-    // ------------------------------------------------------------------------------------------------
     // WS-LITERALS, declared at :532-612. Every literal the program uses is hoisted here with the line
     // that declares it, so that a parity comparison has a single place to check and so that no literal
     // is spelled twice.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code LIT-THISPGM PIC X(8) VALUE 'COACTUPC'}, {@code :533-534}. */
     private static final String PROGRAM_NAME = "COACTUPC";
@@ -501,9 +502,7 @@ public class AccountUpdateService {
     /** {@code LIT-NUMBERS PIC X(10) VALUE '0123456789'}, {@code :591-592}. */
     private static final String DIGITS = "0123456789";
 
-    // ------------------------------------------------------------------------------------------------
     // Screen titles, from app/cpy/COTTL01Y.cpy which the program COPYs at :620. Both are PIC X(40).
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code CCDA-TITLE01}: the product banner, forty characters exactly. */
     private static final String SCREEN_TITLE_01 = "      AWS Mainframe Modernization       ";
@@ -511,10 +510,8 @@ public class AccountUpdateService {
     /** {@code CCDA-TITLE02}: the application banner, forty characters exactly. */
     private static final String SCREEN_TITLE_02 = "              CardDemo                  ";
 
-    // ------------------------------------------------------------------------------------------------
     // WS-INFO-MSG PIC X(40) and its condition names, :463-477. These are the informational prompts
     // 3250-SETUP-INFOMSG selects between.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code 88 FOUND-ACCOUNT-DATA}, {@code :466-467}. */
     private static final String INFO_FOUND_ACCOUNT_DATA = "Details of selected account shown above";
@@ -534,7 +531,6 @@ public class AccountUpdateService {
     /** {@code 88 INFORM-FAILURE}, {@code :476-477}. */
     private static final String INFO_INFORM_FAILURE = "Changes unsuccessful. Please try again";
 
-    // ------------------------------------------------------------------------------------------------
     // WS-RETURN-MSG PIC X(75) and its condition names, :479-528.
     //
     // These condition names are NOT boolean flags. They are eighty-eight levels on a single PIC X(75)
@@ -542,7 +538,6 @@ public class AccountUpdateService {
     // the field against the literal. That is why the post-write dispatch of :2606-2615 is a sequence of
     // string comparisons and why the first-error-wins latch of IF WS-RETURN-MSG-OFF matters: a second
     // SET would otherwise overwrite the first message and change which condition the dispatch matches.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code 88 WS-RETURN-MSG-OFF VALUE SPACES}, {@code :480}: the latch's "no message pending" state. */
     private static final String RETURN_MESSAGE_OFF = "";
@@ -660,11 +655,9 @@ public class AccountUpdateService {
      */
     private static final String CODING_TO_BE_DONE_MESSAGE = "Looks Good.... so far";
 
-    // ------------------------------------------------------------------------------------------------
     // Edit-message fragments. The source builds each message with
     //   STRING FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) '<suffix>' DELIMITED BY SIZE INTO WS-RETURN-MSG
     // so the suffixes below are concatenated onto the trimmed field label.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code 1215-EDIT-MANDATORY}, {@code :1838-1842}. */
     private static final String SUFFIX_MUST_BE_SUPPLIED = " must be supplied.";
@@ -764,10 +757,8 @@ public class AccountUpdateService {
      */
     private static final String INVALID_ZIP_FOR_STATE_MESSAGE = "Invalid zip code for state";
 
-    // ------------------------------------------------------------------------------------------------
     // WS-EDIT-VARIABLE-NAME PIC X(25), :53. The field labels 1200-EDIT-MAP-INPUTS moves into the shared
     // edit variable before each PERFORM, in the exact order the source performs them.
-    // ------------------------------------------------------------------------------------------------
 
     /** Label used for the account status edit, {@code :1451}. */
     private static final String LABEL_ACCOUNT_STATUS = "Account Status";
@@ -884,11 +875,9 @@ public class AccountUpdateService {
     private static final String UNSTORABLE_UPDATE_IMAGE_MESSAGE =
             "One or more submitted values cannot be stored. Re-fetch the account and resubmit every field.";
 
-    // ------------------------------------------------------------------------------------------------
     // Abend vocabulary. app/cpy/CSMSG02Y.cpy - internally titled CABENDD.CPY - declares
     // ABEND-CODE PIC X(4), ABEND-CULPRIT PIC X(8), ABEND-REASON PIC X(50) and ABEND-MSG PIC X(72),
     // together 134 bytes, all VALUE SPACES. The program COPYs it at :632.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code MOVE 'UNEXPECTED DATA SCENARIO' TO ABEND-MSG}, {@code :2637-2638}. */
     private static final String UNEXPECTED_DATA_SCENARIO_MESSAGE = "UNEXPECTED DATA SCENARIO";
@@ -911,11 +900,9 @@ public class AccountUpdateService {
      */
     private static final String ONLINE_ABEND_CODE = "9999";
 
-    // ------------------------------------------------------------------------------------------------
     // WS-FILE-ERROR-MESSAGE, the eighty-byte group declared at :383-407. Twelve, eight, four, nine,
     // fifteen, ten, seven, ten and five bytes, summing to exactly eighty. The MOVE into
     // WS-RETURN-MSG PIC X(75) truncates the trailing five.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code FILLER PIC X(12) VALUE 'File Error: '}, {@code :384-385}. */
     private static final String FILE_ERROR_PREFIX = "File Error: ";
@@ -957,9 +944,7 @@ public class AccountUpdateService {
      */
     private static final String OPERATION_REWRITE = "REWRITE";
 
-    // ------------------------------------------------------------------------------------------------
     // Diagnostic message fragments assembled by the three read paragraphs' DFHRESP(NOTFND) branches.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code 9200} and {@code 9300}, the leading fragment. */
     private static final String MESSAGE_ACCOUNT_PREFIX = "Account:";
@@ -988,11 +973,9 @@ public class AccountUpdateService {
     /** {@code 9400}, the reason fragment; upper case here, unlike {@code 9200} and {@code 9300}. */
     private static final String MESSAGE_REASON_UPPER = " REAS:";
 
-    // ------------------------------------------------------------------------------------------------
     // CICS RESP ordinals and the file statuses they bridge to. FileStatusMapper is keyed on the
     // two-character FILE STATUS of the batch corpus, and this program reports the online RESP instead,
     // so each read records both: the ordinal for the diagnostic message and the status for the mapper.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code DFHRESP(NORMAL)}, ordinal zero. */
     private static final int CICS_RESP_NORMAL = 0;
@@ -1022,10 +1005,8 @@ public class AccountUpdateService {
      */
     private static final String IO_STATUS_IO_ERROR = "90";
 
-    // ------------------------------------------------------------------------------------------------
     // Field widths, all from the record layouts and the symbolic map. Reproduced as constants because a
     // MOVE truncates silently at the receiving field's width and Java does not.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code ACCT-ID PIC 9(11)}, {@code app/cpy/CVACT01Y.cpy:L5}. */
     private static final int ACCOUNT_ID_LENGTH = 11;
@@ -1120,9 +1101,7 @@ public class AccountUpdateService {
     /** {@code CDEMO-LAST-MAP PIC X(7)} and {@code CDEMO-LAST-MAPSET PIC X(7)}. */
     private static final int LAST_MAP_LENGTH = 7;
 
-    // ------------------------------------------------------------------------------------------------
     // Numeric and date shape constants.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code ACCT-CURR-BAL PIC S9(10)V99} and its four siblings: two decimal places. */
     private static final int MONEY_SCALE = 2;
@@ -1178,11 +1157,9 @@ public class AccountUpdateService {
     /** How many trailing characters of a masked identifier stay visible in a log line. */
     private static final int MASK_VISIBLE_DIGITS = 4;
 
-    // ------------------------------------------------------------------------------------------------
     // Screen attribute names, from the CICS-supplied copybooks DFHBMSCA (:615) and DFHAID (:616). Those
     // copybooks are supplied by the transaction monitor, are absent from this repository and get no Java
     // import; their values travel as names so a client can render them without a 3270.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code DFHBMFSE}: unprotected with the modified-data tag forced on. */
     private static final String ATTRIBUTE_UNPROTECTED_FSET = "DFHBMFSE";
@@ -1252,15 +1229,30 @@ public class AccountUpdateService {
      * request. The group is mandatory because {@code 9700-CHECK-CHANGE-IN-REC} has nothing to compare
      * against without it.
      */
-    private static final String OLD_DETAILS_FIELD = "oldDetails";
+    private static final String OLD_DETAILS_FIELD = "snapshot";
+
+    /**
+     * The operation kind the as-displayed snapshot is sealed under.
+     *
+     * <p>Authenticated additional data, so a token sealed for the card update - or for a browse cursor -
+     * cannot be presented here, and one sealed here cannot be presented there.</p>
+     */
+    private static final String SNAPSHOT_KIND = "account-update-snapshot";
+
+    /**
+     * The record key a snapshot is opened against when the request addresses no account.
+     *
+     * <p>Deliberately a value {@code 1210-EDIT-ACCOUNT} could never have accepted - it is not eleven digits -
+     * so no read can ever have sealed a snapshot under it and any snapshot presented with no account
+     * identifier is refused.</p>
+     */
+    private static final String NO_ACCOUNT_ADDRESSED = "-";
 
     /** The field name reported for screen field {@code ACCTSIDI}, edited by {@code 1210-EDIT-ACCOUNT}. */
     private static final String ACCOUNT_FILTER_FIELD = "accountId";
 
-    // ------------------------------------------------------------------------------------------------
     // Header formats. app/cpy/CSDAT01Y.cpy, COPYed at :626, separates the date parts with '/' and the
     // time parts with ':'; CURDATE is eight bytes and CURTIME is eight.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code WS-CURDATE-MONTH '/' WS-CURDATE-DAY '/' WS-CURDATE-YEAR(3:2)}, {@code :2681-2686}. */
     private static final DateTimeFormatter HEADER_DATE_FORMAT =
@@ -1270,11 +1262,9 @@ public class AccountUpdateService {
     private static final DateTimeFormatter HEADER_TIME_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT);
 
-    // ------------------------------------------------------------------------------------------------
     // Date component offsets. The three account dates and the live date of birth are PIC X(10) text in
     // YYYY-MM-DD form, so 9500-STORE-FETCHED-DATA and 9700-CHECK-CHANGE-IN-REC address them at (1:4),
     // (6:2) and (9:2). Expressed here as zero-based Java offsets.
-    // ------------------------------------------------------------------------------------------------
 
     /** COBOL {@code (1:4)} - the four-digit year. {@code :3832}, {@code :4127}. */
     private static final int DATE_YEAR_OFFSET = 0;
@@ -1292,11 +1282,9 @@ public class AccountUpdateService {
     private static final int DATE_PART_LENGTH = 2;
 
 
-    // ------------------------------------------------------------------------------------------------
     // The terminal CICS abend code of ABEND-ROUTINE, distinct from the CABENDD payload ABEND-CODE that
     // 2000-DECIDE-ACTION sets to '0001', and distinct again from the batch 999 / RC 12 that
     // FatalProcessingException declares for CBTRN02C's CEE3ABD path.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code EXEC CICS ABEND ABCODE('9999')}, {@code :4221}. Four characters, filling {@code PIC X(4)}. */
     private static final String TERMINAL_ABEND_CODE = "9999";
@@ -1320,19 +1308,18 @@ public class AccountUpdateService {
     /** Remediation text for a write submitted without the {@code ACUP-OLD-DETAILS} snapshot. */
     private static final String OLD_DETAILS_REQUIRED_MESSAGE =
             "The ACUP-OLD-DETAILS snapshot of app/cbl/COACTUPC.cbl:669 is required: "
-                    + "9700-CHECK-CHANGE-IN-REC compares the live record against it field by field.";
+                    + "9700-CHECK-CHANGE-IN-REC compares the live record against it field by field. Read the "
+                    + "account and send back the sealed snapshot value that read returns.";
 
     /** {@code LIT-CCLISTMAPSET}, tested at {@code :3171} to restore the account field's default colour. */
     private static final String MENU_CARD_LIST_MAPSET = "COCRDLI";
 
 
-    // ------------------------------------------------------------------------------------------------
     // Screen field names, taken verbatim from the symbolic map app/cpy-bms/COACTUP.CPY so that the
     // attribute, colour and cursor maps this bean returns are keyed exactly as the legacy map names them.
     // The trailing suffix letter of the COBOL name - I, O, A, C or L - identifies the sub-field within
     // each generated quintuple and is deliberately NOT part of these keys: one key names one screen
     // field, and the attribute, colour and cursor maps distinguish the aspect.
-    // ------------------------------------------------------------------------------------------------
 
     /** {@code ACCTSID} - the account filter, the only field enterable on a first turn. */
     private static final String FIELD_ACCOUNT_ID = "ACCTSID";
@@ -1524,9 +1511,7 @@ public class AccountUpdateService {
 
 
 
-    // ------------------------------------------------------------------------------------------------
     // Collaborators. Eight, all final, all constructor-injected, none static.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Access point for {@code CCXREF} through its account path {@code CXACAIX}, resolving the account
@@ -1569,6 +1554,18 @@ public class AccountUpdateService {
     private final Clock clock;
 
     /**
+     * The sealer of the as-displayed snapshot, standing in for the storage lifetime
+     * {@code WS-THIS-PROGCOMMAREA} at {@code app/cbl/COACTUPC.cbl:652} provided between the two turns of the
+     * pseudo-conversation.
+     *
+     * <p>It is what makes {@code ACUP-OLD-DETAILS} carriable on a stateless request without becoming
+     * caller-controlled. The read entry point seals the group this service itself projected; the write entry
+     * point opens it and compares that recovered group, never a group taken from the request body - which is
+     * why {@code com.cardemo.model.dto.AccountUpdateRequest} declares no such member.</p>
+     */
+    private final SnapshotTokenService snapshotTokenService;
+
+    /**
      * Constructs the bean. Constructor injection is the only injection form used: there is no field
      * {@code @Autowired}, no setter injection, no service-locator lookup and no {@code ApplicationContext}
      * access anywhere in this class, which is what Rule 1 Clause B requires when it asks that global mutable
@@ -1576,7 +1573,7 @@ public class AccountUpdateService {
      * <p>The body is pure field assignment. No overridable method is invoked and {@code this} does not
      * escape, so the compiler's {@code this-escape} analysis - fatal under {@code -Werror} - has nothing to
      * report.</p>
-     * <p><strong>Seven collaborators are taken, two more than the sibling
+     * <p><strong>Eight collaborators are taken, three more than the sibling
      * {@code AccountViewService}, and the difference is grounded in the two programs' copybook sets rather
      * than in preference.</strong> A census of the {@code WORKING-STORAGE SECTION} of
      * {@code app/cbl/COACTUPC.cbl} finds {@code COPY 'CSUTLDWY'} at {@code :166} and
@@ -1621,6 +1618,12 @@ public class AccountUpdateService {
      *                                     clock is what makes the header projection deterministic and
      *                                     testable; {@code LocalDate.now()} and
      *                                     {@code LocalDateTime.now()} with no argument are never called
+     * @param snapshotTokenService         the sealer of {@code ACUP-OLD-DETAILS}, which stands in for the
+     *                                     {@code WS-THIS-PROGCOMMAREA} storage lifetime of {@code :652}. The
+     *                                     eighth collaborator, and the one transformation Rule 7 forces: the
+     *                                     snapshot has to survive between two stateless requests without
+     *                                     becoming something the caller can read or rewrite; must not be
+     *                                     {@code null}
      */
     public AccountUpdateService(final CardCrossReferenceRepository cardCrossReferenceRepository,
                                 final AccountRepository accountRepository,
@@ -1628,7 +1631,8 @@ public class AccountUpdateService {
                                 final FileStatusMapper fileStatusMapper,
                                 final DateValidationService dateValidationService,
                                 final ValidationLookupService validationLookupService,
-                                final Clock clock) {
+                                final Clock clock,
+                                final SnapshotTokenService snapshotTokenService) {
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
@@ -1636,6 +1640,7 @@ public class AccountUpdateService {
         this.dateValidationService = dateValidationService;
         this.validationLookupService = validationLookupService;
         this.clock = clock;
+        this.snapshotTokenService = snapshotTokenService;
     }
 
     /**
@@ -1647,7 +1652,7 @@ public class AccountUpdateService {
      * The legacy program treats each as a control path that sets a field-error state and renders a
      * diagnostic into {@code WS-RETURN-MSG}, and that is reproduced exactly. Every typed exception the
      * situation warrants is nonetheless constructed and retained on the request context, so nothing is
-     * swallowed; {@link #updateAccount(AccountUpdateRequest)} rethrows it.</p>
+     * swallowed; {@link #updateAccount(AccountUpdateRequest, String)} rethrows it.</p>
      * <p>The transaction boundary is declared here rather than deeper, and it is unconditional. It spans
      * the account rewrite of {@code :4065-4071} and the customer rewrite of {@code :4085-4091} as one unit
      * of work, which is what reproduces the source's asymmetric rollback without a single conditional: on
@@ -1740,19 +1745,26 @@ public class AccountUpdateService {
      * through {@code WHEN OTHER} and is reported as {@code ACUP-CHANGES-OKAYED-AND-DONE} - a top-level
      * success. This method reproduces that, because parity is the contract. The internal outcome stays
      * distinguishable on the result and in the structured log; the reported outcome does not.</p>
-     * @param request the submitted map - the fifty-four screen fields and <b>both</b> snapshot groups; must
-     *                not be {@code null}. Its {@code oldDetails} group carries {@code ACUP-OLD-DETAILS} as
-     *                the preceding read projected it and is what {@code 9700-CHECK-CHANGE-IN-REC} compares
-     *                the live record against, field by field. Without it the change detection has nothing
-     *                to compare against, and silently skipping the comparison would forfeit the guarantee
-     *                the source provides, so an absent group is reported as a {@code ValidationException}
-     *                naming {@code oldDetails} rather than treated as "nothing changed"
+     * @param request the submitted map - the fifty-four screen fields, the {@code newDetails} group and the
+     *                sealed {@code snapshot} member; must not be {@code null}. The sealed member carries
+     *                {@code ACUP-OLD-DETAILS} as the preceding read projected it, and the group recovered
+     *                from it is what {@code 9700-CHECK-CHANGE-IN-REC} compares the live record against, field
+     *                by field. Without it the change detection has nothing to compare against, and silently
+     *                skipping the comparison would forfeit the guarantee the source provides, so an absent
+     *                value is reported rather than treated as "nothing changed"
+     * @param subject the authenticated principal, which the sealed snapshot is bound to. A snapshot issued to
+     *                one operator will not open for another, so evidence of what was displayed cannot be
+     *                borrowed; must not be {@code null} or blank
      * @return the projected outcome, whose {@link AccountUpdateResult#changeAction()} carries the
      *         {@code ACUP} marker the next turn must echo; never {@code null}
-     * @throws ValidationException        when the payload or its snapshot group is missing, or when any of
-     *                                    the fifty-four field edits rejects its input. The exception
-     *                                    carries the offending field name and, through
-     *                                    {@code FailureKind}, whether the value was blank or wrong
+     * @throws IllegalArgumentException   when {@code subject} is {@code null} or blank, which is a wiring
+     *                                    defect rather than a request outcome: the route this method serves
+     *                                    is authenticated, so a principal is always present by the time it
+     *                                    is reached
+     * @throws ValidationException        when the payload is missing, or when any of the fifty-four field
+     *                                    edits rejects its input. The exception carries the offending field
+     *                                    name and, through {@code FailureKind}, whether the value was blank
+     *                                    or wrong
      * @throws ConcurrentUpdateException  with {@code Outcome.COULD_NOT_LOCK_ACCOUNT} when the account
      *                                    read-for-update fails at {@code :3907-3915}, with
      *                                    {@code Outcome.DATA_CHANGED_BEFORE_UPDATE} when the snapshot
@@ -1769,18 +1781,28 @@ public class AccountUpdateService {
      *                                    {@code FileStatusMapper}
      */
     @Transactional(rollbackFor = Exception.class)
-    public AccountUpdateResult updateAccount(final AccountUpdateRequest request) {
+    public AccountUpdateResult updateAccount(final AccountUpdateRequest request, final String subject) {
         if (request == null) {
             throw ValidationException.missingField(REQUEST_FIELD,
                     "The symbolic-map area of app/cpy-bms/COACTUP.CPY is required.");
         }
-        // The snapshot is the request body's own ACUP-OLD-DETAILS group and comes from nowhere else.
+        requireSubject(subject);
+        // The snapshot is OPENED from the sealed value the request carries and comes from nowhere else - in
+        // particular, never from a readable body group, which is why AccountUpdateRequest declares none.
         // Transformation Rule 7 moves the storage lifetime WS-THIS-PROGCOMMAREA held at :652 onto the
-        // request, so the caller returns the group the preceding read projected. Nothing is normalised on
-        // the way in: compareOldNew1205 and checkChangeInRecord9700 each report an absent group as a
-        // ValidationException on oldDetails rather than skipping the comparison, which is what keeps the
-        // guarantee the source provides from being silently forfeited.
-        final AccountUpdateRequest.OldDetails authenticOldDetails = request.getOldDetails();
+        // request; sealing is what lets that happen without handing the comparison's own operand to the
+        // party the comparison exists to guard against. The value is bound to this operation, to this
+        // account and to this principal, and it expires, so a token that opens here was issued by this
+        // server, for this account, to this caller, recently.
+        //
+        // Nothing is normalised on the way in. An absent value is reported as CHANGES_NOT_CONFIRMED and one
+        // that fails to open as DATA_CHANGED_BEFORE_UPDATE, because the remedies differ - obtain a snapshot,
+        // versus read again - and neither is silently treated as "nothing changed".
+        final AccountUpdateRequest.OldDetails authenticOldDetails = this.snapshotTokenService.open(
+                request.getSnapshot(), SNAPSHOT_KIND, snapshotRecordKey(request.getAccountId()), subject,
+                AccountUpdateRequest.OldDetails.class);
+        LOG.debug("Opened the as-displayed snapshot for transaction CAUP: it was sealed for this account and"
+                + " this principal and has not expired");
 
         // TURN ONE - the ENTER turn on a displayed screen. ACUP-SHOW-DETAILS is the marker the source
         // carries into it, which is precisely the marker :1463-1468 does NOT skip, so 1205-COMPARE-OLD-NEW
@@ -1826,6 +1848,50 @@ public class AccountUpdateService {
             throw validationFailure(write);
         }
         return result;
+    }
+
+    /**
+     * Refuses a call that reached a snapshot-bearing entry point without an authenticated principal.
+     *
+     * <p>The two entry points this guards - {@link #sealSnapshotForUpdate(String, String)} and
+     * {@link #updateAccount(AccountUpdateRequest, String)} - are only reachable through routes
+     * {@code SecurityConfig} declares authenticated, so an absent principal is a wiring defect rather than a
+     * request a client made. It is therefore an {@link IllegalArgumentException} and not a
+     * {@code ValidationException}: the latter would render as a {@code 400} and tell a caller to correct
+     * something they never sent.</p>
+     *
+     * @param subject the principal the caller resolved
+     * @throws IllegalArgumentException when {@code subject} is {@code null} or blank
+     */
+    private static void requireSubject(final String subject) {
+        if (subject == null || subject.isBlank()) {
+            throw new IllegalArgumentException("subject must not be null or blank: the as-displayed snapshot"
+                    + " is bound to the authenticated principal, and every route reaching this service is"
+                    + " declared authenticated in SecurityConfig");
+        }
+    }
+
+    /**
+     * Renders the record key the as-displayed snapshot is sealed under.
+     *
+     * <p>The key is the account identifier exactly as it was received - not trimmed, not padded and not
+     * re-cased - so that a snapshot issued for one account cannot be presented against another. The binding
+     * is authenticated additional data, which makes it a cryptographic guarantee rather than a comparison
+     * that could be reasoned around: the two accounts do not have to differ in any compared field for the
+     * substitution to be refused.</p>
+     *
+     * <p>An absent or blank identifier is rendered as a fixed placeholder rather than rejected here. That
+     * keeps a well formed refusal available for a request that addresses no account at all: the placeholder is
+     * a value no read could have sealed under, so the presented snapshot fails to open and the caller is told
+     * to read the record again. The account filter's own edit literal from {@code 1210-EDIT-ACCOUNT}
+     * ({@code app/cbl/COACTUPC.cbl:1783-1820}) reaches clients from the read operation, which is the surface
+     * an operator types an account number into.</p>
+     *
+     * @param accountFilter the account identifier as received, possibly {@code null} or blank
+     * @return the record key, never {@code null} and never blank
+     */
+    private static String snapshotRecordKey(final String accountFilter) {
+        return accountFilter == null || accountFilter.isBlank() ? NO_ACCOUNT_ADDRESSED : accountFilter;
     }
 
     /**
@@ -1881,38 +1947,52 @@ public class AccountUpdateService {
     }
 
     /**
-     * Reads one account and returns the {@code ACUP-OLD-DETAILS} group its update will require.
+     * Reads one account and returns the {@code ACUP-OLD-DETAILS} group its update will require, sealed into
+     * one opaque value the caller echoes back.
      *
      * <p><b>What it does.</b> It drives exactly the conversation {@link #fetchForUpdate(String)} drives -
      * Enter, re-entered, {@code ACUP-DETAILS-NOT-FETCHED}, so that the {@code :2568} arm of the decider
-     * performs {@code 9000-READ-ACCT} - and then returns what {@code 9500-STORE-FETCHED-DATA} stored at
-     * {@code :3805-3813}. It exists because {@code fetchForUpdate} projects the whole screen, of which the
-     * snapshot group is one part, and the read operation needs that part on its own to hand to the client.</p>
+     * performs {@code 9000-READ-ACCT} - takes what {@code 9500-STORE-FETCHED-DATA} stored at
+     * {@code :3805-3813}, and seals it. It exists because {@code fetchForUpdate} projects the whole screen, of
+     * which the snapshot group is one part, and the read operation needs that part on its own to hand to the
+     * client.</p>
      *
-     * <p><b>Why the group and not a derived form.</b> Transformation Rule 7 carries the group in the request
-     * body of the matching write, because {@code WS-THIS-PROGCOMMAREA} at {@code :652} held it between the two
-     * turns of the pseudo-conversation and a stateless server has nowhere to put it. The caller echoes this
-     * value back unaltered, and returning the very type the write binds is what makes that possible without
-     * the caller reconstructing anything. Reconstruction would not be safe: the comparison at
+     * <p><b>Why sealed, and why the group rather than a derived form.</b> Transformation Rule 7 carries the
+     * group in the request body of the matching write, because {@code WS-THIS-PROGCOMMAREA} at {@code :652}
+     * held it between the two turns of the pseudo-conversation and a stateless server has nowhere to put it.
+     * Two things follow. It has to be the group itself and not a rebuildable rendering: the comparison at
      * {@code :4109-4193} reads the date of birth from the live record at offsets {@code 1}, {@code 6} and
      * {@code 9} and from the snapshot at offsets {@code 1}, {@code 5} and {@code 7}, because the live value is
      * dash-separated and the snapshot value is not, so a group assembled from displayed text would differ on
-     * every request.</p>
+     * every request. And it has to be sealed: nine of its members are protected personal data that may not
+     * appear on a response, and a group the caller can rewrite is not evidence of what was displayed - the
+     * lost-update guarantee of {@code 9700-CHECK-CHANGE-IN-REC} would hold only for callers who chose not to
+     * defeat it. Sealing satisfies both at once, and it costs the caller nothing: the value is echoed back
+     * verbatim exactly as the group would have been.</p>
      *
-     * <p><b>Side effects.</b> None. This is a read.</p>
+     * <p>The seal binds the operation, the account identifier, the requesting principal and an expiry, so the
+     * write can establish that the group it compares was issued by this server, for that account, to that
+     * caller, recently.</p>
+     *
+     * <p><b>Side effects.</b> None. This is a read, and the sealing draws a random nonce but touches no
+     * state.</p>
      *
      * @param accountFilter the account identifier as typed into screen field {@code ACCTSIDI}; relayed
      *                      verbatim, so {@code null}, empty, all blanks and {@code *} all mean "not
      *                      supplied" and the source's own edits decide
-     * @return the as-displayed group, never {@code null}
+     * @param subject       the authenticated principal the snapshot is issued to; must not be {@code null} or
+     *                      blank
+     * @return the sealed as-displayed snapshot, never {@code null}
+     * @throws IllegalArgumentException when {@code subject} is {@code null} or blank
      * @throws ValidationException      when the account filter is blank or is non-numeric, short or
      *                                  all-zeroes, exactly as {@link #fetchForUpdate(String)} reports it, and
-     *                                  when the read reached no populated group to return
+     *                                  when the read reached no populated group to seal
      * @throws RecordNotFoundException  when any link of the three-dataset chain has no matching record
      * @throws FileAccessException      for a physical or logical input-output failure
      */
     @Transactional(readOnly = true)
-    public AccountUpdateRequest.OldDetails fetchSnapshotForUpdate(final String accountFilter) {
+    public String sealSnapshotForUpdate(final String accountFilter, final String subject) {
+        requireSubject(subject);
         final AccountUpdateResult fetched = fetchForUpdate(accountFilter);
         final AccountUpdateRequest screen = fetched.screen();
         final AccountUpdateRequest.OldDetails snapshot =
@@ -1920,11 +2000,14 @@ public class AccountUpdateService {
         if (snapshot == null) {
             // The fetch reached neither an exception nor a populated snapshot, which is the state
             // INITIALIZE ACUP-OLD-DETAILS leaves at :981-983 when nothing was stored back. There is nothing
-            // to return and no write could be confirmed against it, so this is reported rather than answered
+            // to seal and no write could be confirmed against it, so this is reported rather than answered
             // with an empty group that would fail every later comparison for an unexplained reason.
             throw ValidationException.missingField(OLD_DETAILS_FIELD, OLD_DETAILS_REQUIRED_MESSAGE);
         }
-        return snapshot;
+        // The record key is the identifier the read actually resolved, taken from the projected screen rather
+        // than from the argument, so that the value the write must present matches what this read addressed.
+        return this.snapshotTokenService.seal(SNAPSHOT_KIND,
+                snapshotRecordKey(screen.getAccountId()), subject, snapshot);
     }
 
 
@@ -2093,7 +2176,7 @@ public class AccountUpdateService {
      * {@code :4099-4101}, and the two must never be conflated. On this path no unit of work is pending: no write has
      * been issued anywhere in the dispatch arm, so committing nothing is a no-op, and the declarative transaction of
      * the entry point commits on normal return regardless. The substitution is therefore a documented no-op and is
-     * owed an entry in the {@code DECISION_LOG.md}.</p>
+     * held as {@code DL-MS-12} in the {@code DECISION_LOG.md}.</p>
      * @param context the per-invocation state carrier
      * @return a {@link ResponseKind#TRANSFER} outcome carrying the navigation metadata; never {@code null}
      */
@@ -3790,7 +3873,7 @@ public class AccountUpdateService {
         // success. There are deliberately only four branches, and the customer-lock flag is deliberately
         // absent from all of them. Do not add a fifth branch - see this method's documentation.
         if (context.customerLockFailed) {
-            // The two identifiers this event used to carry are withheld. The condition being reported is that
+            // The account and customer identifiers are deliberately withheld. The condition being reported is
             // the decider does not test the customer-lock flag, which is a property of the control flow rather
             // than of any particular pair of records - and this is the one outcome where the caller is told
             // nothing went wrong, so an operator reading it needs the discrepancy explained, not the keys. The
@@ -6046,7 +6129,7 @@ public class AccountUpdateService {
         // :4220-4222 EXEC CICS ABEND ABCODE('9999') - the terminal code, distinct from ABEND-CODE.
         // Resolved BEFORE the diagnostic is written, and this ordering is the point.
         //
-        // FINDING, severity Informational - remediated here. The diagnostic used to be written first and
+        // FINDING, severity Low - remediated here. The diagnostic used to be written first and
         // to print the raw work-area field, so an abend that never moved a value into ABEND-CODE logged
         // 'CAUP abend: code=null culprit=COACTUPC' while the response the same request received reported
         // 9999. An operator correlating the two had no way to tell they were the same event, and a null
@@ -6078,12 +6161,10 @@ public class AccountUpdateService {
     }
 
 
-    // ------------------------------------------------------------------------------------------------
     // Private helpers. None of these corresponds to a source paragraph, so none of them consumes any of
     // the 87 mapped label methods. They exist because COBOL expresses at the language level - fixed-width
     // MOVE semantics, LOW-VALUES, reference modification, FUNCTION NUMVAL-C, edited pictures - what Java
     // has to express as a method call. Every one of them cites the source construct it reproduces.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Reproduces a COBOL {@code MOVE} of an alphanumeric field into a fixed-width receiving field: the
@@ -7305,12 +7386,10 @@ public class AccountUpdateService {
     }
 
 
-    // ------------------------------------------------------------------------------------------------
     // Nested types. These replace the COBOL constructs that have no Java counterpart at all: the
     // WORKING-STORAGE flag bytes, the symbolic map's output group, the COMMAREA and the pseudo-conversational
     // screen state. They are declared last, mirroring the layout of the sibling AccountViewService, so the
     // eighty-seven mapped label methods read in source order without interruption.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * What the caller must do with the outcome, replacing the two mutually exclusive terminations of
@@ -7670,7 +7749,6 @@ public class AccountUpdateService {
                                       String errorMessage) {
     }
 
-    // -----------------------------------------------------------------------------------------------
     // Snapshot projection support.
     //
     // ACUP-OLD-DETAILS at app/cbl/COACTUPC.cbl:669 is a group of DISPLAY-usage fields that the legacy
@@ -7680,7 +7758,6 @@ public class AccountUpdateService {
     // com.cardemo.model.dto.AccountUpdateRequest carries an oldDetails group at all. These two helpers
     // encode the snapshot into that group's declared wire shapes. Neither corresponds to a source
     // paragraph, so neither consumes any of the 87 mapped methods.
-    // -----------------------------------------------------------------------------------------------
 
     /**
      * Number of bytes in a {@code PIC S9(10)V99} zoned-decimal money image: ten integer digits plus two
@@ -8234,8 +8311,16 @@ public class AccountUpdateService {
                     null,
                     null,
                     null,
-                    projectOldDetails(context),
-                    null);
+                    // No sealed snapshot is projected onto a screen: sealing is the read entry point's own
+                    // step, so that the group is sealed once, for one principal, at the moment it is handed
+                    // out. The opened group is attached below instead, and it never crosses a wire from here.
+                    null,
+                    null)
+                    // 9500-STORE-FETCHED-DATA at :3805-3813 stored the group the read found, and the
+                    // projection has to carry it so that sealSnapshotForUpdate can seal exactly that. The
+                    // member is @JsonIgnore and has no request binding, so attaching it here cannot widen any
+                    // wire contract.
+                    .withOldDetails(projectOldDetails(context));
         }
     }
 
@@ -8270,9 +8355,7 @@ public class AccountUpdateService {
      */
     private static final class UpdateContext {
 
-        // -------------------------------------------------------------------------------------------
         // Request, identity and control flow.
-        // -------------------------------------------------------------------------------------------
 
         /**
          * The inbound payload, replacing the {@code EXEC CICS RECEIVE MAP} buffer of
@@ -8344,9 +8427,7 @@ public class AccountUpdateService {
          */
         private String userType;
 
-        // -------------------------------------------------------------------------------------------
         // Screen buffer and presentation instructions.
-        // -------------------------------------------------------------------------------------------
 
         /**
          * {@code CACTUPAO}, the output half of the symbolic map. Initialised eagerly so that no path can
@@ -8371,12 +8452,10 @@ public class AccountUpdateService {
          */
         private String cursorField;
 
-        // -------------------------------------------------------------------------------------------
         // Messages. Note that the COBOL 88-levels the specification calls "flags" are message literals
         // on 05 WS-RETURN-MSG PIC X(75) at :479 and 05 WS-INFO-MSG PIC X(40) at :463: SET X TO TRUE
         // moves the literal in and WHEN X compares it. That is why these are Strings and not booleans,
         // and why the post-write EVALUATE at :2606-2615 is a string comparison.
-        // -------------------------------------------------------------------------------------------
 
         /**
          * {@code WS-RETURN-MSG PIC X(75)} at {@code :479}, with {@code 88 WS-RETURN-MSG-OFF VALUE SPACES}
@@ -8400,9 +8479,7 @@ public class AccountUpdateService {
          */
         private boolean inputError;
 
-        // -------------------------------------------------------------------------------------------
         // CICS response plumbing and the abend work area.
-        // -------------------------------------------------------------------------------------------
 
         /** {@code WS-RESP-CD PIC S9(09) COMP} at {@code :40}, the {@code RESP} of the last file request. */
         private int responseCode;
@@ -8436,9 +8513,7 @@ public class AccountUpdateService {
          */
         private CardDemoException pendingFailure;
 
-        // -------------------------------------------------------------------------------------------
         // COMMAREA context (app/cpy/COCOM01Y.cpy) and navigation.
-        // -------------------------------------------------------------------------------------------
 
         /** {@code CDEMO-ACCT-ID}, copied out by {@code 9500-STORE-FETCHED-DATA} at {@code :3805}. */
         private String commAreaAccountId;
@@ -8483,14 +8558,12 @@ public class AccountUpdateService {
         private String nextMap;
 
 
-        // -------------------------------------------------------------------------------------------
         // Received values - 05 ACUP-NEW-DETAILS at app/cbl/COACTUPC.cbl:757, populated field by field by
         // 1100-RECEIVE-MAP at :1039-1426. Every member is text as received, because the source edits the
         // characters the operator typed and 3203-SHOW-UPDATED-VALUES has to redisplay them verbatim when
         // they fail to convert. The five money fields additionally carry a converted BigDecimal, which is
         // exactly the -X / -N redefinition pair the source declares, for example
         // ACUP-NEW-CURR-BAL-X PIC X(12) redefined as ACUP-NEW-CURR-BAL-N PIC S9(10)V99.
-        // -------------------------------------------------------------------------------------------
 
         /**
          * {@code CC-ACCT-ID} - the account filter received from {@code ACCTSIDI}, the only field the first
@@ -8664,13 +8737,11 @@ public class AccountUpdateService {
         /** {@code ACUP-NEW-CUST-PRI-HOLDER-IND PIC X(1)}, edited by {@code 1220-EDIT-YESNO}. */
         private String newPrimaryCardHolderIndicator;
 
-        // -------------------------------------------------------------------------------------------
         // Generic edit work fields - 05 WS-GENERIC-EDITS at app/cbl/COACTUPC.cbl:52-150. The twelve
         // 1210-1280 edit routines are parameterless in COBOL: the caller moves a value and a label into
         // these shared items and then PERFORMs. That indirection is preserved rather than replaced by
         // Java parameters, because the source's own paragraphs read these items by name and the
         // paragraph-to-method correspondence has to stay one-to-one.
-        // -------------------------------------------------------------------------------------------
 
         /**
          * {@code WS-EDIT-VARIABLE-NAME PIC X(25)}, the human-readable label that
@@ -8709,7 +8780,6 @@ public class AccountUpdateService {
         private String editPhoneLineNumber;
 
 
-        // -------------------------------------------------------------------------------------------
         // Per-field edit outcomes. Every one is a TRI-STATE, never a boolean: app/cpy/CSSETATY.cpy:17-27
         // emits DFHRED when a field is NOT-OK *or* BLANK but emits the '*' marker only when it is BLANK,
         // so collapsing the two would lose the marker. See FieldState.
@@ -8718,7 +8788,6 @@ public class AccountUpdateService {
         // almost every 88 FLG-*-ISVALID is VALUE LOW-VALUES, -NOT-OK is '0' and -BLANK is 'B'. That is why
         // MOVE LOW-VALUES TO WS-NON-KEY-FLAGS at :1466 and :2789 sets every non-key field to VALID in one
         // statement - reproduced by clearNonKeyFlags().
-        // -------------------------------------------------------------------------------------------
 
         /**
          * {@code WS-EDIT-ACCT-FLAG PIC X(1)} at {@code :183}. A <em>key</em> flag: it uses
@@ -8893,9 +8962,7 @@ public class AccountUpdateService {
         /** {@code WS-EFT-ACCOUNT-ID-FLGS PIC X(01)} at {@code :345}; expansion 39 of 39. */
         private FieldState eftAccountIdState;
 
-        // -------------------------------------------------------------------------------------------
         // Retrieval and write outcome flags.
-        // -------------------------------------------------------------------------------------------
 
         /**
          * {@code 88 FOUND-ACCT-IN-MASTER VALUE '1'} at {@code :386}. Set optimistically at {@code :1453}
@@ -8966,11 +9033,9 @@ public class AccountUpdateService {
          */
         private boolean snapshotAccountCleared;
 
-        // -------------------------------------------------------------------------------------------
         // Record areas. The read-only retrieval chain of 9000/9200/9300/9400 and the read-for-update
         // pair of 9600 are kept apart, because the source declares distinct record areas and because a
         // 9600 read must never silently reuse whatever 9000 left behind.
-        // -------------------------------------------------------------------------------------------
 
         /** {@code WS-CARD-RID-ACCT-ID} - the eleven-character account key the retrieval chain used. */
         private String readKeyAccountId;
@@ -9009,7 +9074,6 @@ public class AccountUpdateService {
          */
         private Customer lockedCustomer;
 
-        // -------------------------------------------------------------------------------------------
         // The snapshot - 05 ACUP-OLD-DETAILS at app/cbl/COACTUPC.cbl:669, populated by
         // 9500-STORE-FETCHED-DATA at :3801-3884 and compared against the live record by
         // 9700-CHECK-CHANGE-IN-REC at :4109-4193.
@@ -9032,7 +9096,6 @@ public class AccountUpdateService {
         //
         // Privacy: the date of birth, the social security number, both telephone numbers, the
         // government-issued identifier and the electronic funds account identifier all live here.
-        // -------------------------------------------------------------------------------------------
 
         /** {@code ACUP-OLD-ACCT-ID}, moved at {@code :3818}; eleven display characters. */
         private String snapshotAccountId;
@@ -9216,7 +9279,7 @@ public class AccountUpdateService {
          * {@code IF EIBCALEN = 0 OR (CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT CDEMO-PGM-REENTER)} at
          * {@code :880-886}, and {@code changeAction} from the caller's echo of
          * {@code ACUP-CHANGE-ACTION}, which is how a stateless request carries the pseudo-conversational
-         * state that the COMMAREA used to carry.</p>
+         * state the COMMAREA carried on the mainframe.</p>
          *
          * @param request the inbound payload; may be {@code null} on the read-only fetch entry point
          * @param attentionIdentifier {@code EIBAID} as reported; may be {@code null}, which

@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring @Service (shared, date validation)
  * Function    : Replaces CALL 'CSUTLDTC' and the LE CEEDAYS date service with java.time
- * Source      : app/cbl/CSUTLDTC.cbl (157 lines, 2 paragraphs) @ 7756d89
+ * Source      : app/cbl/CSUTLDTC.cbl (157 lines, 2 own paragraph labels) @ 7756d89
  * Source      : app/cpy/CSUTLDPY.cpy (375 lines, 14 paragraphs) @ 7756d89
  * Source      : app/cpy/CSUTLDWY.cpy (89 lines, 0 paragraphs - work area) @ 7756d89
  * ******************************************************************
@@ -232,10 +232,10 @@ import org.springframework.stereotype.Service;
  *
  * <ul>
  *   <li><strong>The internal check order of {@code CEEDAYS}</strong>, and its behaviour for an input
- *       that maps to none of the nine feedback tokens. This gap was previously wider: the
- *       <em>input domain</em> half of it is now closed, because the published documentation for the
+ *       that maps to none of the nine feedback tokens. The <em>input domain</em> half of that gap is
+ *       closed, because the published documentation for the
  *       service defines that domain explicitly, and all four of its rules are implemented and cited at
- *       {@link #callCeedays}. What remains genuinely unavailable is narrower - the order in which the
+ *       {@link #callCeedays}. What remains genuinely unavailable is the order in which the
  *       real service applies its own <em>value</em> checks once the components have been read, and what
  *       it returns for a token outside the nine. The only behaviour the source itself defines for an
  *       unrecognised token is the {@code WHEN OTHER} fallback at
@@ -1206,10 +1206,10 @@ public class DateValidationService {
      * </table>
      *
      * <p><strong>Two outcomes are deliberately reclassified, and neither is a loosening.</strong>
-     * {@code 2022-0-01} and {@code 2022-6-31} were previously reported as non numeric data, because the
-     * fixed offset reading found a hyphen or a digit in a position it expected to be otherwise and never
-     * reached the value. Both are now readable, so both report the condition that names their actual
-     * defect - invalid month and bad date value respectively. They remain rejected with severity three;
+     * {@code 2022-0-01} and {@code 2022-6-31} report invalid month and bad date value respectively, rather
+     * than non numeric data. A fixed offset reading finds a hyphen or a digit in a position it expects to be
+     * otherwise and never reaches the value; both are readable here, so both report the condition that names
+     * their actual defect. They remain rejected with severity three;
      * only the message number becomes more specific, which is what the evaluation order above exists to
      * achieve.
      *

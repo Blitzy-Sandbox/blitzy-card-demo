@@ -62,18 +62,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <h2>1. What it does</h2>
  *
- * <p><strong>Finding, severity High, RESOLVED.</strong> Before this type existed the repository tier asserted
- * metadata in fragments: the shared schema test checked that the eleven tables were present, that exactly
- * three non-unique alternate indexes existed, and that exactly four tables carried a version column, while
+ * <p>Without this type the repository tier would assert
+ * metadata in fragments: the shared schema test checking that the eleven tables are present, that exactly
+ * three non-unique alternate indexes exist, and that exactly four tables carry a version column, while
  * each per-table test asserted whichever handful of columns its own behavioural tests happened to touch.
- * Every one of those assertions was true and none of them was sufficient, because none of them could detect
+ * Every one of those assertions is true and none of them is sufficient, because none of them can detect
  * <em>type-compatible drift</em>: widening {@code CHAR(10)} to {@code CHAR(11)}, dropping a scale from
  * {@code NUMERIC(12,2)} to {@code NUMERIC(12,0)}, reordering two columns of a composite key, retargeting a
- * foreign key at a different parent, or losing a check constraint would all have left the tier green. For a
+ * foreign key at a different parent, or losing a check constraint would each leave the tier green. For a
  * migration whose whole contract is that a field's width and precision come from a frozen picture clause,
  * that is the most consequential blind spot available.
  *
- * <p><em>Remediation, applied:</em> this type declares every facet of every column, key, index and
+ * <p>This type therefore declares every facet of every column, key, index and
  * constraint <strong>once</strong>, and {@link #assertTableMatches(JdbcTemplate, String)} compares the live
  * catalogue against it exhaustively - by exact equality on ordered lists, never by containment, so a
  * <em>missing</em> facet and an <em>extra</em> facet both fail. The shared schema test drives it over all

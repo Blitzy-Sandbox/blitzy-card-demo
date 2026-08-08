@@ -11,7 +11,7 @@
  * Source      : app/cpy/CSSETATY.cpy (COPY ... REPLACING field-error template) @ 7756d89
  * Source      : app/cbl/CBTRN02C.cbl:L131-L144,L236-L252,L707-L727 @ 7756d89
  * Source      : app/cbl/COACTUPC.cbl:L517-L524,L2606-L2615,L4203-L4228 @ 7756d89
- * Source      : app/cbl/CBACT04C.cbl:L415-L460 @ 7756d89
+ * Source      : app/cbl/CBACT04C.cbl:L415-L440,L443-L460 @ 7756d89
  * Source      : app/cbl/CBSTM03A.CBL:L736,L748,L771,L789,L807,L862,L879,L895,L911 @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -96,10 +96,9 @@
  *   <li>{@code ./mvnw -q -DskipTests compile} - compiles the module. Use this as the fast check after
  *       editing anything in this package.</li>
  *   <li>{@code ./mvnw -q verify} - the full gate: compile, unit tests, Failsafe's integration and
- *       end-to-end tiers, coverage enforcement and the dependency vulnerability scan. A reading of
- *       1 August 2026 recorded {@code src/test/java/com/cardemo/integration} and {@code .../e2e} as not
- *       available and concluded that Failsafe had nothing to bind; <strong>both trees are authored</strong>
- *       and that reading is withdrawn. The integration and end-to-end tiers need a container runtime with an
+ *       end-to-end tiers, coverage enforcement and the dependency vulnerability scan.
+ *       <strong>Both {@code src/test/java/com/cardemo/integration} and {@code .../e2e} are authored</strong>,
+ *       so Failsafe has something to bind. Those tiers need a container runtime with an
  *       accessible socket, because they stand PostgreSQL 16 and LocalStack up through Testcontainers; where
  *       one is missing the correct report is {@code Not available} for those tiers specifically, never for the
  *       trees themselves.</li>
@@ -134,8 +133,7 @@
  * {@code repository/AbstractRepositoryIntegrationTest} - so that pattern is what keeps a container-dependent
  * class out of the unit phase. <strong>The {@code e2e} exclusion is now live too</strong>: that tree holds
  * {@code BatchPipelineE2ETest}, {@code OnlineTransactionE2ETest} and {@code GateVerificationTest}, so the
- * pattern matches three classes rather than nothing. Two earlier revisions are withdrawn - the first said
- * neither tree existed, the second said the {@code e2e} half of that was still true.
+ * pattern matches three classes rather than nothing.
  * <strong>No test file lives in this package</strong>, and none should: production and test sources are
  * never mixed in the same directory in this tree.
  *
@@ -148,18 +146,18 @@
  * {@code unit/model/FatalProcessingExceptionTest.java} target it directly, and every one of the nine types is
  * referenced from between six and twenty-two test classes across the tree, because the services and batch
  * components that raise them assert on them. What is <strong>not</strong> present is a dedicated test class
- * per type, so per-type coverage is uneven rather than absent - a narrower and more accurate statement than
- * the one this paragraph previously made.
+ * per type, so per-type coverage is uneven rather than absent - which is the accurate statement, and is
+ * narrower than "this package is untested".
  *
  * <p>The plugin is pinned to <strong>{@code 0.8.12}</strong>, exactly the version the requirement names, and
- * an earlier revision of this paragraph wrongly said it had been raised to {@code 0.8.13}; that claim is
- * withdrawn. Java 25 emits class file major version 69, and the release that rejects it is <strong>ASM</strong>
+ * it is not raised to {@code 0.8.13} or beyond: Java 25 emits class file major version 69, and the release
+ * that rejects it is <strong>ASM</strong>
  * rather than any {@code org.jacoco} artefact, so the pin is honoured literally and only the plugin's
  * transitive reader is advanced: {@code org.ow2.asm:asm}, {@code asm-commons} and {@code asm-tree} to
  * <strong>9.9</strong>, with the runtime agent at the matching <strong>0.8.14</strong> build. Both halves are
  * required. The measurement is recorded beside the property in {@code pom.xml}; the divergence is
- * <strong>owed an entry in {@code DECISION_LOG.md}</strong>, which is authored at the repository
- * root.
+ * <strong>held as {@code DL-CR-04} in {@code DECISION_LOG.md}</strong>, which is authored at the
+ * repository root.
  *
  * <p>The plugin pin is {@code 0.8.12}, exactly as the requirement names it, and it is not raised. Java 25
  * emits class file major version 69 and the ASM 9.7 build inside 0.8.12 has a ceiling of 67, so the naive
@@ -701,20 +699,18 @@
  * <p><strong>Parity governs</strong>, because the clause forbids dead code that is <em>untracked</em>. What
  * makes a retained no-op tracked is stated per artefact, at its own declaration: its COBOL locator, a proof of
  * reachability, an explicit intentional-no-op marker, and an acknowledgement that it
- * is <strong>owed an entry in {@code DECISION_LOG.md}</strong>. Both
+ * is <strong>covered by {@code DL-CR-01} in {@code DECISION_LOG.md}</strong>. Both
  * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} are authored at the repository root, so a
- * present-tense claim about either is a true statement. Two earlier revisions are withdrawn: the first said
- * each artefact was already cited in both files while neither existed, the second said neither existed after
- * both were authored. The per-artefact marker remains the primary record because it cannot drift from the
+ * present-tense claim about either is a true statement. The per-artefact marker remains the primary record
+ * because it cannot drift from the
  * code it governs.
  *
  * <p><strong>No retained parity artefact lives in this package</strong> - and that local fact is all that is
- * asserted. An earlier revision added "the tree has five of them" and enumerated five, while
- * {@code com.cardemo.security} and {@code com.cardemo.repository} each said three. The tallies contradicted one
- * another because each was maintained by hand in a comment that no build step checks. Severity of what that
- * left in place: <strong>High</strong>. The count and the enumeration are both withdrawn, and deliberately not
- * replaced by a corrected count: the per-artefact justification above is the register of record, and no file
- * holds a global list.
+ * asserted. <strong>No global count of retained parity artefacts is published here, and none may be
+ * added</strong> - not "the tree has five of them" with an enumeration, and not a corrected figure either. A
+ * tally maintained by hand in a comment that no build step checks drifts, and a figure here would contradict
+ * whatever {@code com.cardemo.security} and {@code com.cardemo.repository} happened to say. The per-artefact
+ * justification above is the register of record, and no file holds a global list.
  *
  * <p>Every one of the nine classes here is reachable and constructed by real callers. The conflict is recorded
  * in this package because this package documents the error taxonomy the interest job reports through, not

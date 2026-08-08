@@ -13,8 +13,8 @@
  *               normalisation policies they apply, side by side, so that
  *               no policy is ever inferred from a sibling type.
  * Source      : app/cbl/CBTRN02C.cbl:L142-L144 (the universal guard) @ 7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L714-L731 (9910-DISPLAY-IO-STATUS) @ 7756d89
- * Source      : app/cbl/CBTRN02C.cbl:L467-L500 (2700-UPDATE-TCATBAL upsert) @ 7756d89
+ * Source      : app/cbl/CBTRN02C.cbl:L714-L727 (9910-DISPLAY-IO-STATUS) @ 7756d89
+ * Source      : app/cbl/CBTRN02C.cbl:L467-L501 (2700-UPDATE-TCATBAL upsert) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -78,7 +78,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <p>The second substantive contract here belongs to {@link FileAccessException}. It does not store the raw
  * two-character status; it stores the four-character rendering produced by {@code 9910-DISPLAY-IO-STATUS}
- * ({@code app/cbl/CBTRN02C.cbl:L714-L731}). That routine copies the first byte through and expands the second
+ * ({@code app/cbl/CBTRN02C.cbl:L714-L727}). That routine copies the first byte through and expands the second
  * byte from a binary field into three digits when the status is non-numeric or begins with {@code '9'},
  * otherwise emitting four zeros with the two status characters at positions three and four. A status of
  * {@code "92"} therefore renders as {@code "9050"} - {@code '9'} then the decimal value of the character
@@ -109,7 +109,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       well be an improvement, but it is a behaviour change to the diagnostic payload and must be a
  *       deliberate decision, not a side effect.</li>
  *   <li><strong>The {@code "9050"} assertion fails.</strong> The expansion was "corrected" to treat the
- *       second byte as a digit. Read {@code L714-L731}: it is a binary field expanded with a three-digit
+ *       second byte as a digit. Read {@code L714-L727}: it is a binary field expanded with a three-digit
  *       edit, and the baseline comparison depends on it.</li>
  *   <li><strong>The {@code " 032"} assertion fails.</strong> The delegation for an absent status changed.
  *       Check whether the constructor now short-circuits on {@code null} instead of rendering.</li>
@@ -231,7 +231,7 @@ class FileStatusExceptionPayloadTest {
 
             assertThat(thrown.recordKey())
                     .as("the composite key is 11 + 2 + 4 = 17 characters per app/catlg/LISTCAT.txt; note "
-                            + "that at app/cbl/CBTRN02C.cbl:L467-L500 a '23' on this very file is an "
+                            + "that at app/cbl/CBTRN02C.cbl:L467-L501 a '23' on this very file is an "
                             + "ACCEPTED create path and must NOT be thrown - which is why the status "
                             + "mapper, not this type, owns that decision")
                     .contains("00000000001010005")
@@ -439,7 +439,7 @@ class FileStatusExceptionPayloadTest {
                     new FileAccessException(MESSAGE, ioStatus, "TRANSACT", "READ");
 
             assertThat(thrown.getExpandedStatus())
-                    .as("app/cbl/CBTRN02C.cbl:L714-L731 copies the first byte through and expands the "
+                    .as("app/cbl/CBTRN02C.cbl:L714-L727 copies the first byte through and expands the "
                             + "SECOND byte from a binary field into three digits when the status is "
                             + "non-numeric or starts with '9'. Status '%s' therefore renders as '%s' - "
                             + "note '92' becomes 9050 because the character '2' has the decimal value 50, "

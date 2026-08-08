@@ -329,22 +329,8 @@ import software.amazon.awssdk.services.s3.model.S3Object;
 @DisplayName("Transaction report job against real PostgreSQL 16 and LocalStack")
 class TransactionReportJobTest extends AbstractBatchIntegrationTest {
 
-    /**
-     * Creates the test instance.
-     *
-     * <p>Declared explicitly, and package private rather than public, so that construction is documented
-     * rather than implied: JUnit builds one instance per test method, every collaborator arrives by injection
-     * after construction, and there is consequently nothing for a constructor to do. Narrowing it from the
-     * implicit public also keeps the class out of any caller's reach outside this package.
-     */
-    TransactionReportJobTest() {
-        // Intentionally empty; every collaborator is injected after construction.
-    }
-
-    // =================================================================================================
     // Injected collaborators. Every one is an instance field: the parent harness documents a hard limit of
     // two static fields for this package, both of them containers, and nothing here widens it.
-    // =================================================================================================
 
     /** The job under test, bound by bean name so no other assignable job can be injected in its place. */
     @Autowired
@@ -407,10 +393,8 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    // =================================================================================================
     // Bound configuration. Every value arrives from the same property the job binds, so a change to one
     // cannot leave this test asserting against a literal the application no longer uses.
-    // =================================================================================================
 
     /** The bucket the three generations are written to. */
     @Value("${carddemo.aws.s3.batch-output-bucket}")
@@ -432,9 +416,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
     @Value("${carddemo.aws.s3.gdg-retention-generations:10}")
     private int reportRetentionGenerations;
 
-    // =================================================================================================
     // Contract values, every one traced to a locator. Instance fields, never static.
-    // =================================================================================================
 
     /** {@code PARM-START-DATE,C'2022-01-01'}, {@code app/proc/TRANREPT.prc:41}. */
     private final String reportStartDate = "2022-01-01";
@@ -563,25 +545,12 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
     /** The generation ordinal the synthetic daily object is written under. */
     private final long syntheticGenerationOrdinal = 1L;
 
-    // =================================================================================================
     // The three steps, and the geometry of what they emit.
-    // =================================================================================================
 
     /** The procedure's step topology and the record geometry of the report it produces. */
     @Nested
     @DisplayName("Flow topology and report geometry")
     class FlowTopologyAndReportGeometry {
-
-        /**
-         * Creates the procedure topology group.
-         *
-         * <p>Declared explicitly for the same reason as the enclosing class: JUnit builds one
-         * instance per test method and the enclosing instance supplies every collaborator, so the
-         * body has nothing to do and says so.
-         */
-        FlowTopologyAndReportGeometry() {
-            // Intentionally empty; the enclosing instance owns every collaborator.
-        }
 
         /**
          * The three steps of {@code app/proc/TRANREPT.prc} run, once each, in the order the member declares them.
@@ -769,25 +738,12 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // The date filter, applied twice, inclusive at both ends, as a ten-character character comparison.
-    // =================================================================================================
 
     /** The {@code INCLUDE COND} of {@code :45-46} and the re-filter of {@code CBTRN03C.cbl:173-174}. */
     @Nested
     @DisplayName("The doubly applied inclusive date filter")
     class TheDoublyAppliedInclusiveDateFilter {
-
-        /**
-         * Creates the date filter group.
-         *
-         * <p>Declared explicitly for the same reason as the enclosing class: JUnit builds one
-         * instance per test method and the enclosing instance supplies every collaborator, so the
-         * body has nothing to do and says so.
-         */
-        TheDoublyAppliedInclusiveDateFilter() {
-            // Intentionally empty; the enclosing instance owns every collaborator.
-        }
 
         /**
          * A record whose processing date is exactly the lower bound is reported.
@@ -923,26 +879,13 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Pagination. WS-PAGE-SIZE is 20 at app/cbl/CBTRN03C.cbl:131-132 and the break test is
     // IF FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0 at :282.
-    // =================================================================================================
 
     /** The page boundary, driven from one card so that no control break can be mistaken for a page break. */
     @Nested
     @DisplayName("Pagination at twenty lines per page")
     class PaginationAtTwentyLinesPerPage {
-
-        /**
-         * Creates the page boundary group.
-         *
-         * <p>Declared explicitly for the same reason as the enclosing class: JUnit builds one
-         * instance per test method and the enclosing instance supplies every collaborator, so the
-         * body has nothing to do and says so.
-         */
-        PaginationAtTwentyLinesPerPage() {
-            // Intentionally empty; the enclosing instance owns every collaborator.
-        }
 
         /**
          * Sixteen detail lines fill the first page exactly and trigger no page break.
@@ -1014,27 +957,14 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // The four preserved legacy defects. Each one is behaviour, not a bug to be repaired, and each one
     // carries a test because Rule 1 clause B requires a test for any non-trivial bug fix - and preserving
     // a defect deliberately is the same obligation read the other way.
-    // =================================================================================================
 
     /** The control break, the missing final account total, the end-of-data double count and the transfer. */
     @Nested
     @DisplayName("Preserved legacy defects")
     class PreservedLegacyDefects {
-
-        /**
-         * Creates the preserved defect group.
-         *
-         * <p>Declared explicitly for the same reason as the enclosing class: JUnit builds one
-         * instance per test method and the enclosing instance supplies every collaborator, so the
-         * body has nothing to do and says so.
-         */
-        PreservedLegacyDefects() {
-            // Intentionally empty; the enclosing instance owns every collaborator.
-        }
 
         /**
          * The control break fires on the card number while the line it emits is labelled {@code Account Total}.
@@ -1245,26 +1175,13 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Boundary and hostile input at the reader and writer boundaries. Rule 1 clause B requires every
     // boundary and every empty case to be handled explicitly rather than assumed away.
-    // =================================================================================================
 
     /** An empty range, and the three lookups the report resolves on every record. */
     @Nested
     @DisplayName("Boundary and hostile input")
     class BoundaryAndHostileInput {
-
-        /**
-         * Creates the boundary and hostile input group.
-         *
-         * <p>Declared explicitly for the same reason as the enclosing class: JUnit builds one
-         * instance per test method and the enclosing instance supplies every collaborator, so the
-         * body has nothing to do and says so.
-         */
-        BoundaryAndHostileInput() {
-            // Intentionally empty; the enclosing instance owns every collaborator.
-        }
 
         /**
          * An empty in-window set still emits the end-of-data closing block, with both totals signed.
@@ -1482,25 +1399,12 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // The generation carried forward between steps, the resolved retention, and the index the range needs.
-    // =================================================================================================
 
     /** {@code (+1)} written then read in the same job, and the physical support the date range relies on. */
     @Nested
     @DisplayName("Generation carry-forward, retention and the range index")
     class GenerationCarryForwardAndTheRangeIndex {
-
-        /**
-         * Creates the generation carry-forward group.
-         *
-         * <p>Declared explicitly for the same reason as the enclosing class: JUnit builds one
-         * instance per test method and the enclosing instance supplies every collaborator, so the
-         * body has nothing to do and says so.
-         */
-        GenerationCarryForwardAndTheRangeIndex() {
-            // Intentionally empty; the enclosing instance owns every collaborator.
-        }
 
         /**
          * The sort step consumes exactly the generation the backup step produced.
@@ -1554,10 +1458,10 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         /**
          * {@code SORTOUT} carries the {@code SORT FIELDS=(TRAN-CARD-NUM,A)} permutation, byte for byte.
          *
-         * <p><strong>Why this has to be asserted rather than inferred, and why now.</strong> Finding
-         * <strong>F-012</strong> replaced the mechanism behind this step: it used to read the whole
-         * {@code SORTIN} generation into a {@code List<byte[]>} and sort it in heap, and it now pages an
-         * ordered query and streams the result. Every existing assertion in this class about STEP05R covers the
+         * <p><strong>Why this has to be asserted rather than inferred.</strong> Under finding
+         * <strong>F-012</strong> the step may not read the whole
+         * {@code SORTIN} generation into a {@code List<byte[]>} and sort it in heap; it pages an
+         * ordered query and streams the result. Every other assertion in this class about STEP05R covers the
          * generation's <em>key</em> and its <em>record count</em>, and both are unchanged by a wrong ordering -
          * so the one property the change could plausibly have broken was the only one nothing checked.
          *
@@ -1767,9 +1671,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Launchers.
-    // =================================================================================================
 
     /**
      * Launches the assembled job over the declared window.
@@ -1986,9 +1888,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         return messages;
     }
 
-    // =================================================================================================
     // Shared assertions.
-    // =================================================================================================
 
     /**
      * Asserts the run reached the clean outcome, so that later assertions are meaningful rather than merely
@@ -2075,9 +1975,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
                         .contains(expectedMessageFragment));
     }
 
-    // =================================================================================================
     // Execution-context readers.
-    // =================================================================================================
 
     /**
      * Reads a required string entry from the job execution context.
@@ -2143,9 +2041,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         return names;
     }
 
-    // =================================================================================================
     // Object-store readers and the one writer, which places the synthetic generation.
-    // =================================================================================================
 
     /**
      * The emitted report, split into its fixed 133-byte records.
@@ -2250,10 +2146,8 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         return records;
     }
 
-    // =================================================================================================
     // Report-line classifiers. Every one keys on a literal the source declares, never on a position this
     // test invented, and none of them ever returns or names a card number.
-    // =================================================================================================
 
     /**
      * The report lines that open with one literal.
@@ -2356,10 +2250,8 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         return field.charAt(0) == '-' ? magnitude.negate() : magnitude;
     }
 
-    // =================================================================================================
     // Seeded state. Every posted row is committed, because a job reads committed state only, and the
     // harness removes them again after each test.
-    // =================================================================================================
 
     /**
      * The seeded card keys ascending, which is the ordering {@code SORT FIELDS=(TRAN-CARD-NUM,A)} produces.
@@ -2449,10 +2341,8 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
     }
 
-    // =================================================================================================
     // Timestamps. All three producers in the corpus emit CHAR(26); this one reproduces the batch shape,
     // which is Z-GET-DB2-FORMAT-TIMESTAMP: hundredths-of-a-second precision plus four literal zeros.
-    // =================================================================================================
 
     /**
      * The batch-shaped {@code TRAN-PROC-TS} for the harness's pinned instant.
@@ -2490,10 +2380,8 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         return stamp;
     }
 
-    // =================================================================================================
     // The 350-byte record image, assembled from the offsets app/cpy/CVTRA05Y.cpy declares. Needed only for
     // the synthetic generation: everything else is seeded through the entity and encoded by the job.
-    // =================================================================================================
 
     /**
      * Assembles one {@code TRAN-RECORD} image.
@@ -2595,9 +2483,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         return digits.substring(0, 10) + overpunch;
     }
 
-    // =================================================================================================
     // The one collaborator this test contributes: the step handoff a preceding step would have published.
-    // =================================================================================================
 
     /**
      * Publishes the concrete daily generation key into the job execution context before any step runs.

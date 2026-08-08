@@ -584,10 +584,10 @@ class TransactionControllerTest {
      * A navigation past the first page must arrive with the cursor that addresses it, and a blank identifier
      * on the detail operation reports blankness.
      *
-     * <p>{@code action=PAGE_FORWARD&page=5} with no cursor used to answer {@code 200} reporting
+     * <p>{@code action=PAGE_FORWARD&page=5} with no cursor must not answer {@code 200} reporting
      * {@code pageNumber=5} with an empty row list, which a client cannot distinguish from an exhausted
-     * browse. And a whitespace-only {@code transactionId} used to report failure kind {@code INVALID} while
-     * an absent one reported {@code BLANK}, although {@code :147} tests {@code SPACES OR LOW-VALUES} in one
+     * browse. Nor may a whitespace-only {@code transactionId} report failure kind {@code INVALID} while
+     * an absent one reports {@code BLANK}, because {@code :147} tests {@code SPACES OR LOW-VALUES} in one
      * arm and carries one message for both.
      */
     @Nested

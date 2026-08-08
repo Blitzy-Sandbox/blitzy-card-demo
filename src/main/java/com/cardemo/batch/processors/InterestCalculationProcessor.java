@@ -4,7 +4,7 @@
  * Application : CardDemo
  * Type        : Spring Batch ItemProcessor (Java 25 / Spring Boot 3.5.11)
  * Function    : Monthly interest computation per transaction category balance.
- * Source      : app/cbl/CBACT04C.cbl (652 lines, 23 paragraphs) @ 7756d89
+ * Source      : app/cbl/CBACT04C.cbl (652 lines, 22 own paragraph labels) @ 7756d89
  *               app/jcl/INTCALC.jcl - PARM='2022071800', SYSTRAN(+1) LRECL=350
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -359,8 +359,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * against it as well. Re-derive the current set with
  * {@code grep -rl InterestCalculationProcessor src/test/java}.
  * <p>
- * An earlier revision of this paragraph claimed the dedicated file did not exist and that "no assertion in
- * this tree covers this class". Both halves were wrong by the time it was read and are withdrawn.
+ * The dedicated file exists, so "no assertion in this tree covers this class" is not the case.
  * <p>
  * Every seam those tests need is present: the repositories and {@link FileStatusMapper} are constructor
  * arguments, the {@link Clock} is a constructor argument on the six-argument constructor so timestamps are
@@ -1257,12 +1256,10 @@ public class InterestCalculationProcessor
         updateAccount();
     }
 
-    // =============================================================================================
     // Restart correctness. The driving reader saves its position, so this class must save the state
     // that its position implies - otherwise a restart resumes reading in the middle of an account
     // while this processor believes it has not started, which loses one account's accumulated
     // interest and reissues transaction identifiers that the failed attempt already wrote.
-    // =============================================================================================
 
     /**
      * Restores the control-break state a previous execution left behind, so a restart resumes at exactly
@@ -1847,12 +1844,12 @@ public class InterestCalculationProcessor
      * structured event instead, which is both the observability standard and the safer choice: a raw
      * fixed-width dump would put whatever the record area holds into the log verbatim.
      *
-     * <p><strong>Finding, Medium severity - the balance is redacted.</strong> This method previously
-     * rendered every field on the ground that the record "carries no card number and no personal data",
-     * and that reasoning was wrong in one respect: {@code TRAN-CAT-BAL} is a cardholder's outstanding
+     * <p><strong>Finding, Medium severity - the balance is redacted.</strong> Rendering every field on the
+     * ground that the record "carries no card number and no personal data" is wrong in one respect:
+     * {@code TRAN-CAT-BAL} is a cardholder's outstanding
      * balance for one type-and-category pair, and it is emitted on the <em>same line</em> as
      * {@code TRANCAT-ACCT-ID}, so it is linkable to a person by anyone holding the log plus one lookup.
-     * Absence of a card number is not absence of financial data. The balance is now replaced by
+     * Absence of a card number is not absence of financial data. The balance is therefore replaced by
      * {@link #REDACTED_BALANCE}.
      *
      * <p><em>What is redacted and what is not.</em> The financial value is redacted; the three key fields
@@ -1879,9 +1876,9 @@ public class InterestCalculationProcessor
      *
      * <p><em>Remediation if the true values are ever needed:</em> emit them to a separately
      * access-controlled artefact rather than the shared log. Deliberately not invented here, because no
-     * consumer for it exists at {@code 7756d89}. <strong>Owed an entry in
-     * {@code DECISION_LOG.md}</strong>, which is authored at the repository root; this Javadoc stays the
-     * primary record because it cannot drift from the code it governs.
+     * consumer for it exists at {@code 7756d89}. <strong>Held as {@code DL-RM-07} in
+     * {@code DECISION_LOG.md}</strong>, the entry for redaction at both the source and the appender; this
+     * Javadoc stays the primary record because it cannot drift from the code it governs.
      *
      * <p><em>Two controls, not one.</em> Redaction is the value-level control and it is unconditional. The
      * <em>routing</em> control is separate and complementary: the untruncated per-record emissions that a

@@ -311,8 +311,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     single invocation the CI workflow runs, with nothing skipped.</li>
  * <li>{@code -Ddependency-check.skip=true} is a <strong>local convenience only</strong> - the scan needs
  *     network access to the vulnerability feed and is slow on a cold cache. A run carrying that flag is not
- *     gate evidence, and it must never stand in for the full command above when a result is being reported.
- *     An earlier revision of this list published the skipping form as the full gate; that is withdrawn.</li>
+ *     gate evidence, and it must never stand in for the full command above when a result is being
+ *     reported.</li>
  * <li>The pinned container is an equivalent route where a host toolchain is not wanted:
  *     {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q -DskipTests
  *     compile}. The image tag is pinned rather than floating, so the route is reproducible.</li>
@@ -415,11 +415,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     unconditionally. Both legs therefore abend through the same guard every other unexpected status in this
  *     reader takes - {@link FatalProcessingException} carrying a {@link FileAccessException} cause whose
  *     status is {@code '35'}, file not available - so the step ends failed and nothing is swallowed.
- *     <p><b>Two earlier readings are withdrawn.</b> The first reported an absent {@code TRANSACT.BKUP}
- *     generation as {@code '35'} while treating an absent {@code SYSTRAN} generation as an empty read - an
- *     asymmetry the member does not support. The second replaced it with symmetric <em>success</em>, on the
+ *     <p><b>Two readings of this are refused.</b> Reporting an absent {@code TRANSACT.BKUP}
+ *     generation as {@code '35'} while treating an absent {@code SYSTRAN} generation as an empty read is an
+ *     asymmetry the member does not support. Replacing it with symmetric <em>success</em>, on the
  *     grounds that the pipeline's own stage ordering places the sole {@code TRANSACT.BKUP} producer
- *     downstream. That reasoning inverted the dependency: a topology that cannot satisfy a precondition is a
+ *     downstream, inverts the dependency: a topology that cannot satisfy a precondition is a
  *     topology to state honestly, not a reason to redefine the precondition, and reporting an unsatisfied
  *     input as a {@code COMPLETED} run with a record count of zero is the one outcome an operator cannot
  *     distinguish from a genuinely empty input.
@@ -434,7 +434,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     of nothing is a copy that succeeds, and that case still creates an empty combined generation and
  *     publishes a record count of zero.</li>
  * <li><b>Any status that is neither {@code '00'} nor {@code '10'}</b> renders the legacy line
- *     {@code FILE STATUS IS: NNNN} followed by four characters ({@code app/cbl/CBTRN02C.cbl:L714-L731})
+ *     {@code FILE STATUS IS: NNNN} followed by four characters ({@code app/cbl/CBTRN02C.cbl:L714-L727})
  *     and abends with abend code {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE}
  *     and return code {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE}.</li>
  * <li><b>Return code 4</b> - completed with rejects - belongs to the daily posting job and is never
@@ -474,7 +474,7 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     /**
      * Default object-key prefix for {@code AWS.M2.CARDDEMO.TRANSACT.BKUP} generations.
      *
-     * <p><b>Finding m-02, severity Minor, RESOLVED.</b> This constant read {@code gdg/transact-bkup/}, with
+     * <p><b>Finding m-02, severity Medium, RESOLVED.</b> This constant read {@code gdg/transact-bkup/}, with
      * a trailing separator, while {@code src/main/resources/application.yml} declares the same key as
      * {@code gdg/transact-bkup} without one. The two spellings composed identical object keys only because
      * this class repaired them, so the divergence was invisible - and it is the configured value, not this
@@ -533,7 +533,7 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
      * prefix, so a generation legitimately holds several objects whose fixed-width ordinal defines their
      * order. Pinning one key would silently drop every other object of the same generation.
      *
-     * <p><b>Finding C-04, severity Critical, is what this parameter closes.</b> Resolving the equivalent by
+     * <p><b>Finding C-04, severity Blocker, is what this parameter closes.</b> Resolving the equivalent by
      * listing the prefix and taking the greatest key is latest-wins: a second interest run catalogued between
      * stage 2 and stage 3 redirects stage 3 onto a generation its own pipeline did not produce, and nothing in
      * the run reports it, because reading the newest generation is exactly what the reader was asked to do.
@@ -1243,10 +1243,10 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     /**
      * Names what a missing {@code TRANSACT.BKUP} key means on the substrate actually in use.
      *
-     * <p>A null backup key used to have exactly one meaning. On the repository substrate the first leg is the
-     * ordered relation and never has an object key, and on the object-storage substrate an absent generation
-     * abended, so {@code <repository>} was the only possible reading. Now that an absent generation is an
-     * ordinary empty read, the same null carries two meanings and the substrate is what distinguishes them.
+     * <p>A null backup key carries two meanings, and only the substrate distinguishes them. On the repository
+     * substrate the first leg is the ordered relation and never has an object key; on the object-storage
+     * substrate the same null means a generation that exists and holds nothing, which is an ordinary empty
+     * read.
      *
      * <p>Without this, the open and close lines report {@code backupKey=<repository>} while the very same
      * line reports {@code substrate=OBJECT_STORAGE} - a self-contradicting record that would send anyone
@@ -1566,8 +1566,8 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
      * before {@code SORT} receives control - when the generation is not catalogued. The absence of a
      * {@code COND=} parameter says nothing about whether a DD is optional: {@code COND} gates step
      * <em>execution</em> on a preceding return code, while allocation happens first and unconditionally.
-     * An earlier revision of this method returned {@code null} for an absent generation and described a
-     * zero-record combine as parity; that reading is withdrawn, because it turned an unsatisfied
+     * Returning {@code null} for an absent generation and describing a
+     * zero-record combine as parity is therefore wrong: it turns an unsatisfied
      * precondition into a {@code COMPLETED} run with a record count of zero - the one outcome an operator
      * cannot distinguish from a genuinely empty input.
      *
@@ -2246,9 +2246,9 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
      * concatenated {@code SORTIN} halves of {@code app/jcl/COMBTRAN.jcl:L23-L26} inherit
      * {@code DCB=(RECFM=F,LRECL=350)} from {@code app/jcl/INTCALC.jcl:L39}, so a generation is a whole number
      * of 350-byte records and nothing else: there is no record terminator on the mainframe and this
-     * application's writers emit none. An earlier revision tolerated an optional {@code LF}, {@code CRLF} or
-     * {@code CR} after each record on the grounds that an ASCII fixture carries one. That tolerance is
-     * withdrawn on this path, because it made corrupt object geometry indistinguishable from valid input: an
+     * application's writers emit none. Tolerating an optional {@code LF}, {@code CRLF} or
+     * {@code CR} after each record on the grounds that an ASCII fixture carries one is refused on this path,
+     * because it makes corrupt object geometry indistinguishable from valid input: an
      * object written by something other than this application, or truncated mid-transfer, would be read as
      * though every record after the first stray byte were correctly aligned. Line-oriented ingestion of
      * {@code app/data/ASCII/*.txt} belongs to the seed migration and to test fixtures, which read the files
@@ -2918,14 +2918,14 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     /**
      * Validates a configured generation prefix against the one shared grammar and returns its listing form.
      *
-     * <p><b>Finding m-02, severity Minor, RESOLVED.</b> This method used to carry the seventh copy of that
-     * grammar, and it was the second-weakest of the seven: it stripped surrounding whitespace, refused only
-     * {@code ..} and {@code //}, and then <em>appended</em> a separator when one was missing - so a leading
-     * separator passed, a value already ending in a separator was accepted in a second spelling, and a
-     * control character inside an otherwise printable value passed as well. The review named six classes;
-     * this one was not among them, yet it consumes two of the same bases - {@code TRANSACT.BKUP} and
-     * {@code SYSTRAN} - so leaving it behind would have left the duplication the finding is about intact on
-     * exactly the roots the other consumers had just been tightened on. It now delegates, which is why
+     * <p><b>The grammar is not re-implemented here.</b> A local copy is what this method must not carry: the
+     * weak form of that grammar strips surrounding whitespace, refuses only
+     * {@code ..} and {@code //}, and then <em>appends</em> a separator when one is missing - so a leading
+     * separator passes, a value already ending in a separator is accepted in a second spelling, and a
+     * control character inside an otherwise printable value passes as well. This consumer reads two of the
+     * same bases as the six classes finding m-02 names - {@code TRANSACT.BKUP} and
+     * {@code SYSTRAN} - so a local grammar here would leave the duplication that finding is about intact on
+     * exactly the roots the other consumers are tightened on. It delegates, which is why
      * {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is the only prefix grammar in
      * the tier.
      *

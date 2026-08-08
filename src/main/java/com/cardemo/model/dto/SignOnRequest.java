@@ -295,9 +295,9 @@ public record SignOnRequest(
      * <p>This guard is declared on the type rather than configured on the object mapper, and that is
      * deliberate. {@code application.yml} does set
      * {@code spring.jackson.deserialization.fail-on-unknown-properties} to {@code true} and no profile
-     * overlay disables it, so the strict behaviour is in force today; an earlier revision of this
-     * paragraph said the repository published no {@code application*.yml} at all, which is false and is
-     * withdrawn. A mapper-level setting is nonetheless one line of configuration away from being switched
+     * overlay disables it, so the strict behaviour is in force at this commit and the repository does publish
+     * {@code application*.yml} files.
+     * A mapper-level setting is nonetheless one line of configuration away from being switched
      * off, and the framework default is to ignore unknown properties, so declaring the guard here means it
      * holds under a lenient mapper as well as a strict one.</p>
      *

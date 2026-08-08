@@ -207,8 +207,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       that the dependency set is clean; and the documented override
  *       {@code -Ddependency-check.skip=true} is a LOCAL shortcut for a cold cache or an offline host, not
  *       a way to clear a finding and not something any CI job does - the workflow runs one
- *       {@code clean verify} with nothing skipped. An earlier revision of this note said the override
- *       existed for jobs that delegate the scan; no such job exists and that claim is withdrawn. Remediation belongs with the dependency pins, not here.</li>
+ *       {@code clean verify} with nothing skipped, and no job delegates the scan to another. Remediation
+ *       belongs with the dependency pins, not here.</li>
  *   <li><strong>Not available: a {@code usrsec.txt} fixture.</strong> The other nine datasets have ASCII
  *       fixtures under {@code app/data/ASCII/}; the user security records do not, existing only as the in
  *       stream {@code SYSUT1 DD *} data cited above. Nothing needs to be supplied - the in stream data is

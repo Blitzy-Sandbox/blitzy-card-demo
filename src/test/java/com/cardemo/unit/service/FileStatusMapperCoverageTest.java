@@ -16,7 +16,7 @@
  *               very same status is fatal.
  * Source      : app/cbl/CBTRN02C.cbl:L142-L144 (APPL-RESULT condition
  *               names), L481-L493 (2700-UPDATE-TCATBAL accepting
- *               '00' OR '23'), L707-L710 (9999-ABEND-PROGRAM),
+ *               '00' OR '23'), L707-L711 (9999-ABEND-PROGRAM),
  *               L714-L727 (9910-DISPLAY-IO-STATUS) @ 7756d89
  * Source      : app/cbl/CBACT04C.cbl:L415-L440 (1200-GET-INTEREST-RATE
  *               accepting '00' OR '23'), L443-L460
@@ -660,7 +660,7 @@ class FileStatusMapperCoverageTest {
                             + "reason says so instead of guessing a business meaning")
                     .isEqualTo("UNRECOGNISED COBOL FILE STATUS AT I/O GUARD");
             assertThat(failure.getAbendCode())
-                    .as("the abend code stays unset at this layer: app/cbl/CBTRN02C.cbl:L707-L710 moves 999 "
+                    .as("the abend code stays unset at this layer: app/cbl/CBTRN02C.cbl:L707-L711 moves 999 "
                             + "into ABCODE inside 9999-ABEND-PROGRAM, not into ABEND-CODE at the guard")
                     .isEqualTo(FileStatusMapper.ABEND_CODE_UNSET);
             assertThat(failure.getAbendCulprit())

@@ -53,7 +53,9 @@ import static org.mockito.Mockito.when;
 import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.entity.Card;
 import com.cardemo.repository.CardRepository;
+import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.card.CardUpdateService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.LockModeType;
 import java.io.IOException;
 import java.io.InputStream;
@@ -135,13 +137,26 @@ final class CardUpdateWriteContractTest {
     @Mock
     private CardRepository cardRepository;
 
+    /**
+     * A test-only sealing key. Thirty-two ASCII bytes, comfortably over the component's documented minimum,
+     * and local to this file - no configured or deployed key appears here.
+     */
+    private static final String SEALING_KEY = "card-write-contract-test-key!!!!";
+
+    /** The sealer's documented default lifetime, in seconds. */
+    private static final long SEAL_LIFETIME_SECONDS = 900L;
+
     /** The system under test. */
     private CardUpdateService service;
 
     @BeforeEach
     void createServiceUnderTest() {
         final Clock clock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
-        this.service = new CardUpdateService(this.cardRepository, clock);
+        // A real sealer, because the bean requires one. This class drives only the in-process
+        // processRequest entry point, which takes the as-displayed group as an explicit argument and never
+        // opens a sealed value, so the sealer is never exercised here; CardUpdateServiceTest owns that path.
+        this.service = new CardUpdateService(this.cardRepository, clock,
+                new SnapshotTokenService(SEALING_KEY, SEAL_LIFETIME_SECONDS, clock, new ObjectMapper()));
     }
 
     /**
@@ -180,23 +195,27 @@ final class CardUpdateWriteContractTest {
     /**
      * Builds a request whose submitted name differs from the stored name, so the write proceeds.
      *
-     * @param snapshot the snapshot to carry
+     * <p>The sealed {@code snapshot} member is deliberately absent: the in-process entry point this class
+     * drives takes the as-displayed group as an explicit argument, exactly as {@code updateCard} passes the
+     * group it opened, so nothing here needs a sealed value.</p>
+     *
      * @return the request
      */
-    private static CardUpdateRequest changedNameRequest(final CardUpdateRequest.CardDetails snapshot) {
+    private static CardUpdateRequest changedNameRequest() {
         return new CardUpdateRequest(null, null, null, null, null, null,
                 ACCOUNT_ID, CARD_NUMBER, SUBMITTED_NAME, STORED_STATUS,
                 STORED_MONTH, STORED_YEAR, STORED_DAY,
-                null, null, null, null, snapshot, null);
+                null, null, null, null, null, null);
     }
 
     /**
      * Drives the confirmation leg, the only route that reaches {@code 9200-WRITE-PROCESSING}.
      *
-     * @param request the request to submit
+     * @param oldDetails the as-displayed group the comparison of {@code :1503-1508} runs against
      */
-    private void confirmSave(final CardUpdateRequest request) {
-        this.service.processRequest(request, AID_PF05, CardUpdateService.EntryMode.REENTER);
+    private void confirmSave(final CardUpdateRequest.CardDetails oldDetails) {
+        this.service.processRequest(changedNameRequest(), oldDetails, AID_PF05,
+                CardUpdateService.EntryMode.REENTER);
     }
 
     /**
@@ -296,7 +315,7 @@ final class CardUpdateWriteContractTest {
             when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            confirmSave(changedNameRequest(agreeingSnapshot()));
+            confirmSave(agreeingSnapshot());
 
             // The legacy rewrite destroyed the stored verification value on every successful update, because
             // :1464-1465 moved the never-assigned CCUP-NEW-CVV-CD onto the record. Nothing here can: the
@@ -322,7 +341,7 @@ final class CardUpdateWriteContractTest {
             when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            confirmSave(changedNameRequest(snapshotOf("SOMEONE ELSE")));
+            confirmSave(snapshotOf("SOMEONE ELSE"));
 
             verify(cardRepository, never()).save(any(Card.class));
         }
@@ -348,7 +367,7 @@ final class CardUpdateWriteContractTest {
             when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            confirmSave(changedNameRequest(agreeingSnapshot()));
+            confirmSave(agreeingSnapshot());
 
             // :1427-1436 is EXEC CICS READ ... UPDATE, so the lock is acquired at the READ; the restored
             // :1424 adds the account half of the key. Both belong to the SAME read: locking first and
@@ -366,7 +385,7 @@ final class CardUpdateWriteContractTest {
             when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            confirmSave(changedNameRequest(agreeingSnapshot()));
+            confirmSave(agreeingSnapshot());
 
             final ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
             final ArgumentCaptor<Long> account = ArgumentCaptor.forClass(Long.class);
@@ -383,7 +402,7 @@ final class CardUpdateWriteContractTest {
             when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.empty());
 
-            confirmSave(changedNameRequest(agreeingSnapshot()));
+            confirmSave(agreeingSnapshot());
 
             // :1441-1449 treats anything other than DFHRESP(NORMAL) as "could not lock", a missing row
             // included - and a card owned by another account arrives as exactly the same empty result, so

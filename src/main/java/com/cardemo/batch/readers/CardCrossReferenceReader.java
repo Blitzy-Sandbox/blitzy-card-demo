@@ -5,7 +5,7 @@
  * Type        : Spring Batch ItemStreamReader (read-only verification step)
  * Function    : Read-only sequential scan of the card cross-reference file,
  *               replacing the COBOL batch reader CBACT03C.
- * Source      : app/cbl/CBACT03C.cbl (178 lines, 6 paragraphs)
+ * Source      : app/cbl/CBACT03C.cbl (178 lines, 5 own paragraph labels)
  *               app/cpy/CVACT03Y.cpy (36 populated bytes in a 50-byte slot)
  *               app/catlg/LISTCAT.txt:L403 (KEYLEN 16 / AVGLRECL 50)
  *               app/jcl/READXREF.jcl (job that executes CBACT03C)
@@ -291,16 +291,15 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to run, build and test</h2>
  * The read-only verification {@code Step} that owns this reader is <strong>authored</strong>, and nothing
- * about the batch tier around it is outstanding. Two earlier revisions of this paragraph are withdrawn:
- * the first named {@code com.cardemo.config.BatchConfig} as the home of every {@code Job} and
- * {@code Step} and said {@code com.cardemo.batch.jobs} held one job, {@code InterestCalculationJob}; the
- * second said this reader's verification step and its launcher were still owed. Both exist:
+ * about the batch tier around it is outstanding. Both this reader's verification step and its launcher are
+ * declared, the launcher being the framework's own rather than a job of its own inside {@code com.cardemo.config.BatchConfig}:
  * {@link com.cardemo.config.BatchConfig#datasetVerificationReadCrossReferenceStep} is the
  * Java counterpart of {@code app/jcl/READXREF.jcl}, and
  * {@link com.cardemo.config.BatchConfig#datasetVerificationJob} composes it with the
  * three sibling members as one operator submission, selectable by name through the framework's own
- * {@code spring.batch.job.name} property, which is the launch signal that survives after the
- * bespoke operator launcher was withdrawn. The step writes nothing: its sink reaches no relation, no object store and no
+ * {@code spring.batch.job.name} property, which is the launch signal - no
+ * bespoke operator launcher is declared, because one would launch from inside
+ * {@code SpringApplication.run}. The step writes nothing: its sink reaches no relation, no object store and no
  * queue, because {@code app/cbl/CBACT03C.cbl} performs {@code OPEN}, {@code READ} and {@code CLOSE} only.
  * {@code com.cardemo.batch.jobs} holds its six target jobs and <strong>each declares its own
  * {@code Step} beans</strong>, while {@code BatchConfig} owns the dataset bindings and the record
@@ -328,16 +327,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
  * warning category {@code javac} 25 publishes. Coverage is gated by JaCoCo at an eighty percent line floor
- * with no package excluded. <strong>Both test tiers now cover this class.</strong> An earlier revision of this
- * paragraph said neither was authored, that {@code unit/batch} held three classes none of which referenced this
- * reader, and that {@code integration/batch} held one abstract Testcontainers base with no concrete subclass
- * beneath it; every part of that is withdrawn. {@code src/test/java/com/cardemo/unit/batch} holds
- * <strong>36</strong> sources and covers the status renderer, the guard logic and the projection through
- * {@code CardCrossReferenceReaderTest}, {@code SequentialReaderContractTest},
- * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and {@code BatchLogHygieneTest}.
- * {@code src/test/java/com/cardemo/integration/batch} holds <strong>4</strong> sources - one abstract
- * Testcontainers base and three concrete classes that execute under Failsafe against PostgreSQL 16 and
- * LocalStack. This class still creates neither, because test sources are outside the scope of the package it
+ * with no package excluded. <strong>Both test tiers cover this class.</strong>
+ * {@code src/test/java/com/cardemo/unit/batch} covers the status renderer, the guard logic and the
+ * identifier-only projection through the reader's own test class, {@code SequentialReaderContractTest},
+ * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and {@code BatchLogHygieneTest}, and
+ * {@code src/test/java/com/cardemo/integration/batch} holds the abstract
+ * Testcontainers base and the concrete classes that execute under Failsafe against PostgreSQL 16 and
+ * LocalStack; re-measure either tier's size with a directory listing rather than quoting a figure. This class
+ * creates neither, because test sources are outside the scope of the package it
  * belongs to. <b>The assertion that exactly two record-level events occur per row is delivered</b>, by
  * {@code ReaderSensitiveDataTest}, which checks that both record events of {@code CBACT03C:L78} and
  * {@code :L96} are still emitted while neither exposes a card number - that count being the parity property
@@ -362,10 +359,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     {@code spring.jpa.open-in-view} is {@code false} and {@code spring.jpa.show-sql} is {@code false}; the
  *     schema is owned by the Flyway migrations, and no bind-parameter logging is enabled anywhere, which is
  *     what keeps the card-number primary key out of the log path entirely.</li>
- * <li>No AWS, bucket, queue or topic configuration is read by this reader, and no AWS client is injected, so
- *     it requests no cloud privilege whatever.</li>
- * <li>No transaction annotation is declared. See {@link #read()} for why a {@code readOnly} annotation here
- *     would be decorative rather than effective, and how read-only is guaranteed instead.</li>
+ * <li>No cloud privilege and no transaction annotation, both stated for all four verification readers in
+ *     {@code com.cardemo.batch.readers}' package documentation; {@link #read()} records how read-only is
+ *     guaranteed here.</li>
  * </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -493,13 +489,11 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      */
     private static final String ABEND_CULPRIT = "CBACT03C";
 
-    // ----------------------------------------------------------------------------------------------------
     // Legacy DISPLAY literals, reproduced byte for byte. Each is followed by its measured inner length so a
     // reader can confirm fidelity without opening the source. Every assertion is cited.
     // All seven literals of the program are represented; there is no eighth, because the two
     // DISPLAY CARD-XREF-RECORD statements at :L78 and :L96 emit a record rather than a literal and are
     // covered by the documented deviation instead.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/CBACT03C.cbl:L71}, 38 characters. */
     private static final String START_OF_EXECUTION_MESSAGE = "START OF EXECUTION OF PROGRAM CBACT03C";
@@ -527,10 +521,8 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     /** {@code app/cbl/CBACT03C.cbl:L155}, 16 characters. */
     private static final String ABENDING_PROGRAM_MESSAGE = "ABENDING PROGRAM";
 
-    // ----------------------------------------------------------------------------------------------------
     // Execution-context keys for the restart cursor. Namespaced by simple class name so two readers in the
     // same step cannot collide.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Key under which the number of rows already emitted is checkpointed. */
     private static final String CONTEXT_KEY_RECORDS_READ = "CardCrossReferenceReader.recordsRead";
@@ -551,10 +543,8 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     /** The character a COBOL {@code MOVE} into a numeric display item pads with on the left. */
     private static final char NUMERIC_PAD = '0';
 
-    // ----------------------------------------------------------------------------------------------------
     // File-status literals, derived from com.cardemo.model.enums.FileStatus rather than restated, so that the
     // single definition of each code stays single (Rule 1 clause C, avoid duplication).
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code '00'}: the status the source tests at {@code :L94}, {@code :L121} and {@code :L139}. */
     private static final String STATUS_SUCCESS = requireExactCode(FileStatus.SUCCESS);
@@ -580,9 +570,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     private static final String STATUS_PHYSICAL_IO_ERROR =
             String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_PAD;
 
-    // ----------------------------------------------------------------------------------------------------
     // Collaborators, injected through the constructor and never reassigned.
-    // ----------------------------------------------------------------------------------------------------
 
     /**
      * The persistence access point for the card cross-reference, replacing the {@code XREFFILE} VSAM cluster
@@ -619,11 +607,9 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     /** Rows fetched per round trip; validated at construction and never changed afterwards. */
     private final int pageSize;
 
-    // ----------------------------------------------------------------------------------------------------
     // Cursor state. Every field below is the Java counterpart of a WORKING-STORAGE item at
     // app/cbl/CBACT03C.cbl:L42-L67 and is therefore an INSTANCE field: never static, never shared. The step
     // scope gives each step execution its own instance.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code END-OF-FILE PIC X(01)} ({@code :L65}). Held as its literal {@code 'N'} or {@code 'Y'} value. */
     private String endOfFile = END_OF_FILE_NO;
@@ -703,9 +689,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         this.pageSize = requirePositivePageSize(pageSize);
     }
 
-    // ====================================================================================================
     // Mainline PROCEDURE DIVISION, app/cbl/CBACT03C.cbl:L70-L87, realised as the ItemStream lifecycle.
-    // ====================================================================================================
 
     /**
      * Opens the scan: emits the start-of-execution banner and performs {@code 0000-XREFFILE-OPEN},
@@ -921,9 +905,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         return recordsRead;
     }
 
-    // ====================================================================================================
     // 1000-XREFFILE-GET-NEXT, app/cbl/CBACT03C.cbl:L92-L116.
-    // ====================================================================================================
 
     /**
      * Reads the next record and applies the three-way sequential-read guard of
@@ -965,7 +947,6 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         // nested test and its documentation cites this very paragraph, at :L98 (Rule 1 clause C).
         applResult = fileStatusMapper.applResultForSequentialRead(ioStatus);
 
-        // ------------------------------------------------------------------------------------------------
         // PRESERVED QUIRK, the double display. The next line of the source, inside the '00' branch and
         // immediately after MOVE 0 TO APPL-RESULT, is:
         //
@@ -980,7 +961,6 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         //   3. app/cbl/CBACT02C.cbl:L96 is the same statement with an asterisk in column 7, so
         //      com.cardemo.batch.readers.CardReader deliberately reproduces it as a comment only. The two
         //      files are NOT interchangeable.
-        // ------------------------------------------------------------------------------------------------
         if (applResult == FileStatusMapper.APPL_AOK && LOG.isDebugEnabled()) {
             LOG.debug("{} record read (app/cbl/CBACT03C.cbl:L96); sequence={}",
                     LOGICAL_FILE,
@@ -1098,9 +1078,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         return STATUS_SUCCESS;
     }
 
-    // ====================================================================================================
     // 0000-XREFFILE-OPEN, app/cbl/CBACT03C.cbl:L118-L134.
-    // ====================================================================================================
 
     /**
      * Opens the card cross-reference, reproducing {@code 0000-XREFFILE-OPEN}
@@ -1175,9 +1153,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         // EXIT.  (:L134)
     }
 
-    // ====================================================================================================
     // 9000-XREFFILE-CLOSE, app/cbl/CBACT03C.cbl:L136-L152.
-    // ====================================================================================================
 
     /**
      * Closes the card cross-reference, reproducing {@code 9000-XREFFILE-CLOSE}
@@ -1242,9 +1218,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         // EXIT.  (:L152)
     }
 
-    // ====================================================================================================
     // 9999-ABEND-PROGRAM, app/cbl/CBACT03C.cbl:L154-L158.
-    // ====================================================================================================
 
     /**
      * Abends the step, reproducing {@code 9999-ABEND-PROGRAM} ({@code app/cbl/CBACT03C.cbl:L154-L158}).
@@ -1298,9 +1272,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
                 cause);
     }
 
-    // ====================================================================================================
     // 9910-DISPLAY-IO-STATUS, app/cbl/CBACT03C.cbl:L161-L174.
-    // ====================================================================================================
 
     /**
      * Renders a file status as the legacy diagnostic line, reproducing {@code 9910-DISPLAY-IO-STATUS}
@@ -1337,12 +1309,10 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         return fileStatusMapper.displayIoStatus(fileStatus);
     }
 
-    // ====================================================================================================
     // Projection, restart support and construction-time validation. The projection replaces the record image
     // of :L78 and :L96; the rest has no legacy counterpart, because the mainline at
     // app/cbl/CBACT03C.cbl:L70-L87 always scans from the first record - a JES2 job restart re-ran the step
     // from the top. Restartability is additive, and it changes no emitted value.
-    // ====================================================================================================
 
 
     /**

@@ -168,11 +168,12 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * compares field by field against that - 38 rejects, 262 postings, 100 category-balance rows, return code
  * 4 - rather than against a figure anyone derived by hand.
  *
- * <p>An earlier revision declined to assert any total on the grounds that a hand-derived one is
- * model-sensitive, because a stateless single-pass model and a stateful model of the source disagree over
- * these fixtures. The disagreement is real, 13 against 38, but only one of the two is a model of THIS
- * program: {@code :L393-L395} re-reads the account per transaction and {@code :L554} rewrites it inside the
- * same iteration, so the stateless reading contradicts {@code :L554}. Executing the program settled it.
+ * <p>Declining to assert any total, on the grounds that a hand-derived one is
+ * model-sensitive because a stateless single-pass model and a stateful model of the source disagree over
+ * these fixtures, does not follow. The disagreement is real, 13 against 38, but only one of the two is a model
+ * of THIS program: {@code :L393-L395} re-reads the account per transaction and {@code :L554} rewrites it
+ * inside the same iteration, so the stateless reading contradicts {@code :L554}. Executing the program
+ * settles it.
  *
  * <p>Two spans are still excluded, by name and with the reason for each recorded in the provenance file of
  * the oracle: the processing timestamp at offsets 305-330, which {@code :L692-L705} generates per run, and
@@ -186,13 +187,13 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * two sides of the comparison share no code and cannot agree by construction. {@code GateVerificationTest}
  * owns the other half, checking the oracle against the same files without needing a container.
  *
- * <p><strong>An earlier revision of this suite asserted no expected total at all</strong>, on the argument
- * that "two faithful models of the same source disagree over these very fixtures", citing
+ * <p><strong>Asserting no expected total at all</strong> is what the argument
+ * that "two faithful models of the same source disagree over these very fixtures" would license, citing
  * {@code app/cbl/CBTRN02C.cbl:L393-L395} re-reading the account against {@code :L545-L560} mutating its
- * accumulators. That argument was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+ * accumulators. The argument fails: {@code 2800-UPDATE-ACCOUNT-REC} ends in
  * {@code REWRITE FD-ACCTFILE-REC} at {@code :L561}, and a VSAM {@code REWRITE} replaces the record in the
  * cluster, so the re-read returns the mutated values and the stateless reading is a misreading of
- * {@code REWRITE} rather than a second model. Exactly one faithful model exists and it is now asserted. What
+ * {@code REWRITE} rather than a second model. Exactly one faithful model exists and it is asserted. What
  * remains genuinely <strong>Not available</strong> is a captured z/OS run, reported verbatim by
  * {@link #reportGateOneParityStatus()}.
  *
@@ -354,18 +355,6 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 @DisplayName("the daily transaction posting pipeline over all 300 shipped fixture rows")
 public class BatchPipelineE2ETest {
 
-    /**
-     * Creates the single test instance.
-     *
-     * <p>Declared explicitly rather than left implicit so that the class carries no undocumented member, the
-     * standard the {@code doclint} gate holds main sources to. JUnit instantiates this once, because the
-     * lifecycle is {@code PER_CLASS}; every field is then assigned by {@link #setUp()} and never reassigned.
-     */
-    public BatchPipelineE2ETest() {
-        // No state is established here: the captured snapshot is built by setUp(), which needs the injected
-        // collaborators and therefore cannot run until after construction and dependency injection.
-    }
-
     /** Diagnostic sink for this class, used for the evidence report rather than for assertions. */
     private static final Logger LOG = LoggerFactory.getLogger(BatchPipelineE2ETest.class);
 
@@ -412,11 +401,9 @@ public class BatchPipelineE2ETest {
     /** The in-memory signing key, generated once so the context can bind its defaultless property. */
     private static final String EPHEMERAL_SIGNING_KEY = generateEphemeralSigningKey();
 
-    // ====================================================================================================
     // The fixture contract. Every figure below was measured from the fixture itself, not transcribed from
     // prose, and the universal invariant is bytes == rows x (width + 1) because each record carries exactly
     // one trailing line feed.
-    // ====================================================================================================
 
     /**
      * The nine ASCII fixtures of {@code app/data/ASCII}, copied into {@code src/test/resources} and consumed
@@ -468,11 +455,9 @@ public class BatchPipelineE2ETest {
                     "The cross-reference fixture is absent from FIXTURE_CONTRACT; reject code 100 cannot be "
                             + "shown unreachable without it"));
 
-    // ----------------------------------------------------------------------------------------------------
     // app/cpy/CVTRA06Y.cpy - the 350-byte DALYTRAN layout, as 1-based inclusive column spans. The spans sum
     // to exactly 350 and are asserted to do so, because a mis-transcribed offset is the one error in this
     // file that would produce confidently wrong assertions rather than a failure.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code DALYTRAN-ID X(16)}. */
     private static final FieldSpan DALYTRAN_ID = new FieldSpan(1, 16);
@@ -522,9 +507,7 @@ public class BatchPipelineE2ETest {
             DALYTRAN_MERCHANT_ID, DALYTRAN_MERCHANT_NAME, DALYTRAN_MERCHANT_CITY, DALYTRAN_MERCHANT_ZIP,
             DALYTRAN_CARD_NUM, DALYTRAN_ORIG_TS, DALYTRAN_PROC_TS, DALYTRAN_FILLER);
 
-    // ----------------------------------------------------------------------------------------------------
     // app/cpy/CVACT01Y.cpy and app/cpy/CVACT03Y.cpy - only the spans this class actually reads.
-    // ----------------------------------------------------------------------------------------------------
 
     /** {@code ACCT-ID 9(11)}. */
     private static final FieldSpan ACCT_ID = new FieldSpan(1, 11);
@@ -550,12 +533,10 @@ public class BatchPipelineE2ETest {
     /** {@code XREF-ACCT-ID 9(11)}. */
     private static final FieldSpan XREF_ACCT_ID = new FieldSpan(26, 36);
 
-    // ----------------------------------------------------------------------------------------------------
     // Zoned-decimal trailing-sign overpunch. Decoding is position-aware, driven by the spans above and never
     // by a global text substitution: A through R occur legitimately inside DALYTRAN-DESC,
     // DALYTRAN-MERCHANT-NAME, DALYTRAN-MERCHANT-CITY and ACCT-ADDR-ZIP, which is literally A000000000 on
     // all 50 account rows.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Overpunch characters denoting a non-negative value, mapped to the digit each contributes. */
     private static final Map<Character, Character> POSITIVE_OVERPUNCH = Map.of(
@@ -646,7 +627,6 @@ public class BatchPipelineE2ETest {
     /** The four literal zeros {@code :L701} moves into {@code DB2-REST}. */
     private static final String BATCH_TIMESTAMP_TRAILING_ZEROS = "0000";
 
-    // ----------------------------------------------------------------------------------------------------
     // The four published metric names and their tag keys, stated as literals rather than imported from the
     // class that declares them. That is deliberate on two counts.
     //
@@ -659,7 +639,6 @@ public class BatchPipelineE2ETest {
     // Second, com.cardemo.observability.MetricsConfig is not among this file's declared dependencies, so it
     // is not an importable collaborator for this test. Each value below was read from its declaration site
     // and is cited to it rather than guessed.
-    // ----------------------------------------------------------------------------------------------------
 
     /** Counter replacing {@code DISPLAY 'TRANSACTIONS PROCESSED :'} at {@code app/cbl/CBTRN02C.cbl:L227}. */
     private static final String METRIC_RECORDS_PROCESSED = "carddemo.batch.records.processed";
@@ -685,7 +664,6 @@ public class BatchPipelineE2ETest {
     /** Tag value for the negative branch of {@code app/cbl/CBTRN02C.cbl:L551}. */
     private static final String SIGN_DEBIT = "debit";
 
-    // ====================================================================================================
     // Container lifecycle. The two fields are static because one lifecycle must span the class, and final so
     // they are immutable after start. They carry no @Container annotation on purpose: a container the
     // extension manages is stopped in afterAll, while Spring caches the test context on a key that does not
@@ -694,7 +672,6 @@ public class BatchPipelineE2ETest {
     //
     // These two references are the only static mutable-by-construction state in the class. Every value the
     // tests assert against is an instance field assigned once in setUp and never written again.
-    // ====================================================================================================
 
     /**
      * The relational substrate. {@code @ServiceConnection} contributes the JDBC connection details as a
@@ -856,16 +833,6 @@ public class BatchPipelineE2ETest {
     static class FixedClockConfiguration {
 
         /**
-         * Creates the configuration.
-         *
-         * <p>Declared explicitly for the same reason as the enclosing class's constructor: no member is left
-         * undocumented. Spring instantiates it while processing {@code @Import}.
-         */
-        FixedClockConfiguration() {
-            // No state: the single bean below is a pure function of the enclosing class's pinned instant.
-        }
-
-        /**
          * The single time source this run observes.
          *
          * <p>{@code TRAN-PROC-TS} is generated at post time rather than carried on the input - columns
@@ -882,10 +849,8 @@ public class BatchPipelineE2ETest {
         }
     }
 
-    // ====================================================================================================
     // Small immutable value carriers. Records rather than classes because each is a pure data tuple, and
     // nested rather than separate files because this package is not permitted a further source file.
-    // ====================================================================================================
 
     /**
      * The measured contract of one fixture: its classpath resource name and the three figures that must hold
@@ -973,10 +938,8 @@ public class BatchPipelineE2ETest {
                                      BigDecimal currentBalance) {
     }
 
-    // ====================================================================================================
     // Injected collaborators. Field injection is used because JUnit owns the instance lifecycle, so a
     // constructor is not available for it.
-    // ====================================================================================================
 
     /** The job under test, injected by its authored bean name rather than by type. */
     @Autowired
@@ -1007,7 +970,7 @@ public class BatchPipelineE2ETest {
     @Autowired
     private CardCrossReferenceRepository cardCrossReferenceRepository;
 
-    /** The object store, used to read back the reject generation and measure its record geometry. */
+    /** The object store, read to recover the reject generation and measure its record geometry. */
     @Autowired
     private S3Operations objectStorage;
 
@@ -1023,11 +986,9 @@ public class BatchPipelineE2ETest {
     @Value("${carddemo.aws.s3.batch-output-bucket}")
     private String outputBucket;
 
-    // ====================================================================================================
     // Captured state. Every field below is assigned exactly once by setUp and never written again, so the
     // tests read a consistent snapshot and none can influence another. Rule 1 clause B forbids global
     // mutable state; these are per-instance and effectively final after setup.
-    // ====================================================================================================
 
     /** The nine fixtures, read once and keyed by resource name. */
     private Map<String, Fixture> fixtures;
@@ -1156,9 +1117,7 @@ public class BatchPipelineE2ETest {
         LOG.info(reportGateOneParityStatus());
     }
 
-    // ====================================================================================================
     // Public evidence surface. One method, documented per Rule 1 clause B, and deliberately assertion-free.
-    // ====================================================================================================
 
     /**
      * Reports the provenance of the Gate 1 boundary-parity oracle and what this run compared against it.
@@ -1210,8 +1169,8 @@ public class BatchPipelineE2ETest {
      * artefact here genuinely is missing - a captured run of the compiled COBOL under CICS and VSAM - and this
      * method is that statement, in code rather than prose alone, so it travels with the run.
      *
-     * <p><strong>What changed, and why.</strong> An earlier revision of this method reported the whole Gate 1
-     * <em>baseline</em> as {@code Not available} and argued that no expected total could be asserted because
+     * <p><strong>Why the whole Gate 1 <em>baseline</em> is not reported as {@code Not available}.</strong> The
+     * argument for doing so is that no expected total can be asserted because
      * "two faithful models of app/cbl/CBTRN02C.cbl disagree over these fixtures, because :L393-L395 re-reads
      * the account per transaction while :L545-L560 mutates its accumulators, so any hand-derived total is
      * model-sensitive rather than an oracle". That argument does not survive reading the paragraph it cites:
@@ -1220,7 +1179,7 @@ public class BatchPipelineE2ETest {
      * VSAM {@code REWRITE} replaces the record in the cluster, so the next {@code READ} of that key returns
      * the mutated values. The stateless single-pass reading is not a second faithful model - it is a misreading
      * of what {@code REWRITE} means. Exactly one faithful model exists, {@link PostingParityOracle} implements
-     * it, and this suite now compares the real run against it in full.
+     * it, and this suite compares the real run against it in full.
      *
      * <p><strong>Inputs.</strong> None; the answer is a property of the repository rather than of any run. An
      * exhaustive search for expected, baseline, golden, system-output, reject, report, statement and HTML
@@ -1257,9 +1216,7 @@ public class BatchPipelineE2ETest {
                 + "does.";
     }
 
-    // ====================================================================================================
     // Fixture reading and position-aware decoding. Static and pure: none of these touches instance state.
-    // ====================================================================================================
 
     /**
      * Reads one fixture from the classpath, measuring it rather than trusting it.
@@ -1382,9 +1339,7 @@ public class BatchPipelineE2ETest {
         return negative ? magnitude.negate() : magnitude;
     }
 
-    // ====================================================================================================
     // State capture and job launch.
-    // ====================================================================================================
 
     /**
      * Captures the cycle accumulators and balance of every account, keyed by identifier.
@@ -1413,7 +1368,7 @@ public class BatchPipelineE2ETest {
      * Captures the balance of every category-balance row, keyed by the same rendering as the key capture.
      *
      * <p>Separate from {@link #captureCategoryBalanceKeys()} because the two answer different questions: the
-     * key set proves which rows the upsert of {@code app/cbl/CBTRN02C.cbl:L467-L500} created, and this map
+     * key set proves which rows the upsert of {@code app/cbl/CBTRN02C.cbl:L467-L501} created, and this map
      * proves what it accumulated into each of them. The Gate 1 comparison needs both.
      *
      * @return an immutable snapshot keyed by {@code account|type|category}, never {@code null}
@@ -1534,10 +1489,8 @@ public class BatchPipelineE2ETest {
         }
     }
 
-    // ====================================================================================================
     // The fixtures themselves. These run first in reading order because every later assertion rests on the
     // input being exactly what it is measured to be here.
-    // ====================================================================================================
 
     /**
      * All nine fixtures satisfy the universal invariant: {@code bytes == rows x (width + 1)}, zero carriage
@@ -1783,9 +1736,7 @@ public class BatchPipelineE2ETest {
                 .isEqualTo(new BigDecimal("603.22"));
     }
 
-    // ====================================================================================================
     // The load path: what the seed migration put into the staging table, and in what shape.
-    // ====================================================================================================
 
     /**
      * Both {@code DALYTRAN-SOURCE} literals survive the load path, including the one
@@ -1892,9 +1843,7 @@ public class BatchPipelineE2ETest {
                 .isEqualTo(EXPECTED_NEGATIVE_ROWS);
     }
 
-    // ====================================================================================================
     // The posting run: app/cbl/CBTRN02C.cbl:L202-L232.
-    // ====================================================================================================
 
     /**
      * Every one of the 300 staged records is accounted for as either posted or rejected, and the two
@@ -2094,9 +2043,7 @@ public class BatchPipelineE2ETest {
                 .isEmpty();
     }
 
-    // ====================================================================================================
     // Record geometry at the storage boundary.
-    // ====================================================================================================
 
     /**
      * The emitted reject generation is composed of records of exactly 430 bytes, decomposing as 350 + 4 + 76.
@@ -2209,9 +2156,7 @@ public class BatchPipelineE2ETest {
         }
     }
 
-    // ====================================================================================================
     // Posting semantics: the sign branch, the upsert branches and the generated timestamp.
-    // ====================================================================================================
 
     /**
      * A negative amount is added to the cycle <em>debit</em> accumulator, leaving it negative, with no
@@ -2747,7 +2692,7 @@ public class BatchPipelineE2ETest {
     /**
      * Every category-balance row matches the legacy oracle, including the rows the run created.
      *
-     * <p>{@code app/cbl/CBTRN02C.cbl:L467-L500} upserts: an absent row is an accepted control path that
+     * <p>{@code app/cbl/CBTRN02C.cbl:L467-L501} upserts: an absent row is an accepted control path that
      * creates, not an error. The oracle therefore carries more rows after the run than the fixture seeded,
      * and both the key set and every balance are compared.
      */
@@ -2807,11 +2752,11 @@ public class BatchPipelineE2ETest {
      *
      * <h4>Why this is the assertion Gate 1 always needed</h4>
      *
-     * <p>An earlier revision of this suite asserted only that the reject count was
-     * <em>positive</em>, declining an exact total on the grounds that a hand-derived figure would be
-     * "model-sensitive rather than an oracle". A positive count is satisfied by 1 as readily as by 38, so a
-     * posting engine that rejected almost everything, or almost nothing, passed. That is the gap this test
-     * closes.
+     * <p>Asserting only that the reject count is
+     * <em>positive</em>, and declining an exact total on the grounds that a hand-derived figure would be
+     * "model-sensitive rather than an oracle", is the gap this test closes: a positive count is satisfied by 1
+     * as readily as by 38, so a posting engine that rejected almost everything, or almost nothing, would
+     * pass.
      *
      * <p>The expectation it compares against is not captured from this implementation. It is derived from
      * {@code app/cbl/CBTRN02C.cbl} and the frozen fixtures by {@link PostingParityOracle}, which imports no
@@ -2930,9 +2875,7 @@ public class BatchPipelineE2ETest {
     }
 
 
-    // ====================================================================================================
     // Remaining private helpers.
-    // ====================================================================================================
 
     /**
      * Renders one committed {@link Transaction} row in the committed expectation's field order.

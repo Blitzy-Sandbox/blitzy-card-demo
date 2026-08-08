@@ -1,34 +1,34 @@
 # ******************************************************************
-# * File         : application-test.yml
-# * Application  : CardDemo
-# * Type         : Spring Boot profile configuration (YAML) - test
-# * Function     : Testcontainers-backed test profile. Layers the smallest
-# *                possible set of DELTAS over application.yml so that the
-# *                Failsafe integration and end-to-end tiers run against a
-# *                throwaway PostgreSQL 16 container and a throwaway
-# *                LocalStack container, with every connection detail
-# *                supplied at runtime by Testcontainers rather than written
-# *                here. It carries NO host, NO port, NO endpoint, NO
-# *                database name, NO credential and NO secret of any kind,
-# *                and it introduces NO dependency metadata: pom.xml owns
-# *                every coordinate and every version.
-# * Source       : app/jcl/POSTTRAN.jcl (STEP15 EXEC PGM=CBTRN02C at L23; the
-# *                six data DD statements TRANFILE L28, DALYTRAN L30,
-# *                XREFFILE L32, DALYREJS L34, ACCTFILE L39, TCATBALF L41;
-# *                DCB=(RECFM=F,LRECL=430,BLKSIZE=0) at L36 and the
-# *                DALYREJS(+1) generation reference at L38);
-# *                app/jcl/DUSRSECJ.jcl (the ten in-stream SYSUT1 records at
-# *                L35-L44, DCB=(LRECL=80,RECFM=FB) at L48 and DEFINE
-# *                CLUSTER KEYS(8,0) RECORDSIZE(80,80) at L64-L71);
-# *                app/catlg/LISTCAT.txt (CLUSTER 10 at L3940, GDG 7 at
-# *                L3942, PATH 3 at L3946 - the physical geometry the three
-# *                migrations reproduce);
-# *                app/csd/CARDDEMO.CSD (18 DEFINE TRANSACTION entries of
-# *                which 17 are sourced; DEFINE TDQUEUE(JOBS) at L499-L505);
-# *                app/data/ASCII/dailytran.txt (the 300-record Gate 1
-# *                parity fixture);
-# *                app/data/ASCII/discgrp.txt (the 51-row disclosure-group
-# *                fixture) - all @ 7756d89
+# * Program     : application-test.yml
+# * Application : CardDemo
+# * Type        : Spring Boot profile configuration (YAML) - test
+# * Function    : Testcontainers-backed test profile. Layers the smallest
+# *               possible set of DELTAS over application.yml so that the
+# *               Failsafe integration and end-to-end tiers run against a
+# *               throwaway PostgreSQL 16 container and a throwaway
+# *               LocalStack container, with every connection detail
+# *               supplied at runtime by Testcontainers rather than written
+# *               here. It carries NO host, NO port, NO endpoint, NO
+# *               database name, NO credential and NO secret of any kind,
+# *               and it introduces NO dependency metadata: pom.xml owns
+# *               every coordinate and every version.
+# * Source      : app/jcl/POSTTRAN.jcl (STEP15 EXEC PGM=CBTRN02C at L23; the
+# *               six data DD statements TRANFILE L28, DALYTRAN L30,
+# *               XREFFILE L32, DALYREJS L34, ACCTFILE L39, TCATBALF L41;
+# *               DCB=(RECFM=F,LRECL=430,BLKSIZE=0) at L36 and the
+# *               DALYREJS(+1) generation reference at L38);
+# *               app/jcl/DUSRSECJ.jcl (the ten in-stream SYSUT1 records at
+# *               L35-L44, DCB=(LRECL=80,RECFM=FB) at L48 and DEFINE
+# *               CLUSTER KEYS(8,0) RECORDSIZE(80,80) at L64-L71);
+# *               app/catlg/LISTCAT.txt (CLUSTER 10 at L3940, GDG 7 at
+# *               L3942, PATH 3 at L3946 - the physical geometry the three
+# *               migrations reproduce);
+# *               app/csd/CARDDEMO.CSD (18 DEFINE TRANSACTION entries of
+# *               which 17 are sourced; DEFINE TDQUEUE(JOBS) at L499-L505);
+# *               app/data/ASCII/dailytran.txt (the 300-record Gate 1
+# *               parity fixture);
+# *               app/data/ASCII/discgrp.txt (the 51-row disclosure-group
+# *               fixture) - all @ 7756d89
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -204,13 +204,18 @@
 # runnable profile, and it is protected WITHOUT declaring anything, which is
 # what makes the arrangement safe rather than merely conventional:
 #
-#   * application.yml carries the three service endpoints - each indirected
-#     through ${AWS_ENDPOINT_URL} with NO literal default, deliberately, so an
-#     unset variable fails placeholder resolution instead of being hidden - and
-#     the inert static credential pair that displaces the SDK default provider
-#     chain. A standalone run under this profile alone therefore addresses the
-#     emulator rather than falling through to regional endpoint discovery, which
-#     is precisely what it used to do. THAT IS THE WHOLE ENDPOINT POLICY, and it
+#   * application.yml carries the three service endpoints AND the static
+#     credential pair - all five indirected through the environment
+#     (${AWS_ENDPOINT_URL}, ${AWS_ACCESS_KEY_ID}, ${AWS_SECRET_ACCESS_KEY})
+#     with NO literal default on any of them, deliberately, so an unset
+#     variable fails placeholder resolution instead of being hidden. What
+#     resolves is an inert emulator credential pair, and supplying it at all is
+#     what displaces the SDK default provider chain; AwsConfig then rejects an
+#     access key carrying a real AKIA/ASIA prefix, so the displacement cannot be
+#     satisfied by a live key. A standalone run under this profile alone
+#     therefore addresses the emulator rather than falling through to regional
+#     endpoint discovery, which is what an absent override would produce.
+#     THAT IS THE WHOLE ENDPOINT POLICY, and it
 #     is the same in every profile: every profile points S3, SQS and SNS at the
 #     emulator, and com.cardemo.config.AwsConfig aborts the context refresh
 #     unless all three do. The developer defaults for the variable live in
@@ -749,9 +754,9 @@
 #     in this entry is a measurement with a command beside it, because a bare
 #     count goes stale silently and a stale count presented as current is itself
 #     an evidence defect. The figures below were taken from the state of the tree
-#     at the time of writing, NOT copied forward from an earlier revision - the
-#     revision this replaces still claimed 93 sources and 6858 tests, both of
-#     which had been overtaken by later commits.
+#     at the reading dated beside them; re-derive them with the commands rather
+#     than copying a figure forward, because a count carried over from an older
+#     reading is overtaken by the next commit without anything looking wrong.
 #       Compile   ./mvnw -B -ntp -Ddependency-check.skip=true clean compile
 #                 release 25 with -Xlint:all, -Werror and failOnWarning; zero
 #                 warnings, zero errors, exit 0.

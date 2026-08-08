@@ -427,27 +427,12 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 @DisplayName("the eight validation gates and the 28-program bidirectional traceability contract")
 class GateVerificationTest {
 
-    /**
-     * Creates the single test instance.
-     *
-     * <p>Declared explicitly so the class carries no undocumented member. JUnit instantiates it once,
-     * because the lifecycle is {@code PER_CLASS}; the corpus model is then built by
-     * {@link #parseTheFrozenCorpusOnce()} and never reassigned.
-     */
-    GateVerificationTest() {
-        // No state is established here: the corpus model needs the resolved repository root, which is
-        // discovered in @BeforeAll so that a failure to find it is reported as a setup diagnosis rather
-        // than as a constructor exception with no context.
-    }
-
     /** Diagnostic sink, used for the measured baselines and the evidence report, never for assertions. */
     private static final Logger LOG = LoggerFactory.getLogger(GateVerificationTest.class);
 
-    // ====================================================================================================
     // Verified denominators. Each is the expected value of a quantity this class DERIVES from the corpus;
     // none is a substitute for the derivation. Where a derived value and a constant disagree the failure
     // names both, so the corpus always wins the argument.
-    // ====================================================================================================
 
     /** COBOL programs in {@code app/cbl}: 26 with a lowercase extension plus 2 with an uppercase one. */
     private static final int EXPECTED_PROGRAM_COUNT = 28;
@@ -626,10 +611,10 @@ class GateVerificationTest {
     /**
      * Files the delivered tree carries beyond the schema, each sanctioned by {@link #SANCTION_REGISTER_ENTRY}.
      *
-     * <p>This is the second operand of three that make the inventory auditable. The earlier revision of this gate
-     * asserted the delivered total as a bare literal, which fails for two indistinguishable reasons - a file
-     * added without justification, or a file added with justification that nobody re-counted - and a
-     * reviewer who cannot tell those apart eventually edits the literal to make the build green. Stating
+     * <p>This is the second operand of three that make the inventory auditable. Asserting the delivered total
+     * as a bare literal is what this arrangement forecloses: a bare literal fails for two indistinguishable
+     * reasons - a file added without justification, or a file added with justification that nobody re-counted -
+     * and a reviewer who cannot tell those apart eventually edits the literal to make the build green. Stating
      * the total as schema floor plus register means a failure names which operand moved.</p>
      *
      * <p>The 26 divide into four groups, all in {@code DL-CR-06}: 11 controller response types and the
@@ -710,13 +695,17 @@ class GateVerificationTest {
     private static final int FIXTURE_SEEDED_ROW_TOTAL = 626;
 
     /**
-     * No-op sites the documented conflict resolution turns on, enumerated individually elsewhere.
+     * How many rows of the locator-keyed no-op register this class spot-checks individually.
      *
-     * <p>A floor, never an equality: the production tree marks every paragraph-level no-op preserved for
-     * control-flow parity, so the true marker count is far larger. These three are the ones the code-quality
-     * clause and the parity mandate actually collide over.
+     * <p>A floor, never an equality, and never a property of the register. {@code DL-CR-01} keys that
+     * register by identifier and locator and declares no total, so a row can be added or removed without
+     * renumbering anything; the production tree additionally marks every paragraph-level no-op preserved for
+     * control-flow parity, so the true marker count is far larger. This constant is the size of the sample
+     * enumerated below - {@code NOOP-CBACT04C-1400}, {@code NOOP-CBTRN02C-109} and
+     * {@code NOOP-CBSTM03A-CRJMP} - and the derived census is what
+     * {@code dispositions.derivedNoOpMarkers} records.
      */
-    private static final int ENUMERATED_NO_OP_SITES = 3;
+    private static final int SPOT_CHECKED_NO_OP_REGISTER_ROWS = 3;
 
     /** REST operations across the controller tier. */
     private static final int EXPECTED_REST_OPERATION_COUNT = 17;
@@ -814,12 +803,12 @@ class GateVerificationTest {
      * The one piece of Gate 1 evidence still missing, stated verbatim so a later run knows what would
      * strengthen it. Reported by {@link #reportGateOneOracleStatus()}.
      *
-     * <p>This is deliberately narrower than it once was. An earlier revision named this same artefact as what
-     * Gate 1 needed <em>to be assertable at all</em>, on the argument that no expected outcome could otherwise
-     * be derived. That argument was wrong, and {@link PostingParityOracle} is the refutation: the outcome is
-     * derivable from the frozen source and the frozen fixtures, and it is now derived, committed and asserted
-     * against. What a captured run would add is corroboration from the real runtime - confirmation that the
-     * COBOL as compiled and executed under CICS and VSAM behaves as the COBOL as read does.
+     * <p>This is deliberately narrow. Naming this same artefact as what Gate 1 needs <em>to be assertable at
+     * all</em> - on the argument that no expected outcome could otherwise be derived - would be wrong, and
+     * {@link PostingParityOracle} is the refutation: the outcome is derivable from the frozen source and the
+     * frozen fixtures, and it is derived, committed and asserted against. What a captured run would add is
+     * corroboration from the real runtime - confirmation that the COBOL as compiled and executed under CICS
+     * and VSAM behaves as the COBOL as read does.
      */
     private static final String GATE_ONE_NEEDED_EVIDENCE =
             "a captured DALYREJS 430-byte reject dataset plus the resulting TRANSACT / ACCTDATA / TCATBALF "
@@ -846,9 +835,7 @@ class GateVerificationTest {
     /** The artefact whose absence after a build is itself proof that this class never executed. */
     private static final String EVIDENCE_FILE_NAME = "gate-verification-evidence.properties";
 
-    // ====================================================================================================
     // Parser geometry. COBOL is a fixed-column language and every one of these positions is load-bearing.
-    // ====================================================================================================
 
     /** Zero-based index of the indicator column, column 7 in one-based terms. */
     private static final int INDICATOR_COLUMN_INDEX = 6;
@@ -896,10 +883,8 @@ class GateVerificationTest {
     /** One entry of the catalogue totals block: a kind, a run of dashes, then a count. */
     private static final Pattern CATALOGUE_TOTAL = Pattern.compile("^\\s*([A-Z]+)\\s*-+(\\d+)\\s*$");
 
-    // ====================================================================================================
     // The immutable corpus model. Everything below is a value type: the parser is a pure function of the
     // bytes on disk, so two runs over one corpus produce one model and every gate reads the same evidence.
-    // ====================================================================================================
 
     /**
      * One member of the frozen corpus, already normalised for line endings.
@@ -1216,10 +1201,8 @@ class GateVerificationTest {
      */
     private final List<String> recordedEvidence = new ArrayList<>();
 
-    // ====================================================================================================
     // Setup. The corpus is parsed once; a failure here is a setup diagnosis naming what was looked for and
     // where, never a silent empty model that would let every gate pass over nothing.
-    // ====================================================================================================
 
     /**
      * Locates the repository root and parses the frozen corpus into the immutable model every gate reads.
@@ -1288,10 +1271,8 @@ class GateVerificationTest {
                 "gate-verification-summary.properties", attributed.size());
     }
 
-    // ====================================================================================================
     // The parser. Pure functions over bytes: no field is written, nothing is cached, and nothing consults
     // the platform locale, time zone or default charset.
-    // ====================================================================================================
 
     /**
      * Walks up from the working directory to the repository root.
@@ -1596,10 +1577,8 @@ class GateVerificationTest {
                 procedureNames);
     }
 
-    // ====================================================================================================
     // GATE 7 - SCOPE COVERAGE. All 28 programs mapped forward, every citation resolved backward, and the
     // label census DERIVED. No container needed, so this evidence is produced first.
-    // ====================================================================================================
 
     /**
      * Gate 7: the member censuses and the program line total are what the corpus actually holds.
@@ -3168,11 +3147,9 @@ class GateVerificationTest {
                 + "the one-to-one invariant and cite the measured count.");
     }
 
-    // ====================================================================================================
     // GATE 2 - CLEAN BUILD. The build descriptor is the evidence: the toolchain floor, the warning
     // escalation, the coverage floor and the scan are all declared there and are read here rather than
     // assumed. No container needed.
-    // ====================================================================================================
 
     /**
      * Gate 2: the build escalates every warning to an error and pins the toolchain and the coverage floor.
@@ -3323,10 +3300,8 @@ class GateVerificationTest {
         record("gate2.testcontainersPin", "2.0.3 via property override, prefixed coordinates only");
     }
 
-    // ====================================================================================================
     // GATE 6 - SECURITY AUDIT. Type absence, precision, credential hygiene and the three named risky
     // patterns, all asserted ABSENT rather than merely unused. No container needed.
-    // ====================================================================================================
 
     /**
      * Gate 6: no financial field uses binary floating point, and the three declared precisions are exact.
@@ -3741,11 +3716,27 @@ class GateVerificationTest {
             collectMatch(withoutComments(source), executionPattern, testTierProcessUse);
         }
         assertThat(testTierProcessUse.keySet())
-                .as("exactly one test spawns a process, and it does so to syntax-check the emulator "
-                        + "initialisation shell script - a build-time verification of a shipped artefact, "
-                        + "not an application code path. Any other test appearing here would be a new "
-                        + "finding requiring its own justification")
-                .allSatisfy(path -> assertThat(path).endsWith("InitAwsScriptGuardTest.java"));
+                .as("""
+                    exactly TWO tests spawn a process, and each is a build-time verification of a shipped \
+                    artefact rather than an application code path.
+
+                    InitAwsScriptGuardTest syntax-checks the emulator initialisation shell script.
+
+                    BuildProvenanceTest executes the CI log-redaction filter against a planted sentinel \
+                    JWT and proves the sentinel cannot reach stdout or stderr. That proof is only \
+                    meaningful if it runs the SHIPPED filter: a Java reimplementation would verify the \
+                    reimplementation, and a static read of the script cannot show what it emits. The \
+                    property is additionally asserted against the filter's source, unconditionally, so the \
+                    guarantee does not depend on an interpreter being present - the image build stage \
+                    ships none, and that assertion is what covers it there.
+
+                    This remains an exhaustive allowlist rather than an exclusion: a THIRD test appearing \
+                    here is a new finding requiring its own justification, and reporting the occurrence is \
+                    the entire point.""")
+                .allSatisfy(path -> assertThat(path)
+                        .satisfiesAnyOf(
+                                candidate -> assertThat(candidate).endsWith("InitAwsScriptGuardTest.java"),
+                                candidate -> assertThat(candidate).endsWith("BuildProvenanceTest.java")));
 
         // The injectable construct is a DATA VALUE spliced into a statement, so that is what is detected:
         // a literal ending on a comparison operator or a value-list opener, immediately concatenated. A
@@ -3795,24 +3786,21 @@ class GateVerificationTest {
         record("gate6.riskyPatternShellOrSqlInjection", 0);
     }
 
-    // ====================================================================================================
     // PARSER DETERMINISM. Not Gate 3. Gate 3's three figures - batch records per second, per-endpoint p95
     // latency and peak heap - are measured against a running system in ExecutionDependentGates, because a
     // figure taken from parsing text says nothing about the system's performance. What is measured here is
     // that re-parsing the corpus reproduces the two derived censuses exactly, which is what Gate 7's counts
     // rest on.
-    // ====================================================================================================
 
     /**
      * Re-parsing the whole corpus reproduces both derived censuses exactly.
      *
-     * <p><strong>This test used to publish Gate 3's throughput figure, and that was wrong.</strong> It timed
-     * the parse of 19,254 lines of frozen text held in memory and recorded the result as a
-     * "performance baseline". Nothing about that number describes the migrated system: no database, no
-     * endpoint, no batch step and no chunk commit is involved, and the work it times does not exist at run
-     * time at all. A reader meeting {@code gate3.linesPerSecond} in the evidence would reasonably have taken
-     * it for the application's throughput. Gate 3's three figures are now measured where they can be
-     * measured, and this test keeps the assertions that were always sound.
+     * <p><strong>This test must never publish Gate 3's throughput figure.</strong> Timing the parse of 19,254
+     * lines of frozen text held in memory and recording the result as a "performance baseline" describes
+     * nothing about the migrated system: no database, no endpoint, no batch step and no chunk commit is
+     * involved, and the work it times does not exist at run time at all. A reader meeting
+     * {@code gate3.linesPerSecond} in the evidence would reasonably take it for the application's throughput.
+     * Gate 3's three figures are measured where they can be measured.
      *
      * <p>What it asserts is determinism, and it is worth keeping for that: the line total and the paragraph
      * total are re-derived here from a second full pass, and Gate 7's coverage arithmetic is built on both.
@@ -3865,11 +3853,9 @@ class GateVerificationTest {
                 linesParsed, labelsFound, Math.max(1L, elapsed.toMillis()), heapBeforeBytes, heapAfterBytes);
     }
 
-    // ====================================================================================================
     // GATE 1 - BOUNDARY PARITY. The oracle is the LEGACY program's own output: app/cbl/CBTRN02C.cbl was
     // compiled UNMODIFIED and executed against the frozen ASCII fixtures, and its five output images were
     // captured under src/test/resources/parity/gate1. Nothing here derives from the Java implementation.
-    // ====================================================================================================
 
     /**
      * Gate 1: the boundary oracle exists, came from the legacy program, and is reproducible byte for byte.
@@ -3887,15 +3873,14 @@ class GateVerificationTest {
      * was not modified; and that the measured outcome the artefacts themselves carry - 300 read, 38
      * rejected, 262 posted, return code 4, reject reason 0102 alone - agrees with what the record claims.
      *
-     * <p><strong>What this replaces, and why.</strong> An earlier revision of this method asserted that no
-     * baseline existed and that none could be produced, on the grounds that a hand-derived total is
-     * "model-sensitive": a stateless single-pass model and a stateful model of {@code CBTRN02C} disagree
-     * over these fixtures. The disagreement is real - 13 against 38 - but the conclusion did not follow,
-     * because only one of the two is a model of <em>this</em> program.
-     * {@code app/cbl/CBTRN02C.cbl:L393-L395} re-reads the account for every transaction and {@code :L554}
-     * rewrites it inside the same iteration, so transaction n+1 necessarily observes what transaction n
-     * persisted; the stateless reading contradicts {@code :L554} outright. Executing the program settles it,
-     * and that is what was done.
+     * <p><strong>Why "no baseline exists and none can be produced" is not the finding here.</strong> That
+     * conclusion rests on a hand-derived total being "model-sensitive": a stateless single-pass model and a
+     * stateful model of {@code CBTRN02C} disagree over these fixtures. The disagreement is real - 13 against
+     * 38 - but the conclusion does not follow, because only one of the two is a model of <em>this</em>
+     * program. {@code app/cbl/CBTRN02C.cbl:L393-L395} re-reads the account for every transaction and
+     * {@code :L554} rewrites it inside the same iteration, so transaction n+1 necessarily observes what
+     * transaction n persisted; the stateless reading contradicts {@code :L554} outright. Executing the program
+     * settles it, and that is what the committed oracle records.
      */
     @Test
     @DisplayName("Gate 1: the boundary oracle is the frozen program's own output and is reproducible")
@@ -3970,7 +3955,7 @@ class GateVerificationTest {
                 .hasSize(262);
         assertThat(oracle.accounts()).as("all 50 seeded accounts survive the run").hasSize(50);
         assertThat(oracle.categoryBalances())
-                .as("app/cbl/CBTRN02C.cbl:L467-L500 upserts, so the 50 seeded rows become 100 once the run "
+                .as("app/cbl/CBTRN02C.cbl:L467-L501 upserts, so the 50 seeded rows become 100 once the run "
                         + "creates one per account for the type-and-category pair the fixtures carry")
                 .hasSize(oracle.declaredNumber("run.categoryBalanceRowsAfter"))
                 .hasSize(100);
@@ -3999,14 +3984,14 @@ class GateVerificationTest {
 
         // The oracle assertions above are name-based, and a name-based prohibition is only as good as the
         // names it guesses: an expected-output artefact committed under any other name would pass all of
-        // them. So the test resource tree is held to its exact shape instead. An earlier revision of this
-        // guard required src/test/resources to hold NOTHING but the nine frozen input fixtures, on the
-        // ground that any expected-output artefact makes this gate circular. That ground is right and the
-        // rule is now WRONG, because two expected-output trees were subsequently produced and neither is
-        // circular: parity/gate1 is the frozen program's own output, compiled and executed unmodified, and
-        // expected/posttran is re-derived from the same source by a class that imports no production type.
-        // The rule is therefore re-aimed at the property that actually matters - that every file here is
-        // either a byte-identical copy of a frozen input or a member of one of those two DECLARED trees.
+        // them. So the test resource tree is held to its exact shape instead. Requiring src/test/resources to
+        // hold NOTHING but the nine frozen input fixtures - on the ground that any expected-output artefact
+        // makes this gate circular - would be the wrong rule, because two expected-output trees exist here and
+        // neither is circular: parity/gate1 is the frozen program's own output, compiled and executed
+        // unmodified, and expected/posttran is re-derived from the same source by a class that imports no
+        // production type. The rule is therefore aimed at the property that actually matters - that every file
+        // here is either a byte-identical copy of a frozen input or a member of one of those two DECLARED
+        // trees.
         final Path testResources = this.corpus.root().resolve("src/test/resources");
         final List<String> fixtureCopies = new ArrayList<>();
         final List<String> undeclared = new ArrayList<>();
@@ -4110,32 +4095,30 @@ class GateVerificationTest {
                         + oracle.declared("withdrawn.reason") + ".");
     }
 
-    // ====================================================================================================
     // GATE 1 - BOUNDARY PARITY. A source-derived oracle, a committed expectation, and a fail-closed
     // comparison. Never fabricated, never asserted against the implementation's own output, and never
     // satisfied by the ABSENCE of an expectation.
-    // ====================================================================================================
 
     /**
      * Gate 1, half one: the committed expectation exists and is non-empty, so the gate cannot pass vacuously.
      *
      * <h4>Why this assertion is the exact inverse of the one it replaces</h4>
      *
-     * <p>An earlier revision of this gate asserted that {@code src/test/resources/expected},
-     * {@code src/test/resources/baseline} and {@code src/test/resources/golden} each
-     * <b>{@code doesNotExist()}</b>, on the reasoning that any expectation this migration authored would be "a
-     * fabrication dressed as evidence". The consequence was that Gate 1 passed <em>because</em> no expectation
-     * existed, and would have kept passing had the implementation been arbitrarily wrong. A gate that is
-     * satisfied by the absence of its own evidence is not a gate.
+     * <p>Asserting that {@code src/test/resources/expected}, {@code src/test/resources/baseline} and
+     * {@code src/test/resources/golden} each <b>{@code doesNotExist()}</b> - on the reasoning that any
+     * expectation this migration authored would be "a fabrication dressed as evidence" - inverts the gate:
+     * Gate 1 would pass <em>because</em> no expectation existed, and would keep passing had the
+     * implementation been arbitrarily wrong. A gate that is satisfied by the absence of its own evidence is
+     * not a gate.
      *
-     * <p>The reasoning behind it rested on a specific claim, and the claim was false. It held that no
-     * expectation could be derived because "a stateless single-pass model and a stateful model of the same
-     * source disagree over these exact fixtures", citing {@code app/cbl/CBTRN02C.cbl:L395} re-reading the
-     * account against {@code :L545-L560} mutating its accumulators. But
-     * {@code 2800-UPDATE-ACCOUNT-REC} ends in {@code REWRITE FD-ACCTFILE-REC} at {@code :L561}, and a VSAM
-     * {@code REWRITE} replaces the record in the cluster - so the re-read at {@code :L394} returns the mutated
-     * accumulators and the stateless reading is not a model of this program at all. Exactly one faithful model
-     * exists. {@link PostingParityOracle} implements it, and this directory holds what it produces.
+     * <p>That reasoning rests on a specific claim, and the claim is false. It holds that no expectation can
+     * be derived because "a stateless single-pass model and a stateful model of the same source disagree over
+     * these exact fixtures", citing {@code app/cbl/CBTRN02C.cbl:L395} re-reading the account against
+     * {@code :L545-L560} mutating its accumulators. But {@code 2800-UPDATE-ACCOUNT-REC} ends in
+     * {@code REWRITE FD-ACCTFILE-REC} at {@code :L561}, and a VSAM {@code REWRITE} replaces the record in the
+     * cluster - so the re-read at {@code :L394} returns the mutated accumulators and the stateless reading is
+     * not a model of this program at all. Exactly one faithful model exists.
+     * {@link PostingParityOracle} implements it, and this directory holds what it produces.
      *
      * <p><b>The distinction that makes the expectation evidence rather than fabrication</b> is where it came
      * from. It was not captured from the Java implementation's output - that would be circular, and the
@@ -4153,8 +4136,8 @@ class GateVerificationTest {
         final Path oracleDirectory = this.corpus.root().resolve(GATE_ONE_ORACLE_DIRECTORY);
 
         assertThat(oracleDirectory)
-                .as("%s must exist and hold the committed Gate 1 expectation. Its ABSENCE was once asserted "
-                        + "as a virtue; that made the gate pass because it had nothing to compare against. "
+                .as("%s must exist and hold the committed Gate 1 expectation. A gate satisfied by the "
+                        + "absence of its own evidence has nothing to compare against and cannot fail. "
                         + "Regenerate it from PostingParityOracle rather than deleting this assertion",
                         GATE_ONE_ORACLE_DIRECTORY)
                 .isDirectory();
@@ -4358,18 +4341,18 @@ class GateVerificationTest {
                 "  BatchPipelineE2ETest - runs the real posting job over the same 300 rows and checks its",
                 "                         output against those files, field for field and byte for byte",
                 "",
-                "Why an earlier revision said no oracle was derivable, and why that was withdrawn: it argued",
-                "that a stateless single-pass model and a stateful model of app/cbl/CBTRN02C.cbl disagree",
+                "Why a stateless single-pass model is not a second faithful model: such a reading argues",
+                "that it and a stateful model of app/cbl/CBTRN02C.cbl disagree",
                 "over these fixtures, because :L393-L395 re-reads the account while :L545-L560 mutates its",
                 "accumulators. But 2800-UPDATE-ACCOUNT-REC ends in REWRITE FD-ACCTFILE-REC at :L561, and",
                 "2700-B-UPDATE-TCATBAL-REC in REWRITE FD-TRAN-CAT-BAL-RECORD at :L527. A VSAM REWRITE",
                 "replaces the record in the cluster, so the next READ of that key returns the mutated",
-                "values. The stateless reading is not a second faithful model - it is a misreading of what",
-                "REWRITE means. Exactly one faithful model exists, and it is the one now asserted.",
+                "values. The stateless reading is a misreading of what REWRITE means, not a second",
+                "faithful model. Exactly one faithful model exists, and it is the one asserted here.",
                 "",
                 "Still " + NOT_AVAILABLE + ":",
                 "  " + GATE_ONE_NEEDED_EVIDENCE,
-                "A search of the repository returns only three dataset DEFINITION members",
+                "A search of app/ returns only three dataset DEFINITION members",
                 "(app/jcl/DALYREJS.jcl, app/jcl/TRANREPT.jcl, app/proc/TRANREPT.prc) and zero captured data,",
                 "so no such capture exists here and none is manufactured. It would corroborate rather than",
                 "replace the source-derived oracle: what it adds is confirmation that the COBOL as compiled",
@@ -4382,24 +4365,25 @@ class GateVerificationTest {
                 "app/cbl/CBTRN02C.cbl:L229-L230.");
     }
 
-    // ====================================================================================================
-    // DISPOSITIONS. Three justified no-ops, seven labelled deviations, one parity finding that overrides the
-    // project's own prose, and a register of legacy defects that are reported and never repaired.
-    // ====================================================================================================
+    // DISPOSITIONS. The locator-keyed no-op register of DL-CR-01, the labelled deviations, one parity finding
+    // that overrides the project's own prose, and a register of legacy defects reported and never repaired.
+    // Every census below is DERIVED from the published evidence; none is a literal total.
 
     /**
-     * The three intentionally retained no-ops are justified rather than dead, and the justification is
-     * verified against the corpus rather than taken on trust.
+     * Spot-checks three rows of the locator-keyed no-op register against the corpus, so their justification
+     * is verified rather than taken on trust.
      *
      * <p>This is the one documented conflict between the code-quality clause's prohibition on dead code and
      * the parity mandate, and it is resolved in favour of parity. The clause's target is <em>untracked</em>
-     * residue; these three are cited, marked and tracked, so retaining them satisfies the clause as written
-     * while deleting them would break the paragraph map that Gate 7 verifies - failing a stated acceptance
-     * criterion to satisfy a stylistic one.
+     * residue; every register row is cited, marked and tracked, so retaining them satisfies the clause as
+     * written while deleting them would break the paragraph map that Gate 7 verifies - failing a stated
+     * acceptance criterion to satisfy a stylistic one. The register itself is keyed by identifier and
+     * locator and carries no total, so membership is decided by {@code DL-CR-01}'s criterion rather than by
+     * a count; the rows checked here are the sample the conflict resolution turns on.
      */
     @Test
     @DisplayName("Rule 1 clause B: CBACT04C:L518-L520, CBSTM03A:L324 and reject code 109 are justified no-ops")
-    void theThreeRetainedNoOpsAreJustifiedRatherThanDead() {
+    void theSpotCheckedNoOpRegisterRowsAreJustifiedRatherThanDead() {
         final CorpusMember interest = Corpus.require(this.corpus.programs(), "CBACT04C.cbl");
         assertThat(interest.lines().get(517).strip())
                 .as("app/cbl/CBACT04C.cbl:L518 declares the fee paragraph")
@@ -4443,12 +4427,12 @@ class GateVerificationTest {
                         + "them would lose the distinction the source draws between the two assignments")
                 .isEqualTo(RejectCode.ACCOUNT_RECORD_NOT_FOUND.getDescription());
 
-        record("dispositions.justifiedNoOps", ENUMERATED_NO_OP_SITES);
-        record("dispositions.noOpRegisterNote", "These three are the sites the no-dead-code clause and "
-                + "the parity mandate collide over, enumerated individually above. The tree-wide marker "
-                + "total is DERIVED by theDispositionRegistersAreDerivedFromThePublishedEvidence and is "
-                + "larger, because every paragraph-level no-op preserved for control-flow parity is "
-                + "marked.");
+        record("dispositions.registeredParityNoOps", SPOT_CHECKED_NO_OP_REGISTER_ROWS);
+        record("dispositions.noOpRegisterNote", "A SAMPLE SIZE, not a register total. DL-CR-01 keys the "
+                + "register by identifier and locator and declares no total, so membership is decided by "
+                + "its criterion rather than by a count. The tree-wide marker census is DERIVED by "
+                + "theDispositionRegistersAreDerivedFromThePublishedEvidence and is larger, because every "
+                + "paragraph-level no-op preserved for control-flow parity is marked.");
     }
 
     /**
@@ -4889,23 +4873,19 @@ class GateVerificationTest {
     /**
      * The disposition registers are DERIVED from the published evidence rather than fixed in this file.
      *
-     * <p>Three counts used to be literals here: three retained no-ops, six labelled deviations, six reported
-     * legacy defects. A literal is the wrong mechanism for a register that grows. Every one of the three had
-     * in fact already drifted - the evidence artefacts now publish more deviations and more defects than the
-     * literals claimed - and nothing failed, because a hardcoded number cannot notice that the register it
-     * describes has moved.
+     * <p>A literal is the wrong mechanism for a register that grows: a hardcoded number cannot notice that
+     * the register it describes has moved, and the no-op, deviation and defect registers all grow.
      *
-     * <p>So each count is now read from the artefact that owns it. The deviation count is checked against the
+     * <p>Each count is therefore read from the artefact that owns it. The deviation count is checked against the
      * gate ledger's OWN prose number, spelled as a word, which means adding a deviation forces the prose and
      * the table to agree and neither this test nor a remembered figure has to be edited. The defect count is
      * the number of rows in the defect table, each of which must cite a locator. The no-op count is the
      * number of markers actually present in the production tree.
      *
-     * <p>The three enumerated no-op sites checked by
-     * {@link #theThreeRetainedNoOpsAreJustifiedRatherThanDead()} remain a spot check of specific sites and
-     * are asserted to be a subset of the derived total, not equal to it - the tree legitimately carries a
-     * marker on every paragraph-level no-op preserved for control-flow parity, of which those three are the
-     * ones the conflict resolution turns on.
+     * <p>The register rows checked by {@link #theSpotCheckedNoOpRegisterRowsAreJustifiedRatherThanDead()}
+     * remain a spot check of specific locators and are asserted to be a SUBSET of the derived census, never
+     * equal to it - the tree legitimately carries a marker on every paragraph-level no-op preserved for
+     * control-flow parity, and {@code DL-CR-01} declares no total for the register at all.
      */
     @Test
     @DisplayName("Rule 1 clause B/F: the no-op, deviation and defect registers are derived, not hardcoded")
@@ -4974,27 +4954,34 @@ class GateVerificationTest {
                         + "by prose alone")
                 .isEmpty();
 
+        // The no-op register is NOT counted here, and the assertion that used to stand in this place -
+        // markerCount >= ENUMERATED_NO_OP_SITES - is withdrawn. A floor over marker comments answers "does
+        // the tree still say the word", which is not the question: it cannot see a qualifying method that
+        // nobody registered, and that omission is the whole of what Rule 1 clause B forbids. Completeness is
+        // now asserted as a two-way equality by theParityNoOpRegisterIsInBijectionWithTheProductionTree, and
+        // the marker total below is recorded as an observation rather than compared against anything.
         final long noOpMarkers = this.corpus.productionSources().stream()
                 .mapToLong(source -> countOccurrences(source.text(),
                         Pattern.compile("intentional no-op|intentional-no-op|retained no-op")))
                 .sum();
         assertThat(noOpMarkers)
-                .as("the production tree carries at least the three no-op sites the conflict resolution "
-                        + "turns on; the true total is larger because every paragraph-level no-op preserved "
-                        + "for control-flow parity carries a marker, and the derived figure is recorded "
-                        + "rather than compressed to three")
-                .isGreaterThanOrEqualTo(ENUMERATED_NO_OP_SITES);
+                .as("the production tree carries at least the register rows spot-checked elsewhere; the "
+                        + "census is larger because every paragraph-level no-op preserved for control-flow "
+                        + "parity carries a marker, and the derived figure is recorded rather than "
+                        + "compressed to the sample size")
+                .isGreaterThanOrEqualTo(SPOT_CHECKED_NO_OP_REGISTER_ROWS);
 
         record("dispositions.derivedLabelledDeviations", derivedDeviations);
         record("dispositions.derivedDeviationIdentifiers", String.join(",", deviationsCitedByIdentifier));
         record("dispositions.derivedLegacyDefects", defectRows.size());
         record("dispositions.derivedNoOpMarkers", noOpMarkers);
-        record("dispositions.enumeratedNoOpSites", ENUMERATED_NO_OP_SITES);
+        record("dispositions.spotCheckedNoOpRegisterRows", SPOT_CHECKED_NO_OP_REGISTER_ROWS);
         record("dispositions.registerDerivation", "DERIVED, not hardcoded. Deviations are counted from "
                 + "docs/validation-gates.md section 12.5 as (rows stated in full + distinct decision "
                 + "identifiers cited) and cross-checked against that section's own prose number; legacy "
-                + "defects are the rows of section 12.3, each required to cite an app/** locator; no-op "
-                + "markers are counted in the production tree. Adding a deviation, a defect or a no-op "
+                + "defects are the rows of section 12.3, each required to cite an app/** locator; parity "
+                + "no-ops are the rows of DECISION_LOG.md section 15.4, asserted equal to the tree in both "
+                + "directions rather than bounded from below. Adding a deviation, a defect or a no-op "
                 + "updates these figures without editing the harness.");
     }
 
@@ -5441,9 +5428,7 @@ class GateVerificationTest {
                                 + "presence-of-payload test and EIBAID to the action-key mapping."));
     }
 
-    // ====================================================================================================
     // Helpers. Each is a pure function of the corpus model or of the file system; none writes a field.
-    // ====================================================================================================
 
     /**
      * Folds the line counts of a member list.
@@ -6082,6 +6067,8 @@ class GateVerificationTest {
      * <p>The leading and trailing pipes are removed before splitting so the cell indices match the visible
      * column order; leaving them in shifts every index by one, which is a silent way to assert the wrong
      * column.
+     * @param row one Markdown table row.
+     * @return its trimmed cells, in visible column order.
      */
     private static List<String> splitMatrixRow(final String row) {
         Objects.requireNonNull(row, "row must not be null");
@@ -6182,7 +6169,11 @@ class GateVerificationTest {
         return value;
     }
 
-    /** Strips the Markdown code-span backticks a matrix cell wraps its value in. */
+    /**
+     * Strips the Markdown code-span backticks a matrix cell wraps its value in.
+     * @param cell one matrix cell.
+     * @return its value without the code-span backticks.
+     */
     private static String unquote(final String cell) {
         Objects.requireNonNull(cell, "cell must not be null");
         return cell.replace("`", "").strip();
@@ -6195,6 +6186,9 @@ class GateVerificationTest {
      * end of the previous member, so a method cannot inherit the annotation of the one above it. A forward
      * scan, or a naive search for the nearest preceding {@code @Test}, would report a fixture builder sitting
      * below a real test as executable - which is exactly the false positive this gate must not make.
+     * @param source the test source text.
+     * @param method the method name to classify.
+     * @return whether that method is an executable test.
      */
     private static boolean declaresExecutableTest(final String source, final String method) {
         Objects.requireNonNull(source, "source must not be null");
@@ -6220,6 +6214,194 @@ class GateVerificationTest {
             }
         }
         return false;
+    }
+
+    /**
+     * One member of the derived parity no-op census.
+     *
+     * @param stableId the register key, {@code NOOP-<simple class name>-<method name>}
+     * @param simpleClassName the declaring compilation unit's name, extension removed
+     * @param methodName the method's own name
+     * @param called whether a live call site in the same compilation unit names it
+     */
+    private record ParityNoOp(String stableId, String simpleClassName, String methodName, boolean called) {
+
+        /**
+         * Canonical constructor.
+         *
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        private ParityNoOp {
+            Objects.requireNonNull(stableId, "stableId must not be null");
+            Objects.requireNonNull(simpleClassName, "simpleClassName must not be null");
+            Objects.requireNonNull(methodName, "methodName must not be null");
+        }
+    }
+
+    /**
+     * One row parsed out of the parity no-op register.
+     *
+     * @param stableId the row's identifier
+     * @param locator the {@code app/**} citation the row publishes
+     * @param referenceStatus the row's claim, {@code called} or {@code unreferenced}
+     */
+    private record RegisteredNoOp(String stableId, String locator, String referenceStatus) {
+
+        /**
+         * Canonical constructor.
+         *
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        private RegisteredNoOp {
+            Objects.requireNonNull(stableId, "stableId must not be null");
+            Objects.requireNonNull(locator, "locator must not be null");
+            Objects.requireNonNull(referenceStatus, "referenceStatus must not be null");
+        }
+    }
+
+    /**
+     * Removes string literal bodies as well as comments, for the one audit that counts invocations.
+     *
+     * <p>{@link #stripJavaComments(String)} is enough to decide "this body holds no executable statement",
+     * because a comment is the only thing an empty body ever contains. It is <em>not</em> enough to decide
+     * "a live call site names this method": a method name quoted inside an assertion message or a recorded
+     * evidence string reads as an invocation to any regular expression, so a documented no-op would be
+     * reported as called on the strength of prose about it. Emptying literals removes that class of false
+     * positive without needing a list of the sites it would otherwise hit.
+     *
+     * @param javaSource the compilation unit text; must not be {@code null}
+     * @return the text with comments removed and every string literal emptied, never {@code null}
+     */
+    private static String stripCommentsAndStringLiterals(final String javaSource) {
+        Objects.requireNonNull(javaSource, "javaSource must not be null");
+        // Scanned rather than matched with a regular expression on purpose. The obvious pattern for a
+        // literal - a quote, then any escape or non-quote, then a quote - is an alternation under a
+        // quantifier, and Java's engine recurses on that: over a source file this size it overflows the
+        // stack instead of matching. A single left-to-right pass cannot.
+        final String withoutComments = stripJavaComments(javaSource);
+        final StringBuilder stripped = new StringBuilder(withoutComments.length());
+        int index = 0;
+        while (index < withoutComments.length()) {
+            final char current = withoutComments.charAt(index);
+            if (current != '"') {
+                stripped.append(current);
+                index++;
+                continue;
+            }
+            stripped.append("\"\"");
+            index++;
+            while (index < withoutComments.length() && withoutComments.charAt(index) != '"') {
+                index += withoutComments.charAt(index) == '\\' ? 2 : 1;
+            }
+            index++;
+        }
+        return stripped.toString();
+    }
+
+    /**
+     * Derives the parity no-op census from the production tree by the published membership rule.
+     *
+     * <p>The rule is the one {@code DECISION_LOG.md} section 15.1 states: a {@code private void name()} or
+     * {@code private static void name()} declaration, no parameters, whose body holds no executable
+     * statement once comments are removed. Constructors, record headers and wider-visibility methods are
+     * excluded by the declaration pattern itself rather than by a list of exceptions, which is what makes
+     * the rule mechanical instead of editorial.
+     *
+     * @return the census keyed by stable identifier, in path then declaration order
+     */
+    private Map<String, ParityNoOp> deriveParityNoOpCensus() {
+        final Pattern declaration = Pattern.compile(
+                "^([ \\t]*)private\\s+(?:static\\s+)?void\\s+(\\w+)\\(\\s*\\)\\s*\\{\\s*$");
+        final Map<String, ParityNoOp> census = new LinkedHashMap<>();
+        for (final CorpusMember source : this.corpus.productionSources()) {
+            final String simpleName = source.memberName().endsWith(".java")
+                    ? source.memberName().substring(0, source.memberName().length() - ".java".length())
+                    : source.memberName();
+            final String executableText = stripCommentsAndStringLiterals(source.text());
+            final List<String> lines = source.lines();
+            for (int line = 0; line < lines.size(); line++) {
+                final Matcher declared = declaration.matcher(lines.get(line));
+                if (!declared.find()) {
+                    continue;
+                }
+                final String closing = declared.group(1) + "}";
+                final StringBuilder body = new StringBuilder();
+                int cursor = line + 1;
+                while (cursor < lines.size() && !closing.equals(lines.get(cursor))) {
+                    body.append(lines.get(cursor)).append('\n');
+                    cursor++;
+                }
+                if (cursor >= lines.size() || !stripJavaComments(body.toString()).isBlank()) {
+                    continue;
+                }
+                final String methodName = declared.group(2);
+                final long occurrences = Pattern
+                        .compile("(?<![\\w$])" + Pattern.quote(methodName) + "\\s*\\(\\s*\\)")
+                        .matcher(executableText).results().count();
+                final String stableId = "NOOP-" + simpleName + "-" + methodName;
+                census.put(stableId, new ParityNoOp(stableId, simpleName, methodName, occurrences > 1L));
+            }
+        }
+        return Map.copyOf(census);
+    }
+
+    /**
+     * Parses the method rows of the parity no-op register out of {@code DECISION_LOG.md}.
+     *
+     * <p>A row is recognised by carrying both a {@code NOOP-} identifier in its leading cell and a
+     * {@code SimpleClassName#methodName()} cell, and the two must agree: the identifier has to be exactly
+     * {@code NOOP-<class>-<method>} taken from that cell. Recognising rows by shape rather than by section
+     * heading means a heading rename cannot silently empty the register, and requiring the two cells to
+     * agree means a copy-paste that changes one and not the other fails rather than registering a method
+     * under another's identifier.
+     *
+     * <p>Rows for retained artefacts that are <em>not</em> methods - a preserved enum constant, a preserved
+     * assignment - carry no such cell and are therefore not returned. They are registered in their own
+     * sub-section under the same obligation, but they have no counterpart in a census of methods and must
+     * not be compared against one.
+     *
+     * @param decisionLog the register file's whole text; must not be {@code null}
+     * @return the method rows keyed by stable identifier
+     * @throws IllegalStateException if a duplicate identifier appears, or if a row's identifier and its
+     *     method cell disagree
+     */
+    private static Map<String, RegisteredNoOp> parseParityNoOpRegistry(final String decisionLog) {
+        Objects.requireNonNull(decisionLog, "decisionLog must not be null");
+        final Pattern row = Pattern.compile(
+                "^\\|\\s*`(NOOP-[A-Za-z0-9]+-[A-Za-z0-9_]+)`\\s*\\|([^\\n]*)$", Pattern.MULTILINE);
+        final Pattern methodCell = Pattern.compile("`([A-Za-z][A-Za-z0-9]*)#(\\w+)\\(\\)`");
+        final Map<String, RegisteredNoOp> registry = new LinkedHashMap<>();
+        final Matcher matcher = row.matcher(decisionLog);
+        while (matcher.find()) {
+            final String stableId = matcher.group(1);
+            final String remainder = matcher.group(2);
+            final Matcher method = methodCell.matcher(remainder);
+            if (!method.find()) {
+                continue;
+            }
+            final String derivedId = "NOOP-" + method.group(1) + "-" + method.group(2);
+            if (!derivedId.equals(stableId)) {
+                throw new IllegalStateException("DECISION_LOG.md registers " + stableId + " against method "
+                        + method.group(1) + "#" + method.group(2) + "(), whose identity is " + derivedId
+                        + ". The identifier IS the identity, so the two cells cannot disagree.");
+            }
+            String locator = "";
+            String status = "";
+            for (final String cell : remainder.split("\\|", -1)) {
+                final String value = cell.strip();
+                if (value.startsWith("`app/")) {
+                    locator = value.replace("`", "");
+                } else if ("called".equals(value) || "unreferenced".equals(value)) {
+                    status = value;
+                }
+            }
+            if (registry.put(stableId, new RegisteredNoOp(stableId, locator, status)) != null) {
+                throw new IllegalStateException("DECISION_LOG.md registers " + stableId + " twice. A "
+                        + "duplicate identifier makes the register ambiguous about which row governs the "
+                        + "method, and the identifier scheme exists precisely to make that impossible.");
+            }
+        }
+        return Map.copyOf(registry);
     }
 
     /**
@@ -6696,13 +6878,11 @@ class GateVerificationTest {
         }
     }
 
-    // ====================================================================================================
     // GATES 3, 4, 5 AND 8 - ASSERTED ONLY ON ACTUAL EXECUTION. These four cannot be established by reading
     // configuration, so they run against a real application context, a real PostgreSQL 16 database and a
     // real emulator. A reachable container runtime is their prerequisite; where none exists they are
     // BLOCKED, and the correct report is the prerequisite rather than an untested pass. The enclosing class
     // carries no Spring configuration, which is what keeps Gates 1, 2, 6 and 7 runnable without a daemon.
-    // ====================================================================================================
 
     /**
      * The execution-dependent gates: named fixtures, the API contract, the integration topology and the
@@ -6722,17 +6902,6 @@ class GateVerificationTest {
     @Execution(ExecutionMode.SAME_THREAD)
     @DisplayName("Gates 3, 4, 5 and 8 against a real context, database and emulator")
     class ExecutionDependentGates {
-
-        /**
-         * Creates the single nested test instance.
-         *
-         * <p>Declared explicitly so the class carries no undocumented member. JUnit instantiates it once,
-         * because the lifecycle is {@code PER_CLASS}; every field is then injected.
-         */
-        ExecutionDependentGates() {
-            // No state: the collaborators below are injected after construction, and the containers are
-            // started by the static initialiser before the context refreshes.
-        }
 
         /**
          * PostgreSQL 16 by digest rather than by the mutable tag, so the engine this gate measures cannot
@@ -7562,6 +7731,7 @@ class GateVerificationTest {
          * <p><strong>No threshold is applied to either figure and none may be.</strong> The corpus publishes
          * no service-level objective; the recorded evidence says so and says what would be needed to turn a
          * baseline into a target.
+         * @throws Exception if the batch run cannot be launched or its executions cannot be read.
          */
         @Test
         @DisplayName("Gate 3: batch records/second and peak heap are measured over a real job run; no SLA")
@@ -7653,10 +7823,10 @@ class GateVerificationTest {
          *
          * <p>Measured through the framework-assigned port of a real servlet container, so each sample covers
          * what a caller actually waits for: connection, request parsing, the security filter chain, token
-         * validation, the handler, the repository round trip and serialisation. An earlier revision measured
-         * {@code SELECT count(*)} through a {@code JdbcTemplate} and published the result as Gate 3's latency
-         * baseline - a figure with no endpoint, no filter chain and no serialisation in it, which is to say
-         * not a latency figure for anything the requirement names.
+         * validation, the handler, the repository round trip and serialisation. Timing
+         * {@code SELECT count(*)} through a {@code JdbcTemplate} and publishing the result as Gate 3's latency
+         * baseline would be a figure with no endpoint, no filter chain and no serialisation in it, which is to
+         * say not a latency figure for anything the requirement names.
          *
          * <p><strong>Per endpoint, not aggregated.</strong> A single pooled percentile over a mixed workload
          * hides the distribution that matters: sign-on carries a deliberate BCrypt cost and is expected to be
@@ -7836,11 +8006,10 @@ class GateVerificationTest {
         /**
          * A database round-trip baseline, recorded as a component figure rather than as Gate 3's latency.
          *
-         * <p><strong>What this used to claim, and why it was revised rather than removed.</strong> It carried
-         * Gate 3's per-endpoint latency figure while timing {@code SELECT count(*)} through a
-         * {@code JdbcTemplate}: no endpoint, no filter chain, no token validation and no serialisation. The
-         * requirement names per-endpoint latency, and that is now measured over real HTTP by
-         * {@code gateThreeMeasuresPerEndpointLatencyOverRealHttpRequests}.
+         * <p><strong>Why this figure is not Gate 3's per-endpoint latency.</strong> It times
+         * {@code SELECT count(*)} through a {@code JdbcTemplate}: no endpoint, no filter chain, no token
+         * validation and no serialisation. The requirement names per-endpoint latency, and that is measured
+         * over real HTTP by {@code gateThreeMeasuresPerEndpointLatencyOverRealHttpRequests}.
          *
          * <p>The measurement itself is still worth having and is kept for what it is: the floor beneath the
          * endpoint figures. When an endpoint percentile moves, the question a reader asks first is whether the
@@ -7918,6 +8087,7 @@ class GateVerificationTest {
          *
          * <p><strong>No threshold is applied to any figure.</strong> No service-level objective exists in the
          * source, so the gate records a baseline; asserting a limit would be inventing one.
+         * @throws Exception if the HTTP surface or the meter registry cannot be reached.
          */
         @Test
         @DisplayName("Gate 3: application records/sec, per-endpoint p95 and peak heap, measured over HTTP")
@@ -8179,16 +8349,6 @@ class GateVerificationTest {
          */
         @TestConfiguration
         static class FixedClockConfiguration {
-
-            /**
-             * Creates the configuration.
-             *
-             * <p>Declared explicitly so no member is left undocumented. Spring instantiates it while
-             * processing the import.
-             */
-            FixedClockConfiguration() {
-                // No state: the single bean below is a pure function of the enclosing class's instant.
-            }
 
             /**
              * The single time source this tier observes.

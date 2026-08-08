@@ -158,14 +158,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  * evidenced rather than remembered.
  *
  * <p><b>The card verification value is persisted, and this test asserts that rather
- * than its absence.</b> An earlier revision of this file asserted that {@code CARD-CVV-CD} was absent by
- * every route, matching an entity and a migration that modelled no column for it. That institutionalised a
+ * than its absence.</b> Asserting that {@code CARD-CVV-CD} is absent by
+ * every route would institutionalise a
  * field-contract break: {@code app/cpy/CVACT02Y.cpy:L7} declares the field inside the authoritative
  * 150-byte record, all fifty fixture rows carry three digits at bytes 28-30, and the AAP declares field
- * contracts bidirectional, so three authoritative bytes were being lost. {@link Card} now maps a private
+ * contracts bidirectional, so three authoritative bytes would be lost. {@link Card} maps a private
  * {@code cvvCode} field to {@code card_cvv_cd CHAR(3) NOT NULL}, takes it as the third constructor argument
  * in copybook order, and publishes <em>no</em> read path for it - no getter, no setter, only the boolean
- * {@link Card#matchesVerificationValue(String)}. The confidentiality requirement that motivated the
+ * {@link Card#matchesVerificationValue(String)}. The confidentiality requirement that would motivate an
  * omission is met by withholding the read path rather than the storage, which is the control the concern
  * actually calls for. This block therefore asserts the mapping, the exact round trip of a leading-zero
  * value, and non-exposure through every bean-visible route.

@@ -687,7 +687,7 @@ class AccountReaderTest {
     }
 
     @Nested
-    @DisplayName("6. BLOCKER-CRITICAL: the verb inventory is OPEN, READ and CLOSE only")
+    @DisplayName("6. BLOCKER: the verb inventory is OPEN, READ and CLOSE only")
     class VerbInventory {
 
         @Test

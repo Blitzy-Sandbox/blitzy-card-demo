@@ -527,9 +527,9 @@ class RepositoryContractTest {
         @Test
         @DisplayName("every alternate-key finder the source BROWSES returns a collection, never a scalar")
         void everyBrowsedAlternateKeyFinderReturnsACollection() {
-            // The rule is about the OPERATION, not about the index. An earlier revision of this test
-            // required every alternate-key finder to return a collection "because its source index is
-            // NONUNIQKEY", which is the wrong premise: non-uniqueness makes duplicates possible, while it
+            // The rule is about the OPERATION, not about the index. Requiring every alternate-key finder to
+            // return a collection "because its source index is NONUNIQKEY" is the wrong premise:
+            // non-uniqueness makes duplicates possible, while it
             // is the source's verb that decides how many rows a call may yield. The two finders below are
             // reached by STARTBR/READNEXT browses and must therefore stay multi-row; CXACAIX is reached
             // only by a single-record keyed READ and is asserted separately.

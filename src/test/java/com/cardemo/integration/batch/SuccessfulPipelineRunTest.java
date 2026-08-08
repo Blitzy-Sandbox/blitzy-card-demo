@@ -334,8 +334,8 @@ class SuccessfulPipelineRunTest extends AbstractBatchIntegrationTest {
 
         // ---- Stage 3: COMBTRAN. The stage that halts under the default substrate. ----
         assertThat(stepNamed(pipeline, combTranStepBeanName).getExitStatus().getExitCode())
-                .as("stage 3 COMPLETED rather than halting. This is the assertion the tree previously had "
-                        + "nowhere: under the default repository substrate the backup leg re-reads the rows "
+                .as("stage 3 COMPLETED rather than halting. Under the default repository substrate the "
+                        + "backup leg re-reads the rows "
                         + "stage 1 committed and app/jcl/COMBTRAN.jcl:L41 refuses the repeat, which is "
                         + "faithful and is asserted in BatchPipelineOrchestratorTest. On the object-storage "
                         + "substrate of a cold run the backup generation is absent by construction, because "
@@ -366,11 +366,10 @@ class SuccessfulPipelineRunTest extends AbstractBatchIntegrationTest {
 
             final StepExecution branchStep = stepNamed(pipeline, branch.getKey());
             assertThat(branchStep.getStatus())
-                    .as("branch %s COMPLETED. An earlier revision of the sibling suite declined this very "
-                            + "assertion because the SERIALIZABLE create isolation aborted one of the two "
-                            + "concurrent child launches, so it would have failed about two runs in three. "
-                            + "That was a defect in BatchPipelineOrchestrator.launchStage, now fixed by a "
-                            + "bounded retry confined to the creation phase - a SQLSTATE 40001 in the log "
+                    .as("branch %s COMPLETED. This holds only because BatchPipelineOrchestrator.launchStage "
+                            + "confines a bounded retry to the creation phase: SERIALIZABLE create isolation "
+                            + "otherwise aborts one of the two concurrent child launches and would fail about "
+                            + "two runs in three - a SQLSTATE 40001 in the log "
                             + "alongside a failure here means the retry has been removed", branch.getKey())
                     .isEqualTo(BatchStatus.COMPLETED);
             assertThat(branchStep.getExitStatus().getExitCode())

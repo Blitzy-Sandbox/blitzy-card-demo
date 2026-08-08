@@ -85,9 +85,14 @@
 #
 #   The listing it prints IS the context. app/ in full - EBCDIC
 #   included - src/, pom.xml, mvnw, mvnw.cmd, .mvn/, Dockerfile,
-#   docker-compose.yml, localstack-init/, observability/, docs/ and
-#   .env.example must all appear; .git, target and samples must not. Then
-#   confirm the real build still resolves every COPY:
+#   docker-compose.yml, localstack-init/, observability/, docs/,
+#   mkdocs.yml, README.md and .env.example must all appear; .git, target
+#   and samples must not. The last two earn their place the same way the
+#   rest do: the builder stage COPYs both because the unit tier reads
+#   them - the nav assertions in DocumentationConsistencyTest read
+#   mkdocs.yml, and InventoryCountGateTest reads README.md - so a glob
+#   that swept either would break the in-image suite while the host suite
+#   stayed green. Then confirm the real build still resolves every COPY:
 #
 #     docker build --no-cache -t carddemo:verify .
 #
@@ -222,9 +227,9 @@ samples
 # codepage reference, never transcoded and never read by any build step.
 # The AAP puts them out of scope, so they are pruned here.
 #
-# HOW THIS WAS GOT WRONG ONCE, recorded because the wrong fix looked like
-# the right one. The exclusion was WITHDRAWN in an earlier revision to get
-# a green image build: SourceCitationResolutionTest resolves every
+# WHY ADMITTING THE DATA IS THE WRONG LEVER, recorded because the wrong fix
+# looks like the right one. Dropping this exclusion buys a green image build:
+# SourceCitationResolutionTest resolves every
 # `app/...` path cited anywhere in the tree against disk, thirteen
 # committed citations name app/data/EBCDIC - AwsConfig.java,
 # DailyTransactionReader.java, RejectWriter.java, TransactionWriter.java,
@@ -232,11 +237,11 @@ samples
 # package-info files, application-test.yml, UserSecurityTest.java and
 # BatchPipelineE2ETest.java - and the Dockerfile runs the unit tier inside
 # the builder stage, where a pruned subtree turns each of them into "cited
-# but does not resolve". Admitting the data was the wrong lever: it fixed a
-# build-context artefact by widening what the daemon receives, and left
+# but does not resolve". Admitting the data is still the wrong lever: it fixes a
+# build-context artefact by widening what the daemon receives, and leaves
 # out-of-scope material in the context permanently.
 #
-# The right lever is the test, and it was narrowed rather than weakened.
+# The right lever is the test, and it is narrowed rather than weakened.
 # Its exemption is keyed on the DIRECTORY being absent, not on a file being
 # absent, so with app/data/EBCDIC present - in a clone, in CI, in any
 # developer build - every one of those citations is still resolved
@@ -254,8 +259,8 @@ app/data/EBCDIC
 # Everything else is protected by OMISSION, not by negation: app/, src/,
 # docs/, diagrams/, observability/,
 # localstack-init/, .github/, .mvn/, pom.xml, mvnw, mvnw.cmd, Dockerfile,
-# docker-compose.yml and the evidence artefacts all stay in the context
-# because no rule above reaches them. A line such as `!app/**` would read
+# docker-compose.yml, mkdocs.yml, README.md and the evidence artefacts all
+# stay in the context because no rule above reaches them. A line such as `!app/**` would read
 # as protection while doing nothing at all, since a negation only takes
 # effect against an earlier pattern that matches. The guarantee is
 # asserted by the context listing above instead.

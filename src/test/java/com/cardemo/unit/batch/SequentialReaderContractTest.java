@@ -142,7 +142,15 @@ class SequentialReaderContractTest {
     // anywhere - the zero-warning compile would reject either.
     // ====================================================================================================
 
-    /** Answers {@code findAll(Pageable)} out of {@code all}, honouring offset and page size. */
+    /**
+     * Answers {@code findAll(Pageable)} out of {@code all}, honouring offset and page size.
+     *
+     * @param <T> the entity type the page holds.
+     * @param <K> the key type the page is ordered by.
+     * @param all every row the stubbed relation holds, in key order.
+     * @param key projects a row to its key.
+     * @return the stubbed {@code Answer} to install on that finder.
+     */
     private static <T, K extends Comparable<K>> org.mockito.stubbing.Answer<Object> paging(
             final List<T> all, final java.util.function.Function<T, K> key) {
         return invocation -> {
@@ -169,6 +177,10 @@ class SequentialReaderContractTest {
      * {@code throws Exception}, which every caller would then have to propagate; each concrete reader
      * overrides it without a checked exception, so binding at the concrete type keeps the signatures honest
      * and the call sites free of a checked exception none of them can actually raise.
+     * @param <T> the item type the reader emits.
+     * @param next bound to the concrete reader's {@code read()}.
+     * @param key projects each item to the value the assertion compares.
+     * @return the projected values, in emission order.
      */
     private static <T> List<Object> drain(final Supplier<T> next, final Function<T, Object> key) {
         final List<Object> seen = new ArrayList<>();

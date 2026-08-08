@@ -154,17 +154,16 @@
  *   <li><strong>Test.</strong> {@code StatementWriterDeliveryTest} covers the delivery contract and the payload
  *       parity of the statement outputs; {@code BatchWriterScopeIsolationTest} covers the scoping and
  *       per-execution key derivation of both the transaction and statement writers.
- *       <strong>Measured 4 August 2026:</strong> every writer in this package has a test class of its own -
+ *       Every writer in this package has a test class of its own -
  *       {@code RejectWriterTest} for the 430-byte reject record, {@code TransactionWriterTest} and
  *       {@code TransactionWriterStepContractTest} for the transaction image, and
  *       {@code StatementWriterTest}, {@code StatementWriterContractTest} and
- *       {@code StatementWriterOutputContractTest} for the two statement outputs. <strong>An earlier revision
- *       of this document recorded no test class for {@code RejectWriter} and no geometry suite for the
- *       350-byte transaction image</strong>; that statement was true when written and is withdrawn here. The
- *       strongest assertion it named as owed is a byte-identical round trip of every record of
+ *       {@code StatementWriterOutputContractTest} for the two statement outputs, so neither
+ *       {@code RejectWriter} nor the 350-byte transaction image is without a geometry suite. The
+ *       strongest assertion in that set is a byte-identical round trip of every record of
  *       {@code app/data/ASCII/dailytran.txt}, whose
  *       staging layout {@code app/cpy/CVTRA06Y.cpy} is field-for-field the same 350-byte geometry as
- *       {@code app/cpy/CVTRA05Y.cpy}. Note when writing it that the fixture is 105,300 bytes of 300 records at a
+ *       {@code app/cpy/CVTRA05Y.cpy}. Note that the fixture is 105,300 bytes of 300 records at a
  *       <strong>351</strong>-byte stride - 350 data bytes plus a line feed - so a 350-byte read misaligns after
  *       the first record.</li>
  *   <li><strong>Coverage.</strong> JaCoCo enforces an 80 percent LINE floor on the merged bundle at

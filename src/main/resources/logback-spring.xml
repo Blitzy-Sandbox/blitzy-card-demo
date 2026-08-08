@@ -1,58 +1,58 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   ******************************************************************
-  * Program      : logback-spring.xml
-  * Application  : CardDemo
-  * Type         : Logback configuration (structured JSON logging, trace
-  *                correlation, secret and PII masking)
-  * Function     : Sole logging configuration for the CardDemo modular
-  *                monolith. It replaces the only instrumentation the legacy
-  *                corpus has, which is DISPLAY to SYSOUT plus a four
-  *                character file status renderer, with one line delimited
-  *                JSON event stream on stdout carrying a stable field set,
-  *                the traceId / spanId / correlationId trio out of MDC and,
-  *                on batch events, the Spring Batch job instance identifier.
-  *                It is simultaneously the log side secret control:
-  *                credentials, BCrypt hashes, JWTs, AWS key material, social
-  *                security numbers, card numbers, CVVs and the remaining
-  *                customer PII are redacted before an event can reach an
-  *                appender, in every profile without exception.
-  *                One parity obligation constrains all of it: the literal
-  *                'FILE STATUS IS: NNNN' followed by four characters must
-  *                pass through byte for byte, because Gate 1 compares this
-  *                stream against the legacy baseline.
-  * Source       : app/cbl/CBTRN02C.cbl @ 7756d89 - paragraph
-  *                9910-DISPLAY-IO-STATUS at :L714-L727, whose
-  *                DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 at :L721 and
-  *                :L725 is the parity literal, over IO-STATUS-04 at
-  *                :L138-L140 (PIC 9 then PIC 999, four characters exactly);
-  *                paragraph 9999-ABEND-PROGRAM at :L707-L711 (abend code
-  *                999); the end of run counters at :L227-L228 and the
-  *                RETURN-CODE 4 rule at :L229-L231; the reject record
-  *                geometry at :L176-L182 (350 + 80 = 430 bytes);
-  *                app/cbl/CBACT04C.cbl:L181,L230, app/cbl/CBTRN03C.cbl:L160,
-  *                L215, app/cbl/CBSTM03A.CBL:L360,L384,L408,L740 and
-  *                app/cbl/CBTRN01C.cbl:L156,L195 @ 7756d89 - the remaining
-  *                DISPLAY based batch instrumentation this file supersedes;
-  *                app/cpy/CSUSR01Y.cpy:L21 @ 7756d89 (SEC-USR-PWD PIC X(08),
-  *                whose Java counterpart is a BCrypt hash that must never be
-  *                logged);
-  *                app/cpy/CVCUS01Y.cpy:L6-L20 @ 7756d89 (CUST-SSN PIC 9(09)
-  *                at :L17, CUST-GOVT-ISSUED-ID PIC X(20) at :L18,
-  *                CUST-DOB-YYYY-MM-DD PIC X(10) at :L19,
-  *                CUST-EFT-ACCOUNT-ID PIC X(10) at :L20, CUST-PHONE-NUM-1
-  *                and CUST-PHONE-NUM-2 PIC X(15) at :L15-L16, the customer
-  *                names at :L6-L8 and the address at :L9-L14);
-  *                app/cpy/CSMSG02Y.cpy:L22-L28 @ 7756d89 - internally titled
-  *                CABENDD.CPY, the abend work area holding ABEND-CODE X(4),
-  *                ABEND-CULPRIT X(8), ABEND-REASON X(50) and ABEND-MSG X(72);
-  *                app/cpy/COCOM01Y.cpy:L25-L28 @ 7756d89 (CDEMO-USER-ID
-  *                PIC X(08) and CDEMO-USER-TYPE PIC X(01) with its 'A' and
-  *                'U' 88 levels, the identity the correlation trio replaces);
-  *                app/cpy/CVACT02Y.cpy:L5,L7,L8 @ 7756d89 (CARD-NUM X(16),
-  *                CARD-CVV-CD 9(03), CARD-EMBOSSED-NAME X(50));
-  *                app/cpy/CVACT03Y.cpy:L5 and app/cpy/CVTRA05Y.cpy:L15
-  *                @ 7756d89 (XREF-CARD-NUM and TRAN-CARD-NUM, both X(16))
+  * Program     : logback-spring.xml
+  * Application : CardDemo
+  * Type        : Logback configuration (structured JSON logging, trace
+  *               correlation, secret and PII masking)
+  * Function    : Sole logging configuration for the CardDemo modular
+  *               monolith. It replaces the only instrumentation the legacy
+  *               corpus has, which is DISPLAY to SYSOUT plus a four
+  *               character file status renderer, with one line delimited
+  *               JSON event stream on stdout carrying a stable field set,
+  *               the traceId / spanId / correlationId trio out of MDC and,
+  *               on batch events, the Spring Batch job instance identifier.
+  *               It is simultaneously the log side secret control:
+  *               credentials, BCrypt hashes, JWTs, AWS key material, social
+  *               security numbers, card numbers, CVVs and the remaining
+  *               customer PII are redacted before an event can reach an
+  *               appender, in every profile without exception.
+  *               One parity obligation constrains all of it: the literal
+  *               'FILE STATUS IS: NNNN' followed by four characters must
+  *               pass through byte for byte, because Gate 1 compares this
+  *               stream against the legacy baseline.
+  * Source      : app/cbl/CBTRN02C.cbl @ 7756d89 - paragraph
+  *               9910-DISPLAY-IO-STATUS at :L714-L727, whose
+  *               DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 at :L721 and
+  *               :L725 is the parity literal, over IO-STATUS-04 at
+  *               :L138-L140 (PIC 9 then PIC 999, four characters exactly);
+  *               paragraph 9999-ABEND-PROGRAM at :L707-L711 (abend code
+  *               999); the end of run counters at :L227-L228 and the
+  *               RETURN-CODE 4 rule at :L229-L231; the reject record
+  *               geometry at :L176-L182 (350 + 80 = 430 bytes);
+  *               app/cbl/CBACT04C.cbl:L181,L230, app/cbl/CBTRN03C.cbl:L160,
+  *               L215, app/cbl/CBSTM03A.CBL:L360,L384,L408,L740 and
+  *               app/cbl/CBTRN01C.cbl:L156,L195 @ 7756d89 - the remaining
+  *               DISPLAY based batch instrumentation this file supersedes;
+  *               app/cpy/CSUSR01Y.cpy:L21 @ 7756d89 (SEC-USR-PWD PIC X(08),
+  *               whose Java counterpart is a BCrypt hash that must never be
+  *               logged);
+  *               app/cpy/CVCUS01Y.cpy:L6-L20 @ 7756d89 (CUST-SSN PIC 9(09)
+  *               at :L17, CUST-GOVT-ISSUED-ID PIC X(20) at :L18,
+  *               CUST-DOB-YYYY-MM-DD PIC X(10) at :L19,
+  *               CUST-EFT-ACCOUNT-ID PIC X(10) at :L20, CUST-PHONE-NUM-1
+  *               and CUST-PHONE-NUM-2 PIC X(15) at :L15-L16, the customer
+  *               names at :L6-L8 and the address at :L9-L14);
+  *               app/cpy/CSMSG02Y.cpy:L22-L28 @ 7756d89 - internally titled
+  *               CABENDD.CPY, the abend work area holding ABEND-CODE X(4),
+  *               ABEND-CULPRIT X(8), ABEND-REASON X(50) and ABEND-MSG X(72);
+  *               app/cpy/COCOM01Y.cpy:L25-L28 @ 7756d89 (CDEMO-USER-ID
+  *               PIC X(08) and CDEMO-USER-TYPE PIC X(01) with its 'A' and
+  *               'U' 88 levels, the identity the correlation trio replaces);
+  *               app/cpy/CVACT02Y.cpy:L5,L7,L8 @ 7756d89 (CARD-NUM X(16),
+  *               CARD-CVV-CD 9(03), CARD-EMBOSSED-NAME X(50));
+  *               app/cpy/CVACT03Y.cpy:L5 and app/cpy/CVTRA05Y.cpy:L15
+  *               @ 7756d89 (XREF-CARD-NUM and TRAN-CARD-NUM, both X(16))
   ******************************************************************
   * Copyright Amazon.com, Inc. or its affiliates.
   * All Rights Reserved.
@@ -788,7 +788,7 @@
           substitutes a fixed width placeholder of the field's declared digit
           width so that field geometry stays verifiable. The two layers are
           complementary and neither is redundant: the call sites cover the
-          text that exists today, and this group covers any field name that a
+          text those call sites emit, and this group covers any field name that a
           future provider might emit.
 
           Account money, all PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:
@@ -1220,16 +1220,17 @@
           SQL parameter position, which is how a JDBC driver renders a whole
           record image when it reports a rejected statement.
 
-          FINDING F-6, SEVERITY MAJOR (PCI). This is the rule the runtime
+          FINDING F-6, SEVERITY HIGH (PCI). This is the rule the runtime
           assessment asked for and the reason it is needed is that no rule above
           could reach the disclosure. A refused insert surfaced through
-          org.hibernate.engine.jdbc.spi.SqlExceptionHelper as, verbatim from the
-          captured log:
+          org.hibernate.engine.jdbc.spi.SqlExceptionHelper as, with the account
+          number and the transaction identifier masked here so this comment does
+          not itself carry the disclosure the rule exists to stop:
 
             Batch entry 0 insert into transaction (tran_amt,tran_card_num,...,
-            tran_id) values (('2.34'::numeric),('7427684863423209'),
+            tran_id) values (('2.34'::numeric),('################'),
             ('1'::numeric),...,('QAG2      '),('01'),('0'::int8),
-            ('0000000996722789')) was aborted: ERROR: duplicate key value ...
+            ('################')) was aborted: ERROR: duplicate key value ...
 
           The sixteen digits in the second value position are CARD-NUM
           PIC X(16) at app/cpy/CVACT02Y.cpy:L5 in full cleartext. R11 cannot
@@ -1367,7 +1368,7 @@
           WHY THIS DOES NOT CONTRADICT THE PARAGRAPH ABOVE THAT REFUSES TO
           MASK accountId. This rule is keyed on the literal
           'statements/account=', so it fires only on a composed statement key.
-          A labelled 'accountId=00000000011' in a batch diagnostic, the
+          A labelled 'accountId=<11 digits>' in a batch diagnostic, the
           control break key of app/cbl/CBACT04C.cbl:L194, and the account
           identifier of the 133 byte report line are all left exactly as they
           are, which is what Gate 1's byte for byte comparison requires. The
