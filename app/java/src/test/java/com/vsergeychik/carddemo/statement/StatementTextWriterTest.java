@@ -3,6 +3,8 @@ package com.vsergeychik.carddemo.statement;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.statement.StatementTextWriter.RecordSink;
@@ -17,6 +19,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -27,6 +30,7 @@ import javax.sql.DataSource;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -49,14 +53,53 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * database. Every record is collected by an in-memory {@link RecordSink}, which is the seam the class
  * under test exposes precisely so that this is possible (practice B10, gate G51). The one place a
  * database type appears at all is {@link JdbcSinkTests}, where a mocked
- * {@link java.sql.PreparedStatement} is used to assert that the record image is bound as
- * <em>bytes</em> - and even there nothing is connected to anything.
+ * {@link java.sql.PreparedStatement} is used to assert that the whole record image crosses as
+ * <em>one parameter</em>, in whichever representation the deployment configured - both are exercised,
+ * so neither is theoretical - and even there nothing is connected to anything.
  *
- * <h2>Every expectation is transcribed from the COBOL, not from the implementation</h2>
- * The expected images below were written by reading {@code app/cbl/CBSTM03A.CBL:L85-L146} and counting
- * {@code PIC} widths, and the two mask expectations by applying IBM Enterprise COBOL's editing rules
- * to the declared pictures. That is what makes them an audit rather than a restatement: if the
- * implementation and these strings agree, they agree with the copybook.
+ * <h2>Provenance: every expectation here is STATICALLY DERIVED, and nothing was ever executed</h2>
+ * The expected images below were <strong>statically derived</strong> - written by reading
+ * {@code app/cbl/CBSTM03A.CBL:L85-L146} span by span and counting {@code PIC} widths, and, for the
+ * two masks, by applying IBM Enterprise COBOL's editing rules to the declared pictures. Widths and
+ * offsets come from the copybook and the {@code FD}; the record geometry is corroborated by
+ * {@code app/jcl/CREASTMT.JCL:L89}.
+ *
+ * <p><strong>No captured, recorded or replayed COBOL execution baseline exists, and none is claimed
+ * anywhere in this file.</strong> Running the twenty-eight legacy programs is impossible in this
+ * environment - there is no z/OS runtime, the available compiler has indexed file support disabled
+ * and no Language Environment {@code CEE*} services, and {@code app/cpy/CUSTREC.cpy} - which
+ * {@code CBSTM03A} copies - does not even parse because of literal tab characters in its margin. The
+ * substitution of static derivation for execution capture, and its residual risk, are recorded in the
+ * migration plan as risk R-A. Stating the provenance rather than absorbing the limitation is practice
+ * <strong>B12</strong>; a reader must never mistake these strings for observed output.
+ *
+ * <p>That provenance is also what makes them an audit rather than a restatement: they were derived
+ * from the copybook rather than read off the implementation, so if the implementation and these
+ * strings agree, they agree with the copybook.
+ *
+ * <h2>The record is 80 bytes, and this dataset has no width conflict</h2>
+ * Two independent declarations, and they agree:
+ * <ul>
+ *   <li>{@code app/cbl/CBSTM03A.CBL:L44-L45} - {@code FD STMT-FILE.} then
+ *       {@code 01 FD-STMTFILE-REC PIC X(80).}</li>
+ *   <li>{@code app/jcl/CREASTMT.JCL:L89} - on {@code STEP040}, the step that <em>creates</em> the
+ *       dataset at {@code L87}, {@code DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)}. The {@code STEP030}
+ *       {@code IEFBR14} pre-delete at {@code L72-L75} declares the <em>same</em>
+ *       {@code LRECL=80,BLKSIZE=8000}.</li>
+ * </ul>
+ * So, unlike the sibling HTML dataset - which that same JCL declares at 80 in the pre-delete step and
+ * at 100 in the creating step - {@code STMTFILE} carries <strong>no 80-versus-100 conflict</strong>
+ * and the migration plan's risk R-G does not apply to it.
+ *
+ * <p><strong>{@code app/jcl/CREASTMT.JCL:L90} must not be mistaken for a second {@code DCB}.</strong>
+ * It is a corrupted, overwritten JCL card: a {@code SPACE=} clause followed, on the same line and
+ * after a blank, by the tail of a record-format clause and the tail of an unrelated dataset name.
+ * Everything after that blank is a JCL comment, so the card contributes no operand at all.
+ * <strong>{@code L89} is the authoritative {@code DCB}</strong> and {@code L91} the authoritative
+ * {@code DSN}. The defect is recorded here and left in place in the read-only source rather than
+ * repaired, which is practice <strong>B4</strong>; the corrupted text is described rather than quoted
+ * so that a mechanical scan of the Java sources for a mainframe dataset name stays a clean signal
+ * (gate G46).
  *
  * <h2>The gates asserted here</h2>
  * <ul>
@@ -71,9 +114,35 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       rejected.</li>
  *   <li><strong>G46</strong> - the dataset name reaches the insert statement from configuration; the
  *       tests supply their own, and no mainframe dataset literal is needed by the class.</li>
+ *   <li><strong>G47</strong> - the {@code FILE STATUS} outcome of an accepted write is tied to the
+ *       COBOL {@code '00'} itself, and a rejected write surfaces the {@code WHEN OTHER} arm rather
+ *       than abending: the abend decision belongs to the statement job, not to this writer.</li>
+ *   <li><strong>G49</strong> - every branch of the class under test is driven from both sides, so the
+ *       {@code statement} package clears its own {@code BRANCH} ratio without leaning on any
+ *       other.</li>
+ *   <li><strong>G51</strong> - no HTTP layer and no {@code JobLauncher} is in the path of a single
+ *       assertion.</li>
+ *   <li><strong>G52</strong> - every import is explicit; there is no wildcard import in this
+ *       file.</li>
  *   <li><strong>G53</strong> - {@link StructuralTests#everyStaticFieldIsFinal()} walks the class and
  *       its nested types by reflection and asserts there is no mutable static state.</li>
+ *   <li><strong>G54</strong> - nothing here depends on the wall clock, the locale, the time zone, the
+ *       platform default charset, a random source, the network, the filesystem or the order the tests
+ *       run in, so one {@code mvn -B clean verify} is deterministic and non-interactive.</li>
  * </ul>
+ *
+ * <h2>User-specified rules</h2>
+ * {@code review_rules} returns exactly one line - "No user rules provided." - and that single line is
+ * the whole document, so <strong>no user rule governs this file</strong>. Its absence is not licence
+ * to lower the bar: the migration plan's twelve enterprise practices bind in their place, and the ones
+ * bearing on a test file are <strong>B1</strong> (nothing beyond the JUnit 5, Mockito and AssertJ the
+ * pom already declares, and no coordinate or version written into test code), <strong>B3</strong> (the
+ * COBOL, copybook, JCL and CSD trees are cited as provenance and never read from disk, still less
+ * written to), <strong>B4</strong> (the corrupted JCL card above is recorded, not repaired),
+ * <strong>B7</strong> and <strong>B8</strong> (above), <strong>B9</strong> (a fresh writer and a fresh
+ * handle per test method; no static mutable state), <strong>B10</strong> (these tests ship with the
+ * implementation), <strong>B11</strong> (absolute byte offsets and exact widths, asserted against the
+ * copybook, with no third-party copybook parser anywhere) and <strong>B12</strong> (above).
  */
 @DisplayName("StatementTextWriter - the 80-byte STMTFILE plain-text statement record")
 class StatementTextWriterTest {
@@ -121,7 +190,8 @@ class StatementTextWriterTest {
      * @return the writer
      */
     private static StatementTextWriter writer(Charset charset) {
-        return new StatementTextWriter(new JdbcTemplate(), charset, bindings(EIGHTY), RecordImageForm.CHARACTER);
+        return new StatementTextWriter(new JdbcTemplate(), charset, bindings(EIGHTY),
+                RecordImageForm.CHARACTER);
     }
 
     /** A writer over {@link #ASCII}. */
@@ -230,7 +300,8 @@ class StatementTextWriterTest {
     class GeometryTests {
 
         @Test
-        @DisplayName("declares the 17 line groups of 01 STATEMENT-LINES, ST-LINE14A included")
+        @DisplayName("01 STATEMENT-LINES declares 17 line groups, ST-LINE14A included "
+                + "(CBSTM03A.CBL:L85-L146)")
         void declaresSeventeenLines() {
             assertThat(StatementLine.values()).hasSize(17);
             assertThat(StatementTextWriter.LINE_COUNT).isEqualTo(17);
@@ -242,7 +313,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("carries the widths the COBOL and the creating JCL step both declare")
+        @DisplayName("LRECL is 80 and BLKSIZE 8000, declared twice over "
+                + "(CBSTM03A.CBL:L45 and CREASTMT.JCL:L89, corroborated by L72-L75)")
         void carriesTheDeclaredWidths() {
             assertThat(StatementTextWriter.RECORD_LENGTH).isEqualTo(EIGHTY);
             assertThat(StatementTextWriter.BLOCK_SIZE).isEqualTo(8000);
@@ -254,7 +326,7 @@ class StatementTextWriterTest {
 
         @ParameterizedTest
         @EnumSource(StatementLine.class)
-        @DisplayName("places every line at ordinal * 80 and gives it a width of 80")
+        @DisplayName("every line sits at ordinal * 80 and is 80 wide (CBSTM03A.CBL:L85-L146)")
         void placesEveryLineAtItsOrdinalOffset(StatementLine line) {
             assertThat(line.offset()).isEqualTo(line.ordinal() * EIGHTY);
             assertThat(line.length()).isEqualTo(EIGHTY);
@@ -263,7 +335,8 @@ class StatementTextWriterTest {
 
         @ParameterizedTest
         @EnumSource(StatementLine.class)
-        @DisplayName("renders every line as exactly 80 characters and 80 bytes when freshly reset")
+        @DisplayName("every freshly reset line renders as exactly 80 characters and 80 bytes "
+                + "(CBSTM03A.CBL:L45, L459)")
         void rendersEveryResetLineAtEightyBytes(StatementLine line) {
             StatementFile file = writer().openOutput(new CollectingSink());
             assertThat(file.renderLine(line)).hasSize(EIGHTY);
@@ -272,7 +345,8 @@ class StatementTextWriterTest {
 
         @ParameterizedTest
         @EnumSource(StatementLine.class)
-        @DisplayName("renders every line as exactly 80 characters and 80 bytes when fully populated")
+        @DisplayName("every fully populated line still renders as exactly 80 characters and 80 bytes "
+                + "(CBSTM03A.CBL:L45)")
         void rendersEveryPopulatedLineAtEightyBytes(StatementLine line) {
             StatementFile file = writer().openOutput(new CollectingSink());
             populate(file);
@@ -282,7 +356,8 @@ class StatementTextWriterTest {
 
         @ParameterizedTest
         @EnumSource(StatementSlot.class)
-        @DisplayName("places every slot inside its own line, at its line's offset plus its own")
+        @DisplayName("every slot sits inside its own line and cannot overflow it "
+                + "(CBSTM03A.CBL:L85-L146)")
         void placesEverySlotInsideItsLine(StatementSlot slot) {
             assertThat(slot.offset()).isEqualTo(slot.line().offset() + slot.offsetWithinLine());
             assertThat(slot.offsetWithinLine() + slot.length()).isLessThanOrEqualTo(EIGHTY);
@@ -291,7 +366,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("declares the eleven mutable slots at the offsets counted from the copybook")
+        @DisplayName("the eleven mutable slots sit at the offsets counted from the group "
+                + "(CBSTM03A.CBL:L91, L94, L97, L100, L109, L113, L118, L133, L135, L137, L142)")
         void declaresTheElevenSlotsAtTheirCountedOffsets() {
             assertThat(StatementSlot.values()).hasSize(11);
 
@@ -324,7 +400,8 @@ class StatementTextWriterTest {
     class InitializeTests {
 
         @Test
-        @DisplayName("leaves ST-LINE0's banner intact: 31 asterisks, the literal, 31 asterisks")
+        @DisplayName("ST-LINE0's banner survives: 31 asterisks, the 18-character literal, 31 "
+                + "asterisks (CBSTM03A.CBL:L86-L89)")
         void leavesTheOpeningBannerIntact() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String image = file.renderLine(StatementLine.ST_LINE0);
@@ -335,7 +412,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("leaves ST-LINE15's banner intact: 32 asterisks, the literal, 32 asterisks")
+        @DisplayName("ST-LINE15's banner survives: 32 asterisks, the 16-character literal, 32 "
+                + "asterisks (CBSTM03A.CBL:L143-L146)")
         void leavesTheClosingBannerIntact() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String image = file.renderLine(StatementLine.ST_LINE15);
@@ -346,7 +424,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("leaves all three ALL '-' rule lines as 80 hyphens")
+        @DisplayName("all three ALL '-' rules survive as 80 hyphens "
+                + "(CBSTM03A.CBL:L102, L121, L127)")
         void leavesTheThreeRuleLinesIntact() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String rule = "-".repeat(EIGHTY);
@@ -357,7 +436,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("leaves ST-LINE13's three headings at offsets 0, 16 and 67, padded as declared")
+        @DisplayName("ST-LINE13's three headings survive at offsets 0, 16 and 67, padded as declared "
+                + "(CBSTM03A.CBL:L128-L131)")
         void leavesTheColumnHeadingsIntact() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String image = file.renderLine(StatementLine.ST_LINE13);
@@ -371,7 +451,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("still shows every FILLER after a populate-then-reset cycle")
+        @DisplayName("every FILLER is still there after a populate-then-reset cycle, and the previous "
+                + "customer's values are gone (CBSTM03A.CBL:L459)")
         void stillShowsEveryFillerAfterAResetCycle() {
             StatementFile file = writer().openOutput(new CollectingSink());
             populate(file);
@@ -396,7 +477,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("clears an alphanumeric slot to spaces across its full declared width")
+        @DisplayName("INITIALIZE clears an alphanumeric slot to spaces across its full declared width "
+                + "(CBSTM03A.CBL:L459)")
         void clearsAlphanumericSlotsToSpaces() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -411,7 +493,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("clears an edited slot to its picture's zero image, not to spaces or to zeros")
+        @DisplayName("INITIALIZE clears an edited slot to its picture's zero image, not to spaces and "
+                + "not to a run of zeros (CBSTM03A.CBL:L459 into L113, L137, L142)")
         void clearsEditedSlotsToTheirPictureZeroImage() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -424,7 +507,8 @@ class StatementTextWriterTest {
 
         @ParameterizedTest
         @EnumSource(SlotKind.class)
-        @DisplayName("declares an initial image for every slot kind, and each kind is actually used")
+        @DisplayName("every slot kind is actually used by at least one slot "
+                + "(CBSTM03A.CBL:L85-L146)")
         void everySlotKindIsUsedByAtLeastOneSlot(SlotKind kind) {
             assertThat(StatementSlot.values())
                     .anySatisfy(slot -> assertThat(slot.kind()).isEqualTo(kind));
@@ -438,7 +522,8 @@ class StatementTextWriterTest {
     class LiteralTests {
 
         @Test
-        @DisplayName("renders the three twenty-character labels exactly as declared")
+        @DisplayName("the three labels are each exactly 20 characters, spaces counted from source "
+                + "(CBSTM03A.CBL:L108, L112, L117)")
         void rendersTheThreeLabelsExactly() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -454,7 +539,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("pads 'Basic Details' from 13 characters to its declared X(14)")
+        @DisplayName("'Basic Details' is 13 characters padded to its declared X(14) "
+                + "(CBSTM03A.CBL:L104-L106)")
         void padsTheBasicDetailsHeading() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String image = file.renderLine(StatementLine.ST_LINE6);
@@ -465,7 +551,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("keeps the trailing space inside 'TRANSACTION SUMMARY '")
+        @DisplayName("'TRANSACTION SUMMARY ' keeps its trailing space inside the quotes and fills all "
+                + "20 positions (CBSTM03A.CBL:L122-L125)")
         void keepsTheTrailingSpaceInsideTheSummaryHeading() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String image = file.renderLine(StatementLine.ST_LINE11);
@@ -477,7 +564,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("renders ST-LINE14's one-space separator and dollar sign at 16 and 66")
+        @DisplayName("ST-LINE14's one-space separator is at 16 and its dollar sign at 66 "
+                + "(CBSTM03A.CBL:L134, L136)")
         void rendersTheDetailLineSeparators() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String image = file.renderLine(StatementLine.ST_LINE14);
@@ -487,7 +575,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("renders ST-LINE14A's 'Total EXP:' label, 56 spaces and dollar sign")
+        @DisplayName("ST-LINE14A is 'Total EXP:', 56 spaces, a dollar sign and the total "
+                + "(CBSTM03A.CBL:L138-L142)")
         void rendersTheTotalLine() {
             StatementFile file = writer().openOutput(new CollectingSink());
             String image = file.renderLine(StatementLine.ST_LINE14A);
@@ -495,6 +584,153 @@ class StatementTextWriterTest {
             assertThat(image.substring(0, 10)).isEqualTo("Total EXP:");
             assertThat(image.substring(10, 66)).isEqualTo(" ".repeat(56));
             assertThat(image.charAt(66)).isEqualTo('$');
+        }
+    }
+
+    // =============================================================================================
+
+    /**
+     * All seventeen templates, asserted as complete 80-character images rather than span by span.
+     *
+     * <p>The individual span assertions above say where each literal is; these say that
+     * <em>nothing else</em> is anywhere. A single miscounted space, a merged {@code FILLER}, an extra
+     * pad byte or a slot at the wrong offset fails here even when every span assertion still passes,
+     * which is why the whole-image form is worth stating separately.
+     *
+     * <p>Each expected image was <strong>statically derived</strong> by walking
+     * {@code app/cbl/CBSTM03A.CBL:L85-L146} item by item and writing down each item's declared width
+     * and {@code VALUE}, and each is built here span by span - {@code " ".repeat(33)} rather than a
+     * long quoted run of spaces - so a reader can check it against the copybook by reading the
+     * arithmetic instead of counting characters in a string literal. Every image is itself asserted to
+     * be 80 characters before it is compared, so a mistake in the <em>expectation</em> fails as loudly
+     * as a mistake in the implementation.
+     */
+    @Nested
+    @DisplayName("The seventeen templates as whole 80-byte images (CBSTM03A.CBL:L85-L146)")
+    class TemplateImageTests {
+
+        /**
+         * The freshly reset image of every line, in COBOL declaration order.
+         *
+         * <p>Reset state means: every {@code FILLER} holds its declared {@code VALUE}, every
+         * alphanumeric slot holds spaces, and the three edited slots hold their picture's zero image -
+         * {@code 9(9).99-} zero-filled at {@code L113}, {@code Z(9).99-} suppressed at {@code L137}
+         * and {@code L142}.
+         *
+         * @return line and expected 80-character image pairs, one per line group
+         */
+        static Stream<Arguments> resetImages() {
+            return Stream.of(
+                    // L86-L89: ALL '*' X(31), 'START OF STATEMENT' X(18), ALL '*' X(31). The literal
+                    // is itself 18 characters, so VALUE ALL neither repeats nor truncates it.
+                    Arguments.of(StatementLine.ST_LINE0,
+                            "*".repeat(31) + "START OF STATEMENT" + "*".repeat(31)),
+                    // L90-L92: ST-NAME X(75) cleared to spaces, then FILLER SPACES X(05).
+                    Arguments.of(StatementLine.ST_LINE1, " ".repeat(75) + " ".repeat(5)),
+                    // L93-L95 and L96-L98: ST-ADD1 / ST-ADD2 X(50), then FILLER SPACES X(30).
+                    Arguments.of(StatementLine.ST_LINE2, " ".repeat(50) + " ".repeat(30)),
+                    Arguments.of(StatementLine.ST_LINE3, " ".repeat(50) + " ".repeat(30)),
+                    // L99-L100: ST-ADD3 X(80) fills the line; this line declares no FILLER at all.
+                    Arguments.of(StatementLine.ST_LINE4, " ".repeat(80)),
+                    // L101-L102: ALL '-' X(80).
+                    Arguments.of(StatementLine.ST_LINE5, "-".repeat(80)),
+                    // L103-L106: SPACES X(33), 'Basic Details' X(14) - 13 characters, so one trailing
+                    // pad space - then SPACES X(33).
+                    Arguments.of(StatementLine.ST_LINE6,
+                            " ".repeat(33) + "Basic Details" + " " + " ".repeat(33)),
+                    // L107-L110: the 20-character label, ST-ACCT-ID X(20) cleared, SPACES X(40).
+                    Arguments.of(StatementLine.ST_LINE7,
+                            "Account ID         :" + " ".repeat(20) + " ".repeat(40)),
+                    // L111-L115: the 20-character label, ST-CURR-BAL 9(9).99- at its zero image, then
+                    // TWO separately declared FILLER runs, X(07) and X(40).
+                    Arguments.of(StatementLine.ST_LINE8,
+                            "Current Balance    :" + "000000000.00 " + " ".repeat(7)
+                                    + " ".repeat(40)),
+                    // L116-L119: the 20-character label, ST-FICO-SCORE X(20) cleared, SPACES X(40).
+                    Arguments.of(StatementLine.ST_LINE9,
+                            "FICO Score         :" + " ".repeat(20) + " ".repeat(40)),
+                    // L120-L121 and L126-L127: ALL '-' X(80), same as ST-LINE5.
+                    Arguments.of(StatementLine.ST_LINE10, "-".repeat(80)),
+                    // L122-L125: SPACES X(30), 'TRANSACTION SUMMARY ' X(20) - the literal already
+                    // carries its trailing space and so fills all 20 - then SPACES X(30).
+                    Arguments.of(StatementLine.ST_LINE11,
+                            " ".repeat(30) + "TRANSACTION SUMMARY " + " ".repeat(30)),
+                    Arguments.of(StatementLine.ST_LINE12, "-".repeat(80)),
+                    // L128-L131: 'Tran ID         ' X(16) exactly fills; 'Tran Details    ' is 16
+                    // characters declared into X(51) and so is padded by 35; '  Tran Amount' begins
+                    // with TWO spaces and exactly fills X(13).
+                    Arguments.of(StatementLine.ST_LINE13,
+                            "Tran ID         " + "Tran Details    " + " ".repeat(35)
+                                    + "  Tran Amount"),
+                    // L132-L137: ST-TRANID X(16) cleared, FILLER ' ' X(01), ST-TRANDT X(49) cleared,
+                    // FILLER '$' X(01), ST-TRANAMT Z(9).99- at its suppressed zero image.
+                    Arguments.of(StatementLine.ST_LINE14,
+                            " ".repeat(16) + " " + " ".repeat(49) + "$" + "         .00 "),
+                    // L138-L142: 'Total EXP:' X(10), SPACES X(56), FILLER '$' X(01), ST-TOTAL-TRAMT.
+                    Arguments.of(StatementLine.ST_LINE14A,
+                            "Total EXP:" + " ".repeat(56) + "$" + "         .00 "),
+                    // L143-L146: ALL '*' X(32), 'END OF STATEMENT' X(16) - itself 16 characters, so
+                    // again no repetition and no truncation - ALL '*' X(32).
+                    Arguments.of(StatementLine.ST_LINE15,
+                            "*".repeat(32) + "END OF STATEMENT" + "*".repeat(32)));
+        }
+
+        @ParameterizedTest(name = "{0} is [{1}]")
+        @MethodSource("resetImages")
+        @DisplayName("every freshly reset template renders exactly as its spans declare, byte for byte "
+                + "(CBSTM03A.CBL:L85-L146)")
+        void rendersEveryResetTemplate(StatementLine line, String expected) {
+            assertThat(expected)
+                    .as("the expectation for %s must itself be 80 characters", line.cobolName())
+                    .hasSize(EIGHTY);
+
+            StatementFile file = writer().openOutput(new CollectingSink());
+
+            assertThat(file.renderLine(line)).isEqualTo(expected);
+        }
+
+        @ParameterizedTest(name = "{0} returns to [{1}]")
+        @MethodSource("resetImages")
+        @DisplayName("INITIALIZE returns every template to that same image, clearing the slots and no "
+                + "FILLER byte (CBSTM03A.CBL:L459)")
+        void returnsEveryTemplateToItsDeclaredImage(StatementLine line, String expected) {
+            StatementFile file = writer().openOutput(new CollectingSink());
+            populate(file);
+
+            file.initializeStatementLines();
+
+            // This is the whole-image form of gate G21. A reset implemented as "blank the 1360-byte
+            // area" would leave every line 80 bytes long and would still clear the slots, so a width
+            // check and a slot check both pass - and this assertion is the one that fails, because the
+            // banners, the three rules and every heading would have gone with it.
+            assertThat(file.renderLine(line)).isEqualTo(expected);
+        }
+
+        @ParameterizedTest(name = "{0} reaches the sink as [{1}]")
+        @MethodSource("resetImages")
+        @DisplayName("the sink receives exactly those bytes, 80 of them, under the injected code page "
+                + "(CBSTM03A.CBL:L45, CREASTMT.JCL:L89)")
+        void handsThoseSameBytesToTheSink(StatementLine line, String expected) {
+            CollectingSink sink = new CollectingSink();
+            StatementFile file = writer().openOutput(sink);
+
+            assertThat(file.writeLine(line)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(sink.records).hasSize(1);
+            assertThat(sink.records.get(0)).hasSize(EIGHTY);
+            assertThat(sink.decoded(ASCII)).containsExactly(expected);
+        }
+
+        @Test
+        @DisplayName("all seventeen lines are covered, so no template escapes the whole-image check "
+                + "(CBSTM03A.CBL:L85-L146)")
+        void coversAllSeventeenLines() {
+            List<Object> covered = new ArrayList<>();
+            resetImages().forEach(arguments -> covered.add(arguments.get()[0]));
+
+            assertThat(covered)
+                    .hasSize(StatementTextWriter.LINE_COUNT)
+                    .containsExactly((Object[]) StatementLine.values());
         }
     }
 
@@ -567,7 +803,8 @@ class StatementTextWriterTest {
 
         @ParameterizedTest(name = "9(9).99- of {0} is [{1}]")
         @MethodSource("zeroFilledCases")
-        @DisplayName("edits through PIC 9(9).99- with leading zeros retained")
+        @DisplayName("PIC 9(9).99- retains leading zeros and truncates the tenth integer digit "
+                + "(CBSTM03A.CBL:L113, fed from L484 and CVACT01Y.cpy:7)")
         void editsWithLeadingZerosRetained(BigDecimal value, String expected) {
             assertThat(StatementTextWriter.editZeroFilledAmount(value))
                     .isEqualTo(expected)
@@ -576,7 +813,8 @@ class StatementTextWriterTest {
 
         @ParameterizedTest(name = "Z(9).99- of {0} is [{1}]")
         @MethodSource("zeroSuppressedCases")
-        @DisplayName("edits through PIC Z(9).99- with leading zeros suppressed to spaces")
+        @DisplayName("PIC Z(9).99- suppresses leading zeros to spaces but never the fraction "
+                + "(CBSTM03A.CBL:L137, L142)")
         void editsWithLeadingZerosSuppressed(BigDecimal value, String expected) {
             assertThat(StatementTextWriter.editZeroSuppressedAmount(value))
                     .isEqualTo(expected)
@@ -584,7 +822,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("differs between the two masks only in the integer positions")
+        @DisplayName("the two masks differ only in their integer positions "
+                + "(CBSTM03A.CBL:L113 against L137)")
         void differsOnlyInTheIntegerPositions() {
             BigDecimal value = new BigDecimal("194.00");
             String retained = StatementTextWriter.editZeroFilledAmount(value);
@@ -596,7 +835,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("renders CobolDecimal's scale-2 zero as each picture's own zero image")
+        @DisplayName("each picture renders CobolDecimal's scale-2 zero as its own zero image "
+                + "(CBSTM03A.CBL:L459 into L113, L137, L142)")
         void rendersTheScaleTwoZero() {
             assertThat(CobolDecimal.monetaryZero().scale()).isEqualTo(2);
             assertThat(StatementTextWriter.editZeroFilledAmount(CobolDecimal.monetaryZero()))
@@ -606,13 +846,82 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("rejects a null value rather than inventing a zero")
+        @DisplayName("a null value is rejected rather than silently edited as a zero, because the two "
+                + "pictures render zero differently (CBSTM03A.CBL:L113 against L137)")
         void rejectsANullValue() {
             assertThatNullPointerException()
                     .isThrownBy(() -> StatementTextWriter.editZeroFilledAmount(null))
                     .withMessageContaining("monetaryZero");
             assertThatNullPointerException()
                     .isThrownBy(() -> StatementTextWriter.editZeroSuppressedAmount(null));
+        }
+
+        @Test
+        @DisplayName("both masks truncate through CobolDecimal's named scale and rounding, and never "
+                + "round up (no ROUNDED anywhere in the 28 programs; CBSTM03A.CBL:L113, L137)")
+        void truncatesThroughTheNamedRoundingPolicy() {
+            // The policy is named, not implied: scale 2 because every signed decimal PICTURE in the
+            // codebase is V99, and RoundingMode.DOWN because the keyword ROUNDED appears zero times
+            // in all 28 COBOL programs, so a store TRUNCATES the excess fraction (gate G24).
+            assertThat(CobolDecimal.MONETARY_SCALE)
+                    .isEqualTo(StatementTextWriter.EDITED_FRACTION_DIGITS)
+                    .isEqualTo(2);
+            assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
+            assertThat(StatementTextWriter.EDITED_INTEGER_DIGITS).isEqualTo(9);
+
+            // A third fraction digit of 9 would round the second UP under any half-up or half-even
+            // policy. It must not: the receiver keeps .99, and .999 becoming 1.00 would be a parity
+            // failure invisible in every other assertion here.
+            BigDecimal overPrecise = new BigDecimal("1.999");
+            assertThat(CobolDecimal.storeAtPicture(overPrecise,
+                    StatementTextWriter.EDITED_INTEGER_DIGITS,
+                    StatementTextWriter.EDITED_FRACTION_DIGITS))
+                    .isEqualByComparingTo(new BigDecimal("1.99"));
+            assertThat(StatementTextWriter.editZeroFilledAmount(overPrecise))
+                    .isEqualTo("000000001.99 ");
+            assertThat(StatementTextWriter.editZeroSuppressedAmount(overPrecise))
+                    .isEqualTo("        1.99 ");
+
+            // Truncation is towards zero on the negative side too, and the sign position is decided
+            // from the SENDING operand rather than from the truncated magnitude.
+            assertThat(StatementTextWriter.editZeroFilledAmount(new BigDecimal("-1.999")))
+                    .isEqualTo("000000001.99-");
+            assertThat(StatementTextWriter.editZeroSuppressedAmount(new BigDecimal("-0.009")))
+                    .isEqualTo(" ".repeat(9) + ".00-");
+        }
+
+        @Test
+        @DisplayName("ACCT-CURR-BAL's tenth integer digit is DROPPED, not rounded and not reported "
+                + "(CBSTM03A.CBL:L484 moves CVACT01Y.cpy:7 S9(10)V99 into L113's 9(9).99-)")
+        void dropsTheTenthIntegerDigit() {
+            // THIS IS REQUIRED PARITY BEHAVIOUR, NOT A DEFECT TO BE FIXED.
+            //
+            // The sending field ACCT-CURR-BAL is PIC S9(10)V99 - TEN integer digits - and the
+            // receiving edited item ST-CURR-BAL is PIC 9(9).99-, which has only NINE integer
+            // positions. A COBOL numeric MOVE aligns the operands on their implied decimal point, so
+            // the digits that survive are the LOW-order ones and the excess HIGH-order digit is simply
+            // discarded. MOVE ... TO ... at L484 carries no ON SIZE ERROR phrase, so the loss is not
+            // reported either. Widening the mask to ten positions, rounding, throwing, or flagging the
+            // overflow would each change an observable byte of every statement the COBOL prints.
+            assertThat(StatementTextWriter.editZeroFilledAmount(new BigDecimal("1234567890.12")))
+                    .as("the leading 1 is dropped; the surviving digits are the low-order nine")
+                    .isEqualTo("234567890.12 ")
+                    .hasSize(THIRTEEN);
+
+            // The largest value that fits, and the smallest that does not, side by side.
+            assertThat(StatementTextWriter.editZeroFilledAmount(new BigDecimal("999999999.99")))
+                    .isEqualTo("999999999.99 ");
+            assertThat(StatementTextWriter.editZeroFilledAmount(new BigDecimal("1000000000.00")))
+                    .as("ten digits: the leading 1 goes and nine zeros remain, still printed")
+                    .isEqualTo("000000000.00 ");
+
+            // The same rule on the zero-suppressed mask, where losing the only significant digit
+            // re-enables suppression of the entire integer run.
+            assertThat(StatementTextWriter.editZeroSuppressedAmount(new BigDecimal("1000000000.00")))
+                    .isEqualTo("         .00 ");
+            assertThat(StatementTextWriter.editZeroSuppressedAmount(new BigDecimal("-1000000000.01")))
+                    .as("the sign still comes from the sender even when its magnitude truncates away")
+                    .isEqualTo(" ".repeat(9) + ".01-");
         }
     }
 
@@ -623,7 +932,8 @@ class StatementTextWriterTest {
     class MoveSemanticsTests {
 
         @Test
-        @DisplayName("left justifies a short name in X(75) and pads it on the right")
+        @DisplayName("a short name is left justified in X(75) and padded on the right "
+                + "(CBSTM03A.CBL:L91, L462-L469)")
         void padsAShortNameOnTheRight() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setName("JOHN Q PUBLIC");
@@ -634,7 +944,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("truncates an over-long name on the RIGHT, keeping the leading characters")
+        @DisplayName("an over-long name truncates on the RIGHT, keeping the leading characters "
+                + "(CBSTM03A.CBL:L91)")
         void truncatesAnOverLongNameOnTheRight() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setName("A".repeat(70) + "ZZZZZZZZZZ");
@@ -645,7 +956,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("truncates a 100-character TRNX-DESC to the first 49 characters")
+        @DisplayName("a 100-character TRNX-DESC truncates to its first 49 characters "
+                + "(CBSTM03A.CBL:L677 into L135, COSTM01.CPY:28)")
         void truncatesTheTransactionDescriptionToFortyNine() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setTransactionDetails("A".repeat(49) + "B".repeat(51));
@@ -656,7 +968,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("zero-fills ACCT-ID to eleven digits on the LEFT, then pads X(20) on the right")
+        @DisplayName("ACCT-ID zero-fills to eleven digits on the LEFT, then pads X(20) on the right "
+                + "(CBSTM03A.CBL:L483 into L109, CVACT01Y.cpy:5)")
         void zeroFillsTheAccountIdThenPadsIt() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setAccountId(1L);
@@ -667,7 +980,7 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("keeps all eleven digits of a full-width account id")
+        @DisplayName("a full-width account id keeps all eleven digits (CVACT01Y.cpy:5)")
         void keepsAFullWidthAccountId() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setAccountId(99999999999L);
@@ -677,7 +990,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("rejects a negative account id, because PIC 9(11) has no sign position")
+        @DisplayName("a negative account id is rejected, because PIC 9(11) has no sign position "
+                + "(CVACT01Y.cpy:5)")
         void rejectsANegativeAccountId() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -685,7 +999,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("zero-fills a FICO score to three digits, left justified in X(20)")
+        @DisplayName("a FICO score zero-fills to three digits, left justified in X(20) "
+                + "(CBSTM03A.CBL:L485 into L118, CUSTREC.cpy:22)")
         void zeroFillsTheFicoScore() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -699,7 +1014,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("rejects a negative FICO score, because PIC 9(03) has no sign position")
+        @DisplayName("a negative FICO score is rejected, because PIC 9(03) has no sign position "
+                + "(CUSTREC.cpy:22)")
         void rejectsANegativeFicoScore() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -707,7 +1023,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("moves the equal-width address lines through unchanged, padded to their width")
+        @DisplayName("the equal-width address lines move through unchanged, padded to their width "
+                + "(CBSTM03A.CBL:L470-L471, L676, CUSTREC.cpy:9-10)")
         void movesTheAddressLines() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setAddressLine1("100 MAIN STREET");
@@ -725,7 +1042,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("writes each edited amount into its own slot without disturbing its line")
+        @DisplayName("each edited amount lands in its own slot without disturbing its line's FILLER "
+                + "(CBSTM03A.CBL:L484, L678, L434)")
         void writesTheEditedAmountsIntoTheirSlots() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setCurrentBalance(new BigDecimal("194.00"));
@@ -744,7 +1062,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("renders a fully populated detail line byte for byte")
+        @DisplayName("a fully populated ST-LINE14 renders byte for byte "
+                + "(CBSTM03A.CBL:L132-L137, L676-L679)")
         void rendersAFullyPopulatedDetailLine() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.setTransactionId("0000000000000001");
@@ -757,7 +1076,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("rejects a null sending value on every alphanumeric setter")
+        @DisplayName("every setter rejects a null sending value; COBOL has no null "
+                + "(CBSTM03A.CBL:L85-L146)")
         void rejectsNullSendingValues() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -783,6 +1103,74 @@ class StatementTextWriterTest {
             assertThatNullPointerException().isThrownBy(() -> file.renderLineBytes(null));
             assertThatNullPointerException().isThrownBy(() -> file.writeLine(null));
         }
+
+        @Test
+        @DisplayName("every alphanumeric slot goes through FixedWidthCodec.movePicX, never a Java "
+                + "assignment (CBSTM03A.CBL:L462-L471, L676-L677)")
+        void pinsEveryAlphanumericMoveToTheCodec() {
+            // Pinned to the module's audited alphanumeric MOVE rather than to a hand-written expected
+            // string, so the only way this holds is if the setter actually applies that rule. A plain
+            // Java assignment neither pads nor truncates, and the resulting defect is invisible at the
+            // call site - which is exactly why the rule has one implementation and this is tied to it.
+            FixedWidthCodec codec = new FixedWidthCodec(ASCII);
+            String name = "JOHN Q PUBLIC";
+            String addressLine1 = "100 MAIN STREET";
+            String addressLine2 = "APT 3B";
+            String addressLine3 = "SPRINGFIELD IL USA 62701";
+            String transactionId = "0000000000000001";
+            String overLongDescription = "D".repeat(100);
+
+            StatementFile file = writer().openOutput(new CollectingSink());
+            file.setName(name);
+            file.setAddressLine1(addressLine1);
+            file.setAddressLine2(addressLine2);
+            file.setAddressLine3(addressLine3);
+            file.setTransactionId(transactionId);
+            file.setTransactionDetails(overLongDescription);
+
+            assertThat(file.slotImage(StatementSlot.ST_NAME))
+                    .isEqualTo(codec.movePicX(name, 75));
+            assertThat(file.slotImage(StatementSlot.ST_ADD1))
+                    .isEqualTo(codec.movePicX(addressLine1, 50));
+            assertThat(file.slotImage(StatementSlot.ST_ADD2))
+                    .isEqualTo(codec.movePicX(addressLine2, 50));
+            assertThat(file.slotImage(StatementSlot.ST_ADD3))
+                    .isEqualTo(codec.movePicX(addressLine3, EIGHTY));
+            assertThat(file.slotImage(StatementSlot.ST_TRANID))
+                    .isEqualTo(codec.movePicX(transactionId, 16));
+            assertThat(file.slotImage(StatementSlot.ST_TRANDT))
+                    .isEqualTo(codec.movePicX(overLongDescription, 49));
+        }
+
+        @ParameterizedTest(name = "account {0} and score {1}")
+        @CsvSource({
+            "0, 0",
+            "1, 12",
+            "705, 705",
+            "99999999999, 999",
+        })
+        @DisplayName("a numeric sender is zero-filled by movePic9 and then space-padded by movePicX, "
+                + "in that order (CBSTM03A.CBL:L483, L485)")
+        void pinsEveryNumericMoveToTheCodec(long accountId, int ficoScore) {
+            // Two MOVE rules apply in sequence and the ORDER matters: PIC 9 zero-fills on the LEFT,
+            // and only then does the resulting digit string enter an alphanumeric receiver, which left
+            // justifies and pads on the RIGHT. Composing the two codec calls here states that order
+            // explicitly rather than asserting a single string that could be reached either way.
+            FixedWidthCodec codec = new FixedWidthCodec(ASCII);
+            StatementFile file = writer().openOutput(new CollectingSink());
+
+            file.setAccountId(accountId);
+            file.setFicoScore(ficoScore);
+
+            assertThat(file.slotImage(StatementSlot.ST_ACCT_ID))
+                    .isEqualTo(codec.movePicX(
+                            codec.movePic9(accountId, StatementTextWriter.ACCOUNT_ID_DIGITS), 20))
+                    .hasSize(20);
+            assertThat(file.slotImage(StatementSlot.ST_FICO_SCORE))
+                    .isEqualTo(codec.movePicX(
+                            codec.movePic9(ficoScore, StatementTextWriter.FICO_SCORE_DIGITS), 20))
+                    .hasSize(20);
+        }
     }
 
     // =============================================================================================
@@ -792,7 +1180,8 @@ class StatementTextWriterTest {
     class WriteTests {
 
         @Test
-        @DisplayName("emits records in call order, with repeats, and never reorders or coalesces")
+        @DisplayName("records reach the sink in call order, repeats included, never reordered or "
+                + "coalesced (CBSTM03A.CBL:L488-L502 and L435-L437)")
         void emitsRecordsInCallOrder() {
             CollectingSink sink = new CollectingSink();
             StatementFile file = writer().openOutput(sink);
@@ -820,7 +1209,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("emits the values current at the moment of the write, not at the moment of set")
+        @DisplayName("a record carries the values current at the WRITE, so one detail line per "
+                + "transaction (CBSTM03A.CBL:L676-L679)")
         void emitsTheValuesCurrentAtWriteTime() {
             CollectingSink sink = new CollectingSink();
             StatementFile file = writer().openOutput(sink);
@@ -843,7 +1233,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("hands the sink a fresh array each time, so a sink may retain it")
+        @DisplayName("the sink gets a fresh 80-byte array each time, so it may retain it "
+                + "(CBSTM03A.CBL:L45)")
         void handsTheSinkAFreshArrayEachTime() {
             CollectingSink sink = new CollectingSink();
             StatementFile file = writer().openOutput(sink);
@@ -857,7 +1248,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("reports a rejected write as the WHEN OTHER outcome and still counts it")
+        @DisplayName("a rejected write reports the WHEN OTHER arm and still counts "
+                + "(CBSTM03A.CBL:L353-L359)")
         void reportsARejectedWriteAsOther() {
             CollectingSink sink = new CollectingSink(FileStatus.Outcome.OTHER,
                     FileStatus.Outcome.OK);
@@ -870,7 +1262,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("does not mutate the line area when a line is written")
+        @DisplayName("WRITE ... FROM leaves the line area unchanged, so a line may be written twice "
+                + "(CBSTM03A.CBL:L492 and L494)")
         void doesNotMutateTheLineAreaOnWrite() {
             CollectingSink sink = new CollectingSink();
             StatementFile file = writer().openOutput(sink);
@@ -879,6 +1272,90 @@ class StatementTextWriterTest {
             file.writeLine(StatementLine.ST_LINE0);
 
             assertThat(file.renderLine(StatementLine.ST_LINE0)).isEqualTo(before);
+        }
+
+        @ParameterizedTest
+        @EnumSource(StatementLine.class)
+        @DisplayName("every record reaching the sink is exactly 80 bytes, whether its slots hold "
+                + "values shorter or longer than their fields (CBSTM03A.CBL:L45, CREASTMT.JCL:L89)")
+        void handsTheSinkExactlyEightyBytesWhateverTheSlotsHold(StatementLine line) {
+            // A fixed-length record is fixed-length regardless of what was moved into it, and this is
+            // the assertion that makes gate G21 self-enforcing: drop any FILLER from the layout and the
+            // total width fails here immediately, for whichever line lost it.
+            CollectingSink underFilled = new CollectingSink();
+            StatementFile shortValues = writer().openOutput(underFilled);
+            shortValues.setName("A");
+            shortValues.setAddressLine1("B");
+            shortValues.setAddressLine2("C");
+            shortValues.setAddressLine3("D");
+            shortValues.setTransactionId("E");
+            shortValues.setTransactionDetails("F");
+            shortValues.setAccountId(0L);
+            shortValues.setFicoScore(0);
+            shortValues.setCurrentBalance(CobolDecimal.monetaryZero());
+            shortValues.setTransactionAmount(CobolDecimal.monetaryZero());
+            shortValues.setTotalTransactionAmount(CobolDecimal.monetaryZero());
+            shortValues.writeLine(line);
+
+            CollectingSink overFilled = new CollectingSink();
+            StatementFile longValues = writer().openOutput(overFilled);
+            longValues.setName("N".repeat(200));
+            longValues.setAddressLine1("1".repeat(200));
+            longValues.setAddressLine2("2".repeat(200));
+            longValues.setAddressLine3("3".repeat(200));
+            longValues.setTransactionId("T".repeat(200));
+            longValues.setTransactionDetails("D".repeat(200));
+            longValues.setAccountId(99999999999L);
+            longValues.setFicoScore(999);
+            longValues.setCurrentBalance(new BigDecimal("9999999999.99"));
+            longValues.setTransactionAmount(new BigDecimal("-9999999999.99"));
+            longValues.setTotalTransactionAmount(new BigDecimal("-9999999999.99"));
+            longValues.writeLine(line);
+
+            assertThat(underFilled.records).hasSize(1);
+            assertThat(underFilled.records.get(0)).hasSize(EIGHTY);
+            assertThat(underFilled.decoded(ASCII).get(0)).hasSize(EIGHTY);
+
+            assertThat(overFilled.records).hasSize(1);
+            assertThat(overFilled.records.get(0)).hasSize(EIGHTY);
+            assertThat(overFilled.decoded(ASCII).get(0)).hasSize(EIGHTY);
+        }
+
+        @Test
+        @DisplayName("an accepted write surfaces COBOL FILE STATUS '00' and a rejected one surfaces "
+                + "the WHEN OTHER arm, neither abending (CBSTM03A.CBL:L353-L359, L460)")
+        void surfacesTheFileStatusRatherThanAbending() {
+            CollectingSink accepting = new CollectingSink();
+            StatementFile accepted = writer().openOutput(accepting);
+
+            FileStatus.Outcome outcome = accepted.writeLine(StatementLine.ST_LINE0);
+
+            // '00' is the COBOL FILE STATUS for a completed operation, and the outcome the writer
+            // surfaces is tied to that literal rather than merely being some enum constant named OK.
+            assertThat(FileStatus.OK).isEqualTo("00");
+            assertThat(outcome).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(outcome.batchStatus()).contains(FileStatus.OK);
+            assertThat(FileStatus.outcomeOfStatus(FileStatus.OK)).isEqualTo(outcome);
+            assertThat(FileStatus.isOk(FileStatus.OK)).isTrue();
+            assertThat(accepted.recordsWritten()).isEqualTo(1);
+
+            // A rejected write SURFACES a status; it does not abend and does not close the dataset.
+            // Deciding to abend belongs to the statement job, which is what CBSTM03A's own
+            // EVALUATE ... WHEN OTHER guard at L353-L359 does, so this writer must leave that decision
+            // open by reporting rather than throwing.
+            CollectingSink rejecting = new CollectingSink(FileStatus.Outcome.OTHER,
+                    FileStatus.Outcome.OK);
+            StatementFile rejected = writer().openOutput(rejecting);
+
+            assertThatCode(() -> rejected.writeLine(StatementLine.ST_LINE0))
+                    .doesNotThrowAnyException();
+            assertThat(rejected.writeLine(StatementLine.ST_LINE15))
+                    .isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(FileStatus.Outcome.OTHER.batchStatus())
+                    .as("WHEN OTHER is the absence of a recognised FILE STATUS, not a code of its own")
+                    .isEmpty();
+            assertThat(rejected.isOpen()).isTrue();
+            assertThat(rejected.recordsWritten()).isEqualTo(2);
         }
     }
 
@@ -889,7 +1366,8 @@ class StatementTextWriterTest {
     class LifecycleTests {
 
         @Test
-        @DisplayName("opens already reset, open, and with nothing written")
+        @DisplayName("a handle opens already reset, open and with nothing written "
+                + "(CBSTM03A.CBL:L293, L459)")
         void opensReadyToUse() {
             StatementFile file = writer().openOutput(new CollectingSink());
 
@@ -899,7 +1377,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("gives each open its own line area, so two runs never share slot state")
+        @DisplayName("each open gets its own line area, so two runs never share slot state "
+                + "(CBSTM03A.CBL:L85-L146 is per-run state)")
         void givesEachOpenItsOwnLineArea() {
             StatementTextWriter writer = writer();
             StatementFile first = writer.openOutput(new CollectingSink());
@@ -912,7 +1391,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("closes once, reports the sink's outcome, and is idempotent afterwards")
+        @DisplayName("CLOSE happens once, reports the sink's outcome and is idempotent afterwards "
+                + "(CBSTM03A.CBL:L339)")
         void closesOnceAndIsIdempotent() {
             CollectingSink sink = new CollectingSink();
             StatementFile file = writer().openOutput(sink);
@@ -927,7 +1407,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("reports a failed close as the WHEN OTHER outcome")
+        @DisplayName("a failed close reports the WHEN OTHER arm rather than abending "
+                + "(CBSTM03A.CBL:L339, L353-L359)")
         void reportsAFailedClose() {
             CollectingSink sink = new CollectingSink(FileStatus.Outcome.OK,
                     FileStatus.Outcome.OTHER);
@@ -937,7 +1418,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("supports try-with-resources, and logs rather than throws on a failed close")
+        @DisplayName("try-with-resources reproduces the OPEN OUTPUT / CLOSE pairing and logs rather "
+                + "than throws on a failed close (CBSTM03A.CBL:L293, L339)")
         void supportsTryWithResources() {
             CollectingSink clean = new CollectingSink();
             try (StatementFile file = writer().openOutput(clean)) {
@@ -956,7 +1438,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("refuses a write after close, naming the record count reached")
+        @DisplayName("a write after CLOSE is refused, naming the record count reached "
+                + "(CBSTM03A.CBL:L293 opens once, L339 closes once)")
         void refusesAWriteAfterClose() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.writeLine(StatementLine.ST_LINE0);
@@ -970,7 +1453,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("still renders lines after close, because rendering writes nothing")
+        @DisplayName("rendering still works after CLOSE, because a record area outlives an open "
+                + "dataset (CBSTM03A.CBL:L85-L146, L339)")
         void stillRendersAfterClose() {
             StatementFile file = writer().openOutput(new CollectingSink());
             file.closeOutput();
@@ -979,7 +1463,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("rejects a null sink rather than silently discarding records")
+        @DisplayName("a null sink is rejected rather than silently discarding records "
+                + "(CBSTM03A.CBL:L39 assigns the STMTFILE DD)")
         void rejectsANullSink() {
             StatementTextWriter writer = writer();
 
@@ -1158,7 +1643,8 @@ class StatementTextWriterTest {
     class ConstructionTests {
 
         @Test
-        @DisplayName("resolves the STMTFILE binding by DD name and exposes it verbatim")
+        @DisplayName("the STMTFILE target is resolved by DD-name key from carddemo.datasets and "
+                + "exposed verbatim (CBSTM03A.CBL:L39, CREASTMT.JCL:L87-L91)")
         void resolvesTheBindingByDdName() {
             StatementTextWriter writer = writer();
             DatasetBinding binding = writer.datasetBinding();
@@ -1171,19 +1657,22 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("exposes the injected charset rather than resolving one of its own")
+        @DisplayName("the code page is the injected one, never resolved here and never a platform "
+                + "default (carddemo.charset.dataset)")
         void exposesTheInjectedCharset() {
             assertThat(writer(ASCII).datasetCharset()).isEqualTo(ASCII);
             assertThat(writer(EBCDIC).datasetCharset()).isEqualTo(EBCDIC);
         }
 
         @Test
-        @DisplayName("refuses to start when the configured record length is not 80")
+        @DisplayName("a configured record length other than 80 refuses to start, citing both "
+                + "declarations (CBSTM03A.CBL:L45 and CREASTMT.JCL:L89)")
         void refusesAWrongRecordLength() {
             DatasetBindings wrong = bindings(100);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, wrong, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, wrong,
+                            RecordImageForm.CHARACTER))
                     .withMessageContaining("record-length 100")
                     .withMessageContaining("CBSTM03A.CBL:L45")
                     .withMessageContaining("CREASTMT.JCL:L89");
@@ -1195,7 +1684,8 @@ class StatementTextWriterTest {
             DatasetBindings empty = new DatasetBindings();
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, empty, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, empty,
+                            RecordImageForm.CHARACTER))
                     .withMessageContaining("STMTFILE");
         }
 
@@ -1205,13 +1695,16 @@ class StatementTextWriterTest {
             DatasetBindings catalogue = bindings(EIGHTY);
 
             assertThatNullPointerException()
-                    .isThrownBy(() -> new StatementTextWriter(null, ASCII, catalogue, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new StatementTextWriter(null, ASCII, catalogue,
+                            RecordImageForm.CHARACTER))
                     .withMessageContaining("JdbcTemplate");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), null, catalogue, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), null, catalogue,
+                            RecordImageForm.CHARACTER))
                     .withMessageContaining("code page");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, null, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII, null,
+                            RecordImageForm.CHARACTER))
                     .withMessageContaining("carddemo.datasets");
         }
     }
@@ -1219,7 +1712,8 @@ class StatementTextWriterTest {
     // =============================================================================================
 
     @Nested
-    @DisplayName("The default JDBC sink - no column list, one parameter, bound as bytes")
+    @DisplayName("The default JDBC sink - no column list, one parameter, the configured "
+            + "representation")
     class JdbcSinkTests {
 
         @Test
@@ -1281,14 +1775,37 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("rejects a blank or absent dataset name, naming the property to set")
+        @DisplayName("an absent, empty or all-blank dataset name is rejected, naming the property to "
+                + "set (CREASTMT.JCL:L91 is the authoritative DSN, read through configuration)")
         void rejectsABlankDatasetName() {
-            assertThatIllegalStateException()
-                    .isThrownBy(() -> writerBoundTo("   ").insertStatement())
-                    .withMessageContaining("carddemo.datasets.STMTFILE.dsname");
+            // Three genuinely distinct shapes, and all three arms of the guard are driven here:
+            //   null    - the property is absent altogether, so the first condition short-circuits;
+            //   ""      - the property is present but carries nothing, which is the second condition
+            //             and the only way to reach it, since a non-empty value goes to the grammar;
+            //   "   "   - present and non-empty, so it reaches the dataset-name grammar and is refused
+            //             there instead, because a run of blanks is not a qualifier.
             assertThatIllegalStateException()
                     .isThrownBy(() -> writerBoundTo(null).insertStatement())
                     .withMessageContaining("carddemo.datasets.STMTFILE.dsname");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> writerBoundTo("").insertStatement())
+                    .withMessageContaining("carddemo.datasets.STMTFILE.dsname");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> writerBoundTo("   ").insertStatement())
+                    .withMessageContaining("carddemo.datasets.STMTFILE.dsname");
+
+            // And none of the three can reach the default sink either, so a misconfigured deployment
+            // cannot start writing records to a destination nobody named.
+            assertThatIllegalStateException().isThrownBy(() -> writerBoundTo(null).openOutput());
+            assertThatIllegalStateException().isThrownBy(() -> writerBoundTo("").openOutput());
+            assertThatIllegalStateException().isThrownBy(() -> writerBoundTo("   ").openOutput());
+
+            // An empty name still leaves the bean constructible and the geometry checked, exactly as a
+            // fixture-backed location does: the refusal is deferred to the one place that would compose
+            // the name into a statement, so the application context still starts (gate G3).
+            assertThat(writerBoundTo("").recordLength()).isEqualTo(EIGHTY);
+            assertThatCode(() -> writerBoundTo("").openOutput(new CollectingSink()))
+                    .doesNotThrowAnyException();
         }
 
         @Test
@@ -1310,7 +1827,8 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("binds the whole 80-byte record image through the configured representation")
+        @DisplayName("the whole 80-byte image is bound as one parameter in the configured "
+                + "representation (CBSTM03A.CBL:L45, carddemo.record-image.form)")
         void bindsTheRecordImageThroughTheConfiguredForm() throws SQLException {
             // The image reaches the driver as one parameter in one representation, and WHICH one is the
             // deployment's answer rather than this writer's. It used to be this writer's: it bound bytes
@@ -1390,7 +1908,8 @@ class StatementTextWriterTest {
     class EncodingTests {
 
         @Test
-        @DisplayName("encodes the same characters to different bytes under the two code pages")
+        @DisplayName("the same characters encode to different bytes under the two code pages, so the "
+                + "encoding is demonstrably the injected one (CBSTM03A.CBL:L102)")
         void encodesUnderTheInjectedCodePage() {
             CollectingSink ascii = new CollectingSink();
             CollectingSink ebcdic = new CollectingSink();
@@ -1411,12 +1930,53 @@ class StatementTextWriterTest {
         }
 
         @Test
-        @DisplayName("encodes an EBCDIC space as 0x40 where an ASCII space is 0x20")
+        @DisplayName("an EBCDIC space is 0x40 where an ASCII space is 0x20, across a whole reset line "
+                + "(CBSTM03A.CBL:L90-L92)")
         void encodesSpacesUnderBothCodePages() {
             CollectingSink ebcdic = new CollectingSink();
             writer(EBCDIC).openOutput(ebcdic).writeLine(StatementLine.ST_LINE1);
 
             assertThat(ebcdic.records.get(0)).containsOnly((byte) 0x40);
+        }
+
+        @Test
+        @DisplayName("the code page is the one the charset configuration resolves for "
+                + "carddemo.charset.dataset, so it is a configured value and never a platform default")
+        void takesTheCodePageTheConfigurationResolves() {
+            // Resolved the way the application resolves it - through the configuration class itself,
+            // from the property values the two profiles state - rather than by naming a Charset
+            // constant and hoping the two agree. application.yml states IBM037 because its bindings
+            // address the mainframe datasets; application-test.yml states US-ASCII because its bindings
+            // address the nine authoritative text fixtures.
+            Charset resolvedForFixtures =
+                    new CobolCharsetConfig("IBM037", "US-ASCII", "US-ASCII").carddemoDatasetCharset();
+            Charset resolvedForDatasets =
+                    new CobolCharsetConfig("IBM037", "US-ASCII", "IBM037").carddemoDatasetCharset();
+
+            assertThat(resolvedForFixtures).isEqualTo(ASCII);
+            assertThat(resolvedForDatasets).isEqualTo(EBCDIC);
+            assertThat(resolvedForDatasets)
+                    .as("the two profiles resolve genuinely different code pages")
+                    .isNotEqualTo(resolvedForFixtures);
+
+            // Whichever the profile resolved, that is the one the writer reports and encodes with.
+            assertThat(writer(resolvedForFixtures).datasetCharset()).isEqualTo(resolvedForFixtures);
+            assertThat(writer(resolvedForDatasets).datasetCharset()).isEqualTo(resolvedForDatasets);
+
+            CollectingSink underFixtureCodePage = new CollectingSink();
+            CollectingSink underDatasetCodePage = new CollectingSink();
+            writer(resolvedForFixtures).openOutput(underFixtureCodePage)
+                    .writeLine(StatementLine.ST_LINE13);
+            writer(resolvedForDatasets).openOutput(underDatasetCodePage)
+                    .writeLine(StatementLine.ST_LINE13);
+
+            assertThat(underFixtureCodePage.records.get(0)).hasSize(EIGHTY);
+            assertThat(underDatasetCodePage.records.get(0)).hasSize(EIGHTY);
+            assertThat(underFixtureCodePage.records.get(0))
+                    .as("a heading line encodes to different bytes under the two resolved code pages")
+                    .isNotEqualTo(underDatasetCodePage.records.get(0));
+            assertThat(underFixtureCodePage.decoded(resolvedForFixtures))
+                    .isEqualTo(underDatasetCodePage.decoded(resolvedForDatasets));
         }
     }
 

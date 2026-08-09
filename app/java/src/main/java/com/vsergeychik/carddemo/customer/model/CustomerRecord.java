@@ -1300,6 +1300,16 @@ public final class CustomerRecord {
      * primary-card-holder indicator and the FICO score stay legible: none identifies a person once the
      * identifier is masked, and they are what an account-update validation parity failure is read from.
      *
+     * <p>The three legible <em>character</em> fields still go through
+     * {@link SensitiveDiagnostics#plain(Object)} rather than being concatenated directly, and that is
+     * not decoration. They are {@code PIC X} spans holding whatever bytes the dataset holds, and neither
+     * this type nor the repositories validate their content - deliberately, since rejecting a stored
+     * value would be a behaviour change. A {@code CUST-ADDR-STATE-CD} carrying CR or LF concatenated
+     * raw would end this line early and forge a second log entry (CWE-117); routed through the policy
+     * helper, {@link DiagnosticText#singleLine(String)} escapes the control character as a COBOL hex
+     * literal instead, and nothing else about the value changes - a field rendered this way is still
+     * shown in full. The FICO score needs no such treatment: it is an {@code int} and cannot carry one.
+     *
      * <p>The earlier rationale here was that hiding these fields would be a behaviour change and would
      * defeat field-for-field diffing. Neither holds. It is not a behaviour change, because COBOL has no
      * {@code toString} and nothing the legacy program or the parity harness can observe is altered - the
@@ -1320,8 +1330,8 @@ public final class CustomerRecord {
                 + ", CUST-ADDR-LINE-1=" + SensitiveDiagnostics.describeText(custAddrLine1)
                 + ", CUST-ADDR-LINE-2=" + SensitiveDiagnostics.describeText(custAddrLine2)
                 + ", CUST-ADDR-LINE-3=" + SensitiveDiagnostics.describeText(custAddrLine3)
-                + ", CUST-ADDR-STATE-CD=[" + custAddrStateCd
-                + "], CUST-ADDR-COUNTRY-CD=[" + custAddrCountryCd
+                + ", CUST-ADDR-STATE-CD=[" + SensitiveDiagnostics.plain(custAddrStateCd)
+                + "], CUST-ADDR-COUNTRY-CD=[" + SensitiveDiagnostics.plain(custAddrCountryCd)
                 + "], CUST-ADDR-ZIP=" + SensitiveDiagnostics.describeText(custAddrZip)
                 + ", CUST-PHONE-NUM-1=" + SensitiveDiagnostics.describeText(custPhoneNum1)
                 + ", CUST-PHONE-NUM-2=" + SensitiveDiagnostics.describeText(custPhoneNum2)
@@ -1329,7 +1339,8 @@ public final class CustomerRecord {
                 + ", CUST-GOVT-ISSUED-ID=" + SensitiveDiagnostics.redacted()
                 + ", CUST-DOB-YYYY-MM-DD=" + SensitiveDiagnostics.describeText(custDobYyyyMmDd)
                 + ", CUST-EFT-ACCOUNT-ID=" + SensitiveDiagnostics.redacted()
-                + ", CUST-PRI-CARD-HOLDER-IND=[" + custPriCardHolderInd
+                + ", CUST-PRI-CARD-HOLDER-IND=["
+                + SensitiveDiagnostics.plain(custPriCardHolderInd)
                 + "], CUST-FICO-CREDIT-SCORE=" + custFicoCreditScore
                 + '}';
     }

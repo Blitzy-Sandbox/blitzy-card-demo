@@ -28,24 +28,18 @@ import com.vsergeychik.carddemo.statement.StatementHtmlWriter.JdbcHtmlRecordSink
 import com.vsergeychik.carddemo.statement.StatementHtmlWriter.TransactionField;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.DatasetRelation;
-import java.io.IOException;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -65,19 +59,81 @@ import org.springframework.jdbc.core.PreparedStatementSetter;
  * Behavioural-parity tests for {@link StatementHtmlWriter}, the owner of the 100-byte
  * {@code HTMLFILE} record of {@code app/cbl/CBSTM03A.CBL}.
  *
- * <p>Every assertion here is anchored to a line of the COBOL or of the JCL. Nothing runs a Spring
- * context, a {@code JobLauncher} or a filesystem write: the writer's sink is injected as a lambda
- * that collects the 100-byte images, so the bytes and their order are asserted directly (gate G51,
- * practice B10).
+ * <h2>Provenance of every expected value: static derivation, not a captured run</h2>
  *
- * <p>The literal catalogue is asserted twice over. First against expected values written out
- * independently in this file, and then - in {@link ObjectionableTranscription} - against
- * {@code app/cbl/CBSTM03A.CBL} itself, re-extracted from the source with the same fixed-format
- * continuation rule the COBOL compiler applies. The second check is what makes the first
- * trustworthy: a transcription error would have to be made identically in two places to survive.
+ * <p>Not one expectation in this file was captured from an execution of the legacy program. The
+ * COBOL cannot be run in this environment at all, for eight independently verified reasons - no
+ * z/OS runtime, indexed file support disabled in the only available compiler, subprogram linkage
+ * that cannot produce an executable, a copybook that will not parse, no Language Environment
+ * {@code CEE*} services, no CICS emulator, EBCDIC fixtures needing binary handling, and no
+ * alternative compiler installable. Every value below was therefore <strong>derived statically</strong>
+ * by reading the cited source line and applying the documented COBOL rule to it: the fixed-format
+ * continuation rule for a literal, the alphanumeric {@code MOVE} rule for a width change, the
+ * {@code STRING ... DELIMITED BY} rule for a composition, and the {@code PICTURE} clause for a
+ * width. Each test names the line it was derived from, so a reviewer can re-derive it by hand.
  *
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
- * governs this file either.
+ * <p>That is a real difference in kind, and it is stated rather than glossed: a captured
+ * expectation cannot encode a misreading, a derived one can. The mitigation is redundancy. Every
+ * literal is asserted against an expected value written out independently of the enum in
+ * {@link #expectedFixedLiterals()}, so a transcription slip has to be made identically twice to
+ * survive; and every continued literal is asserted a third time in {@link ContinuationRule} against
+ * its two source fragments joined by the compiler's own rule, so a slip has to be made three times
+ * in three different shapes.
+ *
+ * <h2>The reference tree is evidence, and is never touched at run time</h2>
+ *
+ * <p>{@code app/cbl}, {@code app/cpy}, {@code app/jcl}, {@code app/csd} and {@code app/data} are
+ * read-only evidence: they are the only oracle behavioural parity has, and this suite neither writes
+ * to them nor <em>reads</em> from them while it runs (practice B3, gate G5). There is no
+ * {@code Files.read}, no {@code Path.of}, no relative walk out of the Maven module and no
+ * {@code Assumptions.assumeTrue} guarding a file that may not be there - a check that can silently
+ * skip is not a check. The source was read while these tests were being written; what ships is the
+ * derived value together with the line it came from.
+ *
+ * <p>Nothing here runs a Spring context, a {@code JobLauncher} or an HTTP layer, and nothing touches
+ * a filesystem, a database or a network. The writer's sink is injected as a lambda that collects the
+ * 100-byte images, so the bytes and their order are asserted directly (gate G51, practice B10), and
+ * the run is deterministic: no clock, no locale, no default charset, no randomness and no order
+ * dependence between tests (practice B7, gate G54).
+ *
+ * <h2>The record is 100 bytes, not 80 (gate G20, risk R-G)</h2>
+ *
+ * <p>{@code app/jcl/CREASTMT.JCL} declares the {@code HTMLFILE} DD twice, with two different
+ * {@code LRECL}s. L69, in the {@code STEP030 EXEC PGM=IEFBR14,COND=(0,NE)} step that merely
+ * pre-deletes the previous run's report, says {@code DCB=(LRECL=80,BLKSIZE=3200,RECFM=FB)}. L94, in
+ * the {@code STEP040 EXEC PGM=CBSTM03A,COND=(0,NE)} step that actually <strong>creates</strong> the
+ * file, says {@code DCB=(LRECL=100,BLKSIZE=800,RECFM=FB)}. The creating step is authoritative, and
+ * {@code app/cbl/CBSTM03A.CBL:L47} settles it independently with
+ * {@code 01 FD-HTMLFILE-REC PIC X(100)}. The conflict is recorded here rather than reconciled: 80 is
+ * never used, and no average or first-wins rule is applied (practice B4).
+ *
+ * <h2>Two charsets that must never be conflated</h2>
+ *
+ * <p>{@code HTML-L04} is the literal {@code <meta charset="utf-8">}. That is <em>payload text</em> -
+ * a byte sequence transcribed from a COBOL {@code VALUE} clause, describing how a browser should
+ * later read the finished document. It says nothing whatsoever about how the dataset is encoded. The
+ * dataset code page is a separate, injected {@link Charset} from {@code config/CobolCharsetConfig},
+ * and it is what the 100 bytes are actually written in. {@link DatasetCodePageIsNotThePayloadCharset}
+ * exists to hold those two apart, because collapsing them is a plausible-looking mistake that would
+ * change every byte of every record.
+ *
+ * <h2>User-specified rules</h2>
+ *
+ * <p><strong>{@code review_rules} returns exactly one line - "No user rules provided." - and that
+ * single line is the entire document, so no user rule governs this file.</strong> Their absence is
+ * not licence to lower the bar. The twelve enterprise practices of the migration plan bind in their
+ * place, and the ones bearing on this suite are cited inline throughout: B1 (only the test libraries
+ * already on the closed classpath - JUnit Jupiter, Mockito, AssertJ - with no coordinate, version or
+ * {@code pom.xml} edit), B2 (no {@code spring-batch-test}, which is not in the dependency set, and no
+ * application context), B3 (the reference tree is never read or written at run time), B4 (this file is
+ * the only artefact added, and conflicts are documented rather than silently resolved), B5 (the
+ * declared-but-unwritten {@code HTML-L23} group and the never-selected {@code HTML-LTDS} literal are
+ * both asserted to survive untouched), B6 (nothing security-related, and no escaping or masking is
+ * introduced), B7 (deterministic and non-interactive), B8 (the charset is always named, imports are
+ * explicit with no wildcard, and no mainframe dataset-name literal appears here), B9 (no mutable
+ * static state; a fresh writer and a fresh handle per test), B11 (offsets and widths asserted by hand,
+ * with no COBOL or copybook parser) and B12 (statically derived expectations, escalated as such rather
+ * than presented as captured).
  */
 @DisplayName("StatementHtmlWriter - the 100-byte HTMLFILE record of CBSTM03A")
 class StatementHtmlWriterTest {
@@ -141,11 +197,40 @@ class StatementHtmlWriterTest {
      */
     private static StatementHtmlWriter newWriter(final JdbcTemplate template, final int recordLength,
                                                  final String dsname, final RecordImageForm form) {
+        return new StatementHtmlWriter(template, StandardCharsets.US_ASCII,
+                bindingsFor(dsname, recordLength), form);
+    }
+
+    /**
+     * A synthetic {@code carddemo.datasets} catalogue holding only the {@code HTMLFILE} binding, at
+     * the correct 100-byte width.
+     *
+     * <p>Built in memory rather than loaded from {@code application-test.yml}, so no Spring context
+     * is involved (gate G51, practice B2) and no mainframe dataset name enters this file (gate G46).
+     *
+     * @param dsname the dataset name the binding will declare
+     * @return the catalogue
+     */
+    private static DatasetBindings bindingsFor(final String dsname) {
+        return bindingsFor(dsname, StatementHtmlWriter.RECORD_LENGTH);
+    }
+
+    /**
+     * A synthetic {@code carddemo.datasets} catalogue holding only the {@code HTMLFILE} binding.
+     *
+     * <p>The record length is a parameter because the constructor's width guard - the mechanical
+     * enforcement of gate G20 - has to be driven with the wrong width as well as the right one.
+     *
+     * @param dsname       the dataset name the binding will declare
+     * @param recordLength the record length the binding will declare
+     * @return the catalogue
+     */
+    private static DatasetBindings bindingsFor(final String dsname, final int recordLength) {
         DatasetBindings bindings = new DatasetBindings();
         bindings.put(StatementHtmlWriter.HTMLFILE_DD_NAME, new DatasetBinding(
                 dsname, "sequential", false, "FB", StatementHtmlWriter.BLOCK_SIZE, recordLength,
                 null, null, null, null, null));
-        return new StatementHtmlWriter(template, StandardCharsets.US_ASCII, bindings, form);
+        return bindings;
     }
 
     /**
@@ -238,6 +323,38 @@ class StatementHtmlWriterTest {
         void theCharsetIsTheInjectedOne() {
             Charset charset = StatementHtmlWriterTest.this.writer.datasetCharset();
             assertThat(charset).isEqualTo(StandardCharsets.US_ASCII);
+        }
+
+        @Test
+        @DisplayName("The dataset is addressed by the HTMLFILE binding key - CBSTM03A.CBL:L40, gate G46")
+        void theDatasetIsAddressedByItsBindingKey() {
+            // CBSTM03A.CBL:L40 declares SELECT HTML-FILE ASSIGN TO HTMLFILE, and CREASTMT.JCL names
+            // the same DD at L67 and L92. The key is carried verbatim, in the upper case both the JCL
+            // and application.yml use, so configuration can be diffed against JCL line by line.
+            assertThat(StatementHtmlWriter.HTMLFILE_DD_NAME).isEqualTo("HTMLFILE");
+            assertThat(StatementHtmlWriterTest.this.writer.datasetBinding().dsname())
+                    .isEqualTo(TEST_DSNAME);
+        }
+
+        @Test
+        @DisplayName("No mainframe dataset name is known to this suite: it comes from configuration")
+        void noMainframeDatasetNameIsKnownHere() {
+            // Gate G46: the real name lives only in application.yml, as
+            // carddemo.datasets.HTMLFILE.dsname. This suite supplies a synthetic one, and the writer
+            // reports back exactly what it was configured with - it neither defaults nor rewrites it.
+            assertThat(TEST_DSNAME).doesNotContain("CARDDEMO").doesNotStartWith("AWS.");
+            assertThat(StatementHtmlWriterTest.this.writer.datasetBinding().dsname())
+                    .doesNotContain("CARDDEMO");
+        }
+
+        @Test
+        @DisplayName("The COBOL names of the record area and the four lines are carried verbatim")
+        void theCobolLineNamesAreCarriedVerbatim() {
+            assertThat(StatementHtmlWriter.RECORD_AREA_NAME).isEqualTo("FD-HTMLFILE-REC");
+            assertThat(StatementHtmlWriter.FIXED_LINE_NAME).isEqualTo("HTML-FIXED-LN");
+            assertThat(StatementHtmlWriter.ADDRESS_LINE_NAME).isEqualTo("HTML-ADDR-LN");
+            assertThat(StatementHtmlWriter.BASIC_LINE_NAME).isEqualTo("HTML-BSIC-LN");
+            assertThat(StatementHtmlWriter.TRANSACTION_LINE_NAME).isEqualTo("HTML-TRAN-LN");
         }
     }
 
@@ -337,6 +454,83 @@ class StatementHtmlWriterTest {
         void aNullCobolNameIsRejected() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> HtmlFixedLine.ofCobolName(null));
+        }
+
+        @Test
+        @DisplayName("HTML-L22-35 is ONE value written at L551 and again at L610, not two values")
+        void htmlL22To35IsOneValueEmittedAtTwoPoints() {
+            // The compound COBOL name records the reuse: output line 22, in 5100-WRITE-HTML-HEADER,
+            // and output line 35, in 5200-WRITE-HTML-NMADBS, are the same literal. There is therefore
+            // exactly one constant, and emitting it twice must produce two identical records.
+            assertThat(HtmlFixedLine.isDeclared("HTML-L22")).isFalse();
+            assertThat(HtmlFixedLine.isDeclared("HTML-L35")).isFalse();
+            assertThat(HtmlFixedLine.isDeclared("HTML-L22-35")).isTrue();
+
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L22_35);
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L22_35);
+
+            List<String> records = StatementHtmlWriterTest.this.allRecordText();
+            assertThat(records).hasSize(2);
+            assertThat(records.get(1)).isEqualTo(records.get(0));
+            assertThat(records.get(0)).isEqualTo(padded(HtmlFixedLine.HTML_L22_35.literal()));
+        }
+
+        @Test
+        @DisplayName("HTML-L30-42 is ONE value written at L600 and again at L640, not two values")
+        void htmlL30To42IsOneValueEmittedAtTwoPoints() {
+            assertThat(HtmlFixedLine.isDeclared("HTML-L30")).isFalse();
+            assertThat(HtmlFixedLine.isDeclared("HTML-L42")).isFalse();
+            assertThat(HtmlFixedLine.isDeclared("HTML-L30-42")).isTrue();
+
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L30_42);
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L30_42);
+
+            List<String> records = StatementHtmlWriterTest.this.allRecordText();
+            assertThat(records).hasSize(2);
+            assertThat(records.get(1)).isEqualTo(records.get(0));
+            assertThat(records.get(0)).isEqualTo(padded(HtmlFixedLine.HTML_L30_42.literal()));
+        }
+
+        @Test
+        @DisplayName("HTML-L10 is reused too, at L441 in the footer and L526 in the header")
+        void htmlL10IsAlsoReused() {
+            // Not flagged by the compound-name convention, because its name carries a single number,
+            // but the program does SET HTML-L10 TO TRUE twice: at L526 in 5100-WRITE-HTML-HEADER and
+            // at L441 in the eight-record footer. One constant, two emission points, same bytes.
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L10);
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L10);
+
+            List<String> records = StatementHtmlWriterTest.this.allRecordText();
+            assertThat(records.get(1)).isEqualTo(records.get(0));
+            assertThat(records.get(0))
+                    .isEqualTo(padded("<td colspan=\"3\" style=\"padding:0px 5px;"
+                            + "background-color:#1d1d96b3;\">"));
+        }
+
+        @Test
+        @DisplayName("HTML-LTDS survives although CBSTM03A never selects it - practice B5")
+        void htmlLtdsSurvivesAlthoughNeverSelected() {
+            // The declaration at CBSTM03A.CBL:L161 has no SET HTML-LTDS TO TRUE anywhere in the
+            // program's 925 lines - it is the only one of the thirty-four with no write site, and its
+            // paired HTML-LTDE has thirteen. Dead-but-declared code is preserved, not tidied away
+            // (practice B5), so the constant stays declared, resolvable and correct. What is NOT done
+            // is giving it a write site: this test emits it to prove the value is right, which is a
+            // test emitting a record, not the translated program acquiring one.
+            assertThat(HtmlFixedLine.isDeclared("HTML-LTDS")).isTrue();
+            assertThat(HtmlFixedLine.ofCobolName("HTML-LTDS")).isSameAs(HtmlFixedLine.HTML_LTDS);
+            assertThat(HtmlFixedLine.HTML_LTDS.literal()).isEqualTo("<td>");
+            assertThat(HtmlFixedLine.HTML_LTDE.literal()).isEqualTo("</td>");
+
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_LTDS);
+
+            assertThat(StatementHtmlWriterTest.this.lastRecordText()).isEqualTo(padded("<td>"));
         }
     }
 
@@ -442,6 +636,80 @@ class StatementHtmlWriterTest {
                             assertThat(record).hasSize(StatementHtmlWriter.RECORD_LENGTH));
             assertThat(handle.recordsWritten()).isEqualTo(12L);
         }
+
+        @Test
+        @DisplayName("One call emits exactly ONE record: nothing is ever wrapped onto a second")
+        void oneCallEmitsExactlyOneRecord() {
+            StatementHtmlWriter local = StatementHtmlWriterTest.this.writer;
+            HtmlStatementFile handle = StatementHtmlWriterTest.this.file;
+
+            // The widest content each shape can carry, so if anything were going to spill onto a
+            // second record it would be here. Every call must still produce exactly one.
+            local.writeFixedLine(handle, HtmlFixedLine.HTML_L08);
+            assertThat(StatementHtmlWriterTest.this.emitted).hasSize(1);
+
+            local.writeAccountHeading(handle, "9".repeat(20));
+            assertThat(StatementHtmlWriterTest.this.emitted).hasSize(2);
+
+            local.writeNameLine(handle, "N".repeat(75));
+            assertThat(StatementHtmlWriterTest.this.emitted).hasSize(3);
+
+            local.writeAddressLine(handle, AddressField.ADDRESS_LINE_3, "C".repeat(80));
+            assertThat(StatementHtmlWriterTest.this.emitted).hasSize(4);
+
+            local.writeBasicDetail(handle, BasicDetail.ACCOUNT_ID, "A".repeat(20));
+            assertThat(StatementHtmlWriterTest.this.emitted).hasSize(5);
+
+            local.writeTransactionField(handle, TransactionField.TRAN_DETAILS, "D".repeat(49));
+            assertThat(StatementHtmlWriterTest.this.emitted).hasSize(6);
+
+            assertThat(StatementHtmlWriterTest.this.emitted)
+                    .allSatisfy(record ->
+                            assertThat(record).hasSize(StatementHtmlWriter.RECORD_LENGTH));
+            assertThat(handle.recordsWritten()).isEqualTo(6L);
+        }
+
+        @Test
+        @DisplayName("No shape can overflow 100: the widest is the 80-byte third address line at 89")
+        void noShapeCanOverflowTheRecord() {
+            // The reason nothing is ever wrapped is arithmetic, not luck, so the arithmetic is stated
+            // rather than left implicit. Each shape's widest possible composition, derived from the
+            // declared widths in CBSTM03A.CBL's STATEMENT-LINES group and the literal operands of its
+            // STRING statements:
+            int nameLine = StatementHtmlWriter.STYLED_PARAGRAPH_OPEN_TAG.length()   // 26
+                    + StatementHtmlWriter.L23_NAME_LENGTH                          // 50
+                    + StatementHtmlWriter.TWO_SPACE_SEPARATOR.length()             //  2
+                    + StatementHtmlWriter.PARAGRAPH_CLOSE_TAG.length();            //  4  = 82
+            int widestAddress = StatementHtmlWriter.PARAGRAPH_OPEN_TAG.length()     //  3
+                    + AddressField.ADDRESS_LINE_3.declaredLength()                 // 80
+                    + StatementHtmlWriter.TWO_SPACE_SEPARATOR.length()             //  2
+                    + StatementHtmlWriter.PARAGRAPH_CLOSE_TAG.length();            //  4  = 89
+            int widestBasicDetail = BasicDetail.ACCOUNT_ID.label().length()         // 24
+                    + BasicDetail.ACCOUNT_ID.declaredLength()                      // 20
+                    + StatementHtmlWriter.PARAGRAPH_CLOSE_TAG.length();            //  4  = 48
+            int widestTransaction = StatementHtmlWriter.PARAGRAPH_OPEN_TAG.length() //  3
+                    + TransactionField.TRAN_DETAILS.declaredLength()               // 49
+                    + StatementHtmlWriter.PARAGRAPH_CLOSE_TAG.length();            //  4  = 56
+
+            assertThat(nameLine).isEqualTo(82);
+            assertThat(widestAddress).isEqualTo(89);
+            assertThat(widestBasicDetail).isEqualTo(48);
+            assertThat(widestTransaction).isEqualTo(56);
+            assertThat(StatementHtmlWriter.HTML_L11_LENGTH).isEqualTo(59);
+
+            // The widest of all five, and the widest fixed literal, both fit with room to spare - so
+            // right-truncation at 100 is a stated invariant of this writer rather than a live path,
+            // and there is no input a caller can supply that reaches it.
+            int widestShape = Math.max(Math.max(nameLine, widestAddress),
+                    Math.max(widestBasicDetail, widestTransaction));
+            assertThat(widestShape).isEqualTo(89)
+                    .isLessThan(StatementHtmlWriter.RECORD_LENGTH);
+            for (HtmlFixedLine line : HtmlFixedLine.values()) {
+                assertThat(line.literalLength())
+                        .as("literal %s must fit the PIC X(100) it is SET into", line.cobolName())
+                        .isLessThanOrEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+            }
+        }
     }
 
     // =============================================================================================
@@ -508,6 +776,35 @@ class StatementHtmlWriterTest {
             // fall through the inner-loop mismatch break at every one of them.
             assertThat(StatementHtmlWriter.delimitedBy("X Y Z ",
                     StatementHtmlWriter.TWO_SPACE_DELIMITER)).isEqualTo("X Y Z ");
+        }
+
+        @Test
+        @DisplayName("A run at the very last scannable position is still found, not missed")
+        void aRunAtTheLastPositionIsStillFound() {
+            // The scan's final candidate start is length - delimiter length. 'ABC  ' puts the
+            // two-space run exactly there, so this is the boundary case that separates a correct
+            // left-to-right scan from one that stops an index early and silently transfers the
+            // delimiter itself.
+            assertThat(StatementHtmlWriter.delimitedBy("ABC  ",
+                    StatementHtmlWriter.TWO_SPACE_DELIMITER)).isEqualTo("ABC");
+            // One character shorter, so the run is incomplete and nothing is found.
+            assertThat(StatementHtmlWriter.delimitedBy("ABC ",
+                    StatementHtmlWriter.TWO_SPACE_DELIMITER)).isEqualTo("ABC ");
+            // A run at the very first position transfers nothing at all.
+            assertThat(StatementHtmlWriter.delimitedBy("  ABC",
+                    StatementHtmlWriter.TWO_SPACE_DELIMITER)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("A delimiter longer than one character is matched as a SEQUENCE, not per byte")
+        void aMultiCharacterDelimiterIsMatchedAsASequence() {
+            // COBOL looks for the delimiter as a character sequence at every position. A per-character
+            // search would stop at the first space of 'A B  C' and yield 'A', which is a different
+            // program - so the distinction is asserted rather than assumed.
+            assertThat(StatementHtmlWriter.delimitedBy("A B  C",
+                    StatementHtmlWriter.TWO_SPACE_DELIMITER)).isEqualTo("A B");
+            assertThat(StatementHtmlWriter.delimitedBy("A B  C",
+                    StatementHtmlWriter.TWO_SPACE_DELIMITER)).isNotEqualTo("A");
         }
 
         @Test
@@ -912,6 +1209,66 @@ class StatementHtmlWriterTest {
             assertThat(StatementHtmlWriterTest.this.lastRecordText()).isEqualTo(padded(
                     "<h3>Statement for Account Number: " + "9".repeat(20) + "</h3>"));
         }
+
+        @Test
+        @DisplayName("The three spans sit at absolute offsets 0..33, 34..53 and 54..58 - L213-L216")
+        void theThreeSpansSitAtTheirDeclaredOffsets() {
+            // Asserted as offsets rather than only through the composed text, because an offset is
+            // what a copybook actually declares and a dropped FILLER shifts every byte after it while
+            // still producing text that looks plausible (practice B11, gate G21).
+            List<FieldSpan> spans = StatementHtmlWriter.HTML_L11_LAYOUT.spans();
+            assertThat(spans).hasSize(3);
+
+            FieldSpan leadingFiller = spans.get(0);
+            assertThat(leadingFiller.name()).isEqualTo("FILLER");
+            assertThat(leadingFiller.offset()).isZero();
+            assertThat(leadingFiller.length()).isEqualTo(34);
+            assertThat(leadingFiller.endOffsetExclusive()).isEqualTo(34);
+            assertThat(leadingFiller.initialValue())
+                    .isEqualTo(StatementHtmlWriter.ACCOUNT_HEADING_PREFIX);
+
+            FieldSpan account = spans.get(1);
+            assertThat(account.name()).isEqualTo(StatementHtmlWriter.L11_ACCT_FIELD_NAME);
+            assertThat(account.offset()).isEqualTo(34);
+            assertThat(account.length()).isEqualTo(StatementHtmlWriter.L11_ACCT_LENGTH);
+            assertThat(account.endOffsetExclusive()).isEqualTo(54);
+
+            FieldSpan trailingFiller = spans.get(2);
+            assertThat(trailingFiller.name()).isEqualTo("FILLER");
+            assertThat(trailingFiller.offset()).isEqualTo(54);
+            assertThat(trailingFiller.length()).isEqualTo(5);
+            assertThat(trailingFiller.endOffsetExclusive())
+                    .isEqualTo(StatementHtmlWriter.HTML_L11_LENGTH);
+            assertThat(trailingFiller.initialValue())
+                    .isEqualTo(StatementHtmlWriter.ACCOUNT_HEADING_SUFFIX);
+
+            // The spans are contiguous from zero and total exactly 59: no gap, no overlap, nothing
+            // dropped. Both FILLERs are storage, and there is no REDEFINES anywhere in this group.
+            assertThat(StatementHtmlWriter.HTML_L11_LAYOUT.storageSpans()).hasSize(3);
+            assertThat(StatementHtmlWriter.HTML_L11_LAYOUT.redefinitions()).isEmpty();
+            assertThat(StatementHtmlWriter.HTML_L11_LAYOUT.span(
+                    StatementHtmlWriter.L11_ACCT_FIELD_NAME).offset()).isEqualTo(34);
+        }
+
+        @Test
+        @DisplayName("The emitted record carries those spans at those offsets, then 41 pad bytes")
+        void theEmittedRecordCarriesTheSpansAtTheirOffsets() {
+            StatementHtmlWriterTest.this.writer.writeAccountHeading(
+                    StatementHtmlWriterTest.this.file, "00000000011");
+
+            String record = StatementHtmlWriterTest.this.lastRecordText();
+            assertThat(record).hasSize(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(record.substring(0, 34))
+                    .isEqualTo(StatementHtmlWriter.ACCOUNT_HEADING_PREFIX);
+            assertThat(record.substring(34, 54)).isEqualTo("00000000011         ");
+            assertThat(record.substring(54, 59))
+                    .isEqualTo(StatementHtmlWriter.ACCOUNT_HEADING_SUFFIX);
+            // WRITE ... FROM HTML-L11 at L530 moves a 59-byte group into a 100-byte record area, so
+            // bytes 59..99 are the receiver's own padding - 41 of them.
+            assertThat(record.substring(59))
+                    .isEqualTo(String.valueOf(SPACE).repeat(41))
+                    .hasSize(41);
+        }
     }
 
     // =============================================================================================
@@ -969,6 +1326,322 @@ class StatementHtmlWriterTest {
         void aNullNameIsRejected() {
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                     () -> StatementHtmlWriterTest.this.writer.composeNameParagraphGroup(null));
+        }
+
+        @Test
+        @DisplayName("The two spans sit at absolute offsets 0..25 and 26..75 - L218-L220")
+        void theTwoSpansSitAtTheirDeclaredOffsets() {
+            List<FieldSpan> spans = StatementHtmlWriter.HTML_L23_LAYOUT.spans();
+            assertThat(spans).hasSize(2);
+
+            FieldSpan filler = spans.get(0);
+            assertThat(filler.name()).isEqualTo("FILLER");
+            assertThat(filler.offset()).isZero();
+            assertThat(filler.length()).isEqualTo(26);
+            assertThat(filler.endOffsetExclusive()).isEqualTo(26);
+            assertThat(filler.initialValue())
+                    .isEqualTo(StatementHtmlWriter.STYLED_PARAGRAPH_OPEN_TAG);
+
+            FieldSpan name = spans.get(1);
+            assertThat(name.name()).isEqualTo(StatementHtmlWriter.L23_NAME_FIELD_NAME);
+            assertThat(name.offset()).isEqualTo(26);
+            assertThat(name.length()).isEqualTo(StatementHtmlWriter.L23_NAME_LENGTH);
+            assertThat(name.endOffsetExclusive()).isEqualTo(StatementHtmlWriter.HTML_L23_LENGTH);
+
+            // Unlike HTML-L11, this group has no trailing FILLER: it ends with L23-NAME, which is why
+            // its 76 bytes contain no '</p>' at all.
+            assertThat(StatementHtmlWriter.HTML_L23_LENGTH).isEqualTo(26 + 50);
+        }
+
+        @Test
+        @DisplayName("Materialising the group emits NOTHING: CBSTM03A never writes it - practice B5")
+        void materialisingTheGroupEmitsNoRecord() {
+            // This is the assertion that actually enforces B5 for this group. CBSTM03A declares
+            // HTML-L23 at L217-L220 and then never touches it: the token appears on exactly one line
+            // of the whole program, its own declaration. There is no SET, no MOVE and no WRITE of it.
+            // So materialising it must be an entirely passive operation - it produces 76 bytes for a
+            // caller to inspect and puts NO record on the file.
+            byte[] group = StatementHtmlWriterTest.this.writer
+                    .composeNameParagraphGroup("MARGARET GOLD");
+
+            assertThat(group).hasSize(StatementHtmlWriter.HTML_L23_LENGTH);
+            assertThat(StatementHtmlWriterTest.this.emitted).isEmpty();
+            assertThat(StatementHtmlWriterTest.this.file.recordsWritten()).isZero();
+            // Composing it repeatedly still emits nothing, and the handle stays open and untouched.
+            StatementHtmlWriterTest.this.writer.composeNameParagraphGroup("A");
+            StatementHtmlWriterTest.this.writer.composeNameParagraphGroup("");
+            assertThat(StatementHtmlWriterTest.this.emitted).isEmpty();
+            assertThat(StatementHtmlWriterTest.this.file.isOpen()).isTrue();
+        }
+
+        @Test
+        @DisplayName("No public operation emits the group, and none can: every record is 100 bytes")
+        void noPublicOperationEmitsTheGroup() {
+            // Two independent guarantees, because B5 is about what the translated program does NOT do
+            // and an absence is easy to lose by accident.
+            //
+            // First: the writer exposes no group-emitting operation. Every emit method is named
+            // write* and takes the handle as its first parameter; composeNameParagraphGroup is the
+            // only public operation that mentions the group, it takes no handle, and it returns the
+            // bytes instead of writing them. So there is no writeNameGroup, and adding one would show
+            // up here.
+            List<String> emitOperations = new ArrayList<>();
+            for (Method method : StatementHtmlWriter.class.getDeclaredMethods()) {
+                if (method.getName().startsWith("write")) {
+                    emitOperations.add(method.getName());
+                }
+            }
+            assertThat(emitOperations)
+                    .isNotEmpty()
+                    .containsExactlyInAnyOrder("writeFixedLine", "writeAccountHeading",
+                            "writeNameLine", "writeAddressLine", "writeBasicDetail",
+                            "writeTransactionField", "writeFrom");
+            // Both spellings tested literally rather than through toLowerCase(), which consults the
+            // default locale and would make this assertion locale-dependent (practice B7).
+            assertThat(emitOperations)
+                    .noneMatch(name -> name.contains("Group") || name.contains("group"));
+
+            // Second: even if one existed, a 76-byte record is not representable. The record area is
+            // allocated at exactly RECORD_LENGTH and every emitted image is that wide, so the group's
+            // declared width can never be a record width.
+            StatementHtmlWriterTest.this.writer.writeNameLine(
+                    StatementHtmlWriterTest.this.file, "MARGARET GOLD");
+            assertThat(StatementHtmlWriterTest.this.emitted).hasSize(1);
+            assertThat(StatementHtmlWriterTest.this.emitted.get(0))
+                    .hasSize(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(StatementHtmlWriter.HTML_L23_LENGTH)
+                    .isNotEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+        }
+    }
+
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("MOVE SPACES clears each scratch line - CBSTM03A.CBL:L561, L569, L613, L686")
+    class ScratchBufferClearing {
+
+        /**
+         * The three scratch lines of {@code app/cbl/CBSTM03A.CBL:L221-L223} are each
+         * {@code PIC X(100)} and each is reused for several records. COBOL's {@code STRING} overlays
+         * from the receiver's leftmost position and leaves everything beyond the last transferred
+         * character exactly as it found it - which is precisely why every one of the ten
+         * {@code STRING} sites in the program is preceded by an explicit {@code MOVE SPACES}.
+         *
+         * <p>Each test below writes a LONG composition and then a SHORTER one through the same
+         * buffer. Without the clear, the tail of the first record would still be sitting in the
+         * buffer and would leak into the second - the classic stale-tail defect, and one that only
+         * ever shows up from the second record of a run onwards, which is why a freshly allocated
+         * buffer is not evidence of anything.
+         */
+        @Test
+        @DisplayName("HTML-ADDR-LN: a 59-character line then a 10-character one leaves no tail")
+        void theAddressLineIsClearedBetweenRecords() {
+            StatementHtmlWriter local = StatementHtmlWriterTest.this.writer;
+            HtmlStatementFile handle = StatementHtmlWriterTest.this.file;
+
+            // 3 + 50 + 2 + 4 = 59 characters of content.
+            local.writeAddressLine(handle, AddressField.ADDRESS_LINE_1, "L".repeat(50));
+            // 3 + 1 + 2 + 4 = 10 characters of content.
+            local.writeAddressLine(handle, AddressField.ADDRESS_LINE_1, "X");
+
+            List<String> records = StatementHtmlWriterTest.this.allRecordText();
+            assertThat(records.get(0)).isEqualTo(padded("<p>" + "L".repeat(50) + "  </p>"));
+            assertThat(records.get(1))
+                    .isEqualTo(padded("<p>X  </p>"))
+                    .doesNotContain("L");
+            assertThat(handle.addressLine().readString(10, 90))
+                    .isEqualTo(String.valueOf(SPACE).repeat(90));
+        }
+
+        @Test
+        @DisplayName("HTML-BSIC-LN: a 48-character line then a 41-character one leaves no tail")
+        void theBasicLineIsClearedBetweenRecords() {
+            StatementHtmlWriter local = StatementHtmlWriterTest.this.writer;
+            HtmlStatementFile handle = StatementHtmlWriterTest.this.file;
+
+            // 24 + 20 + 4 = 48 characters of content.
+            local.writeBasicDetail(handle, BasicDetail.ACCOUNT_ID, "9".repeat(20));
+            // 24 + 13 + 4 = 41 characters of content - seven shorter, so seven bytes could leak.
+            local.writeBasicDetail(handle, BasicDetail.CURRENT_BALANCE, "000000012.34-");
+
+            List<String> records = StatementHtmlWriterTest.this.allRecordText();
+            assertThat(records.get(0)).isEqualTo(
+                    padded("<p>Account ID         : " + "9".repeat(20) + "</p>"));
+            assertThat(records.get(1))
+                    .isEqualTo(padded("<p>Current Balance    : 000000012.34-</p>"))
+                    .doesNotContain("9999");
+            assertThat(handle.basicLine().readString(41, 59))
+                    .isEqualTo(String.valueOf(SPACE).repeat(59));
+        }
+
+        @Test
+        @DisplayName("HTML-TRAN-LN: a 56-character line then a 20-character one leaves no tail")
+        void theTransactionLineIsClearedBetweenRecords() {
+            StatementHtmlWriter local = StatementHtmlWriterTest.this.writer;
+            HtmlStatementFile handle = StatementHtmlWriterTest.this.file;
+
+            // 3 + 49 + 4 = 56 characters of content.
+            local.writeTransactionField(handle, TransactionField.TRAN_DETAILS, "D".repeat(49));
+            // 3 + 13 + 4 = 20 characters of content - thirty-six shorter. The amount is the already
+            // edited 13-character image of PIC Z(9).99-: nine digit positions with the leading zeros
+            // suppressed to spaces, the point, two more digits, and a blank sign position.
+            local.writeTransactionField(handle, TransactionField.TRAN_AMOUNT, "       12.34 ");
+
+            List<String> records = StatementHtmlWriterTest.this.allRecordText();
+            assertThat(records.get(0)).isEqualTo(padded("<p>" + "D".repeat(49) + "</p>"));
+            assertThat(records.get(1))
+                    .isEqualTo(padded("<p>       12.34 </p>"))
+                    .doesNotContain("D");
+            assertThat(handle.transactionLine().readString(20, 80))
+                    .isEqualTo(String.valueOf(SPACE).repeat(80));
+        }
+
+        @Test
+        @DisplayName("The three buffers are independent: writing one never disturbs another")
+        void theThreeBuffersAreIndependent() {
+            StatementHtmlWriter local = StatementHtmlWriterTest.this.writer;
+            HtmlStatementFile handle = StatementHtmlWriterTest.this.file;
+
+            local.writeAddressLine(handle, AddressField.ADDRESS_LINE_1, "ADDRESS");
+            local.writeBasicDetail(handle, BasicDetail.FICO_SCORE, "700");
+            local.writeTransactionField(handle, TransactionField.TRAN_ID, "TRAN0000000000001");
+
+            // Each buffer still holds its own last composition, and each is exactly what was emitted.
+            assertThat(handle.addressLine().readString(0, StatementHtmlWriter.RECORD_LENGTH))
+                    .isEqualTo(padded("<p>ADDRESS  </p>"));
+            assertThat(handle.basicLine().readString(0, StatementHtmlWriter.RECORD_LENGTH))
+                    .isEqualTo(padded("<p>FICO Score         : 700"
+                            + String.valueOf(SPACE).repeat(17) + "</p>"));
+            assertThat(handle.transactionLine().readString(0, StatementHtmlWriter.RECORD_LENGTH))
+                    .isEqualTo(padded("<p>TRAN000000000000</p>"));
+        }
+
+        @Test
+        @DisplayName("Every buffer is 100 bytes wide - CBSTM03A.CBL:L47, L149, L221-L223")
+        void everyBufferIsOneHundredBytesWide() {
+            HtmlStatementFile handle = StatementHtmlWriterTest.this.file;
+
+            assertThat(handle.recordArea().recordLength())
+                    .isEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(handle.fixedLine().recordLength())
+                    .isEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(handle.addressLine().recordLength())
+                    .isEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(handle.basicLine().recordLength())
+                    .isEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(handle.transactionLine().recordLength())
+                    .isEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+            // The one exception, and it is declared as one: HTML-L11 is a 59-byte group, not a
+            // PIC X(100) line, and the WRITE ... FROM is what pads it.
+            assertThat(handle.accountHeadingLine().recordLength())
+                    .isEqualTo(StatementHtmlWriter.HTML_L11_LENGTH);
+        }
+    }
+
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The dataset code page is not the payload's charset declaration - practice B8")
+    class DatasetCodePageIsNotThePayloadCharset {
+
+        /** A single-byte EBCDIC code page, the one {@code application.yml} names for the datasets. */
+        private static final String EBCDIC_CODE_PAGE = "IBM037";
+
+        @Test
+        @DisplayName("HTML-L04 declares utf-8 as CONTENT: CBSTM03A.CBL:L153, transcribed not obeyed")
+        void theMetaCharsetIsContentNotConfiguration() {
+            // The literal is a byte sequence transcribed from a COBOL VALUE clause. It tells a browser
+            // how to read the finished document later; it says nothing about how this dataset is
+            // encoded, and this class must not read it as configuration.
+            assertThat(HtmlFixedLine.HTML_L04.literal()).isEqualTo("<meta charset=\"utf-8\">");
+            assertThat(StatementHtmlWriterTest.this.writer.datasetCharset())
+                    .isEqualTo(StandardCharsets.US_ASCII)
+                    .isNotEqualTo(StandardCharsets.UTF_8);
+        }
+
+        @Test
+        @DisplayName("The same literal is written in the INJECTED code page, not in the one it names")
+        void theRecordIsWrittenInTheInjectedCodePage() {
+            Charset ebcdic = Charset.forName(EBCDIC_CODE_PAGE);
+            List<byte[]> ebcdicRecords = new ArrayList<>();
+            StatementHtmlWriter ebcdicWriter = new StatementHtmlWriter(
+                    mock(JdbcTemplate.class), ebcdic, bindingsFor(TEST_DSNAME),
+                    RecordImageForm.CHARACTER);
+            HtmlStatementFile ebcdicFile = ebcdicWriter.open(record -> {
+                ebcdicRecords.add(record);
+                return FileStatus.OK;
+            });
+
+            ebcdicWriter.writeFixedLine(ebcdicFile, HtmlFixedLine.HTML_L04);
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L04);
+
+            byte[] asEbcdic = ebcdicRecords.get(0);
+            byte[] asAscii = StatementHtmlWriterTest.this.emitted.get(0);
+
+            // Same 100 bytes of content, two different code pages, two different byte images. Both
+            // decode back to the identical literal under their own charset - which is the whole point:
+            // the record's encoding follows the injected Charset and nothing else.
+            assertThat(asEbcdic).hasSize(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(asAscii).hasSize(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(asEbcdic).isNotEqualTo(asAscii);
+            assertThat(new String(asEbcdic, ebcdic))
+                    .isEqualTo(padded(HtmlFixedLine.HTML_L04.literal()));
+            assertThat(new String(asAscii, StandardCharsets.US_ASCII))
+                    .isEqualTo(padded(HtmlFixedLine.HTML_L04.literal()));
+        }
+
+        @Test
+        @DisplayName("The pad byte follows the code page too: EBCDIC space x'40', ASCII space x'20'")
+        void thePadByteFollowsTheCodePage() {
+            Charset ebcdic = Charset.forName(EBCDIC_CODE_PAGE);
+            List<byte[]> ebcdicRecords = new ArrayList<>();
+            StatementHtmlWriter ebcdicWriter = new StatementHtmlWriter(
+                    mock(JdbcTemplate.class), ebcdic, bindingsFor(TEST_DSNAME),
+                    RecordImageForm.CHARACTER);
+            HtmlStatementFile ebcdicFile = ebcdicWriter.open(record -> {
+                ebcdicRecords.add(record);
+                return FileStatus.OK;
+            });
+
+            // HTML-L03 is six characters, so bytes 6..99 are pure padding in both code pages.
+            ebcdicWriter.writeFixedLine(ebcdicFile, HtmlFixedLine.HTML_L03);
+            StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    StatementHtmlWriterTest.this.file, HtmlFixedLine.HTML_L03);
+
+            assertThat(ebcdicRecords.get(0)[99]).isEqualTo((byte) 0x40);
+            assertThat(StatementHtmlWriterTest.this.emitted.get(0)[99]).isEqualTo((byte) 0x20);
+            assertThat(ebcdicFile.recordArea().spacePadByte()).isEqualTo((byte) 0x40);
+            assertThat(StatementHtmlWriterTest.this.file.recordArea().spacePadByte())
+                    .isEqualTo((byte) 0x20);
+        }
+
+        @Test
+        @DisplayName("Composed lines follow the code page as well, not only the fixed literals")
+        void composedLinesFollowTheCodePageToo() {
+            Charset ebcdic = Charset.forName(EBCDIC_CODE_PAGE);
+            List<byte[]> ebcdicRecords = new ArrayList<>();
+            StatementHtmlWriter ebcdicWriter = new StatementHtmlWriter(
+                    mock(JdbcTemplate.class), ebcdic, bindingsFor(TEST_DSNAME),
+                    RecordImageForm.CHARACTER);
+            HtmlStatementFile ebcdicFile = ebcdicWriter.open(record -> {
+                ebcdicRecords.add(record);
+                return FileStatus.OK;
+            });
+
+            ebcdicWriter.writeBasicDetail(ebcdicFile, BasicDetail.ACCOUNT_ID, "00000000011");
+            ebcdicWriter.writeAccountHeading(ebcdicFile, "00000000011");
+            byte[] group = ebcdicWriter.composeNameParagraphGroup("MARGARET GOLD");
+
+            assertThat(new String(ebcdicRecords.get(0), ebcdic)).isEqualTo(
+                    padded("<p>Account ID         : 00000000011         </p>"));
+            assertThat(new String(ebcdicRecords.get(1), ebcdic)).isEqualTo(
+                    padded("<h3>Statement for Account Number: 00000000011         </h3>"));
+            assertThat(group).hasSize(StatementHtmlWriter.HTML_L23_LENGTH);
+            assertThat(new String(group, ebcdic)).isEqualTo(
+                    "<p style=\"font-size:16px\">MARGARET GOLD"
+                            + String.valueOf(SPACE).repeat(37));
+            assertThat(ebcdicWriter.datasetCharset()).isEqualTo(ebcdic);
         }
     }
 
@@ -1196,6 +1869,77 @@ class StatementHtmlWriterTest {
 
             assertThat(lambda.open()).isEqualTo(FileStatus.OK);
             assertThat(lambda.close()).isEqualTo(FileStatus.OK);
+        }
+
+        /**
+         * Every {@code FILE STATUS} a sink can report becomes the outcome
+         * {@link FileStatus#outcomeOfStatus(String)} classifies it as, and none of them becomes an
+         * exception. This writer <strong>surfaces</strong> status; it never abends.
+         *
+         * <p>That division is {@code CBSTM03A}'s own. The program keeps its
+         * {@code CALL 'CEE3ABD'} at {@code L923}, in the caller, and its file handling reports a
+         * two-character code - compare {@code WS-M03B-RC PIC X(02)} at {@code L80} and the
+         * {@code EVALUATE WS-M03B-RC} guard at {@code L353-L359}, whose {@code WHEN OTHER} arm is what
+         * decides to abend. Deciding is {@code StatementGenerationJobA}'s job, so all five arms have
+         * to reach it intact, including the writer's own permanent-error code.
+         *
+         * @param status  the two-character status the sink reports
+         * @param outcome the outcome the writer must return for it
+         */
+        @ParameterizedTest(name = "FILE STATUS ''{0}'' -> {1}")
+        @MethodSource("com.vsergeychik.carddemo.statement.StatementHtmlWriterTest#writeStatuses")
+        @DisplayName("Every FILE STATUS a sink reports is surfaced as its outcome, never thrown")
+        void everyReportedStatusIsSurfacedAsItsOutcome(final String status,
+                                                       final FileStatus.Outcome outcome) {
+            List<byte[]> records = new ArrayList<>();
+            HtmlStatementFile handle = StatementHtmlWriterTest.this.writer.open(record -> {
+                records.add(record);
+                return status;
+            });
+
+            FileStatus.Outcome reported = StatementHtmlWriterTest.this.writer.writeFixedLine(
+                    handle, HtmlFixedLine.HTML_L01);
+
+            assertThat(reported).isEqualTo(outcome);
+            // The record was still handed to the sink and still counted: a status is a report about
+            // what happened, not a veto applied beforehand.
+            assertThat(records).hasSize(1);
+            assertThat(records.get(0)).hasSize(StatementHtmlWriter.RECORD_LENGTH);
+            assertThat(handle.recordsWritten()).isEqualTo(1L);
+            assertThat(handle.isOpen()).isTrue();
+        }
+
+        @Test
+        @DisplayName("The writer's own permanent-error status is '30', and it classifies as OTHER")
+        void thePermanentErrorStatusClassifiesAsOther() {
+            // '30' is declared on the writer rather than on FileStatus because no COBOL program in
+            // app/cbl tests for it: every batch program guards '00', '10', '23' or '22' and abends on
+            // anything else. Classifying it as OTHER puts it in exactly that WHEN OTHER arm, so a
+            // caller's control flow is unchanged.
+            assertThat(StatementHtmlWriter.PERMANENT_ERROR_STATUS).isEqualTo("30");
+            assertThat(FileStatus.outcomeOfStatus(StatementHtmlWriter.PERMANENT_ERROR_STATUS))
+                    .isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(StatementHtmlWriter.PERMANENT_ERROR_STATUS).isNotEqualTo(FileStatus.OK);
+        }
+
+        @Test
+        @DisplayName("close() surfaces every status too, and still closes the handle")
+        void closeSurfacesEveryStatusAndStillCloses() {
+            for (String status : List.of(FileStatus.OK, FileStatus.END_OF_FILE,
+                    StatementHtmlWriter.PERMANENT_ERROR_STATUS)) {
+                HtmlStatementFile handle = StatementHtmlWriterTest.this.writer.open(
+                        new StatusReportingSink(FileStatus.OK, FileStatus.OK, status));
+
+                FileStatus.Outcome reported =
+                        StatementHtmlWriterTest.this.writer.close(handle);
+
+                assertThat(reported)
+                        .as("close outcome for FILE STATUS '%s'", status)
+                        .isEqualTo(FileStatus.outcomeOfStatus(status));
+                // A non-OK close still closes: CBSTM03A closes once at L339 with no guard, so the
+                // handle must not be left open for a caller to write through again.
+                assertThat(handle.isOpen()).isFalse();
+            }
         }
 
         @Test
@@ -1691,7 +2435,7 @@ class StatementHtmlWriterTest {
 
             assertThat(sink.write(record)).isEqualTo(FileStatus.OK);
 
-            // One parameter placeholder, and no record byte anywhere in the statement text.
+            // Exactly one positional parameter, and no record byte anywhere in the statement text.
             assertThat(sink.insertStatement()).containsOnlyOnce("?");
             assertThat(sink.insertStatement()).doesNotContain("'");
         }
@@ -1707,113 +2451,152 @@ class StatementHtmlWriterTest {
     // =============================================================================================
 
     @Nested
-    @DisplayName("Cross-check against the oracle: app/cbl/CBSTM03A.CBL itself")
-    class ObjectionableTranscription {
+    @DisplayName("The eleven continued literals - the fixed-format continuation rule applied by hand")
+    class ContinuationRule {
 
-        /** Where the COBOL sits, relative to the Maven module directory. */
-        private static final String COBOL_SOURCE = "../cbl/CBSTM03A.CBL";
+        /**
+         * Eleven of the thirty-four literals are continued across two source lines, and every one of
+         * them is asserted here as the explicit join of its two fragments.
+         *
+         * <p>The rule being reproduced is COBOL's fixed-format continuation: the continued line
+         * carries an alphanumeric literal with <em>no</em> closing quotation mark, the next line
+         * carries a hyphen in column 7 and reopens the literal with a quotation mark, and the
+         * continuation begins with the character immediately after that quotation mark.
+         * <strong>Nothing is inserted at the join</strong> - no space, no newline and no concatenation
+         * operator.
+         *
+         * <p>One subtlety decides whether that reading is right, and it is settled by the source's own
+         * geometry rather than by convention. Any spaces at the end of a continued line, through
+         * column 72, would be <em>inside</em> the literal. In this source every continued line is
+         * exactly 72 characters long, so each first fragment ends precisely at column 72 and carries
+         * no trailing spaces at all - which is why the plain join is correct here. That is what
+         * {@link #noFragmentCarriesWhitespaceAtTheJoin()} pins.
+         *
+         * @param line           the constant under test
+         * @param sourceLines    the two source lines it is continued across, for the failure message
+         * @param firstFragment  the characters from the opening quotation mark to column 72
+         * @param secondFragment the characters after the continuation line's reopening quotation mark
+         */
+        @ParameterizedTest(name = "{1} {0}")
+        @MethodSource(
+                "com.vsergeychik.carddemo.statement.StatementHtmlWriterTest#continuedLiterals")
+        @DisplayName("Each continued literal is its two fragments joined with nothing between")
+        void theJoinInsertsNothing(final HtmlFixedLine line, final String sourceLines,
+                                   final String firstFragment, final String secondFragment) {
+            assertThat(line.literal())
+                    .as("%s is continued across %s", line.cobolName(), sourceLines)
+                    .isEqualTo(firstFragment + secondFragment);
+            assertThat(line.literalLength())
+                    .isEqualTo(firstFragment.length() + secondFragment.length());
 
-        /** {@code 88  HTML-Lxx ...} - the start of a condition-name declaration. */
-        private static final Pattern CONDITION_NAME = Pattern.compile("88\\s+(\\S+)");
-
-        @Test
-        @DisplayName("Every literal matches the COBOL, re-extracted with the continuation rule")
-        void everyLiteralMatchesTheCobolSource() throws IOException {
-            Path source = Path.of(COBOL_SOURCE);
-            Assumptions.assumeTrue(Files.isReadable(source),
-                    "app/cbl/CBSTM03A.CBL is not reachable from this build directory");
-
-            Map<String, String> fromSource = extractConditionNameLiterals(source);
-
-            assertThat(fromSource).hasSize(HtmlFixedLine.values().length);
-            for (HtmlFixedLine line : HtmlFixedLine.values()) {
-                assertThat(fromSource)
-                        .as("literal of %s", line.cobolName())
-                        .containsEntry(line.cobolName(), line.literal());
-            }
-        }
-
-        @Test
-        @DisplayName("The COBOL FD declares PIC X(100), independently of the JCL")
-        void theCobolFileDescriptionDeclaresOneHundred() throws IOException {
-            Path source = Path.of(COBOL_SOURCE);
-            Assumptions.assumeTrue(Files.isReadable(source),
-                    "app/cbl/CBSTM03A.CBL is not reachable from this build directory");
-
-            String text = Files.readString(source, StandardCharsets.ISO_8859_1);
-
-            assertThat(text).contains("FD  HTML-FILE.");
-            assertThat(text).contains("01  FD-HTMLFILE-REC         PIC X(100).");
+            // The two characters that actually meet at the boundary, asserted individually so a
+            // failure says which side drifted rather than dumping two 80-character strings.
+            assertThat(line.literal().charAt(firstFragment.length() - 1))
+                    .as("last character of the first fragment of %s", line.cobolName())
+                    .isEqualTo(firstFragment.charAt(firstFragment.length() - 1));
+            assertThat(line.literal().charAt(firstFragment.length()))
+                    .as("first character of the continuation of %s", line.cobolName())
+                    .isEqualTo(secondFragment.charAt(0));
         }
 
         /**
-         * Re-extracts the {@code 88}-level literals of {@code HTML-FIXED-LN} from the COBOL source,
-         * applying the fixed-format continuation rule: a hyphen in column 7 continues the literal,
-         * which is reopened by a quotation mark, and an unterminated literal runs to column 72.
+         * The negative form of the same rule: inserting a space at the join - the single most likely
+         * way to mistranscribe a continued literal, because a human reading two lines sees a line
+         * break where the compiler sees none - produces a different value in every one of the eleven
+         * cases.
          *
-         * @param source the COBOL file
-         * @return condition name to literal, in declaration order
-         * @throws IOException if the source cannot be read
+         * @param line           the constant under test
+         * @param sourceLines    the two source lines it is continued across
+         * @param firstFragment  the first fragment
+         * @param secondFragment the continuation
          */
-        private static Map<String, String> extractConditionNameLiterals(final Path source)
-                throws IOException {
-            List<String> lines = Files.readAllLines(source, StandardCharsets.ISO_8859_1);
-            Map<String, String> literals = new LinkedHashMap<>();
-            String currentName = null;
-            StringBuilder currentLiteral = new StringBuilder();
-            boolean unterminated = false;
-            boolean inCatalogue = false;
+        @ParameterizedTest(name = "{1} {0}")
+        @MethodSource(
+                "com.vsergeychik.carddemo.statement.StatementHtmlWriterTest#continuedLiterals")
+        @DisplayName("Inserting a space at the join would change the value, and does not match")
+        void insertingASpaceAtTheJoinWouldNotMatch(final HtmlFixedLine line,
+                                                   final String sourceLines,
+                                                   final String firstFragment,
+                                                   final String secondFragment) {
+            assertThat(line.literal())
+                    .as("%s, continued across %s, must not carry an inserted space", line.cobolName(),
+                            sourceLines)
+                    .isNotEqualTo(firstFragment + SPACE + secondFragment);
+            assertThat(line.literal()).doesNotContain("\n").doesNotContain("\r")
+                    .doesNotContain("\t").doesNotContain("'");
+        }
 
-            for (String raw : lines) {
-                String line = raw.replace("\r", "");
-                if (line.contains("HTML-FIXED-LN")) {
-                    inCatalogue = true;
-                    continue;
-                }
-                if (!inCatalogue) {
-                    continue;
-                }
-                if (line.contains("05  HTML-L11.")) {
-                    break;
-                }
-                char indicator = line.length() > 6 ? line.charAt(6) : SPACE;
-                String body = line.length() > 7
-                        ? line.substring(7, Math.min(72, line.length()))
-                        : "";
-                if (indicator == '-') {
-                    int opening = body.indexOf('\'');
-                    String rest = body.substring(opening + 1);
-                    currentLiteral.append(rest, 0, rest.indexOf('\''));
-                    unterminated = false;
-                    continue;
-                }
-                Matcher matcher = CONDITION_NAME.matcher(body);
-                if (matcher.find()) {
-                    if (currentName != null && !unterminated) {
-                        literals.put(currentName, currentLiteral.toString());
-                    }
-                    currentName = matcher.group(1);
-                    currentLiteral = new StringBuilder();
-                }
-                int opening = body.indexOf('\'');
-                if (opening >= 0) {
-                    String rest = body.substring(opening + 1);
-                    int closing = rest.indexOf('\'');
-                    if (closing >= 0) {
-                        currentLiteral.append(rest, 0, closing);
-                        unterminated = false;
-                    } else {
-                        currentLiteral.append(rest);
-                        unterminated = true;
-                    }
-                }
+        @Test
+        @DisplayName("No fragment carries whitespace at the join: every continued line is 72 columns")
+        void noFragmentCarriesWhitespaceAtTheJoin() {
+            continuedLiterals().forEach(arguments -> {
+                Object[] parts = arguments.get();
+                String firstFragment = (String) parts[2];
+                String secondFragment = (String) parts[3];
+                assertThat(firstFragment).as("first fragment of %s", parts[0])
+                        .doesNotEndWith(String.valueOf(SPACE));
+                assertThat(secondFragment).as("continuation of %s", parts[0])
+                        .doesNotStartWith(String.valueOf(SPACE));
+            });
+        }
+
+        @Test
+        @DisplayName("Exactly eleven of the thirty-four literals are continued; twenty-three are not")
+        void exactlyElevenLiteralsAreContinued() {
+            assertThat(continuedLiterals()).hasSize(11);
+            assertThat(HtmlFixedLine.values()).hasSize(34);
+            assertThat(HtmlFixedLine.values().length - 11).isEqualTo(23);
+        }
+
+        @Test
+        @DisplayName("The four colspan cells share ONE first fragment ending at 'padding:0px 5px;'")
+        void theColspanCellsShareOneFirstFragment() {
+            for (HtmlFixedLine line : List.of(HtmlFixedLine.HTML_L10, HtmlFixedLine.HTML_L15,
+                    HtmlFixedLine.HTML_L22_35, HtmlFixedLine.HTML_L30_42)) {
+                assertThat(line.literal())
+                        .as("%s opens with the shared colspan fragment", line.cobolName())
+                        .startsWith(COLSPAN_FIRST_FRAGMENT);
             }
-            if (currentName != null) {
-                literals.put(currentName, currentLiteral.toString());
+            // The shared fragment ends AT the semicolon, so the absence of a space before
+            // background-color is a property of the boundary itself, not of any one literal.
+            assertThat(COLSPAN_FIRST_FRAGMENT).endsWith("padding:0px 5px;").hasSize(39);
+        }
+
+        @Test
+        @DisplayName("The six width cells split the word 'background-color' across the join")
+        void theWidthCellsSplitTheWordBackgroundColour() {
+            for (HtmlFixedLine line : List.of(HtmlFixedLine.HTML_L47, HtmlFixedLine.HTML_L50,
+                    HtmlFixedLine.HTML_L53, HtmlFixedLine.HTML_L58, HtmlFixedLine.HTML_L61,
+                    HtmlFixedLine.HTML_L64)) {
+                assertThat(line.literal())
+                        .as("%s carries the space the colspan cells do not", line.cobolName())
+                        .contains("padding:0px 5px; background-color:");
             }
-            return literals;
+            // Three first fragments, each used twice: once with #33FF5E and once with #f2f2f2. Each
+            // ends at the hyphen of "background-", so the continuation begins "color:" and the word
+            // is reassembled only by the join.
+            assertThat(WIDTH_FIRST_FRAGMENT_25).endsWith("background-").hasSize(50);
+            assertThat(WIDTH_FIRST_FRAGMENT_55).endsWith("background-").hasSize(50);
+            assertThat(WIDTH_FIRST_FRAGMENT_20).endsWith("background-").hasSize(50);
+            assertThat(HtmlFixedLine.HTML_L47.literal()).startsWith(WIDTH_FIRST_FRAGMENT_25);
+            assertThat(HtmlFixedLine.HTML_L58.literal()).startsWith(WIDTH_FIRST_FRAGMENT_25);
+            assertThat(HtmlFixedLine.HTML_L50.literal()).startsWith(WIDTH_FIRST_FRAGMENT_55);
+            assertThat(HtmlFixedLine.HTML_L61.literal()).startsWith(WIDTH_FIRST_FRAGMENT_55);
+            assertThat(HtmlFixedLine.HTML_L53.literal()).startsWith(WIDTH_FIRST_FRAGMENT_20);
+            assertThat(HtmlFixedLine.HTML_L64.literal()).startsWith(WIDTH_FIRST_FRAGMENT_20);
+        }
+
+        @Test
+        @DisplayName("HTML-L08's join falls mid-word: 'styl' + 'e=' - CBSTM03A.CBL:L157-L158")
+        void theTableJoinFallsMidWord() {
+            assertThat(TABLE_FIRST_FRAGMENT).endsWith("styl").hasSize(39);
+            assertThat(HtmlFixedLine.HTML_L08.literal())
+                    .startsWith(TABLE_FIRST_FRAGMENT)
+                    .contains("style=\"width:70%;")
+                    .hasSize(85);
         }
     }
+
 
     // =============================================================================================
 
@@ -1874,6 +2657,115 @@ class StatementHtmlWriterTest {
                 Arguments.of(HtmlFixedLine.HTML_L78, "</table>"),
                 Arguments.of(HtmlFixedLine.HTML_L79, "</body>"),
                 Arguments.of(HtmlFixedLine.HTML_L80, "</html>"));
+    }
+
+    // =============================================================================================
+    // The first fragments of the continued literals, transcribed from the source lines they sit on.
+    //
+    // Each is the text from its opening quotation mark through column 72 - the whole of the literal
+    // the continued line contributes. They are named because they are SHARED: the four colspan cells
+    // all use COLSPAN_FIRST_FRAGMENT, and the six width cells use only three fragments between them,
+    // each twice. Naming them is what lets the sharing itself be asserted, so a change to one cell
+    // cannot silently diverge from its twin.
+    // =============================================================================================
+
+    /**
+     * {@code app/cbl/CBSTM03A.CBL:L157} - the first fragment of {@code HTML-L08}, 39 characters.
+     *
+     * <p>It ends mid-word, at {@code styl}, and carries <strong>two spaces</strong> after
+     * {@code <table} rather than one.
+     */
+    private static final String TABLE_FIRST_FRAGMENT =
+            "<table  align=\"center\" frame=\"box\" styl";
+
+    /**
+     * {@code app/cbl/CBSTM03A.CBL:L163}, {@code L165}, {@code L174} and {@code L177} - the single
+     * 39-character first fragment shared by all four colspan cells.
+     *
+     * <p>It ends at the semicolon of {@code padding:0px 5px;}, which is why those four literals have
+     * no space before {@code background-color} while the six width cells do.
+     */
+    private static final String COLSPAN_FIRST_FRAGMENT =
+            "<td colspan=\"3\" style=\"padding:0px 5px;";
+
+    /**
+     * {@code app/cbl/CBSTM03A.CBL:L184} and {@code L199} - the 50-character first fragment shared by
+     * {@code HTML-L47} and {@code HTML-L58}, which differ only in their continuation's colour.
+     */
+    private static final String WIDTH_FIRST_FRAGMENT_25 =
+            "<td style=\"width:25%; padding:0px 5px; background-";
+
+    /**
+     * {@code app/cbl/CBSTM03A.CBL:L189} and {@code L202} - the 50-character first fragment shared by
+     * {@code HTML-L50} and {@code HTML-L61}.
+     */
+    private static final String WIDTH_FIRST_FRAGMENT_55 =
+            "<td style=\"width:55%; padding:0px 5px; background-";
+
+    /**
+     * {@code app/cbl/CBSTM03A.CBL:L194} and {@code L205} - the 50-character first fragment shared by
+     * {@code HTML-L53} and {@code HTML-L64}.
+     */
+    private static final String WIDTH_FIRST_FRAGMENT_20 =
+            "<td style=\"width:20%; padding:0px 5px; background-";
+
+    /**
+     * The eleven continued literals, each as {@code (constant, source lines, first fragment,
+     * continuation)}.
+     *
+     * <p>The fragments are transcribed from the two source lines exactly as they appear there, so the
+     * join in the test is the compiler's own rule and not a restatement of the finished value. That is
+     * deliberately redundant with {@link #expectedFixedLiterals()}: the same literal is asserted once
+     * against an independently written whole value and once against its two halves, in two different
+     * shapes, so a transcription slip has to be made three times to survive.
+     *
+     * @return one four-part argument set per continued literal
+     */
+    /**
+     * Every {@code FILE STATUS} a sink can report, paired with the {@link FileStatus.Outcome} the
+     * writer must surface for it.
+     *
+     * <p>The four named statuses are the estate's whole shared vocabulary - the codes the batch
+     * programs in {@code app/cbl} actually test for - plus the writer's own permanent-error code,
+     * which is deliberately outside that vocabulary and therefore lands in the {@code WHEN OTHER}
+     * arm.
+     *
+     * @return one status-and-outcome pair per arm
+     */
+    static Stream<Arguments> writeStatuses() {
+        return Stream.of(
+                Arguments.of(FileStatus.OK, FileStatus.Outcome.OK),
+                Arguments.of(FileStatus.END_OF_FILE, FileStatus.Outcome.END_OF_FILE),
+                Arguments.of(FileStatus.DUPLICATE, FileStatus.Outcome.DUPLICATE),
+                Arguments.of(FileStatus.NOT_FOUND, FileStatus.Outcome.NOT_FOUND),
+                Arguments.of(StatementHtmlWriter.PERMANENT_ERROR_STATUS,
+                        FileStatus.Outcome.OTHER));
+    }
+
+    static Stream<Arguments> continuedLiterals() {
+        return Stream.of(
+                Arguments.of(HtmlFixedLine.HTML_L08, "L157-L158", TABLE_FIRST_FRAGMENT,
+                        "e=\"width:70%; font:12px Segoe UI,sans-serif;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L10, "L163-L164", COLSPAN_FIRST_FRAGMENT,
+                        "background-color:#1d1d96b3;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L15, "L165-L166", COLSPAN_FIRST_FRAGMENT,
+                        "background-color:#FFAF33;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L22_35, "L174-L175", COLSPAN_FIRST_FRAGMENT,
+                        "background-color:#f2f2f2;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L30_42, "L177-L178", COLSPAN_FIRST_FRAGMENT,
+                        "background-color:#33FFD1; text-align:center;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L47, "L184-L185", WIDTH_FIRST_FRAGMENT_25,
+                        "color:#33FF5E; text-align:left;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L50, "L189-L190", WIDTH_FIRST_FRAGMENT_55,
+                        "color:#33FF5E; text-align:left;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L53, "L194-L195", WIDTH_FIRST_FRAGMENT_20,
+                        "color:#33FF5E; text-align:right;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L58, "L199-L200", WIDTH_FIRST_FRAGMENT_25,
+                        "color:#f2f2f2; text-align:left;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L61, "L202-L203", WIDTH_FIRST_FRAGMENT_55,
+                        "color:#f2f2f2; text-align:left;\">"),
+                Arguments.of(HtmlFixedLine.HTML_L64, "L205-L206", WIDTH_FIRST_FRAGMENT_20,
+                        "color:#f2f2f2; text-align:right;\">"));
     }
 
     /**

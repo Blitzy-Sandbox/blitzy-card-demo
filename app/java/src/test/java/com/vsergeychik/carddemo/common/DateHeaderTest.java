@@ -17,7 +17,10 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -87,12 +90,85 @@ class DateHeaderTest {
     /** {@code WS-TIMESTAMP} for {@link #REFERENCE} - six fractional digits, not two. */
     private static final String REFERENCE_TIMESTAMP = "2024-12-25 13:45:07.089123";
 
+    /**
+     * The whole of {@code 01 WS-DATE-TIME} for {@link #REFERENCE}, written out as one unbroken
+     * 58-character literal rather than assembled from anything the class under test produces.
+     *
+     * <p>Spelling it out matters. The obvious way to check the serialised area is to compare it with
+     * {@code wsCurdateData() + wsCurdateMmDdYy() + wsCurtimeHhMmSs() + wsTimestamp()}, and
+     * {@link Widths#serialisedWidth()} does exactly that - but only to prove that the byte image is
+     * those four groups in that order with nothing between them. That comparison is self-referential:
+     * a defect that shifted every group the same way, or rendered every group from a wrong instant,
+     * would satisfy it. This literal is the independent side of the assertion, so
+     * {@link ByteImage#theWholeImageMatchesADeclaredLiteral()} fails on any drift anywhere in the
+     * layout.
+     *
+     * <p>Derived, group by group, from {@code app/cpy/CSDAT01Y.cpy}:
+     * <pre>
+     *   offset  0..15  WS-CURDATE-DATA       2024122513450708             (:18-:29, 16 bytes)
+     *   offset 16..23  WS-CURDATE-MM-DD-YY   12/25/24                     (:30-:35,  8 bytes)
+     *   offset 24..31  WS-CURTIME-HH-MM-SS   13:45:07                     (:36-:41,  8 bytes)
+     *   offset 32..57  WS-TIMESTAMP          2024-12-25 13:45:07.089123   (:42-:55, 26 bytes)
+     * </pre>
+     */
+    private static final String REFERENCE_IMAGE =
+            "202412251345070812/25/2413:45:072024-12-25 13:45:07.089123";
+
+    /**
+     * The 3rd of month 4 at 05:06:07 and 8 hundredths - every calendar and clock component a single
+     * digit, so each one must be rendered with a leading zero by its {@code PIC 9(02)} receiver.
+     * This is the instant that fails if any component is concatenated as a bare number.
+     */
+    private static final Instant SINGLE_DIGIT_INSTANT = Instant.parse("2024-04-03T05:06:07.089123Z");
+
+    /** One second before midnight on 31 December: the year boundary. */
+    private static final Instant YEAR_END_INSTANT = Instant.parse("2024-12-31T23:59:59Z");
+
+    /** 29 February 2024 - a leap day, which only a real calendar produces. */
+    private static final Instant LEAP_DAY_INSTANT = Instant.parse("2024-02-29T12:34:56Z");
+
     private static DateHeader referenceHeader() {
         return DateHeader.of(ASCII_CODEC, REFERENCE);
     }
 
     private static Clock fixedUtc(String instant) {
         return Clock.fixed(Instant.parse(instant), ZoneOffset.UTC);
+    }
+
+    /**
+     * The offsets at which two equal-length images differ, so that "these two renderings differ in
+     * exactly these positions and nowhere else" can be asserted as a value rather than as a series of
+     * hand-picked character comparisons that might have missed one.
+     *
+     * <p>Offsets are <strong>0-based and absolute within the 58-byte area</strong>, which is the
+     * convention this whole test class uses and the same one {@link DateHeader}'s layout declares.
+     *
+     * @param left  one image
+     * @param right the other, of the same length
+     * @return the differing offsets, ascending
+     */
+    private static List<Integer> differingOffsets(String left, String right) {
+        return IntStream.range(0, Math.min(left.length(), right.length()))
+                .filter(offset -> left.charAt(offset) != right.charAt(offset))
+                .boxed()
+                .toList();
+    }
+
+    /**
+     * Every separator {@code FILLER} the layout declares, in declaration order.
+     *
+     * <p>There are <strong>ten</strong>: {@code '/'} twice, {@code ':'} four times, {@code '-'}
+     * twice, {@code ' '} once and {@code '.'} once - {@code app/cpy/CSDAT01Y.cpy} lines 32, 34, 38,
+     * 40, 44, 46, 48, 50, 52 and 54. Read from the layout rather than listed here, so a separator
+     * added to or dropped from {@link DateHeader#WS_DATE_TIME_LAYOUT} changes what this returns and
+     * {@link Separators#everySeparatorEmitsItsDeclaredValue()} reports it.
+     *
+     * @return the ten {@code FILLER} descriptors
+     */
+    private static List<FieldSpan> separatorFillers() {
+        return DateHeader.WS_DATE_TIME_LAYOUT.spans().stream()
+                .filter(span -> span.kind() == PictureKind.FILLER)
+                .toList();
     }
 
     // =================================================================================================
@@ -176,6 +252,186 @@ class DateHeaderTest {
         @DisplayName("an explicit LocalDateTime with no zone is taken as +0000")
         void bareLocalDateTimeHasNoOffset() {
             assertThat(referenceHeader().gmtOffsetImage()).isEqualTo("+0000");
+        }
+    }
+
+    // =================================================================================================
+
+    /**
+     * The clock as an injected fixture, assembled in {@link #buildFixedClocks()} rather than reached
+     * for inside each test.
+     *
+     * <p>Every clock here is a {@link Clock#fixed(Instant, ZoneId)} built from a named instant and an
+     * explicitly named zone. No factory for the JVM's ambient clock, and no reference to the JVM's
+     * default zone, appears anywhere in this file - the whole file is greppable for that, and
+     * deliberately so. That is the point of the group: if either the ambient clock or the ambient zone
+     * could reach {@link DateHeader}, this test class would be the flakiest thing in the build -
+     * passing all afternoon and failing at midnight, or passing in one CI region and failing in
+     * another. {@link #theSameInstantRendersDifferentlyUnderEachNamedZone()} is the assertion that
+     * pins the zone down, and it is why running the suite under {@code -Duser.timezone=Asia/Tokyo} and
+     * under {@code -Duser.timezone=America/New_York} gives character-identical results.
+     *
+     * <p>The four fields are instance fields, not static ones. JUnit builds a fresh instance per test
+     * method, so nothing is shared between tests and no ordering dependency can arise - the same
+     * reason {@link DateHeader} keeps COBOL {@code WORKING-STORAGE} out of static Java state.
+     */
+    @Nested
+    @DisplayName("Injected clocks - Clock.fixed with a named instant and a named zone")
+    class InjectedClocks {
+
+        /**
+         * 25 December 2024 at 13:45:07.089123. Month 12, day 25, hour 13, minute 45 and second 07 are
+         * five different numbers, so a field transposed with another cannot render correctly by
+         * coincidence. A palindromic instant such as 11:11:11 would hide exactly that defect.
+         */
+        private Clock referenceClock;
+
+        /** {@link #SINGLE_DIGIT_INSTANT} - the zero-fill fixture. */
+        private Clock singleDigitClock;
+
+        /** {@link #YEAR_END_INSTANT} - 31 December, 23:59:59. */
+        private Clock yearEndClock;
+
+        /** {@link #LEAP_DAY_INSTANT} - 29 February 2024. */
+        private Clock leapDayClock;
+
+        @BeforeEach
+        void buildFixedClocks() {
+            referenceClock = Clock.fixed(Instant.parse("2024-12-25T13:45:07.089123Z"), ZoneOffset.UTC);
+            singleDigitClock = Clock.fixed(SINGLE_DIGIT_INSTANT, ZoneOffset.UTC);
+            yearEndClock = Clock.fixed(YEAR_END_INSTANT, ZoneOffset.UTC);
+            leapDayClock = Clock.fixed(LEAP_DAY_INSTANT, ZoneOffset.UTC);
+        }
+
+        @Test
+        @DisplayName("each fixture really is a fixed clock at a named instant in a named zone")
+        void theFixturesAreFixed() {
+            assertThat(referenceClock.instant()).isEqualTo(Instant.parse("2024-12-25T13:45:07.089123Z"));
+            assertThat(referenceClock.instant())
+                    .as("a fixed clock reports the same instant however often it is read")
+                    .isEqualTo(referenceClock.instant());
+            assertThat(referenceClock.getZone()).isEqualTo(ZoneOffset.UTC);
+            assertThat(singleDigitClock.getZone()).isEqualTo(ZoneOffset.UTC);
+            assertThat(yearEndClock.getZone()).isEqualTo(ZoneOffset.UTC);
+            assertThat(leapDayClock.getZone()).isEqualTo(ZoneOffset.UTC);
+        }
+
+        @Test
+        @DisplayName("the reference clock renders every group, and every component is distinguishable")
+        void theReferenceClockRendersEveryGroup() {
+            DateHeader header = DateHeader.from(ASCII_CODEC, referenceClock);
+
+            // source: app/cpy/CSDAT01Y.cpy:20-22 - YYYY then MM then DD, in that order
+            assertThat(header.wsCurdate()).isEqualTo("20241225");
+            // source: app/cpy/CSDAT01Y.cpy:25-28 - hh mm ss cc
+            assertThat(header.wsCurtime()).isEqualTo("13450708");
+            assertThat(header.wsCurdateMmDdYy()).isEqualTo("12/25/24");
+            assertThat(header.wsCurtimeHhMmSs()).isEqualTo("13:45:07");
+            assertThat(header.wsTimestamp()).isEqualTo(REFERENCE_TIMESTAMP);
+            assertThat(new String(header.toBytes(), ASCII)).isEqualTo(REFERENCE_IMAGE);
+        }
+
+        @Test
+        @DisplayName("the single-digit clock renders 04, 03, 05, 06, 07 - never 4, 3, 5, 6, 7")
+        void theSingleDigitClockZeroFillsEveryComponent() {
+            DateHeader header = DateHeader.from(ASCII_CODEC, singleDigitClock);
+
+            // Every one of these receivers is PIC 9(02) - app/cpy/CSDAT01Y.cpy:21-22, :25-28, :31-41
+            assertThat(header.fieldImages())
+                    .containsEntry(DateHeader.WS_CURDATE_MONTH, "04")
+                    .containsEntry(DateHeader.WS_CURDATE_DAY, "03")
+                    .containsEntry(DateHeader.WS_CURTIME_HOURS, "05")
+                    .containsEntry(DateHeader.WS_CURTIME_MINUTE, "06")
+                    .containsEntry(DateHeader.WS_CURTIME_SECOND, "07")
+                    .containsEntry(DateHeader.WS_CURTIME_MILSEC, "08")
+                    .containsEntry(DateHeader.WS_CURDATE_MM, "04")
+                    .containsEntry(DateHeader.WS_CURDATE_DD, "03")
+                    // source: app/cpy/CSDAT01Y.cpy:55 - PIC 9(06), so the microseconds zero-fill too
+                    .containsEntry(DateHeader.WS_TIMESTAMP_TM_MS6, "089123");
+            assertThat(header.wsCurdate()).isEqualTo("20240403");
+            assertThat(header.wsCurtime()).isEqualTo("05060708");
+            assertThat(header.wsCurdateMmDdYy()).isEqualTo("04/03/24");
+            assertThat(header.wsCurtimeHhMmSs()).isEqualTo("05:06:07");
+            assertThat(header.wsTimestamp()).isEqualTo("2024-04-03 05:06:07.089123");
+            // The defect this excludes: a bare number rendered without its leading zero, which
+            // shortens the group and shifts every byte after it.
+            assertThat(header.wsCurtimeHhMmSs()).isNotEqualTo("5:6:7").hasSize(8);
+            assertThat(header.toBytes()).hasSize(DateHeader.WS_DATE_TIME_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the year-end clock renders 31 December at 23:59:59")
+        void theYearEndClockRendersTheBoundary() {
+            DateHeader header = DateHeader.from(ASCII_CODEC, yearEndClock);
+
+            assertThat(header.wsCurdate()).isEqualTo("20241231");
+            assertThat(header.wsCurdateMmDdYy()).isEqualTo("12/31/24");
+            assertThat(header.wsCurtimeHhMmSs()).isEqualTo("23:59:59");
+            assertThat(header.wsTimestamp()).isEqualTo("2024-12-31 23:59:59.000000");
+            assertThat(new String(header.toBytes(), ASCII))
+                    .isEqualTo("202412312359590012/31/2423:59:592024-12-31 23:59:59.000000")
+                    .hasSize(DateHeader.WS_DATE_TIME_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the leap-day clock renders 29 February 2024")
+        void theLeapDayClockRendersTheLeapDay() {
+            DateHeader header = DateHeader.from(ASCII_CODEC, leapDayClock);
+
+            assertThat(header.wsCurdate()).isEqualTo("20240229");
+            assertThat(header.wsCurdateMmDdYy()).isEqualTo("02/29/24");
+            assertThat(header.wsCurtimeHhMmSs()).isEqualTo("12:34:56");
+            assertThat(header.wsTimestamp()).isEqualTo("2024-02-29 12:34:56.000000");
+            assertThat(new String(header.toBytes(), ASCII))
+                    .isEqualTo("202402291234560002/29/2412:34:562024-02-29 12:34:56.000000")
+                    .hasSize(DateHeader.WS_DATE_TIME_LENGTH);
+        }
+
+        @Test
+        @DisplayName("two clocks one second apart differ in exactly the seconds positions, nowhere else")
+        void twoClocksDifferExactlyWhereTheirInstantsDiffer() {
+            DateHeader earlier = DateHeader.from(ASCII_CODEC, referenceClock);
+            DateHeader later = DateHeader.from(ASCII_CODEC,
+                    Clock.fixed(referenceClock.instant().plusSeconds(1), referenceClock.getZone()));
+
+            // The two images are the same width and differ at exactly the four seconds digits:
+            // WS-CURTIME-SECOND (offset 12-13), WS-CURTIME-SS (30-31) and WS-TIMESTAMP-TM-SS (49-50).
+            String before = new String(earlier.toBytes(), ASCII);
+            String after = new String(later.toBytes(), ASCII);
+
+            assertThat(after).hasSameSizeAs(before);
+            assertThat(differingOffsets(before, after)).containsExactly(13, 31, 50);
+            assertThat(later.wsCurdate()).isEqualTo(earlier.wsCurdate());
+            assertThat(later.wsCurdateMmDdYy()).isEqualTo(earlier.wsCurdateMmDdYy());
+            assertThat(later.wsCurtimeHhMmSs()).isEqualTo("13:45:08");
+            assertThat(earlier.wsCurtimeHhMmSs()).isEqualTo("13:45:07");
+        }
+
+        @Test
+        @DisplayName("the same instant renders differently under each named zone, so the zone is used")
+        void theSameInstantRendersDifferentlyUnderEachNamedZone() {
+            // One instant, three explicitly named zones. Whatever the JVM's default zone happens to
+            // be, each of these renders from the zone its own clock carries - which is the property
+            // that makes the whole suite reproducible under -Duser.timezone.
+            Instant instant = Instant.parse("2024-12-25T19:45:07Z");
+
+            DateHeader greenwich =
+                    DateHeader.from(ASCII_CODEC, Clock.fixed(instant, ZoneOffset.UTC));
+            DateHeader chicago =
+                    DateHeader.from(ASCII_CODEC, Clock.fixed(instant, ZoneId.of("America/Chicago")));
+            DateHeader tokyo =
+                    DateHeader.from(ASCII_CODEC, Clock.fixed(instant, ZoneId.of("Asia/Tokyo")));
+
+            assertThat(greenwich.wsCurtimeHhMmSs()).isEqualTo("19:45:07");
+            assertThat(greenwich.wsCurdateMmDdYy()).isEqualTo("12/25/24");
+
+            assertThat(chicago.wsCurtimeHhMmSs()).isEqualTo("13:45:07");
+            assertThat(chicago.wsCurdateMmDdYy()).isEqualTo("12/25/24");
+
+            // Tokyo is +09:00, so the same instant is already the 26th there.
+            assertThat(tokyo.wsCurtimeHhMmSs()).isEqualTo("04:45:07");
+            assertThat(tokyo.wsCurdateMmDdYy()).isEqualTo("12/26/24");
+            assertThat(tokyo.wsTimestamp()).isEqualTo("2024-12-26 04:45:07.000000");
         }
     }
 
@@ -294,6 +550,25 @@ class DateHeaderTest {
 
     // =================================================================================================
 
+    /**
+     * That each separator {@code FILLER} emits the literal it declares.
+     *
+     * <h2>Index convention</h2>
+     * Every position in this group is a <strong>0-based</strong> offset. Within a rendered group it is
+     * an index into that group's own string, and within {@link DateHeader#toBytes()} it is an absolute
+     * offset into the 58-byte area - the same convention {@link DateHeader#WS_DATE_TIME_LAYOUT} uses,
+     * so a position asserted here can be read straight off the layout. Concretely: in
+     * {@code MM/DD/YY} the slashes are at group indices 2 and 5 and at area offsets 18 and 21, and in
+     * {@code YYYY-MM-DD HH:MM:SS.ssssss} the six separators are at group indices 4, 7, 10, 13, 16 and
+     * 19 and at area offsets 36, 39, 42, 45, 48 and 51.
+     *
+     * <h2>How many there are</h2>
+     * <strong>Ten</strong>, not seven: {@code '/'} twice, {@code ':'} four times, {@code '-'} twice,
+     * {@code ' '} once and {@code '.'} once, and 2 + 4 + 2 + 1 + 1 = 10.
+     * {@code app/cpy/CSDAT01Y.cpy} carries exactly ten {@code FILLER} lines - 32, 34, 38, 40, 44, 46,
+     * 48, 50, 52 and 54 - and {@link #theDeclaredSeparatorsAreTenAndInThisOrder()} asserts the count
+     * against the layout so the number cannot drift.
+     */
     @Nested
     @DisplayName("Separators - the FILLER exception: a declared VALUE, never a pad byte")
     class Separators {
@@ -372,6 +647,155 @@ class DateHeaderTest {
             assertThat(area.charAt(39)).isEqualTo('-');
             assertThat(area.charAt(45)).isEqualTo(':');
         }
+
+        @Test
+        @DisplayName("the declared separators are ten, in copybook order, at the declared offsets")
+        void theDeclaredSeparatorsAreTenAndInThisOrder() {
+            List<FieldSpan> fillers = separatorFillers();
+
+            // source: app/cpy/CSDAT01Y.cpy:32, :34, :38, :40, :44, :46, :48, :50, :52, :54
+            assertThat(fillers).hasSize(10);
+            assertThat(fillers).extracting(FieldSpan::offset)
+                    .containsExactly(18, 21, 26, 29, 36, 39, 42, 45, 48, 51);
+            assertThat(fillers).extracting(FieldSpan::initialValue)
+                    .containsExactly("/", "/", ":", ":", "-", "-", " ", ":", ":", ".");
+
+            // The arithmetic, written out so the total is checkable rather than asserted bare.
+            List<String> declared = fillers.stream().map(FieldSpan::initialValue).toList();
+            long slashes = declared.stream().filter("/"::equals).count();
+            long colons = declared.stream().filter(":"::equals).count();
+            long dashes = declared.stream().filter("-"::equals).count();
+            long spaces = declared.stream().filter(" "::equals).count();
+            long dots = declared.stream().filter("."::equals).count();
+            assertThat(slashes).isEqualTo(2);
+            assertThat(colons).isEqualTo(4);
+            assertThat(dashes).isEqualTo(2);
+            assertThat(spaces).isEqualTo(1);
+            assertThat(dots).isEqualTo(1);
+            assertThat(slashes + colons + dashes + spaces + dots).isEqualTo(10);
+        }
+
+        @Test
+        @DisplayName("every separator FILLER emits its declared VALUE at its declared offset")
+        void everySeparatorEmitsItsDeclaredValue() {
+            String area = new String(referenceHeader().toBytes(), ASCII);
+
+            // Driven from the layout rather than from a hand-written list, so this cannot fall out of
+            // step with the descriptors the production code actually serialises through.
+            assertThat(separatorFillers()).allSatisfy(filler -> {
+                assertThat(filler.length())
+                        .as("%s is PIC X(01)", filler.describe())
+                        .isEqualTo(DateHeader.SEPARATOR_LENGTH);
+                assertThat(filler.hasInitialValue())
+                        .as("%s must carry a declared VALUE, or it would be padded", filler.describe())
+                        .isTrue();
+                assertThat(area.substring(filler.offset(), filler.endOffsetExclusive()))
+                        .as("byte %d must hold the declared VALUE", filler.offset())
+                        .isEqualTo(filler.initialValue());
+            });
+        }
+
+        @Test
+        @DisplayName("exactly one separator is a space, and it is the one whose VALUE is a space")
+        void onlyTheTimestampDividerIsASpace() {
+            // This is the assertion that catches a codec which space-fills every FILLER. Such a codec
+            // produces an area of the right length - 58 bytes - and entirely wrong content, and every
+            // field-level width check still passes. The only defence is to insist that nine of the ten
+            // separators are NOT spaces, and that the tenth is a space because CSDAT01Y:48 declares
+            // one, rather than because a pad byte happened to land there.
+            String area = new String(referenceHeader().toBytes(), ASCII);
+
+            List<FieldSpan> spaceValued = separatorFillers().stream()
+                    .filter(filler -> " ".equals(filler.initialValue()))
+                    .toList();
+            assertThat(spaceValued).hasSize(1);
+            // source: app/cpy/CSDAT01Y.cpy:48 - FILLER PIC X(01) VALUE ' ', the date/time divider
+            assertThat(spaceValued.get(0).offset())
+                    .isEqualTo(42)
+                    .isEqualTo(DateHeader.WS_TIMESTAMP_OFFSET + 10);
+            assertThat(area.charAt(42)).isEqualTo(' ');
+
+            List<FieldSpan> nonSpaceValued = separatorFillers().stream()
+                    .filter(filler -> !" ".equals(filler.initialValue()))
+                    .toList();
+            assertThat(nonSpaceValued).hasSize(9);
+            assertThat(nonSpaceValued).allSatisfy(filler -> {
+                assertThat(filler.initialValue())
+                        .as("%s declares a non-space VALUE", filler.describe())
+                        .isNotEqualTo(" ");
+                assertThat(area.charAt(filler.offset()))
+                        .as("byte %d must not be a space: CSDAT01Y declares %s there",
+                                filler.offset(), filler.initialValue())
+                        .isNotEqualTo(' ');
+            });
+
+            // And the whole area carries exactly one space, at that one offset.
+            assertThat(area.chars().filter(character -> character == ' ').count()).isEqualTo(1);
+            assertThat(area.indexOf(' ')).isEqualTo(42);
+        }
+    }
+
+    // =================================================================================================
+
+    /**
+     * The complete 58-byte image, checked against a literal that no part of the class under test
+     * produced.
+     *
+     * <p>{@link Widths#serialisedWidth()} already proves the area is the four groups concatenated in
+     * declaration order, but it builds its expectation from the very accessors it is checking. This
+     * group closes that circle: {@link #REFERENCE_IMAGE} was written out by hand from
+     * {@code app/cpy/CSDAT01Y.cpy}, so a defect that shifted a group, dropped a separator, widened a
+     * field or rendered every group from the wrong instant fails here even though it would satisfy a
+     * self-referential comparison.
+     */
+    @Nested
+    @DisplayName("The whole byte image, against a hand-derived literal")
+    class ByteImage {
+
+        @Test
+        @DisplayName("the 58 bytes are exactly the declared literal, byte for byte")
+        void theWholeImageMatchesADeclaredLiteral() {
+            // The literal itself is 58 characters - asserted, not assumed.
+            assertThat(REFERENCE_IMAGE).hasSize(DateHeader.WS_DATE_TIME_LENGTH).hasSize(58);
+
+            byte[] bytes = referenceHeader().toBytes();
+
+            assertThat(bytes).hasSize(58);
+            assertThat(new String(bytes, ASCII)).isEqualTo(REFERENCE_IMAGE);
+            assertThat(bytes).isEqualTo(REFERENCE_IMAGE.getBytes(ASCII));
+        }
+
+        @Test
+        @DisplayName("each group occupies its declared slice of the literal")
+        void eachGroupOccupiesItsDeclaredSlice() {
+            // Reading the four groups back out of the literal at the declared offsets documents where
+            // each one begins, and fails if a declared offset and the real geometry ever disagree.
+            assertThat(REFERENCE_IMAGE.substring(DateHeader.WS_CURDATE_DATA_OFFSET,
+                    DateHeader.WS_CURDATE_DATA_OFFSET + DateHeader.WS_CURDATE_DATA_LENGTH))
+                    .isEqualTo("2024122513450708");
+            assertThat(REFERENCE_IMAGE.substring(DateHeader.WS_CURDATE_MM_DD_YY_OFFSET,
+                    DateHeader.WS_CURDATE_MM_DD_YY_OFFSET + DateHeader.WS_CURDATE_MM_DD_YY_LENGTH))
+                    .isEqualTo("12/25/24");
+            assertThat(REFERENCE_IMAGE.substring(DateHeader.WS_CURTIME_HH_MM_SS_OFFSET,
+                    DateHeader.WS_CURTIME_HH_MM_SS_OFFSET + DateHeader.WS_CURTIME_HH_MM_SS_LENGTH))
+                    .isEqualTo("13:45:07");
+            assertThat(REFERENCE_IMAGE.substring(DateHeader.WS_TIMESTAMP_OFFSET,
+                    DateHeader.WS_TIMESTAMP_OFFSET + DateHeader.WS_TIMESTAMP_LENGTH))
+                    .isEqualTo(REFERENCE_TIMESTAMP);
+            // And the four slices leave nothing over.
+            assertThat(DateHeader.WS_TIMESTAMP_OFFSET + DateHeader.WS_TIMESTAMP_LENGTH)
+                    .isEqualTo(REFERENCE_IMAGE.length());
+        }
+
+        @Test
+        @DisplayName("the literal and the accessors agree, so neither side alone defines the truth")
+        void theLiteralAndTheAccessorsAgree() {
+            DateHeader header = referenceHeader();
+
+            assertThat(header.wsCurdateData() + header.wsCurdateMmDdYy()
+                    + header.wsCurtimeHhMmSs() + header.wsTimestamp())
+                    .isEqualTo(REFERENCE_IMAGE);
+        }
     }
 
     // =================================================================================================
@@ -445,6 +869,9 @@ class DateHeaderTest {
             "1970,70",
             "9999,99",
             "7,07",
+            // A next-century year: 2105 renders 05, which "the last two non-zero digits" gets wrong.
+            "2105,05",
+            "2100,00",
         })
         @DisplayName("reference modification keeps positions 3 and 4 of the four-digit year")
         void lowOrderTwoDigits(int year, String expected) {
@@ -464,6 +891,37 @@ class DateHeaderTest {
 
             assertThat(header.wsCurdateYy())
                     .isEqualTo(ASCII_CODEC.movePic9(header.captured().year(), 2));
+        }
+
+        @ParameterizedTest(name = "year {0} displays as {1} yet is still {0} in every PIC 9(04) field")
+        @CsvSource({
+            "2024,24",
+            "2000,00",
+            "2105,05",
+            "1999,99",
+        })
+        @DisplayName("the two-digit year is a DISPLAY narrowing, not a loss of the four-digit year")
+        void theFourDigitYearSurvivesInFull(int year, String displayed) {
+            DateHeader header = DateHeader.of(ASCII_CODEC, LocalDateTime.of(year, 6, 15, 12, 0, 0));
+
+            // Narrowed where the screen field is two characters wide - CSDAT01Y:35, WS-CURDATE-YY.
+            assertThat(header.wsCurdateYy()).isEqualTo(displayed).hasSize(2);
+            assertThat(header.wsCurdateMmDdYy()).endsWith(displayed);
+
+            // ...and still present in full wherever the copybook declares PIC 9(04). Reference
+            // modification narrows a copy for display; it does not shorten the source field.
+            String fourDigit = ASCII_CODEC.movePic9(year, DateHeader.YEAR_DIGITS);
+            assertThat(fourDigit).hasSize(4).endsWith(displayed);
+            assertThat(header.fieldImages())
+                    // source: app/cpy/CSDAT01Y.cpy:20 - WS-CURDATE-YEAR PIC 9(04)
+                    .containsEntry(DateHeader.WS_CURDATE_YEAR, fourDigit)
+                    // source: app/cpy/CSDAT01Y.cpy:43 - WS-TIMESTAMP-DT-YYYY PIC 9(04)
+                    .containsEntry(DateHeader.WS_TIMESTAMP_DT_YYYY, fourDigit);
+            assertThat(header.captured().year()).isEqualTo(year);
+            assertThat(header.wsCurdate()).startsWith(fourDigit);
+            assertThat(header.wsCurdateData()).startsWith(fourDigit);
+            assertThat(header.wsTimestamp()).startsWith(fourDigit + "-");
+            assertThat(header.wsCurdateN()).isEqualTo(Integer.parseInt(fourDigit + "0615"));
         }
     }
 
@@ -520,6 +978,98 @@ class DateHeaderTest {
             assertThat(span.length()).isEqualTo(DateHeader.REDEFINED_VIEW_DIGITS).isEqualTo(8);
             assertThat(span.kind()).isEqualTo(PictureKind.UNSIGNED_NUMERIC);
             assertThat(span.redefinition()).isTrue();
+        }
+
+        @ParameterizedTest(name = "{0} REDEFINES {1} at offset {2}: one span, two views, no extra bytes")
+        @CsvSource({
+            // source: app/cpy/CSDAT01Y.cpy:23 - 10 WS-CURDATE-N REDEFINES WS-CURDATE PIC 9(08)
+            "WS-CURDATE-N,WS-CURDATE,0",
+            // source: app/cpy/CSDAT01Y.cpy:29 - 10 WS-CURTIME-N REDEFINES WS-CURTIME PIC 9(08)
+            "WS-CURTIME-N,WS-CURTIME,8",
+        })
+        @DisplayName("both views report the same offset and length, and the overlay adds zero bytes")
+        void bothViewsReportTheSameOffsetAndLength(String overlayName, String componentName,
+                int offset) {
+            FieldSpan overlay = DateHeader.WS_DATE_TIME_LAYOUT.span(overlayName);
+            FieldSpan component = DateHeader.WS_DATE_TIME_LAYOUT.span(componentName);
+
+            // Same offset, same length, same end: this is one span addressed by two names, which is
+            // exactly what REDEFINES means and why the two views can never disagree.
+            assertThat(overlay.offset()).isEqualTo(component.offset()).isEqualTo(offset);
+            assertThat(overlay.length()).isEqualTo(component.length())
+                    .isEqualTo(DateHeader.REDEFINED_VIEW_DIGITS);
+            assertThat(overlay.endOffsetExclusive()).isEqualTo(component.endOffsetExclusive())
+                    .isEqualTo(offset + DateHeader.REDEFINED_VIEW_DIGITS);
+
+            // Two views, two PICTUREs: the overlay is numeric, the group it redefines is character.
+            assertThat(overlay.kind()).isEqualTo(PictureKind.UNSIGNED_NUMERIC);
+            assertThat(component.kind()).isEqualTo(PictureKind.ALPHANUMERIC);
+
+            // Zero added bytes: the overlay is an overlay, not storage, and the record is still 58.
+            assertThat(overlay.redefinition()).isTrue();
+            assertThat(DateHeader.WS_DATE_TIME_LAYOUT.redefinitions()).contains(overlay);
+            assertThat(DateHeader.WS_DATE_TIME_LAYOUT.storageSpans()).doesNotContain(overlay);
+            assertThat(DateHeader.WS_DATE_TIME_LAYOUT.recordLength())
+                    .isEqualTo(DateHeader.WS_DATE_TIME_LENGTH).isEqualTo(58);
+            assertThat(referenceHeader().toBytes()).hasSize(58);
+        }
+
+        @Test
+        @DisplayName("writing through the component fields reads back through the numeric overlay")
+        void componentToOverlayRoundTrip() {
+            // Direction one: populate WS-CURDATE-YEAR / -MONTH / -DAY and WS-CURTIME's four fields,
+            // then read WS-CURDATE-N and WS-CURTIME-N - the eight-digit views of those same bytes.
+            byte[] record = ASCII_CODEC.serialise(DateHeader.WS_DATE_TIME_LAYOUT, Map.of(
+                    DateHeader.WS_CURDATE_YEAR, "2024",
+                    DateHeader.WS_CURDATE_MONTH, "12",
+                    DateHeader.WS_CURDATE_DAY, "25",
+                    DateHeader.WS_CURTIME_HOURS, "13",
+                    DateHeader.WS_CURTIME_MINUTE, "45",
+                    DateHeader.WS_CURTIME_SECOND, "07",
+                    DateHeader.WS_CURTIME_MILSEC, "08"));
+
+            assertThat(record).hasSize(DateHeader.WS_DATE_TIME_LENGTH);
+
+            Map<String, String> images =
+                    ASCII_CODEC.deserialise(DateHeader.WS_DATE_TIME_LAYOUT, record);
+
+            assertThat(images.get(DateHeader.WS_CURDATE_N)).isEqualTo("20241225");
+            assertThat(images.get(DateHeader.WS_CURTIME_N)).isEqualTo("13450708");
+            assertThat(ASCII_CODEC.decodePic9AsInt(images.get(DateHeader.WS_CURDATE_N)))
+                    .isEqualTo(20241225);
+            assertThat(ASCII_CODEC.decodePic9AsInt(images.get(DateHeader.WS_CURTIME_N)))
+                    .isEqualTo(13450708);
+            assertThat(images.get(DateHeader.WS_CURDATE_DATA)).isEqualTo(REFERENCE_CURDATE_DATA);
+        }
+
+        @Test
+        @DisplayName("writing through the numeric overlay reads back through the component fields")
+        void overlayToComponentRoundTrip() {
+            // Direction two, the reverse: populate only the eight-digit REDEFINES views and read the
+            // elementary fields back out. Nothing else is named, so every other span keeps the content
+            // the layout initialised it with - and the record is still exactly 58 bytes, which is the
+            // proof that an overlay contributes no storage of its own.
+            byte[] record = ASCII_CODEC.serialise(DateHeader.WS_DATE_TIME_LAYOUT, Map.of(
+                    DateHeader.WS_CURDATE_N, "20241225",
+                    DateHeader.WS_CURTIME_N, "13450708"));
+
+            assertThat(record).hasSize(DateHeader.WS_DATE_TIME_LENGTH).hasSize(58);
+
+            Map<String, String> images =
+                    ASCII_CODEC.deserialise(DateHeader.WS_DATE_TIME_LAYOUT, record);
+
+            assertThat(images)
+                    .containsEntry(DateHeader.WS_CURDATE_YEAR, "2024")
+                    .containsEntry(DateHeader.WS_CURDATE_MONTH, "12")
+                    .containsEntry(DateHeader.WS_CURDATE_DAY, "25")
+                    .containsEntry(DateHeader.WS_CURTIME_HOURS, "13")
+                    .containsEntry(DateHeader.WS_CURTIME_MINUTE, "45")
+                    .containsEntry(DateHeader.WS_CURTIME_SECOND, "07")
+                    .containsEntry(DateHeader.WS_CURTIME_MILSEC, "08");
+            assertThat(images.get(DateHeader.WS_CURDATE_DATA)).isEqualTo(REFERENCE_CURDATE_DATA);
+            // Both directions land the same 16 bytes, which is what "one span" has to mean.
+            assertThat(new String(record, ASCII).substring(0, DateHeader.WS_CURDATE_DATA_LENGTH))
+                    .isEqualTo(REFERENCE_CURDATE_DATA);
         }
     }
 
@@ -588,6 +1138,92 @@ class DateHeaderTest {
 
             assertThat(header.captured().gmtOffsetMinutes()).isEqualTo(19);
             assertThat(header.gmtOffsetImage()).isEqualTo("+0019").hasSize(5);
+        }
+
+        @Test
+        @DisplayName("WS-CURTIME-MILSEC is TWO digits of hundredths, whatever its name suggests")
+        void milsecHoldsHundredthsNotMilliseconds() {
+            // source: app/cpy/CSDAT01Y.cpy:28 - WS-CURTIME-MILSEC PIC 9(02), two digits.
+            // What is moved into it is the 'ss' field of FUNCTION CURRENT-DATE's 21-character result,
+            // and that field is HUNDREDTHS of a second. The name says MILSEC; the intrinsic supplies
+            // cc. Neither the name nor the width is corrected here: the parity differ compares field
+            // images by name, so a tidied name would make a genuine difference invisible, and a third
+            // digit would widen WS-CURTIME past its declared 8 bytes and shift the whole record.
+            DateHeader header = referenceHeader();
+
+            String milsec = header.fieldImages().get(DateHeader.WS_CURTIME_MILSEC);
+
+            assertThat(milsec).hasSize(DateHeader.MILSEC_DIGITS).hasSize(2).isEqualTo("08");
+            assertThat(header.captured().hundredths()).isEqualTo(8);
+            assertThat(DateHeader.WS_DATE_TIME_LAYOUT.span(DateHeader.WS_CURTIME_MILSEC).length())
+                    .isEqualTo(2);
+
+            // The instant was chosen so that hundredths and milliseconds are DIFFERENT numbers:
+            // 0.089123 s is 8 hundredths but 89 milliseconds. An implementation that reported
+            // milliseconds here would render "89", so this pair of assertions tells them apart.
+            int milliseconds = header.captured().microseconds() / 1_000;
+            assertThat(milliseconds).isEqualTo(89);
+            assertThat(milsec).isNotEqualTo("89").isNotEqualTo("089");
+            assertThat(header.captured().hundredths()).isNotEqualTo(milliseconds);
+
+            // WS-CURTIME is hh mm ss cc and nothing else, so MILSEC is its last two characters.
+            assertThat(header.wsCurtime()).endsWith(milsec).hasSize(8);
+            // WS-TIMESTAMP-TM-MS6 is the other declared precision - six digits, not two.
+            assertThat(header.fieldImages().get(DateHeader.WS_TIMESTAMP_TM_MS6))
+                    .hasSize(DateHeader.MICROSECOND_DIGITS).hasSize(6).isEqualTo("089123");
+        }
+
+        @ParameterizedTest(name = "{0} microseconds render as {1} hundredths and {2} in MS6")
+        @CsvSource({
+            "89123,08,089123",
+            "999999,99,999999",
+            "4999,00,004999",
+            "10000,01,010000",
+            "0,00,000000",
+        })
+        @DisplayName("hundredths are the microseconds truncated, never rounded")
+        void hundredthsAreTruncatedMicroseconds(int microseconds, String milsec, String ms6) {
+            DateHeader header = DateHeader.of(ASCII_CODEC,
+                    LocalDateTime.of(2024, 12, 25, 13, 45, 7, microseconds * 1_000));
+
+            assertThat(header.fieldImages())
+                    .containsEntry(DateHeader.WS_CURTIME_MILSEC, milsec)
+                    .containsEntry(DateHeader.WS_TIMESTAMP_TM_MS6, ms6);
+            // ROUNDED appears zero times in all 28 programs, so 0.004999 s is 00 hundredths - not 01.
+            assertThat(header.captured().hundredths()).isEqualTo(microseconds / 10_000);
+        }
+
+        @Test
+        @DisplayName("no time-zone offset text appears anywhere in the 58 bytes")
+        void theOffsetIsAbsentFromTheWholeImage() {
+            // The five-character shhmm offset belongs to FUNCTION CURRENT-DATE's 21-character result
+            // and is discarded by the move into the 16-byte WS-CURDATE-DATA group. It must therefore be
+            // absent from ALL 58 bytes, not merely from that first group: no span in
+            // app/cpy/CSDAT01Y.cpy declares a sign position anywhere.
+            DateHeader west = DateHeader.of(ASCII_CODEC, REFERENCE, ZoneOffset.ofHours(-6));
+            DateHeader east = DateHeader.of(ASCII_CODEC, REFERENCE, ZoneOffset.ofHoursMinutes(5, 45));
+
+            String westImage = new String(west.toBytes(), ASCII);
+            String eastImage = new String(east.toBytes(), ASCII);
+
+            assertThat(west.gmtOffsetImage()).isEqualTo("-0600");
+            assertThat(westImage).doesNotContain(west.gmtOffsetImage()).doesNotContain("0600");
+            assertThat(east.gmtOffsetImage()).isEqualTo("+0545");
+            assertThat(eastImage).doesNotContain(east.gmtOffsetImage()).doesNotContain("0545");
+
+            // A '+' cannot occur at all - nothing in the layout declares one.
+            assertThat(westImage).doesNotContain("+");
+            assertThat(eastImage).doesNotContain("+");
+            // The only '-' characters are the two WS-TIMESTAMP declares, at offsets 36 and 39, so a
+            // negative offset's sign has not slipped in as a third.
+            assertThat(westImage.chars().filter(character -> character == '-').count()).isEqualTo(2);
+            assertThat(westImage.indexOf('-')).isEqualTo(36);
+            assertThat(westImage.lastIndexOf('-')).isEqualTo(39);
+
+            // Two very different offsets, one identical image - and it is the declared literal.
+            assertThat(differingOffsets(westImage, eastImage)).isEmpty();
+            assertThat(westImage).isEqualTo(REFERENCE_IMAGE);
+            assertThat(eastImage).isEqualTo(REFERENCE_IMAGE);
         }
     }
 
@@ -1115,6 +1751,48 @@ class DateHeaderTest {
         @DisplayName("the layout constant cannot be mutated through its span list")
         void layoutSpansUnmodifiable() {
             assertThat(DateHeader.WS_DATE_TIME_LAYOUT.spans()).isUnmodifiable();
+        }
+
+        @Test
+        @DisplayName("WS-CURTIME-HH-MM-SS never disagrees with the captured instant it was filled from")
+        void curtimeHhMmSsIsAlwaysConsistentWithTheCapturedInstant() {
+            // An invariant of the whole API surface, asserted rather than assumed, and the reason the
+            // WS-CURTIME-HH-MM-SS term of equals() is defensive completeness rather than a live case.
+            //
+            // WS-CURTIME-HH-MM-SS is filled from WS-CURTIME's components at construction -
+            // POPULATE-HEADER-INFO's three MOVEs, app/cbl/COMEN01C.cbl:228-230 - and NO operation on
+            // this type refills it: withTimestampImage and withTimestampFromFormatTime replace
+            // WS-TIMESTAMP, withCurdateMmDdYyFromTimestamp replaces WS-CURDATE-MM-DD-YY, and each
+            // carries this group across untouched. So two headers that captured the same instant
+            // always agree here, however they were built and whatever was done to them afterwards.
+            //
+            // Note the deliberate contrast with WS-CURDATE-MM-DD-YY, which COTRN00C:385-387 genuinely
+            // does refill from another group - IndependentGroups asserts exactly that divergence.
+            String storedTimestamp = "2019-03-04 08:09:10.111213";
+            List<DateHeader> sameInstantByEveryRoute = List.of(
+                    DateHeader.of(ASCII_CODEC, REFERENCE),
+                    DateHeader.of(ASCII_CODEC, REFERENCE, ZoneOffset.UTC),
+                    DateHeader.from(ASCII_CODEC, fixedUtc("2024-12-25T13:45:07.089123Z")),
+                    DateHeader.of(ASCII_CODEC, REFERENCE).withTimestampImage(storedTimestamp),
+                    DateHeader.of(ASCII_CODEC, REFERENCE)
+                            .withTimestampImage(storedTimestamp)
+                            .withCurdateMmDdYyFromTimestamp(),
+                    DateHeader.of(ASCII_CODEC, REFERENCE)
+                            .withTimestampFromFormatTime("2024-12-25", "13:45:07"));
+
+            assertThat(sameInstantByEveryRoute).allSatisfy(header -> {
+                assertThat(header.captured()).isEqualTo(referenceHeader().captured());
+                assertThat(header.wsCurtimeHhMmSs())
+                        .as("equal captured instants must render an equal WS-CURTIME-HH-MM-SS")
+                        .isEqualTo("13:45:07")
+                        .isEqualTo(referenceHeader().wsCurtimeHhMmSs());
+            });
+
+            // Changing the instant changes this group, so it is genuinely derived from it and not a
+            // constant that happens to agree.
+            assertThat(DateHeader.of(ASCII_CODEC, REFERENCE.plusMinutes(1)).wsCurtimeHhMmSs())
+                    .isEqualTo("13:46:07")
+                    .isNotEqualTo(referenceHeader().wsCurtimeHhMmSs());
         }
     }
 

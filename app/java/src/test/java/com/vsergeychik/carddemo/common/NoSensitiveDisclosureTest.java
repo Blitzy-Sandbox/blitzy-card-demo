@@ -675,6 +675,22 @@ class NoSensitiveDisclosureTest {
                                     StandardCharsets.US_ASCII);
                     trnx.writeTrnxCardNum(atWidth(PROBE + "CARDNUM", 16));
                     return new ProbeCase(trnx, List.of(PROBE + "CARDNUM"));
+                },
+
+                "com.vsergeychik.carddemo.transaction.model.DalyTranRecord",
+                () -> {
+                    // CVTRA06Y's DALYTRAN-CARD-NUM is PIC X(16). Probed rather than excused into
+                    // RENDERINGS_NOT_PROBED, even though its rendering decodes DALYTRAN-AMT the way
+                    // TranRecord's does: the constructor INITIALIZEs the three numeric spans to zeros, so
+                    // an allocated area is renderable without a fixture and the guard gets to exercise
+                    // this rendering for real. That matters here - CBTRN01C:168 displays the whole daily
+                    // record and CBTRN02C:447 copies it onto the rejects file, so a card number moves
+                    // through this type on both the posted and the rejected path.
+                    com.vsergeychik.carddemo.transaction.model.DalyTranRecord daly =
+                            new com.vsergeychik.carddemo.transaction.model.DalyTranRecord(
+                                    StandardCharsets.US_ASCII);
+                    daly.moveDalytranCardNum(atWidth(PROBE + "CARDNUM", 16));
+                    return new ProbeCase(daly, List.of(PROBE + "CARDNUM"));
                 });
 
         /**

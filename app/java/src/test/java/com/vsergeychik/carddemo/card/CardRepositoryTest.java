@@ -17,17 +17,21 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.lang.annotation.Annotation;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -64,17 +68,76 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for {@link CardRepository}, the data-access component for the {@code CARDDAT} base
- * cluster and its {@code CARDAIX} alternate-index path.
+ * Unit tests for {@link CardRepository}, the single data-access component for the {@code CARDDAT} base
+ * cluster <em>and</em> its {@code CARDAIX} alternate-index path.
+ *
+ * <h2>What is under test, and where it comes from</h2>
+ *
+ * <p>The unit is the Java migration of the card file access performed by three CICS programs, and the
+ * COBOL is the only oracle for it - this is a like-for-like language migration, so every assertion below
+ * traces to a measured line of source rather than to what a repository "ought" to do:
+ * <ul>
+ *   <li>{@code app/cbl/COCRDSLC.cbl} - the keyed read on the base cluster at {@code :742} (paragraph
+ *       {@code 9100-GETCARD-BYACCTCARD}, key {@code LENGTH OF WS-CARD-RID-CARDNUM} = 16) and the
+ *       alternate-index read at {@code :783-784} (paragraph {@code 9150-GETCARD-BYACCT}, key
+ *       {@code LENGTH OF WS-CARD-RID-ACCT-ID} = 11), each with its own three-armed
+ *       {@code EVALUATE WS-RESP-CD} at {@code :752-772};</li>
+ *   <li>{@code app/cbl/COCRDUPC.cbl} - the same keyed read at {@code :1382}, the locking
+ *       {@code READ ... UPDATE} at {@code :1427-1436} with its two-way could-not-lock test at
+ *       {@code :1441-1449}, and the full-width {@code REWRITE} at {@code :1478-1484} with its own
+ *       two-way test at {@code :1488-1493};</li>
+ *   <li>{@code app/cbl/COCRDLIC.cbl} - the browse: {@code STARTBR} at {@code :1129} forward and
+ *       {@code :1273} backward, {@code READNEXT} at {@code :1146} and {@code :1197}, {@code READPREV}
+ *       at {@code :1294} and {@code :1322}, {@code ENDBR} at {@code :1258} and {@code :1376}.</li>
+ * </ul>
+ * The record shape is {@code app/cpy/CVACT02Y.cpy}: {@code 01 CARD-RECORD}, exactly 150 bytes, ending in
+ * {@code FILLER PIC X(59)}. The dataset names are {@code app/csd/CARDDEMO.CSD}'s, reached only as
+ * {@code carddemo.datasets} configuration keys. All of these are read-only reference inputs, cited here
+ * and never opened, copied or written by any test in this file.
+ *
+ * <h2>Governing directives</h2>
+ *
+ * <p><strong>No user rules were provided for this project</strong> - {@code review_rules} returns the
+ * single line "No user rules provided", which is the whole document. Their absence is not licence to
+ * lower the bar: this file is held instead to the enterprise practices the Agent Action Plan codifies in
+ * §0.10.2 B1-B12 and to the absolutes in §0.8.9. Specifically B1, the closed test stack (JUnit Jupiter,
+ * Mockito and AssertJ as {@code spring-boot-starter-test} supplies them - nothing added, no version
+ * literal anywhere); B2, JUnit 5 only; B3, the reference tree is immutable and is never read at runtime -
+ * fixture bytes arrive from the test classpath at {@value #FIXTURE}; B7, deterministic and
+ * non-interactive - no network, no wall clock, no randomness, no ordering between tests; B8, explicit
+ * over implicit - the code page is always named and never the platform default; B9, no static mutable
+ * state; and B11, hand-written assertions against explicit copybook offsets rather than a parser or a
+ * reflective deep-equality that would hide which offset diverged.
+ *
+ * <h2>Gates this file is answerable for</h2>
+ *
+ * <table>
+ *   <caption>Validation gates and where they are asserted</caption>
+ *   <tr><th>Gate</th><th>Assertion</th></tr>
+ *   <tr><td>G45</td><td>the alternate index is a second access path on <em>one</em> repository over
+ *       <em>one</em> dataset - never a second repository, table or {@code DataSource}: enforced at
+ *       construction in {@link ConstructionTest} and proved behaviourally in
+ *       {@link ReadByAccountIdTest#theSameRecordIsReachableThroughBothPaths()}</td></tr>
+ *   <tr><td>G46</td><td>no {@code DSNAME} literal appears in Java: every statement names only what
+ *       configuration supplied ({@link ConstructionTest})</td></tr>
+ *   <tr><td>G47</td><td>every {@link FileStatus} outcome is exercised <em>per call site</em>, because
+ *       each COBOL paragraph carries its own {@code EVALUATE}</td></tr>
+ *   <tr><td>G19, G21</td><td>150 bytes on the wire with the reserved span space-filled
+ *       ({@link RewriteTest}, {@link RealFixtureRoundTripTest})</td></tr>
+ *   <tr><td>G44</td><td>nothing schema-shaped is required or emitted - no DDL, no entity annotation, no
+ *       version column ({@link NoSchemaFootprintTest})</td></tr>
+ *   <tr><td>G49</td><td>these tests are what carry {@code com.vsergeychik.carddemo.card} over the
+ *       JaCoCo {@code BRANCH} &ge; 0.90 rule, which is scoped per package</td></tr>
+ *   <tr><td>G52, G53</td><td>every import is explicit and no field is static and mutable</td></tr>
+ * </table>
  *
  * <p>Every test runs against a stubbed template with <strong>no backend of any kind</strong> - no HTTP,
  * no job launcher, no embedded database. That is not a convenience: production connectivity cannot be
  * exercised in this environment at all (residual risk R-E), so every arm of every guard chain has to be
- * reachable without one, and these tests are the proof that it is.
- *
- * <p>The exception is {@link RealFixtureRoundTripTest}, which reads the real fifty-record fixture from
- * {@code app/data/ASCII/carddata.txt} - read-only, as a reference input - to prove that what this
- * repository decodes from a row and what it would send back are the same bytes.
+ * reachable without one, and these tests are the proof that it is. {@link RealFixtureRoundTripTest} adds
+ * the real fifty-record fixture on the classpath - byte-identical to
+ * {@code app/data/ASCII/carddata.txt} - to prove that what this repository decodes from a row and what it
+ * would send back are the same bytes.
  */
 @DisplayName("CardRepository - CARDDAT base cluster and CARDAIX alternate-index path")
 class CardRepositoryTest {
@@ -93,6 +156,46 @@ class CardRepositoryTest {
 
     /** The expiry the first fixture row carries, measured from the fixture. */
     private static final String FIRST_FIXTURE_EXPIRAION_DATE = "2023-03-09";
+
+    /** The embossed name the first fixture row carries: nine characters in a fifty-byte span. */
+    private static final String FIRST_FIXTURE_EMBOSSED_NAME = "Aniya Von";
+
+    /** The active-status flag the first fixture row carries. */
+    private static final String FIRST_FIXTURE_ACTIVE_STATUS = "Y";
+
+    /**
+     * The card fixture, <strong>on the test classpath</strong>.
+     *
+     * <p>This file is a byte-identical copy of {@code app/data/ASCII/carddata.txt}, shipped under
+     * {@code src/test/resources} precisely so that no test has to reach into the reference tree. AAP
+     * §0.10.2 B3 makes that tree immutable and forbids opening it at runtime - it is the parity oracle,
+     * and a test that reads it through a relative path is also a test that depends on the directory the
+     * build happened to be launched from, which B7 rules out. Unlike {@code cardxref.txt}, this fixture
+     * needs no width normalisation: all fifty rows measure exactly {@value CardRecord#RECORD_LENGTH}
+     * bytes, matching {@code app/cpy/CVACT02Y.cpy} as declared.
+     */
+    private static final String FIXTURE = "/fixtures/carddata.txt";
+
+    /** The fixture's measured record count. */
+    private static final int FIXTURE_RECORDS = 50;
+
+    /**
+     * The code page of the {@code app/data/ASCII} fixtures, named rather than inherited.
+     *
+     * <p>{@link CobolCharsetConfig} publishes exactly this choice as a bean: {@code IBM037} for the
+     * EBCDIC datasets and {@code US-ASCII} for these text fixtures, with the active dataset code page
+     * selected per profile. The platform default is consulted nowhere in the module, and nowhere here.
+     */
+    private static final Charset FIXTURE_CHARSET = StandardCharsets.US_ASCII;
+
+    /**
+     * The EBCDIC code page {@link CobolCharsetConfig} names for the binary datasets.
+     *
+     * <p>Held here only to prove the negative: decoding these bytes under the wrong code page does not
+     * quietly produce the same fields, which is what makes naming the code page load-bearing rather than
+     * decorative.
+     */
+    private static final Charset EBCDIC_CHARSET = Charset.forName("IBM037");
 
     /**
      * An account id whose digits exercise the full eleven-digit width, for the key-shape tests. It is
@@ -141,7 +244,7 @@ class CardRepositoryTest {
      * @param <T>  its result type
      * @return the body's result
      */
-    private static <T> T inUnitOfWork(java.util.function.Supplier<T> work) {
+    private static <T> T inUnitOfWork(Supplier<T> work) {
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
             return work.get();
@@ -250,6 +353,65 @@ class CardRepositoryTest {
     private static DatasetBinding cardAixBinding(String base, String alternateKey, int recordLength) {
         return new DatasetBinding("CARDDEMO.CARDDATA.AIX.PATH", "aix-path", false, "FB", null,
                 recordLength, "CVACT02Y", null, null, base, alternateKey);
+    }
+
+    /**
+     * The fixture's rows, exactly as stored and with nothing trimmed.
+     *
+     * <p>Read from the test classpath, never from {@code app/data/ASCII} - see {@link #FIXTURE}. The
+     * code page is stated, not inherited (AAP §0.10.2 B8), and the line terminator is dropped without
+     * touching anything inside a row, because trailing spaces inside a fixed-width record are data.
+     *
+     * @return the {@value #FIXTURE_RECORDS} rows in file order, each exactly
+     *         {@value CardRecord#RECORD_LENGTH} characters
+     */
+    private static List<String> fixtureRows() {
+        try (InputStream stream = CardRepositoryTest.class.getResourceAsStream(FIXTURE)) {
+            assertThat(stream).as("the fixture %s must be on the test classpath", FIXTURE).isNotNull();
+            List<String> rows = new ArrayList<>();
+            for (String line : new String(stream.readAllBytes(), FIXTURE_CHARSET).split("\n", -1)) {
+                if (!line.isEmpty()) {
+                    rows.add(line);
+                }
+            }
+            return rows;
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Unable to read the CARDDAT fixture " + FIXTURE, unreadable);
+        }
+    }
+
+    /**
+     * A text resource read from the test classpath, with the code page named.
+     *
+     * <p>Used to read the module's own configuration documents, which are classpath resources of this
+     * build - not the reference tree, which AAP §0.10.2 B3 keeps closed.
+     *
+     * @param resource the absolute classpath location
+     * @return the resource's text
+     */
+    private static String classpathText(String resource) {
+        try (InputStream stream = CardRepositoryTest.class.getResourceAsStream(resource)) {
+            assertThat(stream).as("%s must be on the test classpath", resource).isNotNull();
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Unable to read " + resource, unreadable);
+        }
+    }
+
+    /**
+     * Whether a YAML document declares a mapping key, at any indentation.
+     *
+     * @param yaml the document text
+     * @param key  the key name, without its colon
+     * @return {@code true} if some line is exactly that key
+     */
+    private static boolean declaresKey(String yaml, String key) {
+        for (String line : yaml.split("\n", -1)) {
+            if (line.strip().equals(key + ":")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -445,6 +607,43 @@ class CardRepositoryTest {
             assertThat(sql.selectByCardNumber()).contains("OTHER.PLACE.ENTIRELY");
             assertThat(sql.rewrite()).contains("OTHER.PLACE.ENTIRELY");
             assertThat(sql.selectByCardNumber()).doesNotContain("CARDDATA.KSDS");
+        }
+
+        @Test
+        @DisplayName("gate G46: both dataset names are resolved by configuration key, in both profiles")
+        void bothDatasetNamesAreResolvedByConfigurationKey() {
+            // The names this repository uses are looked up as carddemo.datasets.CARDDAT and
+            // carddemo.datasets.CARDAIX, and nowhere else. Two halves are asserted here:
+            //
+            //  - the Java side never spells a dataset name. The DD names below are configuration KEYS,
+            //    not dataset names, and no production dataset name appears anywhere in this file - not in
+            //    code and not in a comment, which is the whole of gate G46. That is also why every test in
+            //    this class supplies its own names through a binding catalogue rather than expecting a
+            //    built-in one.
+            //  - the configuration side really declares those two keys, in the production document and in
+            //    the test profile alike. A rename on either side would otherwise be found only at
+            //    context refresh, and the failure would name a missing binding rather than a renamed key.
+            //
+            // Only the keys are asserted, never their values: reading a value into this file would put a
+            // dataset name back into Java by the back door.
+            assertThat(CardRepository.BASE_DD_NAME).isEqualTo("CARDDAT");
+            assertThat(CardRepository.ALTERNATE_INDEX_DD_NAME).isEqualTo("CARDAIX");
+
+            for (String document : List.of("/application.yml", "/application-test.yml")) {
+                String yaml = classpathText(document);
+                assertThat(declaresKey(yaml, "carddemo"))
+                        .as("%s declares the carddemo configuration root", document).isTrue();
+                assertThat(declaresKey(yaml, "datasets"))
+                        .as("%s declares the datasets catalogue", document).isTrue();
+                assertThat(declaresKey(yaml, CardRepository.BASE_DD_NAME))
+                        .as("%s binds the %s key this repository looks its base cluster up under",
+                                document, CardRepository.BASE_DD_NAME)
+                        .isTrue();
+                assertThat(declaresKey(yaml, CardRepository.ALTERNATE_INDEX_DD_NAME))
+                        .as("%s binds the %s key this repository looks its alternate-index path up under",
+                                document, CardRepository.ALTERNATE_INDEX_DD_NAME)
+                        .isTrue();
+            }
         }
 
         @Test
@@ -760,6 +959,59 @@ class CardRepositoryTest {
         }
 
         @Test
+        @DisplayName("the key is sixteen bytes wide: LENGTH OF WS-CARD-RID-CARDNUM, COCRDSLC:742")
+        void theKeyLengthIsSixteen() throws SQLException {
+            // COCRDSLC:742 and COCRDUPC:1382 both pass KEYLENGTH(LENGTH OF WS-CARD-RID-CARDNUM), and
+            // WS-CARD-RID-CARDNUM is PIC X(16) (COCRDSLC:98, COCRDUPC:129). Sixteen is therefore not a
+            // convention this class chose - it is the full width of CARDDAT's primary key, and a read
+            // issued with a shorter key would be a generic key read, which CICS treats as a different
+            // request entirely. Three things must agree on it: the copybook constant, the key span this
+            // repository binds, and the bytes that actually reach the statement.
+            stubFetch(FetchedRows.empty());
+
+            repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(CardRecord.CARD_NUM_LENGTH).isEqualTo(16);
+            assertThat(CardRecord.cardDatPrimaryKeySpan().length())
+                    .isEqualTo(CardRecord.CARD_NUM_LENGTH);
+            assertThat(CardRecord.cardDatPrimaryKeySpan().offset())
+                    .as("CARD-NUM begins the record, so nothing precedes the key")
+                    .isZero();
+
+            ArgumentCaptor<String> bound = ArgumentCaptor.forClass(String.class);
+            verify(capturePreparedStatement()).setString(eq(1), bound.capture());
+            String pattern = bound.getValue();
+            assertThat(pattern.substring(0, CardRecord.CARD_NUM_LENGTH))
+                    .as("the first sixteen bytes of the predicate are the key, in full")
+                    .isEqualTo(FIRST_FIXTURE_CARD_NUM);
+            assertThat(pattern.substring(CardRecord.CARD_NUM_LENGTH))
+                    .as("and everything after the key span is unconstrained, so no other field takes "
+                            + "part in the match")
+                    .isEqualTo("%");
+        }
+
+        @Test
+        @DisplayName("WHEN OTHER: both RESP and RESP2 reach the caller, as COCRDSLC:768-771 renders them")
+        void bothResponseCodesReachTheCaller() {
+            // COCRDSLC:768-771 moves WS-RESP-CD and WS-REAS-CD into the composed error message, so both
+            // halves of the response pair have to survive the trip - a result that carried only the
+            // response would leave that message with a blank where the reason code belongs. The pair is
+            // carried on every arm, named, and a measurement is never smuggled into resp2's place.
+            stubFetch(new FetchedRows(new byte[CardRecord.RECORD_LENGTH - 1], 1));
+
+            CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(result.resp()).as("RESP: WS-RESP-CD").isEqualTo(FileStatus.LENGERR);
+            assertThat(result.resp2()).as("RESP2: WS-REAS-CD").isEqualTo(CardRepository.NO_REASON_CODE);
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.observation())
+                    .as("the measured width travels labelled, beside the pair - never inside it")
+                    .isPresent();
+            assertThat(result.observation().orElseThrow().value())
+                    .isEqualTo(CardRecord.RECORD_LENGTH - 1);
+        }
+
+        @Test
         @DisplayName("bounds the fetch: a unique key cannot want more than one row")
         void boundsTheFetch() throws SQLException {
             stubFetch(FetchedRows.empty());
@@ -857,6 +1109,66 @@ class CardRepositoryTest {
             assertThat(result.isNormal()).isFalse();
             assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
         }
+
+        @Test
+        @DisplayName("one result serves both sides of the IF WS-RETURN-MSG-OFF guard, COCRDUPC:1441-1449")
+        void oneResultServesBothSidesOfTheReturnMessageGuard() {
+            // The COBOL guard has two nested decisions, and only the outer one belongs to this layer:
+            //
+            //   IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)      <-- the repository's decision
+            //      CONTINUE
+            //   ELSE
+            //      SET INPUT-ERROR TO TRUE
+            //      IF  WS-RETURN-MSG-OFF                    <-- the controller's decision
+            //          SET COULD-NOT-LOCK-FOR-UPDATE TO TRUE
+            //      END-IF
+            //      GO TO 9200-WRITE-PROCESSING-EXIT
+            //   END-IF
+            //
+            // WS-RETURN-MSG-OFF asks whether a message is ALREADY pending on the screen, which is screen
+            // state - it lives in the controller, and putting it here would make the repository answer a
+            // question it cannot see. What this layer owes both sides is therefore the same thing: one
+            // result, from which a caller with a message pending suppresses the lock diagnostic and a
+            // caller without one raises it. So both sides are driven here against a single result, and the
+            // demand is that reading it is stable: the ELSE branch is taken identically either way, and no
+            // amount of re-reading changes what the caller would decide. A result that mutated on read, or
+            // that reported the lock as taken to one caller and not the other, would break the guard.
+            stubFetch(FetchedRows.empty());
+
+            CardReadResult result =
+                    inUnitOfWork(() -> repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM));
+
+            // Side 1 - WS-RETURN-MSG-OFF true: nothing is pending, so this caller sets
+            // COULD-NOT-LOCK-FOR-UPDATE. It needs to know the lock was not taken, and why.
+            boolean returnMessageOff = true;
+            boolean couldNotLockForUpdate = !result.isNormal() && returnMessageOff;
+            assertThat(couldNotLockForUpdate)
+                    .as("with no message pending, the ELSE arm raises COULD-NOT-LOCK-FOR-UPDATE")
+                    .isTrue();
+
+            // Side 2 - WS-RETURN-MSG-OFF false: a message is already on the screen, so this caller takes
+            // the same ELSE arm and sets INPUT-ERROR only, leaving the earlier message in place.
+            returnMessageOff = false;
+            boolean inputError = !result.isNormal();
+            couldNotLockForUpdate = !result.isNormal() && returnMessageOff;
+            assertThat(inputError).as("INPUT-ERROR is set on the ELSE arm regardless").isTrue();
+            assertThat(couldNotLockForUpdate)
+                    .as("but the pending message is not overwritten")
+                    .isFalse();
+
+            // The result both sides read is the same object read twice, and it says the same thing twice:
+            // the lock was not taken, with the response pair intact for the diagnostic either caller
+            // chooses to compose.
+            assertThat(result.isNormal()).isFalse();
+            assertThat(result.isNormal()).as("reading it again cannot change the guard's outcome")
+                    .isFalse();
+            assertThat(result.record()).as("no record was locked, so none is handed out").isEmpty();
+            assertThat(result.resp()).isEqualTo(FileStatus.NOTFND);
+            assertThat(result.resp2()).isEqualTo(CardRepository.NO_REASON_CODE);
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("and it refuses to invent a record for the arm that returns none")
+                    .isThrownBy(result::requireRecord);
+        }
     }
 
     // =============================================================================================
@@ -886,6 +1198,96 @@ class CardRepositoryTest {
             assertThat(pathStatement)
                     .contains(repository.alternateIndexDatasetName())
                     .doesNotContain(repository.baseDatasetName());
+        }
+
+        @Test
+        @DisplayName("the alternate key is eleven bytes at offset 16: COCRDSLC:783-784")
+        void theAlternateKeyLengthIsEleven() throws SQLException {
+            // COCRDSLC:783-784 reads the path with RIDFLD(WS-CARD-RID-ACCT-ID), and WS-CARD-RID-ACCT-ID
+            // is PIC 9(11) - so eleven digits, and eleven is the whole of CARDDAT's alternate key. The
+            // offset matters as much as the width: CARD-ACCT-ID sits at 16 in CVACT02Y, whereas the
+            // cross-reference record CVACT03Y carries an account id of the same width at a DIFFERENT
+            // offset. A predicate that lost the offset would read the wrong records while looking right.
+            stubFetch(FetchedRows.empty());
+
+            repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID);
+
+            assertThat(CardRecord.CARD_ACCT_ID_LENGTH).isEqualTo(11);
+            assertThat(CardRecord.cardAixAlternateKeySpan().length())
+                    .isEqualTo(CardRecord.CARD_ACCT_ID_LENGTH);
+            assertThat(CardRecord.cardAixAlternateKeySpan().offset())
+                    .isEqualTo(CardRecord.CARD_ACCT_ID_OFFSET).isEqualTo(16);
+
+            ArgumentCaptor<String> bound = ArgumentCaptor.forClass(String.class);
+            verify(capturePreparedStatement()).setString(eq(1), bound.capture());
+            String pattern = bound.getValue();
+            assertThat(pattern.substring(0, CardRecord.CARD_ACCT_ID_OFFSET))
+                    .as("the sixteen leading single-character wildcards ARE the offset, in SQL")
+                    .isEqualTo("_".repeat(CardRecord.CARD_ACCT_ID_OFFSET));
+            assertThat(pattern.substring(CardRecord.CARD_ACCT_ID_OFFSET,
+                    CardRecord.CARD_ACCT_ID_OFFSET + CardRecord.CARD_ACCT_ID_LENGTH))
+                    .as("eleven digits, zero-filled on the left as PIC 9(11) requires")
+                    .isEqualTo("00000000050").hasSize(11);
+        }
+
+        @Test
+        @DisplayName("gate G45: the same record is reachable through both paths, byte for byte")
+        void theSameRecordIsReachableThroughBothPaths() {
+            // THE gate G45 assertion, stated as behaviour rather than as structure.
+            //
+            // CARDAIX is not a second dataset and not a second copy of the data: app/csd/CARDDEMO.CSD
+            // defines FILE(CARDAIX) at :13 with a DSNAME ending ".VSAM.AIX.PATH" - a VSAM PATH over the
+            // base cluster FILE(CARDDAT) defines at :25 - so the two names address one set of records
+            // through two access paths. The names themselves are deliberately not written here, in this
+            // comment or anywhere else in this file: gate G46 keeps every dataset name in configuration,
+            // and a name in a comment is the first step to a name in code.
+            // app/jcl/INTCALC.jcl proves the pattern is the norm on
+            // this system rather than an interpretation: one step opens the cross-reference twice, as
+            // XREFFILE on the base KSDS and XREFFIL1 on the AIX path over that same base.
+            //
+            // The industry default would be two repositories, or two tables, or a join. AAP §0.7.4
+            // forbids all three, and this test is what makes the prohibition checkable: one repository,
+            // one relation of records, two keys - and a record fetched by card number is byte-identical
+            // to the record fetched by that record's own account id. There is deliberately no second
+            // CardRepository, no second DataSource and no second JdbcTemplate anywhere in this file.
+            CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
+            stubFetch(oneRow(stored));
+
+            CardRecord throughTheBase =
+                    repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).requireRecord();
+            CardRecord throughThePath =
+                    repository.readByAccountIdViaAltIndex(throughTheBase.cardAcctId())
+                            .requireRecord();
+
+            // All 150 bytes, compared as bytes: the strongest form of "the same record".
+            assertThat(throughThePath.encode(codec))
+                    .as("gate G45: one dataset, two access paths - so one record")
+                    .hasSize(CardRecord.RECORD_LENGTH)
+                    .isEqualTo(throughTheBase.encode(codec));
+
+            // And field by field, so a failure names the span that diverged rather than one opaque
+            // inequality over 150 bytes (AAP §0.3.8 and §0.10.2 B11).
+            assertThat(throughThePath.cardNum()).isEqualTo(throughTheBase.cardNum());
+            assertThat(throughThePath.cardAcctId()).isEqualTo(throughTheBase.cardAcctId());
+            assertThat(throughThePath.cardCvvCd()).isEqualTo(throughTheBase.cardCvvCd());
+            assertThat(throughThePath.cardEmbossedName())
+                    .isEqualTo(throughTheBase.cardEmbossedName());
+            assertThat(throughThePath.cardExpiraionDate())
+                    .isEqualTo(throughTheBase.cardExpiraionDate());
+            assertThat(throughThePath.cardActiveStatus())
+                    .isEqualTo(throughTheBase.cardActiveStatus());
+
+            // ONE repository and ONE template served both reads. That is the structural half of G45, and
+            // it is asserted rather than assumed: two reads, two configured names, one component. The
+            // constructor is what keeps the second name honest - it refuses a path binding that claims to
+            // index a different base or a different alternate key, which ConstructionTest drives directly.
+            verify(jdbcTemplate, times(2)).query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor());
+            assertThat(repository.alternateIndexDatasetName())
+                    .as("two distinct configured names, both reached through this one repository")
+                    .isNotEqualTo(repository.baseDatasetName());
+            assertThat(CardRepository.ALTERNATE_INDEX_DD_NAME).isEqualTo("CARDAIX");
+            assertThat(CardRepository.BASE_DD_NAME).isEqualTo("CARDDAT");
         }
 
         @Test
@@ -1060,6 +1462,65 @@ class CardRepositoryTest {
             String filler = sent.substring(CardRecord.FILLER_OFFSET,
                     CardRecord.FILLER_OFFSET + CardRecord.FILLER_LENGTH);
             assertThat(filler).isEqualTo(" ".repeat(CardRecord.FILLER_LENGTH)).hasSize(59);
+        }
+
+        @Test
+        @DisplayName("round trip: a mutated record rewritten and re-read matches field for field")
+        void rewriteRoundTripsFieldByField() throws SQLException {
+            // The full COCRDUPC sequence, end to end: read the record under a lock (:1427-1436), change
+            // the fields the screen changed, rewrite at full width (:1478-1484), and read back what is
+            // now stored. The comparison is FIELD BY FIELD, never as one whole string - that is the AAP
+            // §0.3.8 rule, and the reason is diagnostic: a 150-character inequality tells you the record
+            // is wrong, whereas a field comparison tells you which span moved.
+            String storedRow = fixtureRows().get(0);
+            stubFetch(new FetchedRows(storedRow.getBytes(FIXTURE_CHARSET), 1));
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+            CardRecord before = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).requireRecord();
+            CardRecord mutated = before
+                    .withCardEmbossedName("Aniya Von-Reyes")
+                    .withCardExpiraionDate("2031-12-31")
+                    .withCardActiveStatus("N")
+                    .withCardCvvCd(915);
+
+            assertThat(repository.rewrite(mutated).isNormal()).isTrue();
+
+            // What went onto the wire is what a subsequent read would find, so the re-read is seeded with
+            // the very image the rewrite sent rather than with a re-encoding of the record.
+            ArgumentCaptor<String> image = ArgumentCaptor.forClass(String.class);
+            verify(bindRewrite()).setString(eq(1), image.capture());
+            String written = image.getValue();
+            clearInvocations(jdbcTemplate);
+            stubDescribe(repository);
+            stubFetch(new FetchedRows(written.getBytes(FIXTURE_CHARSET), 1));
+
+            CardRecord after = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).requireRecord();
+
+            // Field by field. The changed spans carry the new values, at their declared widths; the
+            // untouched spans are byte-for-byte what they were; and the key is unchanged, because a
+            // REWRITE replaces a record and cannot re-key it.
+            assertThat(after.cardNum()).as("CARD-NUM X(16): a rewrite cannot change the key")
+                    .isEqualTo(before.cardNum()).isEqualTo(FIRST_FIXTURE_CARD_NUM);
+            assertThat(after.cardAcctId()).as("CARD-ACCT-ID 9(11): untouched")
+                    .isEqualTo(before.cardAcctId()).isEqualTo(FIRST_FIXTURE_ACCT_ID);
+            assertThat(after.cardCvvCd()).as("CARD-CVV-CD 9(03): changed").isEqualTo(915)
+                    .isNotEqualTo(before.cardCvvCd());
+            assertThat(after.cardEmbossedName())
+                    .as("CARD-EMBOSSED-NAME X(50): changed, and still space-padded to its full width")
+                    .isEqualTo("Aniya Von-Reyes" + " ".repeat(35))
+                    .hasSize(CardRecord.CARD_EMBOSSED_NAME_LENGTH);
+            assertThat(after.cardExpiraionDate())
+                    .as("CARD-EXPIRAION-DATE X(10): changed - and still spelled as the copybook spells it")
+                    .isEqualTo("2031-12-31").hasSize(CardRecord.CARD_EXPIRAION_DATE_LENGTH);
+            assertThat(after.cardActiveStatus()).as("CARD-ACTIVE-STATUS X(01): changed").isEqualTo("N");
+            assertThat(written.substring(CardRecord.FILLER_OFFSET,
+                    CardRecord.FILLER_OFFSET + CardRecord.FILLER_LENGTH))
+                    .as("gate G21: FILLER X(59) survives the round trip as 59 spaces")
+                    .isEqualTo(" ".repeat(CardRecord.FILLER_LENGTH));
+            assertThat(written).as("gate G19: and the image is the whole record, both ways")
+                    .hasSize(CardRecord.RECORD_LENGTH);
+            assertThat(after).as("the record read back IS the record written")
+                    .isEqualTo(mutated);
         }
 
         @Test
@@ -1296,6 +1757,91 @@ class CardRepositoryTest {
                     .as("the first read anchors with GTEQ; every read after it advances")
                     .containsExactly(repository.resolvedStatements().browseAnchor(),
                             repository.resolvedStatements().browseForward());
+        }
+
+        @Test
+        @DisplayName("walks eight records in ascending order: the repository imposes no page limit")
+        void walksPastThePageSizeBecausePagingIsTheControllersBusiness() throws SQLException {
+            // Page size 7 is NOT this class's concern. COCRDLIC:177-178 declares
+            // WS-MAX-SCREEN-LINES PIC S9(4) COMP-3 VALUE 7 in the CONTROLLER, and it is the controller
+            // that stops filling a screen after seven rows; the file itself has no such notion and
+            // READNEXT keeps returning records until the file ends. Baking 7 into the repository would
+            // make the card list unable to answer any question but "one screenful", and would break
+            // COCRDLIC's own backward paging, which walks the same file past its screen boundaries.
+            // So: eight records, requested one at a time, all delivered, in ascending key order.
+            List<String> rows = fixtureRows();
+            int walked = 8;
+            assertThat(walked).as("deliberately one more than the controller's screen depth of 7")
+                    .isGreaterThan(7);
+            FetchedRows[] answers = new FetchedRows[walked];
+            for (int index = 0; index < walked; index++) {
+                answers[index] = new FetchedRows(rows.get(index).getBytes(FIXTURE_CHARSET), 1);
+            }
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor()))
+                    .thenReturn(answers[0], Arrays.copyOfRange(answers, 1, walked));
+
+            CardBrowse browse = repository.startBrowse(rows.get(0).substring(0,
+                    CardRecord.CARD_NUM_LENGTH), BrowseDirection.FORWARD);
+            List<String> delivered = new ArrayList<>();
+            for (int step = 0; step < walked; step++) {
+                CardReadResult result = browse.readNext();
+                assertThat(result.isRecordReturned()).as("step %d returned a record", step + 1).isTrue();
+                delivered.add(result.requireRecord().cardNum());
+                assertThat(browse.positionKey())
+                        .as("each READNEXT advances the position by exactly one record")
+                        .contains(delivered.get(step));
+            }
+
+            assertThat(delivered).hasSize(walked).doesNotHaveDuplicates()
+                    .as("ascending CARD-NUM order, which is the order the fixture stores them in")
+                    .isSorted()
+                    .containsExactlyElementsOf(rows.subList(0, walked).stream()
+                            .map(row -> row.substring(0, CardRecord.CARD_NUM_LENGTH)).toList());
+            assertThat(statementsSent(walked))
+                    .as("one anchoring read, then seven advancing ones - no limit anywhere in between")
+                    .startsWith(repository.resolvedStatements().browseAnchor())
+                    .endsWith(repository.resolvedStatements().browseForward());
+        }
+
+        @Test
+        @DisplayName("GTEQ: anchoring on a key the file lacks positions at the next greater record")
+        void anchorsAtOrAfterAKeyTheFileDoesNotContain() throws SQLException {
+            // STARTBR ... GTEQ (COCRDLIC:1129, and :1277 for the backward browse) positions at the first
+            // record whose key is greater than OR EQUAL to the one supplied - it does not require the key
+            // to exist, and it does not report NOTFND when it does not. COCRDLIC relies on exactly that:
+            // it pages from a card number the operator typed, which need not be a card number the file
+            // holds. An implementation that demanded equality would report an empty list for a perfectly
+            // valid filter.
+            List<String> rows = fixtureRows();
+            String firstStoredKey = rows.get(0).substring(0, CardRecord.CARD_NUM_LENGTH);
+            String absentKey = "0000000000000000";
+            assertThat(rows).as("the anchor key is genuinely absent from the fixture")
+                    .noneMatch(row -> row.startsWith(absentKey));
+            assertThat(absentKey).isLessThan(firstStoredKey)
+                    .hasSize(CardRecord.CARD_NUM_LENGTH);
+            stubFetch(new FetchedRows(rows.get(0).getBytes(FIXTURE_CHARSET), 1));
+
+            CardBrowse browse = repository.startBrowse(absentKey, BrowseDirection.FORWARD);
+            CardReadResult positioned = browse.readNext();
+
+            assertThat(positioned.isRecordReturned())
+                    .as("at-or-after positioning: an absent anchor is not a missing record")
+                    .isTrue();
+            assertThat(positioned.isNotFound()).isFalse();
+            assertThat(positioned.requireRecord().cardNum())
+                    .as("the browse landed on the next key greater than the anchor")
+                    .isEqualTo(firstStoredKey).isGreaterThan(absentKey);
+            assertThat(browse.positionKey()).contains(firstStoredKey);
+
+            // The statement sent is the anchoring one, whose predicate is >= the key - not the advancing
+            // one, and not the keyed read that would have demanded equality.
+            assertThat(statementsSent(1))
+                    .containsExactly(repository.resolvedStatements().browseAnchor());
+            assertThat(repository.resolvedStatements().browseAnchor())
+                    .as("GTEQ in SQL is a >= predicate on the record image")
+                    .contains(">=")
+                    .isNotEqualTo(repository.resolvedStatements().selectByCardNumber());
         }
 
         @Test
@@ -1645,7 +2191,7 @@ class CardRepositoryTest {
             }
             remaining[available] = Boolean.FALSE;
             when(resultSet.next()).thenReturn(remaining[0],
-                    java.util.Arrays.copyOfRange(remaining, 1, remaining.length));
+                    Arrays.copyOfRange(remaining, 1, remaining.length));
             when(resultSet.getString(CardRepository.RECORD_IMAGE_COLUMN_INDEX))
                     .thenReturn(new String(stored, StandardCharsets.US_ASCII));
 
@@ -1952,31 +2498,27 @@ class CardRepositoryTest {
     // =============================================================================================
 
     @Nested
-    @DisplayName("round trip against app/data/ASCII/carddata.txt")
+    @DisplayName("round trip against the shipped copy of app/data/ASCII/carddata.txt")
     class RealFixtureRoundTripTest {
-
-        /** The fixture, relative to the module directory this test runs in. */
-        private static final Path FIXTURE = Path.of("..", "..", "app", "data", "ASCII",
-                "carddata.txt");
 
         @Test
         @DisplayName("every one of the fifty rows decodes and re-encodes to the identical 150 bytes")
-        void roundTripsEveryFixtureRow() throws IOException {
-            List<String> rows = Files.readAllLines(FIXTURE, StandardCharsets.US_ASCII);
+        void roundTripsEveryFixtureRow() {
+            List<String> rows = fixtureRows();
 
-            assertThat(rows).hasSize(50);
+            assertThat(rows).hasSize(FIXTURE_RECORDS);
             for (String row : rows) {
                 assertThat(row).as("every fixture row is exactly one card record wide")
                         .hasSize(CardRecord.RECORD_LENGTH);
 
-                byte[] stored = row.getBytes(StandardCharsets.US_ASCII);
+                byte[] stored = row.getBytes(FIXTURE_CHARSET);
                 CardRecord decoded = CardRecord.decode(stored, codec);
 
                 assertThat(decoded.encode(codec)).as("re-encoding row %s is byte-identical",
                         decoded.cardNum()).isEqualTo(stored);
                 assertThat(decoded.cardNum()).hasSize(CardRecord.CARD_NUM_LENGTH);
                 assertThat(new String(stored, CardRecord.FILLER_OFFSET, CardRecord.FILLER_LENGTH,
-                        StandardCharsets.US_ASCII))
+                        FIXTURE_CHARSET))
                         .as("gate G21: the reserved span is 59 spaces")
                         .isEqualTo(" ".repeat(CardRecord.FILLER_LENGTH));
             }
@@ -1984,9 +2526,9 @@ class CardRepositoryTest {
 
         @Test
         @DisplayName("a fixture row read through the repository yields the record it encodes")
-        void readsAFixtureRowThroughTheRepository() throws IOException {
-            String row = Files.readAllLines(FIXTURE, StandardCharsets.US_ASCII).get(0);
-            stubFetch(new FetchedRows(row.getBytes(StandardCharsets.US_ASCII), 1));
+        void readsAFixtureRowThroughTheRepository() {
+            String row = fixtureRows().get(0);
+            stubFetch(new FetchedRows(row.getBytes(FIXTURE_CHARSET), 1));
 
             CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
 
@@ -1998,12 +2540,315 @@ class CardRepositoryTest {
             assertThat(card.cardCvvCd()).isEqualTo(FIRST_FIXTURE_CVV_CD);
             assertThat(card.cardEmbossedName())
                     .as("padding is data: the name is never trimmed on read")
-                    .isEqualTo("Aniya Von" + " ".repeat(41))
+                    .isEqualTo(FIRST_FIXTURE_EMBOSSED_NAME + " ".repeat(41))
                     .hasSize(CardRecord.CARD_EMBOSSED_NAME_LENGTH);
             assertThat(card.cardExpiraionDate()).isEqualTo(FIRST_FIXTURE_EXPIRAION_DATE)
                     .hasSize(CardRecord.CARD_EXPIRAION_DATE_LENGTH);
-            assertThat(card.cardActiveStatus()).isEqualTo("Y")
+            assertThat(card.cardActiveStatus()).isEqualTo(FIRST_FIXTURE_ACTIVE_STATUS)
                     .hasSize(CardRecord.CARD_ACTIVE_STATUS_LENGTH);
+        }
+
+        @Test
+        @DisplayName("all seven CVACT02Y spans land at the offsets and widths the copybook declares")
+        void everySpanLandsWhereTheCopybookPutsIt() {
+            // Hand-written offset arithmetic, deliberately (AAP §0.10.2 B11): each field is cut out of
+            // the stored row by absolute offset and width and compared with what the repository decoded,
+            // so a regression names the span that moved instead of reporting one opaque inequality. The
+            // seven spans of app/cpy/CVACT02Y.cpy are contiguous from zero and sum to 150:
+            //   CARD-NUM            X(16) @  0   CARD-ACCT-ID        9(11) @ 16
+            //   CARD-CVV-CD         9(03) @ 27   CARD-EMBOSSED-NAME  X(50) @ 30
+            //   CARD-EXPIRAION-DATE X(10) @ 80   CARD-ACTIVE-STATUS  X(01) @ 90
+            //   FILLER              X(59) @ 91
+            // CARD-EXPIRAION-DATE keeps the copybook's misspelling; renaming it would break the
+            // field-for-field diffing the parity gate performs (AAP §0.8.9).
+            String row = fixtureRows().get(0);
+            stubFetch(new FetchedRows(row.getBytes(FIXTURE_CHARSET), 1));
+
+            CardRecord card = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).requireRecord();
+
+            assertThat(span(row, CardRecord.CARD_NUM_OFFSET, CardRecord.CARD_NUM_LENGTH))
+                    .isEqualTo(card.cardNum()).isEqualTo(FIRST_FIXTURE_CARD_NUM).hasSize(16);
+            assertThat(span(row, CardRecord.CARD_ACCT_ID_OFFSET, CardRecord.CARD_ACCT_ID_LENGTH))
+                    .as("the eleven digits are stored zero-filled on the LEFT")
+                    .isEqualTo("00000000050").hasSize(11);
+            assertThat(Long.parseLong(span(row, CardRecord.CARD_ACCT_ID_OFFSET,
+                    CardRecord.CARD_ACCT_ID_LENGTH))).isEqualTo(card.cardAcctId());
+            assertThat(span(row, CardRecord.CARD_CVV_CD_OFFSET, CardRecord.CARD_CVV_CD_LENGTH))
+                    .isEqualTo("747").hasSize(3);
+            assertThat(Integer.parseInt(span(row, CardRecord.CARD_CVV_CD_OFFSET,
+                    CardRecord.CARD_CVV_CD_LENGTH))).isEqualTo(card.cardCvvCd());
+            assertThat(span(row, CardRecord.CARD_EMBOSSED_NAME_OFFSET,
+                    CardRecord.CARD_EMBOSSED_NAME_LENGTH))
+                    .isEqualTo(card.cardEmbossedName())
+                    .startsWith(FIRST_FIXTURE_EMBOSSED_NAME).hasSize(50);
+            assertThat(span(row, CardRecord.CARD_EXPIRAION_DATE_OFFSET,
+                    CardRecord.CARD_EXPIRAION_DATE_LENGTH))
+                    .isEqualTo(card.cardExpiraionDate()).isEqualTo(FIRST_FIXTURE_EXPIRAION_DATE)
+                    .hasSize(10);
+            assertThat(span(row, CardRecord.CARD_ACTIVE_STATUS_OFFSET,
+                    CardRecord.CARD_ACTIVE_STATUS_LENGTH))
+                    .isEqualTo(card.cardActiveStatus()).isEqualTo(FIRST_FIXTURE_ACTIVE_STATUS)
+                    .hasSize(1);
+            assertThat(span(row, CardRecord.FILLER_OFFSET, CardRecord.FILLER_LENGTH))
+                    .as("gate G21: FILLER is a span of the record, not padding to be skipped")
+                    .isEqualTo(" ".repeat(59)).hasSize(59);
+            assertThat(CardRecord.FILLER_OFFSET + CardRecord.FILLER_LENGTH)
+                    .as("gate G19: the seven spans sum to the declared record width")
+                    .isEqualTo(CardRecord.RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the code page is named at every decode, and naming the wrong one changes the bytes")
+        void theCodePageIsAlwaysNamedExplicitly() {
+            // AAP §0.10.2 B8. CobolCharsetConfig publishes IBM037 for the EBCDIC datasets under
+            // app/data/EBCDIC and US-ASCII for these text fixtures, and the repository takes the active
+            // code page as a constructor argument selected by bean name - so the platform default is
+            // consulted nowhere. This test is the proof that the choice is load-bearing: the same bytes
+            // decoded as EBCDIC are NOT the same record, so a decode that silently inherited a default
+            // could not pass by luck.
+            String row = fixtureRows().get(0);
+            byte[] stored = row.getBytes(FIXTURE_CHARSET);
+
+            CardRecord underTheConfiguredCodePage = CardRecord.decode(stored,
+                    new FixedWidthCodec(FIXTURE_CHARSET));
+
+            assertThat(underTheConfiguredCodePage.cardNum()).isEqualTo(FIRST_FIXTURE_CARD_NUM);
+            assertThat(underTheConfiguredCodePage.cardEmbossedName())
+                    .startsWith(FIRST_FIXTURE_EMBOSSED_NAME);
+            assertThat(new FixedWidthCodec(FIXTURE_CHARSET).charset())
+                    .as("the codec carries the code page rather than looking one up")
+                    .isEqualTo(FIXTURE_CHARSET);
+
+            // The same span, read as EBCDIC: not the same characters. The comparison is on the decoded
+            // text rather than on a decode that might legitimately reject the bytes.
+            assertThat(new String(stored, CardRecord.CARD_EMBOSSED_NAME_OFFSET,
+                    CardRecord.CARD_EMBOSSED_NAME_LENGTH, EBCDIC_CHARSET))
+                    .as("US-ASCII and IBM037 disagree about these bytes, which is why the code page is "
+                            + "always stated")
+                    .isNotEqualTo(underTheConfiguredCodePage.cardEmbossedName());
+            assertThat(EBCDIC_CHARSET.name()).isEqualTo("IBM037");
+            assertThat(FIXTURE_CHARSET.name()).isEqualTo("US-ASCII");
+        }
+
+        /**
+         * One span of a stored row, cut out by absolute offset and width.
+         *
+         * @param row    the stored record image
+         * @param offset the span's zero-based offset, from {@code app/cpy/CVACT02Y.cpy}
+         * @param length the span's declared width
+         * @return the span, untrimmed
+         */
+        private String span(String row, int offset, int length) {
+            return row.substring(offset, offset + length);
+        }
+    }
+
+    // =============================================================================================
+    // Gate G47: the FileStatus vocabulary, call site by call site. Each COBOL paragraph carries its own
+    // EVALUATE, so coverage is owed per call site rather than per method family - 9100-GETCARD-BYACCTCARD
+    // and 9150-GETCARD-BYACCT are separate branch sets even though both are "a read".
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("gate G47: every FileStatus outcome, per call site")
+    class FileStatusVocabularyPerCallSiteTest {
+
+        @Test
+        @DisplayName("the base keyed read: '00' and '23' are reachable; '10' and '22' are not, and why")
+        void baseKeyedReadVocabulary() {
+            stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
+            assertThat(repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).batchStatus())
+                    .contains(FileStatus.OK);
+
+            clearInvocations(jdbcTemplate);
+            stubDescribe(repository);
+            stubFetch(FetchedRows.empty());
+            CardReadResult missing = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            assertThat(missing.batchStatus()).contains(FileStatus.NOT_FOUND);
+            assertThat(missing.resp()).isEqualTo(FileStatus.NOTFND);
+
+            // '10' END-OF-FILE and '22' DUPLICATE are unreachable HERE, and that is a property of the
+            // access path rather than a gap in this test. A keyed read has no cursor, so it can never run
+            // off the end of one - the end of file belongs to the browse, where forwardEndOfFile drives
+            // it. And CARD-NUM is CARDDAT's unique primary key, so a key cannot select two records: the
+            // duplicate arm belongs to the alternate-index path, where nonUniqueAlternateKey drives it.
+            // Asserting the absence is what keeps that reasoning honest rather than assumed.
+            assertThat(missing.isEndOfFile()).isFalse();
+            assertThat(missing.isDuplicateKey()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the alternate-index read: '00', '22' and '23' are all reachable")
+        void alternateIndexVocabulary() {
+            CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
+            stubFetch(new FetchedRows(stored.encode(codec), 2));
+            CardReadResult shared = repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID);
+            assertThat(shared.batchStatus())
+                    .as("an alternate key need not be unique, so '22' is reachable only here")
+                    .contains(FileStatus.DUPLICATE);
+            assertThat(shared.isRecordReturned()).as("and it is not an error: the record is there")
+                    .isTrue();
+
+            clearInvocations(jdbcTemplate);
+            stubDescribe(repository);
+            stubFetch(new FetchedRows(stored.encode(codec), 1));
+            assertThat(repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID).batchStatus())
+                    .contains(FileStatus.OK);
+
+            clearInvocations(jdbcTemplate);
+            stubDescribe(repository);
+            stubFetch(FetchedRows.empty());
+            assertThat(repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID).batchStatus())
+                    .contains(FileStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("the browse: '00' and '10' are reachable, and '10' is where a paging loop ends")
+        void browseVocabulary() {
+            stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
+            assertThat(repository.startBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD)
+                    .readNext().batchStatus()).contains(FileStatus.OK);
+
+            clearInvocations(jdbcTemplate);
+            stubDescribe(repository);
+            stubFetch(FetchedRows.empty());
+            CardReadResult ended = repository.startBrowse(FIRST_FIXTURE_CARD_NUM,
+                    BrowseDirection.FORWARD).readNext();
+            assertThat(ended.batchStatus())
+                    .as("COCRDLIC's paging loop terminates on this and nothing else")
+                    .contains(FileStatus.END_OF_FILE);
+            assertThat(ended.resp()).isEqualTo(FileStatus.ENDFILE);
+            assertThat(ended.isNotFound())
+                    .as("the end of a pass is not a missing record, and conflating them would make the "
+                            + "list report a lookup failure at the bottom of every file")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the rewrite: only a normal response is a success, and no batch status is invented")
+        void rewriteVocabulary() {
+            stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+            CardWriteResult written = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            assertThat(written.isNormal()).isTrue();
+            assertThat(written.batchStatus()).contains(FileStatus.OK);
+
+            // COCRDUPC:1488-1492 is a two-way test, so the failure arm has one meaning - the update did
+            // not happen - and it carries the response pair rather than a batch status, because there is
+            // no batch FILE STATUS for "invalid request".
+            clearInvocations(jdbcTemplate);
+            stubDescribe(repository);
+            stubFetch(FetchedRows.empty());
+            CardWriteResult refused = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            assertThat(refused.isFailure()).isTrue();
+            assertThat(refused.resp()).isEqualTo(FileStatus.INVREQ);
+            assertThat(refused.batchStatus()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("all four batch statuses are the COBOL's own two-character codes, unchanged")
+        void theBatchStatusCodesAreTheCobolsOwn() {
+            // The values themselves matter: a batch program tests a two-character FILE STATUS literally,
+            // so '00', '10', '22' and '23' are data, not an enumeration this module is free to renumber.
+            assertThat(FileStatus.OK).isEqualTo("00");
+            assertThat(FileStatus.END_OF_FILE).isEqualTo("10");
+            assertThat(FileStatus.DUPLICATE).isEqualTo("22");
+            assertThat(FileStatus.NOT_FOUND).isEqualTo("23");
+            assertThat(FileStatus.batchStatusOfCicsResp(FileStatus.NORMAL)).contains(FileStatus.OK);
+            assertThat(FileStatus.batchStatusOfCicsResp(FileStatus.ENDFILE))
+                    .contains(FileStatus.END_OF_FILE);
+            assertThat(FileStatus.batchStatusOfCicsResp(FileStatus.DUPKEY))
+                    .contains(FileStatus.DUPLICATE);
+            assertThat(FileStatus.batchStatusOfCicsResp(FileStatus.NOTFND))
+                    .contains(FileStatus.NOT_FOUND);
+        }
+    }
+
+    // =============================================================================================
+    // Gate G44: what this repository does NOT need. A migration whose brief forbids schema change has
+    // to be able to show that it made none, and the absence of a thing is only demonstrable by looking
+    // for it.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("gate G44: no schema footprint")
+    class NoSchemaFootprintTest {
+
+        @Test
+        @DisplayName("no statement this repository composes is DDL, and none creates or alters anything")
+        void noStatementIsDdl() {
+            CardRepository.Statements sql = statementsOf(repository);
+
+            assertThat(List.of(sql.selectByCardNumber(), sql.selectForUpdateByCardNumber(),
+                    sql.selectByAccountId(), sql.rewrite(), sql.browseAnchor(), sql.browseForward(),
+                    sql.browseBackward()))
+                    .allSatisfy(statement -> assertThat(statement.toUpperCase(Locale.ROOT))
+                            .doesNotContain("CREATE ").doesNotContain("ALTER ")
+                            .doesNotContain("DROP ").doesNotContain("TRUNCATE ")
+                            .doesNotContain("INSERT ").doesNotContain("DELETE ")
+                            .doesNotContain("GRANT "))
+                    .allSatisfy(statement -> assertThat(statement.startsWith("SELECT ")
+                            || statement.startsWith("UPDATE "))
+                            .as("the operations the card programs perform are reads, a rewrite and a "
+                                    + "browse - and nothing else, because no card program adds or "
+                                    + "deletes a card (AAP §0.3.5): [%s]", statement)
+                            .isTrue());
+        }
+
+        @Test
+        @DisplayName("no statement names a version, timestamp or optimistic-lock column")
+        void noVersionColumnIsIntroduced() {
+            // COCRDUPC's own concurrency check is 9300-CHECK-CHANGE-IN-REC at :1453-1457: it re-reads the
+            // record and compares it field by field. That check is preserved - in the update service,
+            // where the business logic belongs - and it is emphatically NOT replaced by a version column,
+            // because adding a column is a schema change and the brief forbids one.
+            CardRepository.Statements sql = statementsOf(repository);
+
+            assertThat(List.of(sql.selectByCardNumber(), sql.selectForUpdateByCardNumber(),
+                    sql.selectByAccountId(), sql.rewrite(), sql.browseAnchor(), sql.browseForward(),
+                    sql.browseBackward()))
+                    .allSatisfy(statement -> assertThat(statement.toUpperCase(Locale.ROOT))
+                            .doesNotContain("VERSION").doesNotContain("OPTLOCK")
+                            .doesNotContain("ROWVERSION").doesNotContain("LAST_UPDATED")
+                            .doesNotContain("UPDATED_AT"));
+        }
+
+        @Test
+        @DisplayName("no execute() is ever issued, so no statement escapes the composed set")
+        void noStatementIsIssuedOutsideTheComposedSet() {
+            stubFetch(FetchedRows.empty());
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+            repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID);
+            repository.startBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD).readNext();
+            repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+
+            // JdbcTemplate.execute(String) is the route a DDL statement would take. It is never taken.
+            verify(jdbcTemplate, never()).execute(anyString());
+        }
+
+        @Test
+        @DisplayName("neither the repository nor the record carries a persistence or ORM annotation")
+        void noEntityAnnotationIsPresent() {
+            // No JPA, no Hibernate, no entity model: the record layout is the copybook's and the access
+            // is JdbcTemplate's. An ORM would impose an entity and table model that does not exist, which
+            // is exactly what the brief excludes.
+            List<String> annotations = new ArrayList<>();
+            for (Class<?> type : List.of(CardRepository.class, CardRecord.class,
+                    CardReadResult.class, CardWriteResult.class, CardBrowse.class)) {
+                for (Annotation annotation : type.getAnnotations()) {
+                    annotations.add(annotation.annotationType().getName());
+                }
+            }
+
+            assertThat(annotations).isNotEmpty()
+                    .as("@Repository is a stereotype, not a mapping")
+                    .contains("org.springframework.stereotype.Repository")
+                    .allSatisfy(name -> assertThat(name)
+                            .doesNotStartWith("jakarta.persistence.")
+                            .doesNotStartWith("javax.persistence.")
+                            .doesNotStartWith("org.hibernate."));
         }
     }
 }

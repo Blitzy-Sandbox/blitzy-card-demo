@@ -143,7 +143,7 @@ import java.util.function.Function;
  *       why it has no floating-point type anywhere and needs no rounding mode.</li>
  *   <li>{@code PAGENUMO} is {@code X(8)} even though the cursor's {@code CDEMO-CT00-PAGE-NUM} is
  *       {@code PIC 9(08)}: {@code COTRN00C:324} moves the numeric item into the alphanumeric screen
- *       item. {@link #movePageNumberToScreen(int)} performs that move through the codec so the
+ *       item. {@link #movePageNumberToScreen(FixedWidthCodec, int)} performs that move through the codec so the
  *       zero-filled eight-digit image is produced by the same rule COBOL uses.</li>
  * </ul>
  *
@@ -1940,7 +1940,7 @@ public final class TransactionListResponse {
      *
      * <p>Alphanumeric on the screen even though {@code CDEMO-CT00-PAGE-NUM} is {@code PIC 9(08)}:
      * {@code COTRN00C:324} moves the numeric item into this alphanumeric one. Use
-     * {@link #movePageNumberToScreen(int)} to perform that move through the codec.
+     * {@link #movePageNumberToScreen(FixedWidthCodec, int)} to perform that move through the codec.
      *
      * @return the stored value, untrimmed; never {@code null}
      */
@@ -2993,7 +2993,7 @@ public final class TransactionListResponse {
      *
      * <p>{@code COTRN00C} blanks it at line 103 and fills it from the 80-character
      * {@code WS-MESSAGE} at line 531, which truncates on the right. Use
-     * {@link #moveMessageToErrorLine(String)} to perform that move through the codec.
+     * {@link #moveMessageToErrorLine(FixedWidthCodec, String)} to perform that move through the codec.
      *
      * @return the stored value, untrimmed; never {@code null}
      */
@@ -3627,7 +3627,8 @@ public final class TransactionListResponse {
      * {@code EVALUATE WS-IDX} arm performs.
      *
      * <pre>
-     *   MOVE TRAN-ID       TO TRNIDnnI   (and, for row 1 only, TO CDEMO-CT00-TRNID-FIRST)
+     *   MOVE TRAN-ID       TO TRNIDnnI   (and, for row 1, TO CDEMO-CT00-TRNID-FIRST;
+     *                                     and, for row 10, TO CDEMO-CT00-TRNID-LAST)
      *   MOVE WS-TRAN-DATE  TO TDATEnnI
      *   MOVE TRAN-DESC     TO TDESCnnI
      *   MOVE WS-TRAN-AMT   TO TAMT00nI
@@ -3645,9 +3646,14 @@ public final class TransactionListResponse {
      *       from the right. That move is performed through
      *       {@link FixedWidthCodec#movePicX(String, int)} so the direction is the codec's single
      *       implementation of the rule rather than a substring written here.</li>
-     *   <li><strong>Row one also seeds the cursor.</strong> Line 393 moves {@code TRAN-ID} into
-     *       {@code CDEMO-CT00-TRNID-FIRST} as well, which is what makes backward paging possible.
-     *       Only row one does this.</li>
+     *   <li><strong>Rows one and ten also seed the cursor.</strong> Line 393 moves {@code TRAN-ID}
+     *       into {@code CDEMO-CT00-TRNID-FIRST} as well, and line 439 moves it into
+     *       {@code CDEMO-CT00-TRNID-LAST} in the {@code WHEN 10} arm - a single {@code MOVE} with two
+     *       receivers in each case. Between them they are what makes paging possible at all: the
+     *       {@code PROCESS-PF7-KEY} starts the backward browse from {@code TRNID-FIRST}
+     *       [{@code COTRN00C:236-239}] and {@code PROCESS-PF8-KEY} the forward browse from
+     *       {@code TRNID-LAST} [{@code :259-262}]. The eight rows in between seed neither, and
+     *       seeding them would move the browse origin.</li>
      * </ul>
      *
      * <p>The amount is the {@code PIC +99999999.99} edit form. This type does not produce it: the
@@ -3689,6 +3695,16 @@ public final class TransactionListResponse {
             // MOVE TRAN-ID TO ... CDEMO-CT00-TRNID-FIRST - COTRN00C:392-393.
             cursor.setTrnidFirst(codec.movePicX(tranId,
                     TransactionListCursor.TRNID_FIRST_LENGTH));
+        }
+        if (oneBasedRow == LAST_ROW) {
+            // MOVE TRAN-ID TO ... CDEMO-CT00-TRNID-LAST - COTRN00C:438-439. The WHEN 10 arm is the
+            // mirror image of the WHEN 1 arm: one MOVE, two receivers. Both are separate ifs rather
+            // than an if/else chain because the two arms are independent in the source and a page of
+            // one row would legitimately be both the first and the last - which cannot happen with
+            // PAGE_SIZE 10, but expressing it as an else would encode an assumption the COBOL
+            // does not make.
+            cursor.setTrnidLast(codec.movePicX(tranId,
+                    TransactionListCursor.TRNID_LAST_LENGTH));
         }
     }
 

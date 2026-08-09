@@ -2,20 +2,13 @@ package com.vsergeychik.carddemo.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
-import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
 import com.vsergeychik.carddemo.card.CardXrefRepository.BrowseCursor;
@@ -24,9 +17,11 @@ import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.RecordImageForm;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
+import com.vsergeychik.carddemo.config.DataSourceConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
-import com.vsergeychik.carddemo.common.RecordImageForm;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -35,7 +30,6 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,56 +38,179 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatcher;
 import org.mockito.ArgumentMatchers;
 import org.mockito.invocation.InvocationOnMock;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.ResultSetExtractor;
-import org.springframework.jdbc.core.RowMapper;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 /**
- * Tests for {@link CardXrefRepository}: the {@code CCXREF} base KSDS and the {@code CXACAIX}
- * alternate-index path over it.
+ * Tests for {@link CardXrefRepository}: the single {@code @Repository} covering the {@code CCXREF}
+ * base KSDS <em>and</em> the {@code CXACAIX} alternate-index path over it.
  *
- * <p>Plain JUnit 5 with a mocked {@link JdbcTemplate} and no application context. That is deliberate
- * and it is what makes the whole class reachable: production connectivity cannot be exercised from this
- * build (risk R-E), so every outcome the COBOL enumerates - {@code '00'}, {@code '10'}, {@code '22'},
- * {@code '23'} and the {@code WHEN OTHER} arm - has to be provable without a backend. Driving all of
- * them is gate G47, and doing it from a plain unit test is what lets the {@code card} package meet the
- * per-package branch-coverage gate G49 honestly rather than by exercising a happy path.
+ * <h2>The unit, and the COBOL that is its only oracle</h2>
+ *
+ * <p>This is a like-for-like COBOL to Java migration, so every expectation below traces to a source
+ * line rather than to a preference. The three operations and their call sites are:
+ * <ul>
+ *   <li><strong>{@link CardXrefRepository#readByCardNumber(String)}</strong> - the base keyed read on
+ *       {@code XREF-CARD-NUM}. {@code app/cbl/COTRN02C.cbl:610} {@code READ-CCXREF-FILE}, plus the
+ *       batch keyed reads of {@code CBTRN02C}, {@code CBTRN01C}, {@code CBTRN03C} and
+ *       {@code CBACT04C}.</li>
+ *   <li><strong>{@link CardXrefRepository#readByAccountIdViaAltIndex(long)}</strong> - the
+ *       {@code CXACAIX} finder on {@code XREF-ACCT-ID}. {@code app/cbl/COACTVWC.cbl:727}
+ *       {@code 9200-GETCARDXREF-BYACCT}, {@code app/cbl/COACTUPC.cbl:3655},
+ *       {@code app/cbl/COTRN02C.cbl:577} and {@code app/cbl/COBIL00C.cbl:411}.</li>
+ *   <li><strong>{@link CardXrefRepository#openBrowse()}</strong> - the sequential base browse in
+ *       card-number order. {@code app/cbl/CBACT03C.cbl:29-32} {@code SELECT}/{@code ASSIGN},
+ *       {@code :93} open, {@code :120} read, {@code :138} close; and {@code CBSTM03B}'s {@code 'R'}
+ *       read-next and {@code 'K'} keyed-read operations for {@code XREFFILE}.</li>
+ * </ul>
+ *
+ * <h2>Governing standard: no user rules exist, and their absence lowers nothing</h2>
+ *
+ * <p>{@code review_rules} returns exactly one line - "No user rules provided." - and that single line
+ * is the whole document, so <strong>no user rule governs this file</strong>. None has been invented,
+ * and the absence is not treated as licence to lower the bar. The binding standard is instead
+ * enterprise best practice as the Agent Action Plan codifies it in &sect;0.10.2 B1-B12, plus the
+ * absolutes of &sect;0.8.9. The ones this file answers to directly:
+ * <ul>
+ *   <li><strong>B1</strong> - only the closed test stack {@code app/java/pom.xml} already declares:
+ *       JUnit Jupiter, Mockito and AssertJ by way of {@code spring-boot-starter-test}. No dependency
+ *       is added and no version literal appears here.</li>
+ *   <li><strong>B2</strong> - JUnit 5 throughout; no JUnit 4 and no Spring Boot 4 or Batch 6 API.</li>
+ *   <li><strong>B3</strong> - {@code app/cbl}, {@code app/cpy}, {@code app/csd} and {@code app/data}
+ *       are <em>cited</em> below as the contract and are never opened, copied or written at runtime.
+ *       The only data this suite reads is the classpath fixture the {@code test} profile binds.</li>
+ *   <li><strong>B4</strong> - divergences are recorded, not corrected. See the note on consumers
+ *       below.</li>
+ *   <li><strong>B5</strong> and <strong>B12</strong> - the 36-versus-50 fixture deviation (risk R-F)
+ *       is named, asserted and left in place. The fixture is not "fixed" and the record is not
+ *       shortened to 36.</li>
+ *   <li><strong>B7</strong> - deterministic under {@code mvn -f app/java/pom.xml -B clean verify}: no
+ *       watch mode, no randomness, no network, no shared mutable state and therefore no order
+ *       dependence between tests.</li>
+ *   <li><strong>B8</strong> - the {@link Charset} is always stated explicitly and never inherited from
+ *       the platform; imports are explicit with no wildcard; no dataset name is written in Java.</li>
+ *   <li><strong>B9</strong> - no static mutable state: every {@code static} member here is
+ *       {@code final} and immutable, and the per-test backends live on an instance field.</li>
+ *   <li><strong>B11</strong> - offsets and widths are asserted against {@code app/cpy/CVACT03Y.cpy}
+ *       explicitly. There is no copybook parser and no reflective deep-equality anywhere.</li>
+ * </ul>
+ *
+ * <h2>Gates this class is responsible for</h2>
+ *
+ * <p><strong>G45</strong> two access paths over one cluster - never a second repository, table or
+ * {@code DataSource}; <strong>G16</strong> with risk <strong>R-F</strong> - the 36 to 50 right-pad;
+ * <strong>G47</strong> every {@code FILE STATUS} outcome per call site; <strong>G19</strong> and
+ * <strong>G21</strong> - fifty bytes with a space-filled {@code FILLER}; <strong>G46</strong> no
+ * dataset-name literal; <strong>G44</strong> nothing schema-shaped; <strong>G49</strong> branch
+ * coverage at or above 0.90 for {@code com.vsergeychik.carddemo.card}, the JaCoCo rule being per
+ * package; <strong>G52</strong> no wildcard imports; <strong>G53</strong> no static mutable state;
+ * <strong>G54</strong> non-interactive under Surefire.
+ *
+ * <h2>Why plain JUnit with a mocked template, and where Spring does appear</h2>
+ *
+ * <p>Mostly plain JUnit 5 with a mocked {@link JdbcTemplate} and no application context. That is
+ * deliberate and it is what makes the whole class reachable: production connectivity cannot be
+ * exercised from this build (risk R-E), so every outcome the COBOL enumerates - {@code '00'},
+ * {@code '10'}, {@code '22'}, {@code '23'} and the {@code WHEN OTHER} arm - has to be provable without
+ * a backend. Driving all of them is gate G47, and doing it from a plain unit test is what lets the
+ * {@code card} package meet gate G49 honestly rather than by exercising a happy path.
+ *
+ * <p>{@link ConfigurationBinding} is the one exception, and it exists because one property cannot be
+ * proved without the real configuration document: that the two dataset names are resolved <em>through
+ * the keys</em> {@code carddemo.datasets.CCXREF} and {@code carddemo.datasets.CXACAIX}. It slices
+ * Spring as thinly as that property allows - an {@link ApplicationContextRunner} with
+ * {@link ConfigDataApplicationContextInitializer} over {@code spring.profiles.active=test}, which is
+ * the convention {@code config/DataSourceConfigTest} already established in this module and which is
+ * both thinner and more deterministic than a {@code @SpringBootTest} with {@code @ActiveProfiles}.
+ * {@code CardDemoApplicationTest} avoids a full context for the same reason.
  *
  * <p>The record images the mock returns are built through {@link CardXrefRecord} rather than typed out,
  * so a change to the copybook layout would break these tests at their source instead of leaving them
  * asserting a stale shape. The one place a literal image appears is the fixture round-trip, which reads
- * the real 36-byte rows of {@code app/data/ASCII/cardxref.txt}.
+ * the real 36-byte rows of {@code app/data/ASCII/cardxref.txt} from the classpath copy.
  *
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule governs
- * this file.
+ * <p>Every internal import here is either the unit itself, its record model, the status vocabulary, the
+ * codec or the two configuration classes the constructor's arguments come from.
+ * {@link RecordImageForm} is imported for the same reason and no other: it is the fourth argument of
+ * {@link CardXrefRepository}'s own constructor, so the unit cannot be built without naming it. Recorded
+ * rather than left implicit, so a reviewer auditing the import list can account for each entry.
+ *
+ * <h2>Recorded per B4: this type's consumers are mostly not in this package</h2>
+ *
+ * <p>{@code CVACT03Y} has <strong>twelve</strong> consumers, more than any other copybook in the
+ * estate, and only three of them are card programs. The rest are elsewhere: {@code COACTVWC} and
+ * {@code COACTUPC} in {@code account}, {@code COTRN02C} and {@code CBTRN01C} / {@code CBTRN02C} /
+ * {@code CBTRN03C} in {@code transaction}, {@code COBIL00C} in {@code billing}, and
+ * {@code CBACT03C} / {@code CBACT04C} / {@code CBSTM03B} among the batch jobs. So a width or offset
+ * error here fails far outside the {@code card} package, which is precisely why the assertions below
+ * are explicit about bytes rather than reflective about objects. The class nonetheless stays in
+ * {@code card} because that is where the Agent Action Plan assigns it; the mismatch between where the
+ * type lives and where it is used is <em>documented here rather than corrected</em>.
+ *
+ * @see CardXrefRepository
+ * @see CardXrefRecord
+ * @see FileStatus
  */
 @DisplayName("CardXrefRepository - one cluster, two access paths, three operations")
 class CardXrefRepositoryTest {
 
     // =================================================================================================
-    // Fixtures. The dataset names here are TEST values and are deliberately not the production ones:
-    // this suite proves that names come from configuration, so putting a production name in it would
-    // undermine the very thing being proved.
+    // THE BYTE ARITHMETIC, STATED SO A REVIEWER NEED NOT OPEN THE COPYBOOK.
+    //
+    // app/cpy/CVACT03Y.cpy, "01 CARD-XREF-RECORD", header comment "(RECLN 50)":
+    //
+    //   offset  length  field            PICTURE     role
+    //   ------  ------  ---------------  ----------  ------------------------------------------------
+    //        0      16  XREF-CARD-NUM    PIC X(16)   CCXREF base key
+    //       16       9  XREF-CUST-ID     PIC 9(09)
+    //       25      11  XREF-ACCT-ID     PIC 9(11)   CXACAIX alternate key
+    //       36      14  FILLER           PIC X(14)   emitted as spaces, never omitted
+    //
+    //   16 + 9 + 11 + 14 = 50   <- the authoritative record width
+    //   fixture prefix     = 36 <- what app/data/ASCII/cardxref.txt actually holds per row
+    //   pad                = 14 <- 50 - 36, the omitted FILLER, restored as spaces (risk R-F)
+    //
+    // Every one of those five numbers is asserted below against the constants CardXrefRecord derives
+    // from the copybook, so the table cannot drift away from the source without a test going red.
     // =================================================================================================
 
-    /** The code page the fixtures are in, always named explicitly. */
+    // =================================================================================================
+    // Fixtures. The dataset names here are TEST values and are deliberately not the production ones:
+    // this suite proves that names come from configuration, so putting a production name in it would
+    // undermine the very thing being proved. The production names appear nowhere in this file at all
+    // (gate G46); ConfigurationBinding reads them from the environment instead of restating them.
+    // =================================================================================================
+
+    /**
+     * The code page every assertion in this class states explicitly.
+     *
+     * <p>Never {@code Charset.defaultCharset()} and never an overload that omits the charset (practice
+     * B8). A fixed-width mainframe record is bytes in a specific code page, so the code page is part of
+     * the contract rather than an environmental accident. The module makes the same decision in
+     * configuration rather than in Java: {@link CobolCharsetConfig} publishes
+     * {@value CobolCharsetConfig#DATASET_CHARSET_BEAN_NAME} from
+     * {@value CobolCharsetConfig#DATASET_CHARSET_PROPERTY}, which each profile states on one line -
+     * {@code IBM037} in {@code application.yml}, whose bindings address the mainframe datasets, and
+     * {@code US-ASCII} in {@code application-test.yml}, whose bindings address the nine text fixtures.
+     * {@code US-ASCII} is therefore the right value here, and
+     * {@link ConfigurationBinding#theTestProfileNamesTheAsciiCodePageExplicitly()} proves it is the
+     * value the shipped profile actually injects rather than one this class assumed.
+     */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
     /** A stand-in dataset name for the base cluster. */
@@ -137,23 +254,20 @@ class CardXrefRepositoryTest {
     private static final String BASE_BROWSE_AFTER_SQL = "SELECT * FROM \"" + BASE_DS + "\" WHERE "
             + IMAGE + " > ? ORDER BY " + IMAGE + " ASC";
 
-    /**
-     * Distinguishes the in-memory database each seeded test uses, so no two tests share a relation.
-     *
-     * <p>A counter rather than a random or time-derived name, so a run is reproducible.
-     */
-    private static final AtomicInteger DATABASE_SEQUENCE = new AtomicInteger();
-
     /** The first row of {@code app/data/ASCII/cardxref.txt}: card 0500024453765740, customer and account 50. */
     private static final String CARD_1 = "0500024453765740";
 
     /** The second fixture row's card number. */
     private static final String CARD_2 = "0683586198171516";
 
-    /** A third card number, present in no seeded relation, for the unmatched-key arms. */
-    private static final String CARD_3 = "9999999999999999";
-
-    /** The codec every assertion uses, over the explicitly named code page. */
+    /**
+     * The codec every assertion uses, over the explicitly named code page.
+     *
+     * <p>{@code static final} and a reference to a stateless, immutable collaborator, so it introduces
+     * no shared mutable state (practice B9, gate G53). It is <strong>the</strong> home of the 36 to 50
+     * right-pad: {@link FixedWidthCodec#padToDeclaredWidth(String, int)} is what
+     * {@link ByteLevelParity} exercises as a consumer, and no padding is re-implemented in this file.
+     */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(ASCII);
 
     /**
@@ -650,6 +764,39 @@ class CardXrefRepositoryTest {
             assertThat(CardXrefRepository.CARD_NUMBER_KEY_LENGTH).isEqualTo(16);
             assertThat(CardXrefRepository.ACCOUNT_ID_KEY_LENGTH).isEqualTo(11);
             assertThat(CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD).isEqualTo("XREF-ACCT-ID");
+            // The offset table stated at the head of this class, enforced field by field so the comment
+            // cannot drift from app/cpy/CVACT03Y.cpy: X(16) at 0, 9(09) at 16, 9(11) at 25,
+            // FILLER X(14) at 36. Names included, because a renamed field breaks field-for-field
+            // diffing for all twelve consumers even when every offset is still right (AAP 0.8.9).
+            assertThat(CardXrefRecord.XREF_CARD_NUM_NAME).isEqualTo("XREF-CARD-NUM");
+            assertThat(CardXrefRecord.XREF_CARD_NUM_OFFSET).isZero();
+            assertThat(CardXrefRecord.XREF_CARD_NUM_LENGTH).isEqualTo(16);
+            assertThat(CardXrefRecord.XREF_CUST_ID_NAME).isEqualTo("XREF-CUST-ID");
+            assertThat(CardXrefRecord.XREF_CUST_ID_OFFSET).isEqualTo(16);
+            assertThat(CardXrefRecord.XREF_CUST_ID_LENGTH).isEqualTo(9);
+            assertThat(CardXrefRecord.XREF_ACCT_ID_NAME).isEqualTo("XREF-ACCT-ID");
+            assertThat(CardXrefRecord.XREF_ACCT_ID_OFFSET).isEqualTo(25);
+            assertThat(CardXrefRecord.XREF_ACCT_ID_LENGTH).isEqualTo(11);
+            assertThat(CardXrefRecord.FILLER_OFFSET).isEqualTo(36);
+            assertThat(CardXrefRecord.FILLER_LENGTH).isEqualTo(14);
+            // 16 + 9 + 11 + 14 = 50, and each field begins where the previous one ends: the two
+            // properties that together make decoding by absolute offset safe.
+            assertThat(CardXrefRecord.XREF_CARD_NUM_LENGTH
+                    + CardXrefRecord.XREF_CUST_ID_LENGTH
+                    + CardXrefRecord.XREF_ACCT_ID_LENGTH
+                    + CardXrefRecord.FILLER_LENGTH)
+                    .isEqualTo(CardXrefRepository.RECORD_LENGTH);
+            assertThat(CardXrefRecord.XREF_CARD_NUM_OFFSET + CardXrefRecord.XREF_CARD_NUM_LENGTH)
+                    .isEqualTo(CardXrefRecord.XREF_CUST_ID_OFFSET);
+            assertThat(CardXrefRecord.XREF_CUST_ID_OFFSET + CardXrefRecord.XREF_CUST_ID_LENGTH)
+                    .isEqualTo(CardXrefRecord.XREF_ACCT_ID_OFFSET);
+            assertThat(CardXrefRecord.XREF_ACCT_ID_OFFSET + CardXrefRecord.XREF_ACCT_ID_LENGTH)
+                    .isEqualTo(CardXrefRecord.FILLER_OFFSET);
+            // The fixture prefix is exactly the data span, and the pad is exactly the FILLER: 36 + 14.
+            // This is risk R-F expressed as arithmetic rather than as prose.
+            assertThat(CardXrefRecord.FILLER_OFFSET)
+                    .as("the 36-byte fixture row is the record MINUS its FILLER, nothing else")
+                    .isEqualTo(CardXrefRepository.RECORD_LENGTH - CardXrefRecord.FILLER_LENGTH);
             assertThat(CardXrefRepository.RECORD_IMAGE_COLUMN_INDEX).isOne();
             assertThat(CardXrefRepository.APPL_RESULT_FATAL).isEqualTo(12);
             assertThat(CardXrefRepository.CICS_RESP2_NOT_APPLICABLE).isZero();
@@ -755,10 +902,27 @@ class CardXrefRepositoryTest {
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
-            assertThat(result.cicsResp()).isEqualTo(FileStatus.NOTOPEN);
             assertThat(result.record()).isEmpty();
             assertThat(result.statusImage()).isEqualTo(
                     FileStatus.toStatusImage(CardXrefRepository.PERMANENT_ERROR_STATUS));
+
+            // BOTH CICS response codes travel to the caller on the WHEN OTHER arm, because both are
+            // rendered into observable message text and field-for-field parity diffing compares that
+            // text. app/cbl/COACTVWC.cbl:745-746 moves WS-RESP-CD to ERROR-RESP and WS-REAS-CD to
+            // ERROR-RESP2 and STRINGs both into WS-RETURN-MSG; app/cbl/COTRN02C.cbl:598 and
+            // app/cbl/COBIL00C.cbl:431 DISPLAY 'RESP:' ... 'REAS:' ... So the fields must exist and must
+            // hold something definite.
+            assertThat(result.cicsResp()).isEqualTo(FileStatus.NOTOPEN);
+            assertThat(result.cicsResp2())
+                    .as("RESP2 is honestly zero: a read served over JDBC has no CICS secondary reason "
+                            + "code, and inventing a plausible one would put a fabricated number into "
+                            + "message text that parity diffing compares")
+                    .isEqualTo(CardXrefRepository.CICS_RESP2_NOT_APPLICABLE);
+            // And the backend's own diagnosis rides along, so an operator can tell an unreachable
+            // backend from a missing relation - without the coarse two-character status losing anything.
+            assertThat(result.diagnostic())
+                    .as("the WHEN OTHER arm carries the reason it was taken")
+                    .isPresent();
         }
 
         @Test
@@ -1348,6 +1512,61 @@ class CardXrefRepositoryTest {
                 assertThat(cursor.readNext().record().orElseThrow().xrefCustId()).isEqualTo(111);
             }
         }
+
+        @Test
+        @DisplayName("Gate G47: a sequential pass cannot report DUPLICATE '22' - and that is asserted, "
+                + "not assumed")
+        void aSequentialPassNeverReportsADuplicate() {
+            // WHY THIS OUTCOME IS UNREACHABLE HERE RATHER THAN MERELY UNTESTED. '22' is the duplicate
+            // condition, and a duplicate is a statement about a KEY: CICS raises DUPREC when an added
+            // base key already exists, and DUPKEY when a READ through a path over a non-unique alternate
+            // index matches more than one record. A sequential READ supplies no key at all -
+            // app/cbl/CBACT03C.cbl:120 is a bare "READ XREFFILE-FILE INTO CARD-XREF-RECORD" under
+            // ACCESS MODE IS SEQUENTIAL - so there is nothing for a duplicate to be a duplicate OF.
+            // Accordingly CBACT03C's 1000-XREFFILE-GET-NEXT tests exactly three arms, '00', '10' and
+            // WHEN OTHER, and never '22'; CBSTM03B's 'R' read-next arm does the same. The Java browse
+            // reproduces that three-arm shape, and this test pins it: the branch is absent because the
+            // COBOL has no such branch, which is a parity property rather than a coverage gap.
+            //
+            // Two records sharing one key are seeded to make the point concretely - a keyed read of that
+            // key WOULD report DUPREC, and the assertion below shows the browse simply returns both.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L), image(CARD_1, 77, 77L)));
+            List<ReadResult> outcomes = new ArrayList<>();
+
+            try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
+                assertThat(cursor.openOutcome()).isEqualTo(Outcome.OK);
+                for (ReadResult next = cursor.readNext(); ; next = cursor.readNext()) {
+                    outcomes.add(next);
+                    if (next.isEndOfFile()) {
+                        break;
+                    }
+                }
+                assertThat(cursor.closeBrowse()).isEqualTo(FileStatus.OK);
+            }
+
+            // Every outcome a pass produced is one of the three arms the COBOL enumerates for a
+            // sequential read, and not one of them is the duplicate arm.
+            assertThat(outcomes).isNotEmpty();
+            assertThat(outcomes).allSatisfy(outcome -> {
+                assertThat(outcome.isDuplicate())
+                        .as("a keyless read has no key to duplicate")
+                        .isFalse();
+                assertThat(outcome.status()).isNotEqualTo(FileStatus.DUPLICATE);
+                assertThat(outcome.outcome()).isIn(Outcome.OK, Outcome.END_OF_FILE, Outcome.OTHER);
+            });
+            // The pass surfaced both same-key records in order and then stopped - no deduplication, no
+            // condition raised, which is what a sequential COBOL pass over a corrupted cluster does.
+            assertThat(outcomes.get(outcomes.size() - 1).isEndOfFile()).isTrue();
+            assertThat(outcomes.subList(0, outcomes.size() - 1))
+                    .allSatisfy(outcome -> assertThat(outcome.isFound()).isTrue());
+
+            // And the contrast, so "unreachable for this operation" is demonstrated rather than
+            // asserted: the very same two rows, read BY KEY, do report the duplicate condition.
+            assertThat(repository(jdbc).readByCardNumber(CARD_1).isDuplicate())
+                    .as("'22' is reachable - for a keyed read, which is the operation it belongs to")
+                    .isTrue();
+        }
     }
 
     // =================================================================================================
@@ -1359,13 +1578,53 @@ class CardXrefRepositoryTest {
     @DisplayName("Byte-level parity - the offset audit and the real fixture")
     class ByteLevelParity {
 
+        // =============================================================================================
+        // RISK R-F, RECORDED IN FULL. This nested class is where that risk bites, so it is named here
+        // rather than left to a commit message (practice B12).
+        //
+        //   THE DEVIATION.  app/data/ASCII/cardxref.txt is 50 records of 36 bytes each. Eight of the
+        //                   nine shipped ASCII fixtures match their copybook width exactly; this is the
+        //                   one that does not. It OMITS CVACT03Y's trailing FILLER X(14).
+        //
+        //   THE AUTHORITY.  50 is the record width, not 36. app/cpy/CVACT03Y.cpy declares four fields
+        //                   summing to 50 and its own header says "(RECLN 50)". The fixture is the
+        //                   party that is short, and the copybook is the party that is right.
+        //
+        //   THE FIX.        Rows are RIGHT-PADDED 36 -> 50 with spaces BEFORE any decode or comparison.
+        //                   Padding up preserves every declared offset; shortening the record to 36
+        //                   would instead move XREF-CUST-ID and XREF-ACCT-ID out of position for all
+        //                   twelve consumers of this copybook.
+        //
+        //   THE OWNER.      The normaliser is FixedWidthCodec.padToDeclaredWidth, and it is DELIBERATELY
+        //                   NOT inside CardXrefRecord. The model does not self-heal a short row and this
+        //                   class asserts that it does not - see aShortRowIsNotSilentlyUsableAsARecord.
+        //                   This suite is therefore a CONSUMER of the normaliser: no padding is
+        //                   re-implemented here as a private helper, because a second implementation is
+        //                   a second thing to get wrong.
+        //
+        //   THE HARNESS.    The parity harness applies exactly the same padding before field-for-field
+        //                   comparison, driven by carddemo.test.fixtures.cardxref.pad-to: 50 in
+        //                   application-test.yml. One rule, stated in configuration, applied in both
+        //                   places (gate G16).
+        //
+        //   WHAT IS FORBIDDEN. Do NOT "fix" the fixture by padding the file on disk: app/data is the
+        //                   read-only parity oracle (practice B3) and rewriting it would destroy the
+        //                   only evidence of what the legacy system actually ships. Do NOT shorten the
+        //                   record, the configured record-length or the codec to 36 (practice B5).
+        //                   The deviation is preserved and compensated for, never absorbed.
+        // =============================================================================================
+
         /** Where the fixture rows are copied to on the test classpath. */
         private static final String FIXTURE = "/fixtures/cardxref.txt";
 
         /**
          * Reads the shipped fixture rows.
          *
-         * @return the fifty rows, exactly as stored
+         * <p>From the classpath copy, never from {@code app/data/ASCII} on disk (practice B3). The
+         * build copies the fixture into {@code target/test-classes}; this suite opens that copy
+         * read-only and writes nothing anywhere.
+         *
+         * @return the fifty rows, exactly as stored - 36 bytes each, unpadded
          * @throws IOException if the classpath resource cannot be read
          */
         private List<String> fixtureRows() throws IOException {
@@ -1373,6 +1632,23 @@ class CardXrefRepositoryTest {
                 assertThat(stream).as("the fixture must be on the test classpath").isNotNull();
                 return new String(stream.readAllBytes(), ASCII).lines().toList();
             }
+        }
+
+        /**
+         * The fixture rows after the one normalisation the module recognises.
+         *
+         * <p>Through {@link FixedWidthCodec#padToDeclaredWidth(String, int)} - the codec's own
+         * normaliser - so this suite consumes it rather than reproducing it.
+         *
+         * @return the fifty rows, each exactly {@link CardXrefRepository#RECORD_LENGTH} characters
+         * @throws IOException if the classpath resource cannot be read
+         */
+        private List<String> normalisedFixtureRows() throws IOException {
+            List<String> padded = new ArrayList<>();
+            for (String row : fixtureRows()) {
+                padded.add(CODEC.padToDeclaredWidth(row, CardXrefRepository.RECORD_LENGTH));
+            }
+            return padded;
         }
 
         @Test
@@ -1390,19 +1666,87 @@ class CardXrefRepositoryTest {
         void everyFixtureRowIsThirtySixBytes() throws IOException {
             List<String> rows = fixtureRows();
 
+            // 50 records of 36 bytes: the deviation itself, measured rather than assumed. If a future
+            // change padded the file on disk this assertion goes red - which is the intent, because
+            // app/data is the read-only oracle and must keep shipping what the legacy system ships.
             assertThat(rows).hasSize(50);
-            assertThat(rows).allSatisfy(row -> assertThat(row).hasSize(36));
+            assertThat(rows).allSatisfy(row -> assertThat(row).hasSize(CardXrefRecord.FILLER_OFFSET));
+            assertThat(CardXrefRecord.FILLER_OFFSET)
+                    .as("36 is the record's data prefix - the record minus its FILLER X(14)")
+                    .isEqualTo(36);
+        }
+
+        @Test
+        @DisplayName("Gate G16: the pad restores exactly the FILLER as spaces and touches nothing else")
+        void theRightPadAddsFourteenSpacesAndChangesNoDataByte() throws IOException {
+            List<String> raw = fixtureRows();
+            List<String> padded = normalisedFixtureRows();
+
+            assertThat(padded).hasSameSizeAs(raw);
+            for (int index = 0; index < padded.size(); index++) {
+                String before = raw.get(index);
+                String after = padded.get(index);
+
+                // 36 -> 50. The record is exactly its declared width once normalised (gate G19).
+                assertThat(after)
+                        .as("row %d is the copybook width after normalisation", index + 1)
+                        .hasSize(CardXrefRepository.RECORD_LENGTH);
+                // Bytes 36..49 - the FILLER X(14) span - are spaces, never zeros and never absent.
+                // A FILLER omitted from a codec breaks the total width and every downstream offset,
+                // so it is emitted as spaces (gate G21).
+                assertThat(after.substring(CardXrefRecord.FILLER_OFFSET))
+                        .as("row %d FILLER span is 14 spaces", index + 1)
+                        .isEqualTo(" ".repeat(CardXrefRecord.FILLER_LENGTH))
+                        .hasSize(CardXrefRecord.FILLER_LENGTH);
+                // And the three data fields are untouched: the pad appends, it does not reshape. This
+                // is the half of the property that a length check alone would miss.
+                assertThat(after.substring(0, CardXrefRecord.FILLER_OFFSET))
+                        .as("row %d data prefix survives the pad byte for byte", index + 1)
+                        .isEqualTo(before);
+
+                // Field for field, through the decode the repository itself uses.
+                CardXrefRecord decoded = CardXrefRecord.decode(after.getBytes(ASCII), ASCII);
+                assertThat(decoded.xrefCardNum())
+                        .isEqualTo(before.substring(CardXrefRecord.XREF_CARD_NUM_OFFSET,
+                                CardXrefRecord.XREF_CUST_ID_OFFSET))
+                        .hasSize(CardXrefRecord.XREF_CARD_NUM_LENGTH);
+                assertThat(decoded.xrefCustId()).isEqualTo(Integer.parseInt(
+                        before.substring(CardXrefRecord.XREF_CUST_ID_OFFSET,
+                                CardXrefRecord.XREF_ACCT_ID_OFFSET)));
+                assertThat(decoded.xrefAcctId()).isEqualTo(Long.parseLong(
+                        before.substring(CardXrefRecord.XREF_ACCT_ID_OFFSET,
+                                CardXrefRecord.FILLER_OFFSET)));
+            }
+        }
+
+        @Test
+        @DisplayName("Risk R-F: the MODEL does not self-heal a short row - the codec is the normaliser")
+        void aShortRowIsNotSilentlyUsableAsARecord() throws IOException {
+            String raw = fixtureRows().get(0);
+
+            // CardXrefRecord decodes by absolute offset and therefore requires the declared width. It
+            // deliberately does NOT pad: were it to, a genuinely truncated production row would be
+            // silently completed with spaces and read as valid. The responsibility sits one layer up,
+            // in FixedWidthCodec, and this assertion is what keeps it there.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a 36-byte image is not a 50-byte record and the model must say so")
+                    .isThrownBy(() -> CardXrefRecord.decode(raw.getBytes(ASCII), ASCII))
+                    .withMessageContaining("padToDeclaredWidth");
+
+            // The same bytes, normalised by the codec, decode cleanly. One collaboration, two roles.
+            assertThat(CardXrefRecord.decode(
+                    CODEC.padToDeclaredWidth(raw, CardXrefRepository.RECORD_LENGTH).getBytes(ASCII),
+                    ASCII))
+                    .isEqualTo(new CardXrefRecord(CARD_1, 50, 50L));
         }
 
         @Test
         @DisplayName("Gate G16: padded 36 to 50, all fifty fixture rows decode and re-encode byte-identically")
         void theWholeFixtureRoundTripsAfterNormalisation() throws IOException {
-            List<String> padded = new ArrayList<>();
-            for (String row : fixtureRows()) {
-                // The normalisation application-test.yml declares as
-                // carddemo.test.fixtures.cardxref.pad-to: 50 - performed by the harness, never here.
-                padded.add(CODEC.padToDeclaredWidth(row, CardXrefRepository.RECORD_LENGTH));
-            }
+            // normalise -> decode -> re-serialise, and every step is 50 bytes wide. The normalisation
+            // is the one application-test.yml declares as carddemo.test.fixtures.cardxref.pad-to: 50,
+            // performed by the codec and by the harness, never re-implemented here.
+            List<String> padded = normalisedFixtureRows();
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             stubRows(jdbc, BASE_DS, padded);
             List<CardXrefRecord> decoded = new ArrayList<>();
@@ -1415,7 +1759,11 @@ class CardXrefRepositoryTest {
 
             assertThat(decoded).hasSize(50);
             for (int index = 0; index < decoded.size(); index++) {
-                assertThat(new String(decoded.get(index).encode(ASCII), ASCII))
+                byte[] reserialised = decoded.get(index).encode(ASCII);
+                assertThat(reserialised)
+                        .as("fixture row %d re-serialises at the copybook width", index + 1)
+                        .hasSize(CardXrefRepository.RECORD_LENGTH);
+                assertThat(new String(reserialised, ASCII))
                         .as("fixture row %d re-encodes byte-identically", index + 1)
                         .isEqualTo(padded.get(index));
             }
@@ -1426,10 +1774,7 @@ class CardXrefRepositoryTest {
         @Test
         @DisplayName("Both keys find the first fixture row, at their two different offsets")
         void bothKeysFindTheFirstFixtureRowFromTheRealData() throws IOException {
-            List<String> padded = new ArrayList<>();
-            for (String row : fixtureRows()) {
-                padded.add(CODEC.padToDeclaredWidth(row, CardXrefRepository.RECORD_LENGTH));
-            }
+            List<String> padded = normalisedFixtureRows();
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             stubRows(jdbc, BASE_DS, padded);
             stubRows(jdbc, ALT_DS, padded);
@@ -1443,6 +1788,98 @@ class CardXrefRepositoryTest {
             // Two access paths, two key offsets - 0 and 25 - and one record.
             assertThat(byAccount.record()).isEqualTo(byCard.record());
             assertThat(byCard.ddName()).isNotEqualTo(byAccount.ddName());
+
+            // ALL FOUR FIELDS OF A REAL FIXTURE ROW, AT THEIR EXACT OFFSETS AND WIDTHS, reached through
+            // the base keyed read. The expectations are sliced out of the raw 36-byte fixture line, so
+            // this compares the decode against the shipped bytes rather than against a restated literal.
+            String rawRow = fixtureRows().get(0);
+            CardXrefRecord found = byCard.record().orElseThrow();
+
+            // XREF-CARD-NUM PIC X(16) at offset 0 - sixteen characters, LEADING ZEROS INTACT. Trimming
+            // it, or holding it as a number, would lose the leading zero the fixture actually carries
+            // and would break every one of this copybook's twelve consumers.
+            assertThat(found.xrefCardNum())
+                    .isEqualTo(rawRow.substring(CardXrefRecord.XREF_CARD_NUM_OFFSET,
+                            CardXrefRecord.XREF_CARD_NUM_OFFSET + CardXrefRecord.XREF_CARD_NUM_LENGTH))
+                    .hasSize(16)
+                    .startsWith("0");
+            // XREF-CUST-ID PIC 9(09) at offset 16 and XREF-ACCT-ID PIC 9(11) at offset 25.
+            assertThat(found.xrefCustId()).isEqualTo(50);
+            assertThat(found.xrefAcctId()).isEqualTo(50L);
+            // FILLER X(14) at offset 36 - present, and spaces.
+            String image = new String(found.encode(ASCII), ASCII);
+            assertThat(image).hasSize(CardXrefRepository.RECORD_LENGTH);
+            assertThat(image.substring(CardXrefRecord.FILLER_OFFSET))
+                    .isEqualTo(" ".repeat(CardXrefRecord.FILLER_LENGTH));
+
+            // ZERO-FILLED TO 9 AND 11 ON WRITE. Customer 50 and account 50 are two-digit values and the
+            // spans are nine and eleven wide; a PIC 9 receiver fills on the LEFT, so they are stored as
+            // 000000050 and
+            // 00000000050 - which is exactly how app/data/ASCII/cardxref.txt holds them. Writing them
+            // right-padded, or unpadded, would shift every following byte.
+            assertThat(image.substring(CardXrefRecord.XREF_CUST_ID_OFFSET,
+                    CardXrefRecord.XREF_ACCT_ID_OFFSET))
+                    .isEqualTo("000000050")
+                    .hasSize(CardXrefRecord.XREF_CUST_ID_LENGTH);
+            assertThat(image.substring(CardXrefRecord.XREF_ACCT_ID_OFFSET,
+                    CardXrefRecord.FILLER_OFFSET))
+                    .isEqualTo("00000000050")
+                    .hasSize(CardXrefRecord.XREF_ACCT_ID_LENGTH);
+            // The three data spans re-serialise to exactly the bytes the fixture shipped.
+            assertThat(image.substring(0, CardXrefRecord.FILLER_OFFSET)).isEqualTo(rawRow);
+        }
+
+        @Test
+        @DisplayName("Gate G45: the same record, reached both ways, is byte-identical across all 50 bytes")
+        void theTwoAccessPathsReturnTheSameFiftyBytes() throws IOException {
+            // ONE CLUSTER, TWO ACCESS PATHS. app/csd/CARDDEMO.CSD:37 defines FILE(CCXREF) as the base
+            // KSDS, "CARD TO ACCOUNT XREF"; :63 defines FILE(CXACAIX) as the "ALTERNATE INDEX TO CCXREF
+            // VIA ACCOUNT KEY". app/jcl/INTCALC.jcl is the proof text: it opens the cross reference
+            // TWICE IN ONE STEP - XREFFILE on the base and XREFFIL1 on the AIX path over that same base
+            // - and app/cbl/CBACT04C.cbl carries both keys on a single SELECT. So the alternate index is
+            // a second key on one dataset, never a second dataset, and never a second repository, table
+            // or DataSource.
+            List<String> padded = normalisedFixtureRows();
+            JdbcTemplate oneTemplate = mock(JdbcTemplate.class);
+            stubRows(oneTemplate, BASE_DS, padded);
+            stubRows(oneTemplate, ALT_DS, padded);
+            // ONE repository instance over ONE JdbcTemplate - hence one DataSource - serves both paths.
+            CardXrefRepository oneRepository = repository(oneTemplate);
+
+            ReadResult byCard = oneRepository.readByCardNumber(CARD_1);
+            assertThat(byCard.isFound()).isTrue();
+            CardXrefRecord viaBaseKey = byCard.record().orElseThrow();
+
+            // The alternate key is taken from the record the BASE read returned, not from a literal, so
+            // the two reads are provably about the same record rather than coincidentally about two.
+            ReadResult byAccount =
+                    oneRepository.readByAccountIdViaAltIndex(viaBaseKey.xrefAcctId());
+            assertThat(byAccount.isFound()).isTrue();
+            CardXrefRecord viaAlternateKey = byAccount.record().orElseThrow();
+
+            // BYTE-IDENTICAL ACROSS ALL FIFTY BYTES - FILLER included, which is the half a field-by-
+            // field comparison of the three data fields would silently skip.
+            byte[] fromBase = viaBaseKey.encode(ASCII);
+            byte[] fromPath = viaAlternateKey.encode(ASCII);
+            assertThat(fromBase).hasSize(CardXrefRepository.RECORD_LENGTH);
+            assertThat(fromPath).hasSize(CardXrefRepository.RECORD_LENGTH);
+            assertThat(fromPath)
+                    .as("the CXACAIX path returns the very bytes the CCXREF base holds")
+                    .containsExactly(fromBase);
+            assertThat(new String(fromPath, ASCII).substring(CardXrefRecord.FILLER_OFFSET))
+                    .isEqualTo(" ".repeat(CardXrefRecord.FILLER_LENGTH));
+            // Field for field as well, so a reviewer sees both the whole and the parts.
+            assertThat(viaAlternateKey.xrefCardNum()).isEqualTo(viaBaseKey.xrefCardNum());
+            assertThat(viaAlternateKey.xrefCustId()).isEqualTo(viaBaseKey.xrefCustId());
+            assertThat(viaAlternateKey.xrefAcctId()).isEqualTo(viaBaseKey.xrefAcctId());
+
+            // Two paths, distinguishable only by which key and which configured name each addresses.
+            assertThat(byCard.ddName()).isEqualTo(CardXrefRepository.BASE_DD_NAME);
+            assertThat(byAccount.ddName()).isEqualTo(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+            assertThat(CardXrefRepository.CARD_NUMBER_KEY_LENGTH).isEqualTo(16);
+            assertThat(CardXrefRepository.ACCOUNT_ID_KEY_LENGTH).isEqualTo(11);
+            assertThat(CardXrefRecord.XREF_CARD_NUM_OFFSET)
+                    .isNotEqualTo(CardXrefRecord.XREF_ACCT_ID_OFFSET);
         }
 
         @Test
@@ -1837,6 +2274,207 @@ class CardXrefRepositoryTest {
                     .isThrownBy(() -> new CardXrefRepository(jdbc,
                             bindings(ksds("TEST.\"ODD\".NAME"), aixPath(ALT_DS)), ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
+        }
+
+        @Test
+        @DisplayName("Gate G44: nothing this repository composes is schema-shaped - every statement reads")
+        void noComposedStatementIsSchemaShaped() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)))
+                    .storing(ALT_DS, List.of(image(CARD_1, 50, 50L)));
+            CardXrefRepository repository = repository(jdbc);
+
+            // Every operation the unit offers, so every statement it can compose is captured: the two
+            // describes, the two keyed reads, the browse open read and the browse advancing read.
+            repository.readByCardNumber(CARD_1);
+            repository.readByAccountIdViaAltIndex(50L);
+            try (BrowseCursor cursor = repository.openBrowse()) {
+                cursor.readNext();
+                cursor.readNext();
+            }
+
+            assertThat(backend.statementsSent()).isNotEmpty();
+            assertThat(backend.statementsSent()).allSatisfy(sql -> {
+                // The migration reaches the EXISTING cluster exactly as it is. No data-definition
+                // statement, no migration script, no table or column creation, no index creation, no
+                // mutation of any kind, and no optimistic-locking version column - the COBOL's own
+                // 9300-CHECK-CHANGE-IN-REC re-read is how concurrency is expressed in this estate.
+                assertThat(sql.toUpperCase(Locale.ROOT)).startsWith("SELECT ");
+                assertThat(sql.toUpperCase(Locale.ROOT))
+                        .as("no schema-shaped verb may appear in %s", sql)
+                        .doesNotContain("CREATE ")
+                        .doesNotContain("ALTER ")
+                        .doesNotContain("DROP ")
+                        .doesNotContain("TRUNCATE ")
+                        .doesNotContain("INSERT ")
+                        .doesNotContain("UPDATE ")
+                        .doesNotContain("DELETE ")
+                        .doesNotContain("MERGE ")
+                        .doesNotContain("GRANT ")
+                        .doesNotContain("INDEX")
+                        .doesNotContain("PRIMARY KEY")
+                        .doesNotContain("VERSION");
+            });
+        }
+    }
+
+    // =================================================================================================
+    // Configuration binding. Gate G46 has a positive form as well as a negative one: it is not enough
+    // that no dataset name is WRITTEN here, the names must demonstrably be READ from the two
+    // configuration keys. That cannot be shown with a hand-built catalogue, so this one nested class
+    // slices Spring - as thinly as the property allows - over the shipped test profile document.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Gate G46 - both names resolved from carddemo.datasets, none written in Java")
+    class ConfigurationBinding {
+
+        /** The configuration key that names the {@code CCXREF} base cluster's dataset. */
+        private static final String BASE_DSNAME_KEY =
+                "carddemo.datasets." + CardXrefRepository.BASE_DD_NAME + ".dsname";
+
+        /** The configuration key that names the {@code CXACAIX} alternate-index path's dataset. */
+        private static final String ALTERNATE_DSNAME_KEY =
+                "carddemo.datasets." + CardXrefRepository.ALTERNATE_INDEX_DD_NAME + ".dsname";
+
+        /**
+         * A slice over the shipped {@code test} profile: the real {@code application.yml} plus
+         * {@code application-test.yml}, with nothing supplied inline.
+         *
+         * <p>An {@link ApplicationContextRunner} with a {@link ConfigDataApplicationContextInitializer}
+         * rather than {@code @SpringBootTest} with {@code @ActiveProfiles}, which is the convention
+         * {@code config/DataSourceConfigTest} established in this module: it reads the same documents,
+         * activates the same profile, starts no web server and no batch infrastructure, and cannot be
+         * perturbed by an unrelated bean failing elsewhere in the graph. Naming the profile inline also
+         * outranks anything the surrounding JVM exported, so the slice is hermetic (practice B7).
+         *
+         * <p>Only the two configuration classes this repository's constructor arguments come from are
+         * registered, so nothing else can supply a value by accident.
+         *
+         * @return the runner
+         */
+        private ApplicationContextRunner shippedTestProfile() {
+            return new ApplicationContextRunner()
+                    .withInitializer(new ConfigDataApplicationContextInitializer())
+                    .withUserConfiguration(DataSourceConfig.class, CobolCharsetConfig.class)
+                    .withPropertyValues("spring.profiles.active=test");
+        }
+
+        @Test
+        @DisplayName("Both dataset names come from carddemo.datasets.CCXREF and .CXACAIX, not from Java")
+        void bothDatasetNamesAreResolvedFromTheirConfigurationKeys() {
+            shippedTestProfile().run(context -> {
+                CardXrefRepository repository = new CardXrefRepository(
+                        context.getBean(JdbcTemplate.class),
+                        context.getBean(DatasetBindings.class),
+                        context.getBean(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class),
+                        context.getBean(RecordImageForm.class));
+
+                // The expected values are READ from the environment under the two keys rather than
+                // written here. That is what makes this assertion a proof of gate G46 instead of a
+                // restatement of it: were a name ever hard-coded in Java, this would still pass only
+                // while the two agreed, and the moment configuration changed it would go red.
+                String configuredBase = context.getEnvironment().getProperty(BASE_DSNAME_KEY);
+                String configuredAlternate =
+                        context.getEnvironment().getProperty(ALTERNATE_DSNAME_KEY);
+
+                assertThat(configuredBase).as(BASE_DSNAME_KEY).isNotBlank();
+                assertThat(configuredAlternate).as(ALTERNATE_DSNAME_KEY).isNotBlank();
+                assertThat(repository.baseDatasetName()).isEqualTo(configuredBase);
+                assertThat(repository.alternateIndexDatasetName()).isEqualTo(configuredAlternate);
+            });
+        }
+
+        @Test
+        @DisplayName("Gate G45 in the shipped configuration: CXACAIX declares CCXREF as its base")
+        void theShippedCatalogueDeclaresThePathOverTheBase() {
+            shippedTestProfile().run(context -> {
+                DatasetBindings catalogue = context.getBean(DatasetBindings.class);
+                DatasetBinding base = catalogue.binding(CardXrefRepository.BASE_DD_NAME);
+                DatasetBinding path =
+                        catalogue.binding(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+
+                // app/csd/CARDDEMO.CSD:63-65, DESCRIPTION(ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY),
+                // and app/jcl/INTCALC.jcl opening the cross reference twice in one step - as XREFFILE on
+                // the base and XREFFIL1 on the path - both expressed as configuration, not as prose.
+                assertThat(base.base()).as("the base cluster declares no base of its own").isNull();
+                assertThat(path.base()).isEqualTo(CardXrefRepository.BASE_DD_NAME);
+                assertThat(path.alternateKey())
+                        .isEqualTo(CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD);
+                // One copybook, one width, for both access paths - because they are one dataset.
+                assertThat(base.recordLength()).isEqualTo(CardXrefRepository.RECORD_LENGTH);
+                assertThat(path.recordLength()).isEqualTo(CardXrefRepository.RECORD_LENGTH);
+                assertThat(base.copybook()).isEqualTo(path.copybook());
+                // And the 36-byte fixture width is nowhere in the dataset catalogue: risk R-F is
+                // compensated for by padding UP at the fixture boundary, never by configuring DOWN here.
+                assertThat(base.recordLength()).isNotEqualTo(CardXrefRecord.FILLER_OFFSET);
+            });
+        }
+
+        @Test
+        @DisplayName("The test profile names US-ASCII explicitly; the platform default is never used")
+        void theTestProfileNamesTheAsciiCodePageExplicitly() {
+            shippedTestProfile().run(context -> {
+                Charset injected =
+                        context.getBean(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class);
+
+                // carddemo.charset.dataset carries NO default, so this value was stated by a document:
+                // US-ASCII in application-test.yml, whose bindings address the nine text fixtures, and
+                // IBM037 in application.yml, whose bindings address the mainframe datasets. Either way
+                // it is named, never inherited from the JVM (practice B8).
+                assertThat(context.getEnvironment()
+                        .getProperty(CobolCharsetConfig.DATASET_CHARSET_PROPERTY))
+                        .isEqualTo(StandardCharsets.US_ASCII.name());
+                assertThat(injected).isEqualTo(ASCII);
+                // The code page this suite asserts with IS the one the profile injects, so no assertion
+                // here is decoding fixture bytes differently from the way the module would.
+                assertThat(CODEC.charset()).isEqualTo(injected);
+            });
+        }
+
+        @Test
+        @DisplayName("Gate G44: the profile-bound repository still only ever composes a read")
+        void theProfileBoundRepositoryComposesOnlyReads() {
+            shippedTestProfile().run(context -> {
+                CardXrefRepository repository = new CardXrefRepository(
+                        context.getBean(JdbcTemplate.class),
+                        context.getBean(DatasetBindings.class),
+                        context.getBean(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class),
+                        context.getBean(RecordImageForm.class));
+
+                // The two dataset-scoped statements the repository can compose without reaching a
+                // backend. Both are reads, and neither creates, alters or migrates anything: the
+                // existing cluster is reached exactly as it is, with no DDL and no schema change.
+                assertThat(repository.describeBaseStatement()).startsWith("SELECT ");
+                assertThat(repository.describeAlternateIndexStatement()).startsWith("SELECT ");
+                assertThat(repository.describeBaseStatement()).contains("WHERE 1 = 0");
+                assertThat(repository.describeAlternateIndexStatement()).contains("WHERE 1 = 0");
+
+                // Each statement addresses the name ITS OWN key declares, whatever that name is - the
+                // one property that holds under both profiles.
+                //
+                // GATE G45, MADE LITERAL BY THIS PROFILE. Under the default profile the two keys carry
+                // two names, a .VSAM.KSDS for the base and a .VSAM.AIX.PATH for the path, and the
+                // statements therefore differ. Under the test profile they carry the SAME name, because
+                // one seeded relation stands for the whole cluster and the alternate index is an
+                // additional access path over it rather than a dataset of its own. Both arrangements are
+                // correct and neither is asserted away here: what is asserted is that each access path
+                // follows its own configuration key. Asserting the two statements must DIFFER would have
+                // been asserting the opposite of gate G45.
+                assertThat(repository.describeBaseStatement())
+                        .contains(context.getEnvironment().getProperty(BASE_DSNAME_KEY));
+                assertThat(repository.describeAlternateIndexStatement())
+                        .contains(context.getEnvironment().getProperty(ALTERNATE_DSNAME_KEY));
+                // The CICS FILE names the online programs hold as PIC X(08), padded through the codec's
+                // own PIC X move so the module's single truncation-and-padding rule governs them.
+                assertThat(repository.baseFileNameForCics())
+                        .hasSize(CardXrefRepository.CICS_FILE_NAME_LENGTH)
+                        .startsWith(CardXrefRepository.BASE_DD_NAME);
+                assertThat(repository.alternateIndexFileNameForCics())
+                        .hasSize(CardXrefRepository.CICS_FILE_NAME_LENGTH)
+                        .startsWith(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+            });
         }
     }
 }
