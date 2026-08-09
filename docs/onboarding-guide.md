@@ -172,7 +172,7 @@ wrong answer, the warning is part of the row &mdash; these are not hypothetical.
 
 | Path | Contents |
 |---|---|
-| `app/cbl/` | **28 programs, 19,254 lines.** :warning: `CBSTM03A.CBL` (924 lines) and `CBSTM03B.CBL` (230) carry an **uppercase `.CBL` extension**. A `*.cbl` glob finds 26 files and 18,100 lines &mdash; it silently drops the entire statement-generation program. **Always match case-insensitively.** |
+| `app/cbl/` | **28 programs, 19,254 lines.** &#9888; **Trap:** `CBSTM03A.CBL` (924 lines) and `CBSTM03B.CBL` (230) carry an **uppercase `.CBL` extension**. A `*.cbl` glob finds 26 files and 18,100 lines &mdash; it silently drops the entire statement-generation program. **Always match case-insensitively.** |
 | `app/cpy/` | 28 copybooks, 2,614 lines. Includes the uppercase `COSTM01.CPY` and `UNUSED1Y.cpy`, which has **zero `COPY` references repository-wide** and is dispositioned as documented dead code rather than deleted. |
 | `app/bms/` | 17 mapsets, 4,472 lines &mdash; the screen definitions. |
 | `app/cpy-bms/` | 17 generated symbolic maps, 5,632 lines, **441 input fields** in total. These are the DTO field contracts: names, types and lengths come from here, not from judgement. |
@@ -311,11 +311,20 @@ profiles, with fail-fast on absence and no committed default.** An unset variabl
 application start-up. That is deliberate: a default would be a credential in the repository,
 and a silent fallback would be worse than a crash because it would look like it worked.
 
-The variable is `JWT_SIGNING_KEY`. To configure a local run:
+The variable is `JWT_SIGNING_KEY`. To configure a local run, create the file with a
+restrictive mode **before** any key material goes into it, then verify the mode:
 
 ```bash
-cp .env.example .env      # then fill in the empty values locally
+umask 077 && cp .env.example .env      # or: install -m 600 .env.example .env
+stat -c '%a %n' .env                   # MUST print: 600 .env
 ```
+
+A bare `cp` inherits your `umask`, which on most systems leaves the file at `0644`.
+Tightening the mode after a secret has already been written does not undo the window in
+which every local account could read it, which is why the mode comes first and is checked
+rather than assumed. Only once `stat` prints `600` should you fill in the empty values.
+`README.md` carries the same two-line recipe verbatim; they are deliberately identical, so
+following either page produces the same file mode.
 
 * **`.env.example` at the repository root documents the variable names and nothing else.**
   Every value in it is **blank or an obvious placeholder &mdash; never a real secret.** It is
@@ -358,12 +367,62 @@ warning-free. A bare `mvn` bypasses both.
 ```bash
 ./mvnw clean verify                       # full build: compile, all test tiers, coverage, scan
 ./mvnw test                               # unit tier only (Surefire 3.5.4)
-./mvnw verify -DskipUnitTests             # integration and end-to-end tiers (Failsafe 3.5.4)
+./mvnw test-compile failsafe:integration-test failsafe:verify   # integration and end-to-end tiers only (Failsafe 3.5.4)
 ./mvnw -B -ntp -Ddependency-check.skip=true clean verify   # fast local iteration
+./mvnw -B -ntp -Dtest='<Class>' -Dsurefire.failIfNoSpecifiedTests=false test
+./mvnw -B -ntp -Ddependency-check.skip=true -Dit.test='<Class>' verify
 ```
 
-The last form skips the vulnerability scan. **Treat it as an iteration shortcut, not as a
-pass** &mdash; a complete `verify` includes the scan.
+The third form skips the vulnerability scan. **Treat it as an iteration shortcut, not as a
+pass** &mdash; a complete `verify` includes the scan. The last two narrow **within** a tier: the
+fourth runs one unit class, and the fifth runs one integration or end-to-end class **on top of
+the whole unit tier**, which is what keeps the coverage gate satisfiable.
+
+**There is no integration-tier-only shortcut, and the flag once published here was not one.**
+`-DskipUnitTests` binds nothing &mdash; no plugin, property or profile in `pom.xml` reads that
+name &mdash; so a `verify` carrying it ran the entire unit tier regardless, silently. That is the
+worst of the three possible outcomes: the run neither skipped the tier nor said it could not, so
+the wait looked like the price of the shortcut. It has been removed rather than implemented,
+because implementing it would only move the failure: `check-line-coverage` measures the
+**merged** unit-and-integration execution data against the 0.80 LINE floor, so a `verify` with
+the unit tier removed fails on coverage &mdash; a red build for a reason unrelated to whatever
+was being tested. Narrow with `-Dtest=` or `-Dit.test=` instead, which selects inside a tier
+rather than deleting one.
+
+**Why the third line invokes two goals instead of passing a skip property.** This line used to
+read `./mvnw verify -DskipUnitTests`, which **did nothing at all**: `skipUnitTests` is declared
+in no `pom.xml`, no profile and no plugin, so Maven accepted it, ignored it, and ran the unit
+tier anyway &mdash; roughly ten minutes of work the reader believed had been skipped, and a
+green result that proved something other than what was asked for. There is no property that
+skips only the unit tier either, which is the trap worth knowing: `skipTests`
+and `maven.test.skip.exec` are both declared by **Surefire and Failsafe alike**, so either one
+switches off the tier you wanted to run. `skipITs` exists and works, but it is the opposite
+&mdash; it skips the integration tier. Invoking the two Failsafe goals directly after
+`test-compile` is therefore the honest way to run that tier alone, and it is what the comment
+above now describes. Add `-Dit.test=<ClassName>` to narrow it to one class; Failsafe reads
+`it.test`, not `test`, so `-Dtest=` filters Surefire and has no effect here.
+
+Two consequences follow from invoking goals rather than a phase, and both are the point rather
+than a limitation. **Nothing bound to `verify` runs** &mdash; no coverage check, no vulnerability
+scan &mdash; so the result is a tier reading, never a gate. And that is also why no
+`verify`-shaped variant of this command is offered: coverage is measured on the **merged**
+unit-plus-integration data against a `0.80` floor, so a `verify` that ran the integration tier
+alone would fail at `jacoco:check` having proved the tier perfectly well. Use `clean verify`
+when you want the gates, and this line when you want the tier.
+
+Measured rather than asserted, because a documented command that has never been run is how the
+inert flag survived: the form above was executed on this tree and printed `BUILD SUCCESS` in
+**08:18**, running **907** cases with 0 failures, 0 errors and 0 skips across **eight** goals
+&mdash; `enforcer:enforce`, `jacoco:prepare-agent`, `resources`, `compile`, `testResources`,
+`testCompile`, `failsafe:integration-test`, `failsafe:verify` &mdash; with **no `surefire:test`
+among them and not one `unit/` suite in the log**, which is the property the old line claimed and
+did not have.
+
+One other page still shows the withdrawn flag, and deliberately keeps it:
+[`docs/project-guide.md`](project-guide.md) is a prior-run record, and the command it prints is
+what that run actually issued. Editing it would make the record say something the run did not do,
+so it stays as it is; **this** page is the one to follow. The flag is inert wherever it appears, so
+nothing there behaves differently from what is described above.
 
 **What `verify` enforces.** Every item below **fails** the build rather than warning:
 
@@ -392,16 +451,27 @@ container runtime. The image is the same one the `Dockerfile` build stage pins &
 docker run --rm \
   -v "$PWD":/workspace -w /workspace \
   -v "$HOME/.m2":/root/.m2 \
-  maven:3.9.11-eclipse-temurin-25 \
+  maven:3.9.11-eclipse-temurin-25@sha256:407c4423cec0cf2981055bc2c6c0dc211d9605b6669279b95997f2d1c7e91e2c \
   mvn -B -ntp clean verify
 ```
 
+**The digest belongs in the command, not in a cross-reference.** An earlier revision of this
+section claimed the tag-and-digest pin in its prose and then printed the tag alone, so the two
+published forms of one command disagreed and the weaker one was the copyable one. The digest
+above is the same one `Dockerfile`'s build stage carries, and `../README.md` prints this command
+identically under *Build, run and verify* &mdash; if those three ever diverge again, `Dockerfile`
+is the one to believe, because it is the only one a build executes.
+
 Mount the working tree and a **persistent Maven cache** &mdash; without the second mount
 every run re-downloads the whole dependency set. That container already carries Maven 3.9.11
-on JDK 25, so `mvn` is invoked directly rather than through the wrapper. The
+on JDK 25, so `mvn` is invoked directly rather than through the wrapper &mdash; measured inside
+that exact digest: `Apache Maven 3.9.11`, `Java version: 25.0.1`, and every enforcer rule
+passing. Note the patch level: the base image ships **25.0.1** and clears the `[25,)` floor,
+while `Dockerfile` installs **25.0.3+9** over it for the image it builds, so this path is a
+JDK-25 build rather than a byte-identical reproduction of that one. The
 Testcontainers-backed tiers additionally need a Docker daemon reachable from *inside* the
-container; expect them to fail fast without one. For the digest-pinned form of this command
-see `../README.md` under *Build, run and verify*.
+container; expect them to fail fast without one. Note that the first `-v` mounts your tree
+**read-write**, so the build writes `target/` back onto the host.
 
 ### 5.3 Running the full topology
 
@@ -410,7 +480,7 @@ docker compose up --build          # foreground
 docker compose up -d --wait        # detached; returns when every healthcheck is healthy
 ```
 
-That starts **six services**. Every image is pinned to a tag **and** a digest.
+That starts **seven services**. Every image is pinned to a tag **and** a digest.
 
 | Service | Host port | Role |
 |---|--:|---|
@@ -418,17 +488,41 @@ That starts **six services**. Every image is pinned to a tag **and** a digest.
 | `postgres` | 5432 | PostgreSQL 16, the VSAM replacement |
 | `localstack` | 4566 | S3, SQS FIFO and SNS |
 | `jaeger` | 16686 UI, 4318 OTLP/HTTP | Trace collection and search |
-| `prometheus` | 9090 | Scrapes `/actuator/prometheus` |
+| `pushgateway` | 9091 | Holds the end-of-run counter totals a batch submission publishes as it exits |
+| `prometheus` | 9090 | Scrapes `/actuator/prometheus` on `app` and `/metrics` on `pushgateway` |
 | `grafana` | 3000 | Dashboards, provisioned from `observability/grafana/` |
+
+**The Pushgateway is there for one specific reason, and knowing it saves an afternoon.** Three of the
+four named counters &mdash; `carddemo.batch.records.processed`, `carddemo.batch.records.rejected` and
+`carddemo.transaction.amount.total` &mdash; are written by `POSTTRAN` and `COMBTRAN`, which run in a
+separate `java -jar` process with `--spring.main.web-application-type=none`. That process ends when
+its job ends, so it never serves a scrape: before the gateway existed, a real `POSTTRAN` run printed
+`TRANSACTIONS PROCESSED :000000300` while the matching series read `0.0`, and six of the nine data
+panels on the dashboard could never hold a value. The batch process now pushes its totals as it
+exits. The push is **off by default** &mdash; the web application is already scraped, and a process
+that both pushed and was scraped would be double-counted &mdash; so a batch launch that wants the
+counters collected adds one flag:
+
+```bash
+java -jar target/carddemo-1.0.0.jar \
+     --spring.main.web-application-type=none \
+     --spring.batch.job.enabled=true --spring.batch.job.name=POSTTRAN \
+     --management.prometheus.metrics.export.pushgateway.enabled=true
+```
+
+If you run that on the host rather than in a container, set `CARDDEMO_PUSHGATEWAY_ADDRESS` to the
+**published** address (`localhost:9091` by default, shifted if you shifted `PUSHGATEWAY_PORT`); a
+container-run launch already receives `pushgateway:9091` from `docker-compose.yml`.
 
 `localstack-init/init-aws.sh` provisions **exactly three S3 buckets** &mdash;
 `carddemo-batch-input`, `carddemo-batch-output` (**versioning enabled on the output bucket
-only**) and `carddemo-statements` &mdash; **two SQS queues**, **one** SNS topic and **one**
+only**) and `carddemo-statements` &mdash; **three SQS queues**, **one** SNS topic and **one**
 SNS subscription:
 
 | Resource | Name | Why it exists |
 |---|---|---|
 | FIFO queue | `carddemo-report-jobs` (created as `carddemo-report-jobs.fifo`, since the suffix is mandatory for a FIFO queue) | Carries report-job submissions in the order the operator made them |
+| FIFO queue | `carddemo-report-jobs-dlq.fifo` | The dead-letter target the report queue's `RedrivePolicy` names, with `maxReceiveCount` 4. Every submission travels in one ordered FIFO group, so a message no consumer can act on has to *leave* the group rather than circulate at its head. The name is derived from the report queue's rather than configured, so the two cannot be pointed at the wrong queues; the target of a FIFO queue must itself be FIFO |
 | Standard queue | `carddemo-notifications-inbox` | The topic's **only** subscriber, holding each notice until an operator reads it |
 | Topic | `carddemo-notifications` | Operator notification, replacing the mainframe `NOTIFY` path |
 | Subscription | the inbox queue, protocol `sqs`, `RawMessageDelivery=true` | Turns an accepted publish into a **delivered** notice |
@@ -493,28 +587,146 @@ as BCrypt hashes ([§7.3](#73-the-user-records-and-what-the-demo-credential-can-
 ### 5.5 Running a batch job
 
 **Jobs do not auto-launch on start-up.** `spring.batch.job.enabled` is `false` deliberately,
-because the framework default would run every job on every boot. Launching is explicit and
-goes through the orchestrator, which reads one property:
+because the framework default would run every job on every boot. There are exactly **two** ways
+to start one, and both are the mainframe's own paths rather than inventions:
+
+1. **An operator submission** &mdash; the framework's own `JobLauncherApplicationRunner`,
+   switched on for one process. This stands in for `TSO SUBMIT` and SDSF.
+2. **The online tier writing to the job queue** &mdash; the single `@SqsListener`, which
+   launches the report job once per submission. This stands in for
+   `EXEC CICS WRITEQ TD QUEUE('JOBS')` feeding the JES2 internal reader.
+
+**There is no third path.** No `@Scheduled` method, no cron expression and no task scheduler
+appears anywhere in the main sources: the legacy stream is operator-driven and queue-driven, so
+inventing a time trigger would be a behaviour change.
+
+**The operator submission.** Three worked forms &mdash; one job that takes no parameters, one
+that takes the interest date, one that takes the report date range. Each was run verbatim
+against a live stack and the outcomes are tabulated below:
 
 ```bash
-java -jar target/carddemo-*.jar \
-  --carddemo.batch.launch=dailyTransactionPostingJob
-
-java -jar target/carddemo-*.jar \
-  --carddemo.batch.launch=interestCalculationJob \
-  --carddemo.batch.launch.parm-date=<ten-character date>
-
-java -jar target/carddemo-*.jar \
-  --carddemo.batch.launch=transactionReportJob \
-  --carddemo.batch.launch.start-date=<date> \
-  --carddemo.batch.launch.end-date=<date>
+java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=POSTTRAN
 ```
 
-`carddemo.batch.launch` has **no default**, deliberately: an absent value must mean "this is
-a server", not "run something". Six bean names are launchable &mdash; the whole stream or any
-single stage. The date parameters correspond to the legacy job parameters at
-[`app/jcl/INTCALC.jcl:L22`] and [`app/proc/TRANREPT.prc:L41-L42`]; note from
-[§8.6](#86-formula-shape-not-just-value) that the interest date is **not** an ISO date.
+```bash
+java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=INTCALC \
+  parmDate=2022071800
+```
+
+```bash
+java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=TRANREPT \
+  startDate=2022-01-01 endDate=2022-07-06
+```
+
+Every element of that is load-bearing, and three of the five are silent when omitted:
+
+| Element | Why it is there |
+|---|---|
+| `--sun-misc-unsafe-memory-access=allow` | Stops JDK 25 emitting a `sun.misc.Unsafe` deprecation warning from inside a dependency. The container image sets the same flag through `JAVA_TOOL_OPTIONS`, so it is needed **only** for a direct `java -jar`. `../README.md` shows the same form under *Security and configuration*, with each environment variable supplied as a per-command assignment rather than an export |
+| `--spring.main.web-application-type=none` | What makes the process **end** when the job ends, as a submitted job freed its initiator. Omit it and the job still runs correctly, but the embedded container holds the JVM open and the submission looks hung |
+| `--spring.batch.job.enabled=true` | Switches the framework's runner on **for this one process**, overriding the `false` that every profile sets. Omit it and the process starts, launches nothing, and reports no error |
+| `--spring.batch.job.name=<JOB NAME>` | Matched against `Job.getName()`. **A job name, never a bean name.** Omitting it runs **every** job |
+| `parmDate=` / `startDate=` / `endDate=` | Job parameters, and therefore **bare arguments, not `--` options** &mdash; the form the JCL parameter cards arrive in. They correspond to [`app/jcl/INTCALC.jcl:L22`] and [`app/proc/TRANREPT.prc:L41-L42`] |
+
+**The six submittable job names.** Every job is named after the JCL member it replaces, which
+is what makes the value above guessable from the corpus. `application.yml` publishes each one as
+a default under `carddemo.batch.jobs`, and `../README.md` carries the fuller inventory with each
+job's source members.
+
+| `spring.batch.job.name` | What it runs |
+|---|---|
+| `POSTTRAN` | Daily transaction posting, with the read-only pre-flight folded in |
+| `INTCALC` | Interest calculation &mdash; **requires `parmDate`** |
+| `COMBTRAN` | Transaction combine: sort, then bulk load |
+| `CREASTMT` | Statement generation, five steps |
+| `TRANREPT` | Transaction report &mdash; **requires `startDate` and `endDate`** |
+| `CARDDEMO-PIPELINE` | The whole stream: the first three in sequence, then the last two as parallel branches of a split &mdash; and because it contains both parameterised stages it **requires all three parameters together** |
+
+**Six ways this goes wrong, each measured rather than predicted:**
+
+| What you type | What actually happens |
+|---|---|
+| A **bean name** &mdash; `--spring.batch.job.name=dailyTransactionPostingJob` | Exit **1**, `IllegalStateException: No job found with name 'dailyTransactionPostingJob'`. The bean names exist, but they are not what this property matches |
+| The parameter as an option &mdash; `--parmDate=2022071800` | Exit **1**, `JobParametersInvalidException: Job parameter 'parmDate' is required and was absent`. The `--` form is bound as a Spring **property**, so the job sees no parameter at all |
+| `parmDate=2022071801` | Exit **1**, `Job parameter 'parmDate' must end with the two trailing zeros that app/jcl/INTCALC.jcl:L22 supplies`. The interest date is **not** an ISO date &mdash; eight date digits then `00`, ten characters ([§8.6](#86-formula-shape-not-just-value)) |
+| A **parameterless job again** &mdash; `POSTTRAN`, `COMBTRAN` or `CREASTMT` a second time | Exit **0**, status `COMPLETED`, exit code **`NOOP`**, and **zero step executions**: the instance is reused, every step is already complete, and **nothing runs**. This is the quiet one &mdash; a successful-looking 27 ms run that did nothing |
+| A **parameterised job again** with the same values &mdash; `INTCALC`, `TRANREPT` or `CARDDEMO-PIPELINE` | Exit **1**, `JobInstanceAlreadyCompleteException: A job instance already exists and is complete for identifying parameters={...}. If you want to run this job again, change the parameters.` **The opposite outcome to the row above**, from the same act, because the framework applies that check only to an instance that had at least one parameter. Vary a date, or accept that a completed run is not repeatable |
+| A misspelled profile &mdash; `--spring.profiles.active=locl` | **Starts normally and warns about nothing.** Spring does not validate profile names, so the process runs with none of the intended profile's deltas &mdash; no demo users, no emulator endpoint defaults &mdash; and the only clue is the `profile` field on every log record |
+
+**The process exit status is not the job's return code.** No `ExitCodeGenerator` is registered,
+so the JVM exits `0` whenever the *launcher* returned normally &mdash; **including when the job
+failed**. Measured twice, on different jobs: a `COMBTRAN` submission whose bulk load hit a
+duplicate `TRAN-ID`, and a `CARDDEMO-PIPELINE` submission that stopped at its posting stage for
+the same reason, each logged `status: [FAILED]` and each still exited `0`. Note the asymmetry
+with the row above &mdash; a job that *refuses to start* exits `1`, while a job that starts and
+**fails** exits `0`, so `$?` is at its least informative exactly when the outcome matters most.
+Read the outcome from the launcher's own
+`completed with ... status: [...]` log line, or from `batch_job_execution.exit_code` in the
+metadata tables, and never from `$?` alone. The four job outcomes and the return codes they
+carry are in [§8.14](#814-exit-codes-and-the-status-rendering).
+
+That `COMBTRAN` failure is worth reading rather than working around, because it is the mandated
+behaviour and its message says so: the interest job builds each generated identifier from the
+`parmDate` it was given, so re-driving the stream with a date already used produces colliding
+identifiers, and the load into a keyed cluster must **fail** rather than quietly upsert. The
+remedy is a fresh date, which is what the error tells you. The neighbouring case &mdash; the
+same conflict arising from the racy online identifier generation, retained deliberately &mdash;
+is [§11.6](#116-never-replace-the-legacy-identifier-generation-with-a-database-sequence).
+
+**A withdrawn property, recorded because it was published here.** Earlier revisions of this
+section documented three commands built on a `carddemo.batch.launch` property with
+`.parm-date`, `.start-date` and `.end-date` sub-keys. **None of those keys has ever bound
+anything since finding `CFG-001` removed the authored runner**, so all three commands started a
+web server and launched no job. They are replaced by the framework property above rather than
+reinstated: an in-process runner launches a job from inside `SpringApplication.run`, which is a
+boot-time launch however narrowly it is gated, and that is exactly what
+`spring.batch.job.enabled=false` exists to prevent.
+
+**Relaunching the same job with the same parameters is refused**, deliberately: none of these
+jobs declares a `JobParametersIncrementer`, so an identical submission addresses the same job
+instance. A completed instance raises `JobInstanceAlreadyCompleteException` &mdash; the repeat
+surfaces instead of silently posting twice. A **failed** instance is a different case: the same
+command line restarts it from its checkpoint, which is the recovery path in
+[§5.7](#57-recovering-a-stuck-or-failed-execution).
+
+**`COMBTRAN` on its own takes one parameter, and it matters.** Submit it as
+
+```bash
+java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=COMBTRAN \
+  archiveAndResetMaster=true
+```
+
+That parameter makes a standalone run self-sufficient, because it performs the two steps the
+legacy stream performs around the merge: it archives the transaction master to a new
+`TRANSACT.BKUP` generation and empties the master before the load. Omit it and one of two
+faithful refusals follows, both of which have been observed:
+
+- **`FILE STATUS IS: NNNN0035`** when no `TRANSACT.BKUP` generation exists at all. `SORTIN` DD 1
+  reads `AWS.M2.CARDDEMO.TRANSACT.BKUP(0)` with `DISP=SHR` at [`app/jcl/COMBTRAN.jcl:L23-L26`],
+  and a `DISP=SHR` allocation of an absent dataset fails rather than creating one.
+- **A duplicate-key refusal at the load step** when a generation exists but the master still
+  holds the rows it carries &mdash; for instance after `TRANREPT`, whose backup step
+  ([`app/proc/TRANREPT.prc:L21`]) archives the master without emptying it. The `IDCAMS REPRO` of
+  [`app/jcl/COMBTRAN.jcl:L48`] loads a keyed cluster, so a repeated identifier fails the step.
+  That refusal is the source's behaviour and is not to be worked around by making the load an
+  upsert.
+
+Stage 3 of the pipeline does **not** pass that parameter, so a pipeline run over a freshly
+seeded database needs a `TRANSACT.BKUP` generation to exist first: run `TRANREPT` once before
+the pipeline, which catalogues one from the empty master and leaves the merge with only the
+interest generation to load.
 
 **The report path is queue-driven.** `POST /api/reports` publishes a job-submission message
 to the FIFO queue, which is the direct replacement for `EXEC CICS WRITEQ TD QUEUE('JOBS')` in
@@ -530,6 +742,149 @@ exists predates it; see finding `L-3` in [§13](#13-findings-severity-classified
 anywhere in this repository, and no code path may reach a real AWS endpoint.** If you find
 yourself needing a real account to run something, that is a defect in what you are building,
 not a missing prerequisite.
+
+### 5.7 Recovering a stuck or failed execution
+
+A submitted job that dies without ending cleanly &mdash; the container was killed, the host
+rebooted, the connection to PostgreSQL dropped mid-chunk &mdash; leaves rows in **both**
+`BATCH_JOB_EXECUTION` and `BATCH_STEP_EXECUTION` whose `STATUS` is still `STARTED`, or `UNKNOWN`
+if the framework got far enough to record that it could not tell. **Neither state clears itself,
+and the next submission of the same job instance is refused while either stands**, with
+`JobExecutionAlreadyRunningException`. There was no runbook for this &mdash; QA finding
+**B-09** &mdash; so this is it. Work the four steps in order, do not skip step 2, and note in
+step 4 that the two tables must both be closed and that the status you choose decides whether the
+work resumes or the instance retires.
+
+**1. Identify what is actually stuck.** Every query below is a read.
+
+```bash
+docker compose exec -T postgres psql -U carddemo -d carddemo -c "
+  select e.job_execution_id, i.job_name, e.status, e.exit_code,
+         e.start_time, e.end_time, e.last_updated
+    from batch_job_execution e
+    join batch_job_instance i on i.job_instance_id = e.job_instance_id
+   where e.status in ('STARTED','STARTING','STOPPING','UNKNOWN')
+   order by e.job_execution_id"
+```
+
+An `end_time` of `NULL` with a `last_updated` far in the past is the signature of a process
+that died. Confirm no JVM is still running that job before you touch anything: a genuinely
+live run also reads `STARTED`, and abandoning a live execution corrupts its own bookkeeping.
+`docker compose ps` and the application log are the evidence; the batch metadata cannot tell
+you.
+
+**2. Establish what was committed before you decide anything.** This is the step that makes the
+rest safe, and it is specific to this system because a chunk here commits the transaction
+insert, the account update and the category-balance upsert **together** (the atomicity of
+`app/cbl/CBTRN02C.cbl:L424-L465`). So the row counts are consistent by construction: there are
+no half-posted records to reconcile by hand.
+
+```bash
+docker compose exec -T postgres psql -U carddemo -d carddemo -c "
+  select se.step_name, se.status, se.read_count, se.write_count, se.commit_count
+    from batch_step_execution se
+   where se.job_execution_id = <the identifier from step 1>
+   order by se.step_execution_id"
+```
+
+Read those counts as **input records, not rows**. Every input record is either posted or
+rejected, so `write_count` is the sum of the two and is deliberately larger than the number of
+rows in `transaction`: in the recovery that validated this procedure a step killed at
+`read_count` 53 had `write_count` 53, of which 48 were committed transaction rows and 5 were
+rejects. The end-of-run counters an operator reads in the log are held in the step's execution
+context and are compensated when a chunk does not commit &mdash; QA finding **B-08** &mdash; so a
+restart continues from the committed figure rather than recounting the chunk that was lost.
+**Do not adjust either counter by hand.**
+
+**3. Prefer a restart to an abandonment.** If the execution is already terminal &mdash; `FAILED`
+or `STOPPED` &mdash; you need none of what follows: re-issue **the same command line with the same
+parameters** from [§5.5](#55-running-a-batch-job). The identical parameter set addresses the same
+job instance, the framework restarts it from its checkpoint, and the reader resumes where it
+stopped. That is the supported path and it is what the restart-safety of finding B-08 exists to
+protect. A restart is a **new** `BATCH_JOB_EXECUTION` row against the same instance; the dead row
+stays as the audit trail and must not be deleted.
+
+**4. Free a dead `STARTED` or `UNKNOWN` execution, and choose the disposition deliberately.**
+
+Two facts govern this step, and both were established by running it rather than by reading about
+it. First, **closing `BATCH_JOB_EXECUTION` alone does not free the instance.** The submission is
+refused by `TaskExecutorJobLauncher`, which inspects the **step** executions of the last execution:
+a step still in a running state (`STARTING`, `STARTED`, `STOPPING`) raises
+`JobExecutionAlreadyRunningException: A job execution for this job is already running: …`, and a
+step left at `UNKNOWN` raises `JobRestartException: Cannot restart step [<name>] from UNKNOWN
+status.` An execution row reading `ABANDONED` whose step row still reads `STARTED` is refused
+exactly as before &mdash; observed. **Both tables must be closed.**
+
+Second, **the framework's own operations cannot do this for a crashed process.**
+`SimpleJobOperator.abandon` refuses any execution whose status is below `STOPPING` in
+`BatchStatus` order (`COMPLETED, STARTING, STARTED, STOPPING, STOPPED, FAILED, ABANDONED,
+UNKNOWN`) with `JobExecutionAlreadyRunningException: JobExecution is running or complete and
+therefore cannot be aborted`, so a `STARTED` execution has to be `stop()`ped first &mdash; which
+only writes `STOPPING` &mdash; and in either case `abandon` writes the execution row and **never**
+the step rows. So for a process that is already gone, the metadata statements below are the
+operator path, and they are safe **only** once step 1 has proved nothing is running.
+
+**4a. To finish the work &mdash; close both rows to `FAILED`.** This is the normal case. `FAILED`
+is terminal *and* restartable, which is precisely what you want:
+
+```bash
+docker compose exec -T postgres psql -U carddemo -d carddemo -c "
+  update batch_step_execution
+     set status = 'FAILED', exit_code = 'FAILED',
+         end_time = now(), last_updated = now()
+   where job_execution_id = <identifier>
+     and status in ('STARTED','STARTING','STOPPING','UNKNOWN')"
+```
+
+```bash
+docker compose exec -T postgres psql -U carddemo -d carddemo -c "
+  update batch_job_execution
+     set status = 'FAILED', exit_code = 'FAILED',
+         end_time = now(), last_updated = now()
+   where job_execution_id = <identifier>
+     and status in ('STARTED','STARTING','STOPPING','UNKNOWN')"
+```
+
+Then follow step 3's restart. The steps that had completed are skipped &mdash;
+`Step already complete or not restartable, so no action to execute` against the pre-flight step is
+the correct reading, not a warning &mdash; the step that died resumes from its checkpoint, and the
+run ends with the whole-input end-of-run counters. Over the seeded fixture `POSTTRAN` reports
+`TRANSACTIONS PROCESSED :000000300` and `TRANSACTIONS REJECTED  :000000038` with 262 rows in
+`transaction`, whether it ran once or was recovered mid-flight; that invariance is finding B-08.
+
+**Check the recovery arithmetic rather than assuming it.** Re-run step 2's query without the
+`where` clause: the dead step and the restarted step are separate rows, and their `read_count`
+values must add to the whole input with nothing repeated and nothing skipped. The run that
+validated this procedure reads `53 + 247 = 300`, with the pre-flight step present once and still
+`COMPLETED`. If the two do not add up, stop and reconcile before submitting anything else.
+
+**4b. To retire the instance for good &mdash; close both rows to `ABANDONED` instead.** `FAILED`
+means "resume me"; `ABANDONED` means "never run me again", and `SimpleStepHandler` honours that
+literally by skipping an abandoned step with `Step already complete or not restartable, so no
+action to execute`. A resubmission of that instance is therefore **accepted and does nothing**:
+it ends `FAILED` in tens of milliseconds, emits no end-of-run counters and commits no rows.
+That is the right outcome for a retired instance and a thoroughly confusing one if you meant to
+resume, which is why the disposition is a decision and not a formality. Use `ABANDONED` only when
+the run should never complete &mdash; the input dataset was wrong, say &mdash; and note that a
+genuinely new run then needs a new identifying parameter set, subject to the second warning below.
+
+Three things you must **not** do, each because it makes the state worse rather than better:
+
+- **Do not delete rows from any `BATCH_*` table.** The step rows and the execution context are
+  the checkpoint; deleting them turns a restartable failure into a rerun from record one, which
+  for `POSTTRAN` means every already-committed transaction identifier collides on the primary key
+  and the rerun abends.
+- **Do not change the parameters to "get a fresh instance".** A new instance re-reads the whole
+  input, and the committed rows from the dead run are still there.
+- **Do not run Flyway `clean`.** It is disabled in every profile for exactly this reason.
+
+**The report bridge needs no recovery of its own.** A submission whose validation refuses it is
+consumed rather than redelivered, and a delivery that keeps failing is dropped after a bounded
+number of attempts, so a single bad submission cannot hold the FIFO message group &mdash; QA
+finding **B-15**. Check depth with
+`docker compose exec localstack awslocal sqs get-queue-attributes --queue-name carddemo-report-jobs.fifo --attribute-names All`
+and expect both `ApproximateNumberOfMessages` and `ApproximateNumberOfMessagesNotVisible` to be
+zero once the listener has drained it.
 
 ---
 
@@ -816,11 +1171,20 @@ wrong in either direction:
 
 * **The ledger reads as follows at the commit it names**: gates 1, 2, 4, 5 and 6 **Pass**;
   gate 3 records **measured baselines** with no threshold applied, because no service level
-  exists in the source to apply one against; gate 7 records an executed harness &mdash; 58 gate
-  assertions, exit code 0, against `../TRACEABILITY_MATRIX.md`; and gate 8 is **Partly**, the
-  application having stood up against a real containerised database and emulator while the
-  six-service compose topology itself remains Not available. So it is wrong to read every gate
-  as unexecuted, and equally wrong to read gate 8 as complete.
+  exists in the source to apply one against; gate 7 records an executed harness &mdash; **59**
+  gate assertions, exit code 0, against `../TRACEABILITY_MATRIX.md`; and gate 8 is a **Pass**
+  on both of its clauses &mdash; the application stands up against a real containerised database
+  and emulator, **and** the seven-service compose topology has been brought up as a unit.
+  So it is wrong to read any gate as unexecuted.
+* **Two figures in the sentence above were restamped on 9 August 2026, and the second one
+  matters more than the number.** The harness count moved 58 &rarr; 59 because a case was added.
+  Gate 8's standing moved from **Partly** to **Pass** because the missing clause was produced
+  &mdash; but between those two readings the command that produces it, `docker compose up -d
+  --build --wait`, had begun exiting **1**, on defects present only inside the Docker build
+  context, while the ledger went on publishing exit 0. Both are fixed and the regression is
+  disclosed as `H-8` in [§12.2](validation-gates.md#findings). The lesson for a reader of this
+  guide is narrow and practical: when a published bring-up stamp names a clone and a tree state
+  you are not in, re-run the command rather than trusting the stamp.
 * **No gate is container-blocked**, because a container runtime is available
   ([§3.2](#32-a-dated-reading-of-the-authoring-host)). "Not available" is a statement about
   published evidence, not a claim that a gate would fail. An absence is closed by producing
@@ -973,9 +1337,24 @@ EEEE-MM-DD-UU.MM.SS.HH0000` [`app/cbl/CBTRN02C.cbl:L149`], with the field declar
 `PIC X(26)` at [`:L159`] and built by `Z-GET-DB2-FORMAT-TIMESTAMP` at [`:L692`], performed
 during posting from [`:L437`].
 
-**Format to millisecond precision and then append four zeros &mdash; never nanosecond
-precision.** Otherwise every generated timestamp differs from the baseline, and every parity
+**Format to hundredths-of-a-second (centisecond) precision &mdash; two fraction digits &mdash;
+and then append the four literal zeros. Never milliseconds, and never nanoseconds.** The layout
+above settles it arithmetically: `HH0000` is **six** characters, so a three-digit millisecond
+field cannot fit beside four zeros in a twenty-six character value. The source is equally
+explicit &mdash; `COB-MIL` is `PIC X(02)` [`app/cbl/CBTRN02C.cbl:L157`], receiving the hundredths
+pair of the twenty-one-character `FUNCTION CURRENT-DATE` result, and it is moved into
+`DB2-MIL PIC 9(002)` with `'0000'` moved into `DB2-REST PIC X(04)` [`:L173-L174`], [`:L700-L701`].
+The field *name* says milliseconds and the field *width* says hundredths; the width is the
+contract. Get this wrong and every generated timestamp differs from the baseline, so every parity
 comparison fails on every record for a reason that has nothing to do with the logic under test.
+
+**This section said "millisecond precision" for a commit**, two sentences after correctly quoting
+the layout it contradicts, while `Transaction.java` and every sibling document said hundredths. The words
+*centisecond* and *hundredth* appeared **nowhere** on this page, which is what let the single
+wrong word survive proof-reading: there was no neighbouring correct statement to disagree with it.
+(The sibling statements are at
+[architecture-before-after.md §5.4](architecture-before-after.md#54-preserved-quirks-fidelity-that-looks-like-a-bug)
+and [validation-gates.md Gate 1](validation-gates.md#gate-1).)
 
 ### 8.8 Case-handling asymmetry
 
@@ -1080,9 +1459,19 @@ data silently if omitted.
 * **The empty-file identifier path yields a first identifier of 1.** An end-of-file response
   moves zeros into the identifier, which is then incremented
   [`app/cbl/COBIL00C.cbl:L487-L488`], in `READPREV-TRANSACT-FILE` [`:L472-L496`].
-* **The interest job performs the account update one final time** when the loop detects end of
-  file [`app/cbl/CBACT04C.cbl:L188-L222`]. **Omitting that flush silently loses the last
-  account's interest** &mdash; and only the last account's, so a small test may well pass.
+* **The interest job's apparent final flush is UNREACHABLE, so the last account's interest is
+  silently lost &mdash; and that loss is preserved.** The loop is
+  `PERFORM UNTIL END-OF-FILE = 'Y'` with an inner `IF END-OF-FILE = 'N' … ELSE PERFORM
+  1050-UPDATE-ACCOUNT` [`app/cbl/CBACT04C.cbl:L188-L222`]. `PERFORM UNTIL` tests **before** each
+  iteration, so the moment the flag flips to `'Y'` the loop **exits** and the `ELSE` is never
+  entered. **Do not add a final flush.** `InterestCalculationJob` says so in its own header, and
+  [technical-specifications.md §0.7.3.3](technical-specifications.md#0733-control-break-the-unreachable-final-flush-and-the-two-paragraph-default-fallback)
+  records the correction in full. **This bullet asserted the opposite for a commit** &mdash; that
+  the source performs the update one final time and that omitting it loses data &mdash; which is
+  the more dangerous direction of the two, because acting on it adds behaviour the frozen program
+  does not have and breaks parity on the last account of every run. It is listed here rather than
+  removed because it *reads* like a boundary path you would omit by accident, and that resemblance
+  is exactly what made it wrong twice.
 * **The interest job's account update zeroes both cycle counters** before rewriting
   [`app/cbl/CBACT04C.cbl:L350-L370`]. **Omitting that reset breaks the over-limit arithmetic
   on the *next* posting cycle** &mdash; a defect that surfaces only on a second batch run,
@@ -1142,6 +1531,13 @@ justified in `../DECISION_LOG.md`.
   it is to be implemented, plus an exit [`app/cbl/CBACT04C.cbl:L518-L520`], and it **is
   performed**, from [`:L216`]. It is retained as a **documented intentional no-op** &mdash;
   see [§12.2](#122-clause-b-code-quality) for how that squares with the no-dead-code rule.
+* **The interest job's end-of-data flush is unreachable, so the last account's interest is
+  lost** &mdash; the mirror image of the bullet above, and in the same program. `PERFORM UNTIL`
+  tests before each iteration, so the `ELSE PERFORM 1050-UPDATE-ACCOUNT` at
+  [`app/cbl/CBACT04C.cbl:L188-L222`] never runs. **Do not add a final flush**, and treat a
+  missing last-account total as correct output ([§8.12](#812-boundary-paths-that-are-easy-to-omit)).
+  It belongs on this list because it was twice described elsewhere on this page as a boundary
+  path to restore, which is the one action that breaks parity here.
 * **Legacy job-control defects are logged, not repaired**: the corrupted dataset statement in
   the statement job's execution step, and the 80-versus-100 record-length mismatch for the
   HTML output between [`app/jcl/CREASTMT.JCL:L69`] and [`:L94`]. One legacy inconsistency
@@ -1228,6 +1624,12 @@ you will hit them.
 | Integration tests fail on **missing S3 buckets or the FIFO queue** | LocalStack initialisation had not completed when the test ran | Wait for health (`docker compose up -d --wait`) and re-run. **The init script is idempotent**, so re-running the stack converges rather than failing |
 | `/actuator/prometheus` returns **401** | `METRICS_SCRAPE_USERNAME` and `METRICS_SCRAPE_PASSWORD` are not both non-blank. **This is intended behaviour, not a fault** | Set both. A bearer token will not work here &mdash; that path has its own filter chain and principal ([§5.3](#53-running-the-full-topology)) |
 | A published report message is not drained | The queue listener is `drainReportJobQueue` in [`src/main/java/com/cardemo/config/BatchConfig.java`]; if it is not running, check the queue name property resolves and the stack is healthy | Confirm `carddemo-report-jobs` exists in LocalStack and the profile activated the listener |
+| A batch submission **starts a web server and runs nothing**, with no error | The command passed the withdrawn `carddemo.batch.launch` property as an option; finding `CFG-001` withdrew it and it now binds to nothing | Use `--spring.batch.job.name=<JOB NAME>` with `--spring.main.web-application-type=none` ([§5.5](#55-running-a-batch-job)) |
+| A submission is refused with `Job parameter 'parmDate' is required and was absent` although a date was passed | The parameter was spelled `parm-date`. Relaxed binding applies to configuration keys, never to job parameters | Use the exact camelCase names `parmDate`, `startDate`, `endDate`, as bare `name=value` arguments with no `--` prefix ([§5.5](#55-running-a-batch-job)) |
+| A submission is refused with `JobExecutionAlreadyRunningException` and no job is running | A previous execution died leaving a **step** row at `STARTED` or `UNKNOWN`. The launcher inspects the step executions, not just the execution row, so closing `BATCH_JOB_EXECUTION` alone does not clear it | Work the four steps of [§5.7](#57-recovering-a-stuck-or-failed-execution) &mdash; identify, establish what committed, prefer a restart, then close **both** `BATCH_STEP_EXECUTION` and `BATCH_JOB_EXECUTION` to `FAILED` (step 4a) |
+| A relaunch after a recovery is **accepted, ends `FAILED` in milliseconds** and commits nothing | The recovery closed the rows to `ABANDONED`. `SimpleStepHandler` skips an abandoned step &mdash; `Step already complete or not restartable, so no action to execute` &mdash; which retires the instance rather than resuming it | Use `FAILED`, not `ABANDONED`, when you intend the work to finish ([§5.7](#57-recovering-a-stuck-or-failed-execution) step 4a versus 4b) |
+| `COMBTRAN` abends with `FILE STATUS IS: NNNN0035` on a freshly seeded database | Its `SORTIN` DD 1 reads `TRANSACT.BKUP(0)` with `DISP=SHR`, and no generation is catalogued yet | Submit it with `archiveAndResetMaster=true`, which archives the master to a new generation first, or run `TRANREPT` once to catalogue one ([§5.5](#55-running-a-batch-job)) |
+| `COMBTRAN` fails its load step with a **duplicate `TRAN-ID`** | A `TRANSACT.BKUP` generation exists but the master still holds the rows it carries, and [`app/jcl/COMBTRAN.jcl:L48`] loads a keyed cluster | Submit it with `archiveAndResetMaster=true` so the master is emptied before the load. **Do not make the load an upsert** &mdash; the refusal is the source's behaviour |
 
 ### Behaviour that looks like a Java bug
 
@@ -1239,7 +1641,7 @@ you will hit them.
 | **A seeded user will not authenticate** | Either the profile does not seed demo users, or a test is comparing the STORED value as plaintext | Check that `seeddemousers` is true for the active profile - it is false in `application.yml` and `application-prod.yml` by design. The stored value is a **BCrypt hash**, so do not expect a plaintext comparison of it; the presented password is still the documented plaintext one. Both identifier and password are upper-cased before comparison ([§7.3](#73-the-user-records-and-what-the-demo-credential-can-and-cannot-do)) |
 | A debit total is positive when the baseline shows it negative | An `Math.abs()` or a sign normalisation was introduced | Remove it &mdash; the debit accumulator legitimately holds negative values ([§8.5](#85-sign-semantics-no-absolute-value-ever)) |
 | Statement output differs from the baseline in the processing timestamp | The two-byte projection truncation was "fixed" | Reproduce the truncation exactly ([§8.2](#82-the-statement-projection-truncates-two-bytes-reproduce-it-do-not-fix-it)) |
-| The last account's interest is missing from a run | The end-of-data final flush was omitted | Restore it ([§8.12](#812-boundary-paths-that-are-easy-to-omit)) |
+| The last account's interest is missing from a run | **Nothing. That is correct behaviour.** The frozen program's end-of-data flush is unreachable, so the legacy run loses it too | **Leave it.** This row said "the final flush was omitted &mdash; restore it" for a commit; restoring it would add behaviour the source does not have and break parity on the last account of every run ([§8.12](#812-boundary-paths-that-are-easy-to-omit)) |
 
 ### Paths, files and documentation
 
@@ -1547,6 +1949,8 @@ register &mdash; **it is referenced here, not duplicated.**
 | `H-4` | The vulnerability scan was never executed in a prior implementation | [`docs/project-guide.md:L50`] | **Closed by this work** &mdash; bound to `verify`, with a skip reported honestly when taken |
 | `H-5` | A page omitted from the `mkdocs.yml` `nav` silently never publishes, and on a default configuration **a strict build does not catch it either**, because the omission is reported at INFO level | `mkdocs.yml` `nav`; [`catalog-info.yaml:L22`] | **Closed by this work** &mdash; `validation.nav.omitted_files: warn` in [`mkdocs.yml`] makes a strict build fail on it; still add the `nav` entry in the same change as the page ([§7.5](#75-documentation-rendering)) |
 | `H-6` | **Absent host JDK and Maven** blocks a host-native `./mvnw` entirely | [§3.2](#32-a-dated-reading-of-the-authoring-host) | Provision JDK 25 and let the wrapper supply Maven 3.9.11, **or** use the pinned-container build path, which needs only the container runtime. **Both are present on the host of that reading** |
+| `B-01` | **This page documented a batch-launch property that binds to nothing.** §5.5 passed the withdrawn `carddemo.batch.launch` property as an option with a bean name, withdrawn by finding `CFG-001`. The command started a web server, ran no job and reported no error — a silent no-op is the worst failure mode for an operator instruction | §5.5 as it stood before this revision; the withdrawal is recorded in [`src/main/java/com/cardemo/config/BatchConfig.java`] | **Closed by this work** — [§5.5](#55-running-a-batch-job) now documents the framework's own `spring.batch.job.name` submission, with job names rather than bean names, and §10 carries the symptom |
+| `B-02` | **The operator example in `application.yml` carried unrunnable parameter spellings** — `parm-date`, `start-date`, `end-date`. Relaxed binding applies to configuration keys and never to job parameters, so the submission was refused with `Job parameter 'parmDate' is required and was absent` | `spring.batch.job` commentary in [`src/main/resources/application.yml`] | **Closed by this work** — corrected to the exact camelCase names in both that file and [§5.5](#55-running-a-batch-job), with the reason stated so the trap is not re-set |
 
 ### Medium
 
@@ -1558,6 +1962,7 @@ register &mdash; **it is referenced here, not duplicated.**
 | `M-4` | The screen-field census circulating in earlier prose is wrong and internally inconsistent | `app/cpy-bms/**`, in particular the account-view map | Cite the derived census of **441** input fields, with the account-view map at **37** rather than 36 |
 | `M-5` | The procedural-label total circulating in earlier prose matches neither defensible expansion total | `app/cbl/**`, `app/cpy/CSUTLDPY.cpy`, `app/cpy/CSSTRPFY.cpy` | Cite the derived base and state the expansion convention beside it, rather than reconciling the figures by force |
 | `M-6` | **User deletion has no self-delete guard**, so a signed-on administrator can delete their own record | `app/cbl/COUSR03C.cbl` &mdash; no comparison of target against signed-on identifier | **Preserved deliberately**, not corrected ([§11.7](#117-never-add-a-guard-the-source-does-not-have)). Adding a guard is a behaviour change requiring a labelled deviation |
+| `B-09` | **No runbook existed for a stuck execution.** A job that died without ending cleanly leaves `STATUS` at `STARTED` or `UNKNOWN`, neither state clears itself, and the next submission of that instance is refused — with nothing anywhere telling an operator how to establish what committed or how to free it safely | `BATCH_JOB_EXECUTION` and `BATCH_STEP_EXECUTION` metadata; no prior section of this page | **Closed by this work** — [§5.7](#57-recovering-a-stuck-or-failed-execution) gives the four-step procedure, every statement of it executed against a deliberately killed `POSTTRAN`. It prefers a restart, closes **both** metadata tables because the launcher inspects the step rows, separates `FAILED` (resume) from `ABANDONED` (retire) with the observed outcome of each, and names the three actions that make the state worse |
 | `M-7` | **Identifier generation is inherently racy** &mdash; a descending browse for the maximum key plus one | The browse idiom in the transaction-add and bill-payment paths | **Retained for parity.** A collision surfaces as a duplicate-record conflict. A database sequence would change generated values and break baseline comparison ([§11.6](#116-never-replace-the-legacy-identifier-generation-with-a-database-sequence)) |
 
 ### Low
@@ -1579,15 +1984,28 @@ the outstanding items, in that exact wording.
 
 | Item | Status | What is needed to close it |
 |---|---|---|
-| Gate results 1, 2, 3, 4, 5, 6 and 8 | **Not available** &mdash; implementation and evidence not yet published | Execute each gate and publish the artefact a reviewer would open. See [validation-gates.md](validation-gates.md), which names the specific missing artefact per gate |
-| A legacy output baseline to diff against for Gate 1 | **Not available** | A captured legacy run, or an agreed synthetic baseline, against which byte-level comparison can be performed |
-| Any coverage, throughput or latency figure | **Not available** | A completed `./mvnw clean verify` in a given environment, producing `target/site/jacoco/index.html`, plus a recorded measurement run for Gate 3 |
+| Gate results 1, 2, 3, 4, 5, 6 and 8 | **No longer unavailable &mdash; this row is closed, and it is kept rather than deleted so the change of state is visible.** Every gate now publishes a result: 1, 2, 4, 5, 6 and 8 read **Pass**, Gate 3 reads **Baselines measured and published** because it has no threshold to pass against, and Gate 7 reads **Assertions hold** | Nothing. Read the results from [validation-gates.md](validation-gates.md), which is the only place they are published, and re-run the command each row names rather than trusting a stored figure |
+| A captured **z/OS** run to diff Gate 1 against | **Not available** &mdash; and this is the *narrowed* form of a row that used to say no baseline of any kind existed | Nothing is blocked by it. Gate 1 now matches **two independent expectations** on every field and every byte &mdash; the frozen program's own captured output and a source-derived expectation computed from the COBOL &mdash; and a captured mainframe run would **corroborate** those rather than replace either. The distinction between the two kinds of oracle is set out at [validation-gates.md, the oracle taxonomy](validation-gates.md#gate-1-oracle) |
+| Any coverage, throughput or latency figure | **No longer unavailable &mdash; also closed.** Coverage is measured at **0.9164** line coverage against the 0.80 floor; batch throughput is published as a **five-reading series spanning 1,005 to 1,923 records/second** over identical work; per-endpoint p95 latency spans **21.5 ms to 105.1 ms** | Nothing. But read the throughput figure as the series and not as a constant: the host is unpinned and shared, no service-level objective exists to compare it against, and the authoritative per-run value is `gate3.recordsPerSecond` in the harness's own artefact |
 | A service-level objective for Gate 3 to compare against | **Not available** and **cannot be supplied from the source** &mdash; the COBOL publishes none, and none may be invented | Nothing. Gate 3 is deliberately a **measured baseline**, not a target |
 | The program behind CICS transaction `CDV1` | **Not available** &mdash; `COCRDSEC` has no source file anywhere in the repository | Nothing. It is a dangling legacy definition; **no operation is published for it** ([§2.3](#23-the-17-versus-18-reconciliation)) |
 
-**Nothing on this page claims the implementation is complete, that tests pass, or that any
-coverage, performance or gate result has been achieved.** Gate results may be read from
-[validation-gates.md](validation-gates.md) and nowhere else.
+**This page does not *originate* any gate result, coverage figure or performance figure, and it
+is not the place to look one up.** [validation-gates.md](validation-gates.md) is the single
+publisher of all of them; the two rows above quote it so that a reader who arrives here with the
+question is not left with an answer that was true at an earlier commit, and every figure they
+quote is the ledger's, carrying the ledger's own qualifications.
+
+**That paragraph previously read "Nothing on this page claims the implementation is complete,
+that tests pass, or that any coverage, performance or gate result has been achieved", and it is
+corrected rather than quietly reworded.** It was written when the register above genuinely said
+`Not available` on every one of those rows, and it was accurate then. Once the gates produced
+results, the sentence became the more dangerous kind of stale claim: not a wrong number, which a
+reader can check, but a **disclaimer that had outlived the thing it disclaimed**, telling a
+reader not to expect evidence that by then existed one document away. The single-source
+discipline it was protecting is real and is kept &mdash; what changed is that the discipline is
+now stated as "this page does not publish results, it points at the publisher" rather than as
+"no results exist".
 
 **A specific caution about [`docs/project-guide.md`](project-guide.md).** It is retained
 **unchanged** as prior-run evidence, and it is a useful record of what a previous attempt
@@ -1605,7 +2023,7 @@ profile [`:L51`], and the hardcoded JWT secret [`:L52`], [`:L215`].
 |---|---|
 | Host tooling | Verified by invocation on **7 August 2026 at 20:08 UTC** &mdash; see the reading in [§3.2](#32-a-dated-reading-of-the-authoring-host) |
 | Corpus counts, field census and every source locator cited here | Verified by machine at the anchor commit; the corrected line ranges match `../TRACEABILITY_MATRIX.md` §15.1 |
-| `mkdocs build --strict` | Run on this host. The outcome, including its exit status and the reason for it, is recorded in [§14.3](#143-documentation-build-outcome) |
+| `mkdocs build --strict --site-dir /tmp/carddemo-site` | Run on this host, most recently on **9 August 2026**: **exit code 0 with 0 `WARNING` lines**. The full outcome, how that exit status must be read, this page's re-measured rendered-output counts, and the 20 &rarr; 9 &rarr; 0 warning history are recorded in [§14.3](#143-documentation-build-outcome) |
 | Files created or modified by this page's authoring | **Exactly one**: `docs/onboarding-guide.md`. [`docs/index.md`](index.md) and [`docs/project-guide.md`](project-guide.md) are byte-for-byte unchanged |
 
 ### 14.3 Documentation build outcome
@@ -1616,27 +2034,42 @@ the eight gates; this is recorded because clause F requires evidence to be cited
 | Item | Value |
 |---|---|
 | Tooling | MkDocs **1.6.1** with the `techdocs-core` and `mermaid2` plugins that `mkdocs.yml` declares |
-| Command | `mkdocs build --strict` with the site directory written **outside the repository**, so no build output is committed |
-| Exit status | **1 &mdash; aborted with 9 warnings in strict mode** |
-| Warnings attributable to **this page** | **2**, both of them a link to `executive-presentation.html`, a document created in the same batch |
-| Warnings attributable to other pages | 7, every one of the same kind, from `api-contracts.md` (1), `architecture-before-after.md` (3) and `validation-gates.md` (3) |
+| Command | `mkdocs build --strict --site-dir /tmp/carddemo-site`. The `--site-dir` is **mandatory, not tidiness**: `mkdocs.yml` sets no `site_dir`, so a bare build writes `./site/` — whose rendered copy of `docs/project-guide.md` carries the seeded plaintext and used to fail the very next `./mvnw verify`. Both halves of that collision are now closed; see [§12.2 `H-8`](validation-gates.md#findings) |
+| Exit status | **0 &mdash; clean, with 0 `WARNING` lines**, measured 9 August 2026 |
+| Warnings attributable to **this page** | **0** |
+| Warnings attributable to other pages | **0** |
 | Warnings of any other kind | **0** |
-| This page's rendered output | Produced successfully: **32 tables**, **11 fenced code blocks**, **81 heading anchors**, **all 260 in-page links resolving to a real element id**, and **no syntax-highlighting error token** |
+| How that exit status must be read | **Exit status together with the warning count, never either alone.** `mkdocs build --strict` prints an unconditional notice from the theme's maintainers about a future MkDocs 2.0 that contains the word `Warning` in its prose, so a naive `grep -c -i warning` is not zero even on a clean build; and a `grep -c '^WARNING'` also prints `0` when MkDocs was never importable in the first place. The reading that means something is **exit code 0 *and* zero lines beginning `WARNING`** |
+| This page's rendered output | Produced successfully, re-measured 9 August 2026 against the built HTML: **35 content tables**, **19 fenced code blocks**, **92 heading anchors** with **0** duplicate slugs and exactly **1** level-one heading, **all 186 in-page links resolving to a real element id** with **0** unresolved, **216 table body rows with 0 column-count mismatches**, and **0 syntax-highlighting error tokens** |
+| Why those counts reconcile the way they do | A reader running the selectors themselves will see numbers that look like they disagree, and they do not. `document.querySelectorAll('table')` returns **54**, which is the 35 content tables **plus 19 syntax-highlight wrapper tables** &mdash; the theme renders each fenced block as a two-cell table, a line-number gutter beside the code, which is also why a `<pre>` count returns **38** rather than 19. The 186 rendered in-page links reconcile exactly as **94 anchor references written in the Markdown plus one permalink per heading, 94 + 92 = 186**. Anchor identifiers added by the theme's own scripts at run time are not in the served markup, so a live-DOM count is legitimately higher than a static one without either being wrong |
+| Why every count in the two rows above is machine-checked | **All of them drift the moment this page is edited, and two drifted while these very rows were being written** &mdash; adding the cross-references in the note below moved the link count from 174 to 175, and adding these explanatory rows moved the body-row count from 202 to 205, both between measuring the figure and publishing it; the figures published here are the current re-measurement of this page after its batch-launch section was rewritten. Each is therefore derived from the Markdown on every build by `DocumentationConsistencyTest.OnboardingPageStructureIsMeasured`, which fails if this table disagrees with the file. They are **measurements, not assertions**; do not edit them by hand. The one figure that is *not* a measurement is the **0 column-count mismatches**, which is an invariant: any other value is a malformed table |
 
-> **What that failure means, and what it does not.** The build fails **only** because one
-> document this page links to has not landed yet. The link filename is already the one the
-> `nav` will carry, so it resolves when that document arrives, and **rewriting it to silence an
-> interim warning would leave a wrong link behind after the warning disappeared.** **No warning
-> concerns this page's own structure, tables, code fences or anchors.**
+> **This build used to fail, and the way it stopped failing is worth more than the fact that it
+> passes.** The recorded progression is **20 warnings, then 9, then 0**. The 20-warning reading
+> at [validation-gates.md §2.5](validation-gates.md#env-mkdocs) predates this page existing at
+> all, and several of those warnings were links *to* this page from its siblings. This page's
+> arrival resolved those and left 9, of which **2 were on this page**, both a link to
+> `executive-presentation.html` &mdash; a document that had not landed yet. The remaining 7 were
+> the same kind of link from `api-contracts.md` (1), `architecture-before-after.md` (3) and
+> `validation-gates.md` (3). All nine are now zero because every one of those documents exists.
 >
-> Note also what this page's arrival *fixed*: the earlier run recorded at
-> [validation-gates.md §2.5](validation-gates.md#env-mkdocs) reported 20 warnings, several of
-> which were links to this very page from its siblings. Those are now resolved, which is why
-> the count is 9.
+> **The earlier entry made a prediction, declined an easy fix, and both were vindicated.** It
+> said the link filename was already the one the `nav` would carry, so it would resolve when the
+> document arrived, and that *rewriting it to silence an interim warning would leave a wrong link
+> behind after the warning disappeared*. That is exactly what happened: nothing about the link
+> was changed, the document landed, and the warning went away on its own. Had the link been
+> flattened to plain text to buy a green build, the build would have been green and the
+> cross-reference would have been permanently dead &mdash; and no strict build would ever have
+> reported it, because a link that is no longer a link cannot dangle. **A warning that names a
+> real future state is worth keeping until that state arrives.**
 >
-> **This is not a pass for any of the eight gates** &mdash; documentation rendering is not one
-> of them. And note from [§7.5](#75-documentation-rendering) that a **clean** strict build would
-> still not prove the `nav` is complete, because an omitted page is reported only at INFO level.
+> **Two cautions survive the build going green, and neither is weakened by it.** First, **this is
+> not a pass for any of the eight gates** &mdash; documentation rendering is not one of them, and
+> a clean docs build is evidence about the documentation only. Second, from
+> [§7.5](#75-documentation-rendering): a **clean** strict build still does **not** prove the
+> `nav` is complete, because a page present in `docs/` but omitted from `nav` is reported at INFO
+> level and INFO does not fail `--strict`. The `nav` therefore has to be checked as a list, which
+> is what [§7.5](#75-documentation-rendering) does, and not inferred from an exit code.
 
 ### 14.4 Cross-references
 

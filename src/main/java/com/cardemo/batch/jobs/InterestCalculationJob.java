@@ -89,6 +89,7 @@ import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.TransactionSource;
+import com.cardemo.observability.BatchJobSpanNamingConvention;
 import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
@@ -1448,6 +1449,12 @@ public class InterestCalculationJob {
             @Qualifier(FLOW_BEAN_NAME) final Flow interestCalculationFlow) {
 
         return new JobBuilder(jobName, jobRepository)
+                // Finding B-12: without this the framework hands the ALL-CAPS job name to
+                // Micrometer Tracing, whose SpanNameUtil.toLowerHyphen hyphenates every
+                // upper-case character, so the run reached the trace store under a name no
+                // operator could search for. Registered per builder because Spring Batch
+                // resolves no convention bean from the context.
+                .observationConvention(BatchJobSpanNamingConvention.INSTANCE)
                 .validator(new ParmDateValidator())
                 .listener(new InterestCalculationJobListener())
                 .start(interestCalculationFlow)

@@ -909,15 +909,27 @@ public record StatementTransaction(
      * Rejects a value that cannot fit its fixed-width field. A {@code null} value is accepted, because absence
      * is a distinct and meaningful state that must not be coerced to the empty string.
      *
+     * <p>The width is counted in Unicode code points, because a {@code PIC X(n)} clause declares n
+     * character positions and the {@code character(n)} columns a statement is assembled from pad to n
+     * characters. A Java {@code String} counts UTF-16 code units, which differ for any supplementary-plane
+     * character, so counting code units would reject a stored, padded value on the way out that the write
+     * path had accepted on the way in. A code point count never exceeds a code unit count, so this is the
+     * same bound rather than a looser one. The <em>byte</em> budget of the fixed-width statement records
+     * themselves is a separate concern, enforced where those records are emitted rather than here.
+     *
      * @param value the candidate value, possibly {@code null}
-     * @param maxLength the declared width of the COBOL field in bytes
+     * @param maxLength the declared width of the COBOL field, in character positions
      * @param fieldName the Java component name, used verbatim in the failure message
-     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}.
+     * @throws IllegalArgumentException if {@code value} holds more code points than {@code maxLength}.
      */
     private static void requireWithinWidth(String value, int maxLength, String fieldName) {
-        if (value != null && value.length() > maxLength) {
+        if (value == null) {
+            return;
+        }
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw new IllegalArgumentException(fieldName + " exceeds its declared COBOL width: "
-                    + value.length() + " characters supplied, " + maxLength + " permitted");
+                    + characterPositions + " characters supplied, " + maxLength + " permitted");
         }
     }
 

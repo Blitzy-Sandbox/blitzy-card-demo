@@ -964,6 +964,83 @@ class InitAwsScriptGuardTest {
         }
 
         @Test
+        @DisplayName("the report queue has a dead-letter target, so a message no consumer can act on leaves "
+                + "the group")
+        void theReportQueueHasADeadLetterTarget() {
+            // FINDING, severity MAJOR. The queue was provisioned with no RedrivePolicy at all, and every
+            // submission travels in ONE FIFO message group. An ordered group cannot deliver past the message
+            // at its head, so a submission the producer legitimately accepts but the consumer can never run
+            // was redelivered every visibility window for the queue's whole four-day retention - roughly 384
+            // attempts - and starved every valid submission behind it while the submission endpoint kept
+            // answering 202.
+            final String source = source();
+
+            assertThat(source)
+                    .as("the count must be a named constant, so a reader can see the retry budget rather "
+                            + "than find it inlined in a JSON literal")
+                    .containsPattern("readonly QUEUE_MAX_RECEIVE_COUNT='\\d+'");
+            assertThat(extract("readonly DLQ_PHYSICAL=", "\n"))
+                    .as("the dead-letter name must be DERIVED from the report queue's rather than configured "
+                            + "separately: two independent variables can be pointed at each other's queue, "
+                            + "or at the same one, and a queue that is its own dead-letter target quarantines "
+                            + "nothing. It must also end in .fifo, which AWS requires of the target of a "
+                            + "FIFO queue")
+                    .contains("${QUEUE_LOGICAL}")
+                    .contains("-dlq.fifo");
+
+            final int declared = Integer.parseInt(source
+                    .replaceAll("(?s).*readonly QUEUE_MAX_RECEIVE_COUNT='(\\d+)'.*", "$1"));
+            assertThat(declared)
+                    .as("one would quarantine a submission on a single transient store outage; a large count "
+                            + "multiplied by the 900-second window is measured in hours of head-of-line "
+                            + "blocking")
+                    .isGreaterThan(1)
+                    .isLessThanOrEqualTo(10);
+
+            final String body = extract("ensure_redrive_policy() {", "\n}\n");
+            assertThat(body)
+                    .as("the policy has to be APPLIED, not merely described")
+                    .contains("set-queue-attributes")
+                    .contains("RedrivePolicy");
+            assertThat(body)
+                    .as("and READ BACK, because RedrivePolicy is mutable and every volume provisioned before "
+                            + "this revision carries none - which is exactly the state that produced the "
+                            + "finding, and which create-queue against an existing queue never corrects")
+                    .contains("get-queue-attributes");
+            assertThat(body)
+                    .as("a policy that read back without naming the dead-letter queue, or with the wrong "
+                            + "count, must be fatal rather than logged: a policy that reads as configured "
+                            + "and quarantines nothing is the worst of the three outcomes")
+                    .contains("fail ");
+            assertThat(body.indexOf("set-queue-attributes"))
+                    .as("set then read, in that order; reading first would assert the state this function "
+                            + "was called to establish")
+                    .isLessThan(body.indexOf("get-queue-attributes"));
+
+            final String resolver = extract("dead_letter_queue_arn() {", "\n}\n");
+            assertThat(resolver)
+                    .as("the value-returning resolver must not log, for the reason notification_inbox_arn "
+                            + "documents: log() writes to stdout, so a captured value would carry the "
+                            + "progress lines with it and the policy would name something that is not a queue")
+                    .doesNotContain("\n  log ");
+            assertThat(resolver)
+                    .as("and the captured value must be proven to be an sqs ARN before it is used as a "
+                            + "redrive target, not merely proven non-empty")
+                    .contains("arn:aws:sqs:*");
+
+            final int dlqEnsured = source.indexOf("ensure_queue \"${DLQ_PHYSICAL}\"");
+            final int policyApplied = source.indexOf("ensure_redrive_policy \"${QUEUE_PHYSICAL}\"");
+            assertThat(dlqEnsured)
+                    .as("main() must provision the dead-letter queue itself, so a fresh stack is correct "
+                            + "without a manual step")
+                    .isGreaterThan(-1);
+            assertThat(dlqEnsured)
+                    .as("and provision it BEFORE the policy that names it by ARN, because an ARN cannot be "
+                            + "resolved for a queue that does not exist")
+                    .isLessThan(policyApplied);
+        }
+
+        @Test
         @DisplayName("the topic requires at least one subscription: zero is fatal, not verified")
         void theTopicRequiresASubscriber() {
             // FINDING M-04, severity High. The hook must not assert a count of ZERO subscriptions, which

@@ -33,7 +33,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
 import com.cardemo.exception.FileAccessException;
@@ -223,13 +223,23 @@ import com.cardemo.repository.CardRepository;
  *       {@code NO PREVIOUS PAGES TO DISPLAY} at {@code :903} and {@code NO MORE PAGES TO DISPLAY}
  *       at {@code :908}, the latter reachable only through the two-press latch at {@code :910-916}.
  *       Applied here: both are implemented verbatim.</li>
- *   <li><strong>Medium - performance tradeoff, justified.</strong> {@code STARTBR ... GTEQ} has no
- *       Spring Data equivalent, and the only permitted finders are offset-paged. Positioning is
- *       therefore performed by an exponential probe followed by a binary search over single-row
- *       reads, which is logarithmic in table size and issues no {@code COUNT} query - consistent
- *       with {@code PageResponse} deliberately omitting totals. Not addressed here: a keyset
- *       finder on {@code CardRepository} would make this a single query, but no method may be added
- *       to that interface in this change.</li>
+ *   <li><strong>Critical - the browse was offset addressed, and is now keyset addressed.</strong>
+ *       {@code STARTBR ... GTEQ} is an index descent to a key, and SQL {@code OFFSET} is not a seek:
+ *       the engine produces and discards every preceding row. Positioning used to be performed by a
+ *       binary search over offset-paged windows bounded by one {@code count()}, and - because an
+ *       offset carries no predicate - the account and card filters of {@code 9500-FILTER-RECORDS}
+ *       were then applied in Java to rows the store had already produced, so one filtered screen
+ *       issued {@code ceil(rows / windowSize)} statements in as many transactions and its cost grew
+ *       with the whole table rather than with the answer. Applied here: {@code CardRepository} gained
+ *       four keyset finders and a descending-first finder, so {@code STARTBR ... GTEQ} is one
+ *       inclusive keyset bound, {@code READNEXT} and {@code READPREV} are windows over that bound,
+ *       and a valid account filter is hoisted into the predicate that the
+ *       {@code card (card_acct_id)} index of {@code CARDDATA.VSAM.AIX} exists to answer. A valid card
+ *       filter names a primary key outright and needs no browse at all. Every screen the source
+ *       renders is rendered identically, because the two reads that must see the base cluster
+ *       regardless of the filter still do: the page-full lookahead at {@code :1197-1205} and the
+ *       end-of-file record settlement behind {@code :1236-1237}. No {@code COUNT} query is issued at
+ *       all, which stays consistent with {@code PageResponse} deliberately omitting totals.</li>
  *   <li>Duplicate {@code WHEN} condition: {@code CCARD-AID-PFK07 AND
  *       CA-FIRST-PAGE} is declared twice, at {@code :439-440} and {@code :444-445}, with nothing but
  *       comments between them, so the first occurrence is empty and redundant and COBOL reduces the
@@ -506,6 +516,17 @@ public class CardListService {
 
     /** {@code CARDSIDI PIC X(16)} - app/cpy-bms/COCRDLI.CPY:72, matching {@code CARD-NUM PIC X(16)}. */
     private static final int CARD_FILTER_WIDTH = 16;
+
+    /**
+     * The browse key that precedes every stored key, standing in for the spaces that {@code INITIALIZE
+     * CC-WORK-AREA} at app/cbl/COCRDLIC.cbl:300-302 leaves in {@code WS-CARD-RID-CARDNUM} on a fresh
+     * entry.
+     *
+     * <p>The empty string is provably below the whole key space: {@code CARD-NUM} is {@code PIC X(16)} at
+     * app/cpy/CVACT02Y.cpy:5 and the column is {@code CHAR(16) NOT NULL}, so no stored key can be empty.
+     * It is the same seed the sequential card readers open their keyset scan with.</p>
+     */
+    private static final String LOW_VALUES_KEY = "";
 
     /** {@code PAGENOI PIC X(3)} - app/cpy-bms/COCRDLI.CPY:60. */
     private static final int PAGE_NUMBER_WIDTH = 3;
@@ -2111,8 +2132,11 @@ public class CardListService {
             state.caLastCardAccountId = accountIdOf(record);
             state.caLastCardNumber = cardNumberOf(record);
 
-            // EXEC CICS READNEXT - :1197-1205. The lookahead. It deliberately does NOT filter.
-            final Card lookahead = readNextRecord(state);
+            // EXEC CICS READNEXT - :1197-1205. The lookahead. It deliberately does NOT filter, which is
+            // why it reads the base sequence through its own primitive: its outcome is the next-page
+            // indicator and its key is the page-down start key, so applying the filter here would report a
+            // different next-page state and position the following request differently.
+            final Card lookahead = readNextRecordUnfiltered(state);
 
             // EVALUATE WS-RESP-CD - :1207-1231.
             if (lookahead != null) {
@@ -2240,8 +2264,10 @@ public class CardListService {
         // SET MORE-RECORDS-TO-READ TO TRUE - :1288.
         state.readLoopExit = false;
 
-        // EXEC CICS READPREV - :1294-1302. The priming read.
-        final Card primed = readPrevRecord(state);
+        // EXEC CICS READPREV - :1294-1302. The priming read. Like the forward lookahead it reads the base
+        // sequence, because :1307 discards the record and never applies the filter to it; only its
+        // existence and its key matter, the key becoming the bound the filtered loop reads backwards from.
+        final Card primed = readPrevRecordUnfiltered(state);
 
         // EVALUATE WS-RESP-CD - :1304-1318.
         if (primed != null) {
@@ -2527,68 +2553,59 @@ public class CardListService {
     // STARTBR ... GTEQ, READNEXT, READPREV and ENDBR. They are not COBOL paragraphs and therefore
     // carry no paragraph citation of their own; each names the verb and the source line it serves.
     //
-    // Only the mandated finder is used - CardRepository.findAllByOrderByCardNumberAsc(Pageable) - and
-    // no method is added to that interface, no query string is built and no criteria API is touched.
+    // Every read is keyset addressed - a predicate on the card number, never an OFFSET - because
+    // STARTBR ... GTEQ is an index descent to a key and an OFFSET is not a seek. With a filter in force
+    // the rows that occupy screen lines come from an index-backed, account-scoped finder, while the two
+    // reads the source performs against the base cluster regardless of the filter - the page-full
+    // lookahead at :1197 and the end-of-file record settlement behind :1236 - stay unfiltered.
 
     /**
-     * Renders {@code EXEC CICS STARTBR ... GTEQ}: positions the browse at the first card whose number
-     * is greater than or equal to the start key.
+     * Renders {@code EXEC CICS STARTBR ... GTEQ}: positions the browse at the first record of the
+     * effective sequence whose number is greater than or equal to the start key.
      *
      * <p>Serves {@code app/cbl/COCRDLIC.cbl:1129-1136} and :1273-1280. The source captures the response
      * at :1134 and :1278 and never tests it, an absent guard that is preserved: a positioning failure
      * surfaces on the first read instead.</p>
      *
-     * <p><b>How the position is found, and the tradeoff.</b> A key-addressed browse cannot be expressed
-     * through an offset {@code Pageable}, so the offset of the start key is located by binary search
-     * over the same totally ordered finder, in logarithmic single-block reads. A blank or low-values
-     * start key - the fresh-entry case, since {@code INITIALIZE} at :300-302 leaves the key as spaces
-     * and it sorts before every populated key - short-circuits to offset zero with no probe at all, so
-     * the common first-page request costs nothing extra. Ordering by the sixteen-digit primary key is
-     * a total order, which is what makes both the search and every page reproducible.</p>
+     * <p><b>Positioning costs nothing.</b> No probe, no count and no offset arithmetic happens here. The
+     * start key is recorded and the first read applies it as an inclusive keyset bound, which is one
+     * index descent - the same work {@code STARTBR ... GTEQ} does. A blank or low-values start key, the
+     * fresh-entry case since {@code INITIALIZE} at :300-302 leaves the key as spaces and spaces sort
+     * before every populated key, becomes the empty seed that precedes the whole key space.</p>
      *
-     * <p>The remaining cost is deliberate. A keyset finder such as
-     * {@code findByCardNumberGreaterThanEqualOrderByCardNumberAsc} would locate the position in one
-     * read, but adding a method to {@code CardRepository} is outside this file's scope. Correctness and
-     * parity outrank the marginal efficiency of the probe, and the probe is bounded logarithmically
-     * rather than scanning. The cleaner form is that one finder, to be added by whoever
-     * owns the repository.</p>
+     * <p><b>What "effective sequence" means, and why it is not simply the base cluster.</b> The source
+     * browses the base cluster and lets {@code 9500-FILTER-RECORDS} discard rows that do not match, so a
+     * screen filtered on an account read - and threw away - every intervening card in the file. Those
+     * discarded reads have exactly one observable consequence, the record buffer the end-of-file arm
+     * saves its keys from, and {@link #settleEndOfFileRecord(ProgramState)} reproduces that in one read.
+     * Everything else about them is invisible, which is what makes it sound to have the store skip them:
+     * the rows the screen shows, the order they arrive in and the messages that accompany them are
+     * identical, and the cost stops growing with the size of the file.</p>
      *
      * @param state the per-request working storage
      * @param startKey the sixteen-character start key, {@code WS-CARD-RID-CARDNUM}
-     * @throws FileAccessException if the underlying store cannot be read
      */
     private void startBrowse(final ProgramState state, final String startKey) {
         state.browseActive = true;
-        state.browseWindowStart = -1;
         state.browseWindow = new ArrayList<>();
-        state.browseTotal = -1L;
+        state.browseWindowConsumed = 0;
+        state.browseExhausted = false;
+        state.browseCursor = null;
         state.fileErrorRespCondition = null;
 
         final String key = movePicX(startKey, CARD_FILTER_WIDTH);
-        if (isPicBlank(key)) {
-            state.browsePosition = 0;
-            return;
-        }
-
-        final long total = browseTotal(state);
-        int low = 0;
-        int high = (int) Math.min(total, Integer.MAX_VALUE);
-        while (low < high) {
-            final int mid = low + ((high - low) / 2);
-            final Card probe = recordAt(state, mid);
-            if (probe == null || cardNumberOf(probe).compareTo(key) >= 0) {
-                high = mid;
-            } else {
-                low = mid + 1;
-            }
-        }
-        state.browsePosition = low;
+        state.browseStartKey = isPicBlank(key) ? LOW_VALUES_KEY : key;
     }
 
     /**
-     * Renders {@code EXEC CICS READNEXT}: returns the record at the browse position and advances.
+     * Renders {@code EXEC CICS READNEXT}: returns the next record of the effective sequence and advances.
      *
-     * <p>Serves {@code app/cbl/COCRDLIC.cbl:1146-1154} and the unfiltered lookahead at :1197-1205.</p>
+     * <p>Serves {@code app/cbl/COCRDLIC.cbl:1146-1154}, the loop read of {@code 9000-READ-FORWARD}. The
+     * page-full lookahead at :1197-1205 is the same verb but is deliberately unfiltered, so it is
+     * {@link #readNextRecordUnfiltered(ProgramState)} instead.</p>
+     *
+     * <p>When the effective sequence is exhausted the record buffer is settled first, so that the caller's
+     * end-of-file arm reads the same record the source's buffer would have been holding.</p>
      *
      * @param state the per-request working storage
      * @return the record, or {@code null} for end of file. A {@code null} accompanied by a latched
@@ -2596,36 +2613,77 @@ public class CardListService {
      */
     private Card readNextRecord(final ProgramState state) {
         state.fileErrorRespCondition = null;
-        final Card record = recordAt(state, state.browsePosition);
-        if (record != null) {
-            state.browsePosition = state.browsePosition + 1;
+        final Card record = nextInSequence(state);
+        if (record == null && state.fileErrorRespCondition == null) {
+            settleEndOfFileRecord(state);
         }
         return record;
     }
 
     /**
-     * Renders {@code EXEC CICS READPREV}: returns the record at the browse position and steps back.
+     * Renders the page-full lookahead {@code EXEC CICS READNEXT} of
+     * {@code app/cbl/COCRDLIC.cbl:1197-1205}, which reads the next record of the <b>base</b> cluster and
+     * does not apply the filter.
      *
-     * <p>Serves the priming read at {@code app/cbl/COCRDLIC.cbl:1294-1302} and the loop read at
-     * :1322-1330.</p>
-     *
-     * <p>Running off the front of the file latches the {@code ENDFILE} condition, because that is what
-     * the terminal monitor would have raised - and <b>neither {@code READPREV} has an {@code ENDFILE}
-     * arm</b>, so the caller's {@code WHEN OTHER} at :1308 or :1361 takes it and the browse is reported
-     * as a file error. That is the preserved legacy defect, not an oversight
-     * here.</p>
+     * <p>That distinction is load-bearing rather than incidental. The lookahead's outcome sets
+     * {@code CA-NEXT-PAGE-EXISTS} at :1210-1211 and its key becomes {@code WS-CA-LAST-CARDKEY} at
+     * :1212-1214, which is the start key the page-down request positions from. With an account filter in
+     * force the source therefore reports "a next page exists" whenever <em>any</em> card follows in the
+     * file, even one the filter would exclude, and the next page may then legitimately come back empty.
+     * Filtering this read would report a different next-page state and a different page-down key, so it
+     * is one bounded read of the base sequence.</p>
      *
      * @param state the per-request working storage
-     * @return the record, or {@code null} once the front of the file is passed
+     * @return the immediate base-cluster successor of the last record read, or {@code null} at end of file
+     */
+    private Card readNextRecordUnfiltered(final ProgramState state) {
+        state.fileErrorRespCondition = null;
+        if (!state.isAccountFilterValid() && !state.isCardFilterValid()) {
+            // With no filter in force the effective sequence IS the base sequence, so this is the ordinary
+            // forward read and the row it wants is already in the buffered window. Reading it again would be
+            // a second statement for a row the browse is holding.
+            return nextInSequence(state);
+        }
+        final String from = state.browseCursor == null ? state.browseStartKey : state.browseCursor;
+        final List<Card> window = readWindow(state, from, 2, true, false);
+        if (window == null) {
+            return null;
+        }
+        final Card record = firstBeyondCursor(window, state.browseCursor);
+        if (record == null) {
+            return null;
+        }
+        // The lookahead consumes a read, so the browse position advances onto the record it returned -
+        // exactly as READNEXT leaves it - and the buffered window is dropped because the effective
+        // sequence and the base sequence have now diverged.
+        state.browseCursor = cardNumberOf(record);
+        state.browseWindow = new ArrayList<>();
+        state.browseWindowConsumed = 0;
+        state.browseExhausted = false;
+        return record;
+    }
+
+    /**
+     * Renders {@code EXEC CICS READPREV}: returns the previous record of the effective sequence and steps
+     * back.
+     *
+     * <p>Serves the loop read of {@code 9100-READ-BACKWARDS} at {@code app/cbl/COCRDLIC.cbl:1322-1330}.
+     * The priming read at :1294-1302 is the same verb but is deliberately unfiltered, so it is
+     * {@link #readPrevRecordUnfiltered(ProgramState)} instead.</p>
+     *
+     * <p>Running out of records latches the {@code ENDFILE} condition, because that is what the terminal
+     * monitor would have raised - and <b>neither {@code READPREV} has an {@code ENDFILE} arm</b>, so the
+     * caller's {@code WHEN OTHER} at :1308 or :1361 takes it and the browse is reported as a file error.
+     * That is the preserved legacy defect, not an oversight here. It applies equally when a filter is in
+     * force: the source would have kept reading base records backwards, discarding every one, until it
+     * ran off the front of the file - so exhausting the filter's own rows reaches the same arm.</p>
+     *
+     * @param state the per-request working storage
+     * @return the record, or {@code null} once the front of the sequence is passed
      */
     private Card readPrevRecord(final ProgramState state) {
         state.fileErrorRespCondition = null;
-        if (state.browsePosition < 0) {
-            state.fileErrorRespCondition = RESP_ENDFILE;
-            return null;
-        }
-        final Card record = recordAt(state, state.browsePosition);
-        state.browsePosition = state.browsePosition - 1;
+        final Card record = previousInSequence(state);
         if (record == null && state.fileErrorRespCondition == null) {
             state.fileErrorRespCondition = RESP_ENDFILE;
         }
@@ -2633,99 +2691,275 @@ public class CardListService {
     }
 
     /**
-     * Reads the single record at an absolute browse offset, buffering one aligned block at a time.
+     * Renders the priming {@code EXEC CICS READPREV} of {@code app/cbl/COCRDLIC.cbl:1294-1302}, which
+     * returns the record the browse is positioned at in the <b>base</b> cluster and discards it.
      *
-     * <p>The block size is the page size plus one, the same width as the source's screen-plus-lookahead
-     * window at {@code app/cbl/COCRDLIC.cbl:1191} and :1197, so no independent literal is introduced.
-     * Blocks are aligned to that width, which is what lets an offset be addressed through a
-     * page-indexed {@code Pageable} while a browse walking forward or backward crosses each block at
-     * most once.</p>
+     * <p>The source does not apply the filter to it - :1307 subtracts one from the screen counter and
+     * stores nothing - so the record it returns is the first base record at or after the start key
+     * whatever the filter says. Only its existence and its key matter: the key becomes the upper bound
+     * the filtered loop reads backwards from, and its absence is the {@code WHEN OTHER} arm at
+     * :1308-1317.</p>
      *
      * @param state the per-request working storage
-     * @param offset the absolute zero-based offset in ascending card-number order
-     * @return the record, or {@code null} when the offset lies outside the table
+     * @return the first base-cluster record at or after the start key, or {@code null} when there is none
      */
-    private Card recordAt(final ProgramState state, final int offset) {
-        if (offset < 0) {
+    private Card readPrevRecordUnfiltered(final ProgramState state) {
+        state.fileErrorRespCondition = null;
+        final List<Card> window = readWindow(state, state.browseStartKey, 1, true, false);
+        if (window == null) {
             return null;
         }
-        final int blockSize = this.pageSize + 1;
-        final int block = offset / blockSize;
-        final int blockStart = block * blockSize;
-        if (state.browseWindowStart != blockStart) {
-            try {
-                // A Slice, not a Page. The binary search in startBrowse fetches on the order of log2(n)
-                // windows per request, and a Page would have issued a count query on every one of them to
-                // supply a total this method needed only once. browseTotal now obtains it with a single
-                // explicit count(); see there.
-                final Slice<Card> window =
-                        this.cardRepository.findAllByOrderByCardNumberAsc(
-                                PageRequest.of(block, blockSize));
-                state.browseWindow = new ArrayList<>(window.getContent());
-                state.browseWindowStart = blockStart;
-            } catch (final DataAccessException cause) {
-                // The unexpected-condition arms at :1222-1230, :1246-1254, :1308-1316 and :1361-1369.
-                // The root cause is preserved and rethrown by throwLatchedFileError once the browse has
-                // been terminated, so nothing is swallowed.
-                state.fileErrorRespCondition = cause.getClass().getSimpleName();
-                state.fileErrorCause = cause;
-                return null;
-            }
-        }
-        final int index = offset - state.browseWindowStart;
-        if (index < 0 || index >= state.browseWindow.size()) {
+        if (window.isEmpty()) {
+            state.fileErrorRespCondition = RESP_ENDFILE;
             return null;
         }
-        return state.browseWindow.get(index);
+        final Card record = window.get(0);
+        state.browseCursor = cardNumberOf(record);
+        state.browseWindow = new ArrayList<>();
+        state.browseWindowConsumed = 0;
+        state.browseExhausted = false;
+        return record;
     }
 
     /**
-     * Returns the number of rows the browse can see, counting them once per request.
+     * Serves one record of the effective ascending sequence out of the buffered window, refilling it when
+     * it runs dry.
      *
-     * <p>The count is the upper bound of the binary search in {@link #startBrowse(ProgramState, String)} and
-     * is needed exactly once. It used to arrive as a side effect of the window fetch, because that fetch
-     * returned a {@code Page}; every window therefore carried a {@code count(*)} the search discarded. One
-     * explicit count, memoised in the request state, replaces all of them.
-     *
-     * <p>The failure path is the reason this does not simply call {@code count()} inline. An unreadable
-     * table must latch the same {@code RESP} condition and the same cause that a failed window fetch
-     * latches, <b>and must compose the diagnostic</b>, so that {@code throwLatchedFileError} rethrows it
-     * after {@code ENDBR} has run - exactly as the four unexpected-condition arms of
-     * {@code app/cbl/COCRDLIC.cbl:1226-1230}, {@code :1250-1254}, {@code :1312-1316} and
-     * {@code :1365-1369} require. Nothing is swallowed; a zero is returned so the search collapses
-     * immediately and the latched error surfaces at the normal point.
-     *
-     * <p><b>Why the diagnostic is composed here and not left to the caller.</b> A count failure is the
-     * one file error in this program that no subsequent read repeats: a {@code count(*)} examines the
-     * whole table while a windowed fetch examines at most {@link #pageSize} rows, so a timeout can strike
-     * the former while the latter still succeeds. Because {@code readNextRecord} and
-     * {@code readPrevRecord} each clear {@code fileErrorRespCondition} at their first statement, a
-     * condition left merely transient here would be wiped by the very next read and the browse would
-     * position at offset zero instead of at the requested key - a wrong position reported as success.
+     * <p>The window is the page size plus two wide, and each of the two extra rows is accounted for. The
+     * first is the source's own lookahead row: {@code app/cbl/COCRDLIC.cbl:1191} fills a page of
+     * {@code WS-MAX-SCREEN-LINES} and :1197 then reads one more, so a page costs the page size plus one
+     * record. The second is the row the inclusive bound repeats - {@link #beyondCursor(List, String)}
+     * discards it - so requesting only the plus-one width would come back one row short of a full page
+     * and force a second round trip. No independent literal is introduced: the width is derived from
+     * {@link #pageSize}, which is itself the configured rendering of {@code WS-MAX-SCREEN-LINES}.</p>
      *
      * @param state the per-request working storage
-     * @return the row count, or zero when the table is empty or unreadable
+     * @return the next record, or {@code null} when the sequence is exhausted or a read failed
      */
-    private long browseTotal(final ProgramState state) {
-        if (state.browseTotal < 0L) {
-            try {
-                state.browseTotal = this.cardRepository.count();
-            } catch (final DataAccessException cause) {
-                // Latching the transient condition is not enough on its own: readNextRecord and
-                // readPrevRecord both clear fileErrorRespCondition at their first statement, because it
-                // describes the outcome of one operation. latchFileError is what makes the condition
-                // durable, by composing WS-ERROR-MSG into fileErrorMessage, which is the field
-                // throwLatchedFileError tests once ENDBR has run. Without this call a count failure would
-                // be wiped by the first read that followed, and the browse would silently position at the
-                // start of the file rather than at the requested key - a wrong position reported as
-                // success. The operation name is READ because that is the only one this program uses.
-                state.fileErrorRespCondition = cause.getClass().getSimpleName();
-                state.fileErrorCause = cause;
-                state.errorMessage = latchFileError(state, OPERATION_READ);
-                return 0L;
+    private Card nextInSequence(final ProgramState state) {
+        if (state.browseWindowConsumed >= state.browseWindow.size()) {
+            if (state.browseExhausted) {
+                return null;
+            }
+            final String from = state.browseCursor == null ? state.browseStartKey : state.browseCursor;
+            final List<Card> window = readWindow(state, from, this.pageSize + 2, true, true);
+            if (window == null) {
+                return null;
+            }
+            final List<Card> beyond = beyondCursor(window, state.browseCursor);
+            state.browseWindow = beyond;
+            state.browseWindowConsumed = 0;
+            // A short window means the store had nothing more to give, so the sequence ends here and no
+            // further request is made. Asking for more rows than a page needs is what makes "short"
+            // detectable without a second, empty round trip.
+            state.browseExhausted = window.size() < this.pageSize + 2;
+            if (beyond.isEmpty()) {
+                return null;
             }
         }
-        return state.browseTotal < 0L ? 0L : state.browseTotal;
+        final Card record = state.browseWindow.get(state.browseWindowConsumed);
+        state.browseWindowConsumed = state.browseWindowConsumed + 1;
+        state.browseCursor = cardNumberOf(record);
+        return record;
+    }
+
+    /**
+     * Serves one record of the effective descending sequence, the backward counterpart of
+     * {@link #nextInSequence(ProgramState)}.
+     *
+     * @param state the per-request working storage
+     * @return the previous record, or {@code null} when the front of the sequence is passed or a read
+     *     failed
+     */
+    private Card previousInSequence(final ProgramState state) {
+        if (state.browseWindowConsumed >= state.browseWindow.size()) {
+            if (state.browseExhausted) {
+                return null;
+            }
+            if (state.browseCursor == null) {
+                // A backward browse always primes first, so there is always a cursor by the time the loop
+                // reads. Reaching here would mean the front of the file was already passed.
+                return null;
+            }
+            final List<Card> window =
+                    readWindow(state, state.browseCursor, this.pageSize + 2, false, true);
+            if (window == null) {
+                return null;
+            }
+            final List<Card> beyond = beyondCursor(window, state.browseCursor);
+            state.browseWindow = beyond;
+            state.browseWindowConsumed = 0;
+            state.browseExhausted = window.size() < this.pageSize + 2;
+            if (beyond.isEmpty()) {
+                return null;
+            }
+        }
+        final Card record = state.browseWindow.get(state.browseWindowConsumed);
+        state.browseWindowConsumed = state.browseWindowConsumed + 1;
+        state.browseCursor = cardNumberOf(record);
+        return record;
+    }
+
+    /**
+     * Issues one window read against the store, choosing the finder from the direction and from whether
+     * the filter applies to this read.
+     *
+     * <p>Every bound is inclusive, so a browse resuming from a key it has already returned asks again
+     * from that key; {@link #beyondCursor(List, String)} discards the one leading row that repeats it.
+     * That keeps a single rule for the first read and for every continuation.</p>
+     *
+     * <p>The account filter is hoisted into the predicate, which is what puts the {@code card
+     * (card_acct_id)} index of {@code CARDDATA.VSAM.AIX} on the path. The card filter names a primary key
+     * outright, so it needs no browse at all: at most one record can satisfy it, and the bound decides
+     * whether that record is in range. Both mirror {@code 9500-FILTER-RECORDS} at
+     * {@code app/cbl/COCRDLIC.cbl:1385-1405} exactly - the account gate compares
+     * {@code CARD-ACCT-ID = CC-ACCT-ID} and the card gate {@code CARD-NUM = CC-CARD-NUM-N}, both for
+     * equality, and a gate participates only while its flag reads valid.</p>
+     *
+     * <p>An account-scoped browse opening at low values takes the plain alternate-index finder rather than
+     * its keyset form, because at that point the bound carries no information: the browse is positioned at
+     * the start of the path and {@code card_num >= ''} would be a comparison against a value no stored key
+     * can be below. That is also the call site Transformation Rule 5 requires the alternate-index finder to
+     * have.</p>
+     *
+     * @param state the per-request working storage
+     * @param bound the inclusive key bound
+     * @param width how many records to request
+     * @param ascending whether the window runs forward
+     * @param filtered whether the filter applies to this read
+     * @return the window, or {@code null} when the read failed and a condition was latched
+     */
+    private List<Card> readWindow(final ProgramState state, final String bound, final int width,
+            final boolean ascending, final boolean filtered) {
+        final boolean accountGate = filtered && state.isAccountFilterValid();
+        final boolean cardGate = filtered && state.isCardFilterValid();
+        try {
+            if (cardGate) {
+                return cardFilterWindow(state, bound, ascending, accountGate);
+            }
+            final Pageable window = PageRequest.of(0, width);
+            if (accountGate) {
+                final Long accountId = Long.valueOf(state.ccAcctId.trim());
+                if (ascending && LOW_VALUES_KEY.equals(bound)) {
+                    // STARTBR ... GTEQ with the record identification field still holding the spaces
+                    // INITIALIZE left at :300-302 positions at the start of the path, so the bound carries no
+                    // information and the read is the alternate index in key order - which is exactly the
+                    // finder Transformation Rule 5 maps CARDDATA.VSAM.AIX onto. Every continuation carries a
+                    // real key and takes the keyset form below.
+                    return new ArrayList<>(this.cardRepository
+                            .findByAccountIdOrderByCardNumberAsc(accountId, window)
+                            .getContent());
+                }
+                return ascending
+                        ? this.cardRepository
+                                .findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc(
+                                        accountId, bound, window)
+                        : this.cardRepository
+                                .findByAccountIdAndCardNumberLessThanEqualOrderByCardNumberDesc(
+                                        accountId, bound, window);
+            }
+            return ascending
+                    ? this.cardRepository.findByCardNumberGreaterThanEqualOrderByCardNumberAsc(bound, window)
+                    : this.cardRepository.findByCardNumberLessThanEqualOrderByCardNumberDesc(bound, window);
+        } catch (final DataAccessException cause) {
+            // The unexpected-condition arms at :1222-1230, :1246-1254, :1308-1316 and :1361-1369. The root
+            // cause is preserved and rethrown by throwLatchedFileError once the browse has been
+            // terminated, so nothing is swallowed.
+            state.fileErrorRespCondition = cause.getClass().getSimpleName();
+            state.fileErrorCause = cause;
+            return null;
+        }
+    }
+
+    /**
+     * Resolves the at-most-one-record sequence a valid card filter describes.
+     *
+     * <p>{@code CARD-NUM = CC-CARD-NUM-N} at {@code app/cbl/COCRDLIC.cbl:1397} is an equality test on the
+     * primary key, so the filtered sequence holds one record at most. It is read by key and then admitted
+     * only if it lies within the browse's bound and, when an account filter is also in force, only if it
+     * belongs to that account - the two gates being independent and ordered exactly as :1385-1405 orders
+     * them.</p>
+     *
+     * @param state the per-request working storage
+     * @param bound the inclusive key bound
+     * @param ascending whether the window runs forward
+     * @param accountGate whether the account filter also applies
+     * @return the one-record window, or an empty window when nothing satisfies the filter in range
+     */
+    private List<Card> cardFilterWindow(final ProgramState state, final String bound,
+            final boolean ascending, final boolean accountGate) {
+        final String wanted = state.ccCardNumber;
+        final int comparison = wanted.compareTo(bound);
+        if (ascending ? comparison < 0 : comparison > 0) {
+            return List.of();
+        }
+        return this.cardRepository.findById(wanted)
+                .filter(card -> !accountGate || accountIdOf(card).equals(state.ccAcctId))
+                .map(List::of)
+                .orElseGet(List::of);
+    }
+
+    /**
+     * Drops the leading record that repeats the cursor, so an inclusive bound behaves as a resumption.
+     *
+     * @param window the window the store returned
+     * @param cursor the key already consumed, or {@code null} before the browse's first read
+     * @return the records the browse has not yet seen
+     */
+    private static List<Card> beyondCursor(final List<Card> window, final String cursor) {
+        if (cursor == null || window.isEmpty()) {
+            return new ArrayList<>(window);
+        }
+        final List<Card> remaining = new ArrayList<>(window);
+        if (cardNumberOf(remaining.get(0)).equals(cursor)) {
+            remaining.remove(0);
+        }
+        return remaining;
+    }
+
+    /**
+     * The first record of a window that the browse has not already consumed.
+     *
+     * @param window the window the store returned
+     * @param cursor the key already consumed, or {@code null} before the browse's first read
+     * @return that record, or {@code null} when the window held nothing new
+     */
+    private static Card firstBeyondCursor(final List<Card> window, final String cursor) {
+        final List<Card> remaining = beyondCursor(window, cursor);
+        return remaining.isEmpty() ? null : remaining.get(0);
+    }
+
+    /**
+     * Leaves the record buffer holding what the source's buffer would hold at end of file.
+     *
+     * <p>{@code 9000-READ-FORWARD} browses the base cluster from the start key to the end of the file
+     * whether or not the filter excluded rows on the way, and its end-of-file arm saves
+     * {@code WS-CA-LAST-CARDKEY} from the record buffer at :1236-1237 - which therefore holds the
+     * highest-keyed record in the file, not the last one that survived the filter. A filtered browse stops
+     * as soon as the filter's own rows run out, so it has not read that record; one descending read
+     * supplies it rather than walking the remaining base records only to discard them.</p>
+     *
+     * <p>Nothing is settled when the browse was unfiltered, because the last record it returned already
+     * is that record. Nothing is settled either when the file holds no row at or after the start key,
+     * which leaves the buffer untouched exactly as an untouched {@code INTO} area is - the state the
+     * source is in when its very first {@code READNEXT} reports end of file - so the saved keys stay
+     * unset rather than being invented.</p>
+     *
+     * @param state the per-request working storage
+     */
+    private void settleEndOfFileRecord(final ProgramState state) {
+        if (!state.isAccountFilterValid() && !state.isCardFilterValid()) {
+            return;
+        }
+        try {
+            this.cardRepository.findFirstByOrderByCardNumberDesc()
+                    .filter(last -> cardNumberOf(last).compareTo(state.browseStartKey) >= 0)
+                    .ifPresent(last -> state.cardRecord = last);
+        } catch (final DataAccessException cause) {
+            state.fileErrorRespCondition = cause.getClass().getSimpleName();
+            state.fileErrorCause = cause;
+            state.errorMessage = latchFileError(state, OPERATION_READ);
+        }
     }
 
     /**
@@ -2740,7 +2974,8 @@ public class CardListService {
     private void endBrowse(final ProgramState state) {
         state.browseActive = false;
         state.browseWindow = new ArrayList<>();
-        state.browseWindowStart = -1;
+        state.browseWindowConsumed = 0;
+        state.browseExhausted = false;
     }
 
     /**
@@ -3890,17 +4125,33 @@ public class CardListService {
         /** Whether a browse is open between {@code STARTBR} and {@code ENDBR}. */
         private boolean browseActive;
 
-        /** The row count the browse can see, or negative when not yet observed. */
-        private long browseTotal;
+        /**
+         * The key the browse was positioned at by {@code STARTBR ... GTEQ}, sixteen characters wide. It
+         * bounds every read of the browse and is what the end-of-file arm's record settlement is measured
+         * against.
+         */
+        private String browseStartKey;
 
-        /** The absolute offset the next sequential browse read will return. */
-        private int browsePosition;
+        /**
+         * The key of the last record the browse returned, or {@code null} before its first read. It is the
+         * inclusive bound the next window is requested from, and the one leading row that repeats it is
+         * discarded - which is how one inclusive finder serves both the first read and every continuation.
+         */
+        private String browseCursor;
 
-        /** The buffered aligned block of records, standing in for the VSAM control interval. */
+        /** The buffered window of records, standing in for the VSAM control interval. */
         private List<Card> browseWindow;
 
-        /** The absolute offset of the first record in {@link #browseWindow}, or negative when empty. */
-        private int browseWindowStart;
+        /** How many records of {@link #browseWindow} the browse has already consumed. */
+        private int browseWindowConsumed;
+
+        /**
+         * Whether the effective record sequence is exhausted, so that no further window is requested. It is
+         * not the same thing as end of file: with a filter in force the effective sequence ends when the
+         * filter's own rows run out, while the base cluster may still hold rows the source would have read
+         * and excluded.
+         */
+        private boolean browseExhausted;
 
         /** The condition a failed browse read raised, or {@code null} after a normal read. */
         private String fileErrorRespCondition;
@@ -3964,10 +4215,11 @@ public class CardListService {
             // CA-NEXT-PAGE-EXISTS for 'Y'. The third state is real and is represented rather than
             // collapsed into one of the two.
             this.caNextPageIndicator = CA_NEXT_PAGE_UNSET;
-            this.browseTotal = -1L;
-            this.browsePosition = 0;
+            this.browseStartKey = null;
+            this.browseCursor = null;
             this.browseWindow = new ArrayList<>();
-            this.browseWindowStart = -1;
+            this.browseWindowConsumed = 0;
+            this.browseExhausted = false;
         }
 
         /**

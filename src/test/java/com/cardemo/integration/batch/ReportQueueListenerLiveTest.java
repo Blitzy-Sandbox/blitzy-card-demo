@@ -142,10 +142,13 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       refused rather than run again.</dd>
  *   <dt>A body that cannot be bound</dt>
  *   <dd>Launches nothing, and does not stall its message group: a well-formed submission published behind it
- *       in the same group still runs. A FIFO group is ordered and this topology has no dead-letter target, so
- *       a consumer that returned the unbindable message would block every later submission behind it
- *       indefinitely. That is why the production listener consumes it, and this is the assertion that the
- *       consequence actually holds.</dd>
+ *       in the same group still runs. A FIFO group is ordered, so a consumer that returned the unbindable
+ *       message would make every later submission behind it wait one visibility window per redelivery, for no
+ *       possibility of a different outcome. {@code localstack-init/init-aws.sh} does provision a dead-letter
+ *       target with a {@code RedrivePolicy}, and it bounds the failures the consumer cannot classify rather
+ *       than replacing this decision: a body that can never bind is dropped on its first delivery instead of
+ *       being left to exhaust the redrive count. That is why the production listener consumes it, and this is
+ *       the assertion that the consequence actually holds.</dd>
  * </dl>
  *
  * <h2>How to build, run and test</h2>
@@ -439,14 +442,54 @@ class ReportQueueListenerLiveTest extends AbstractBatchIntegrationTest {
 
         final JobExecution recovered = awaitExecution(recoveredId, LAUNCH_DEADLINE);
         assertThat(recovered.getStatus())
-                .as("a FIFO group is ordered and this topology has no dead-letter queue, so the unbindable "
-                        + "message had to be consumed for this one to be delivered at all")
+                .as("a FIFO group is ordered, so the unbindable message had to be consumed for this one to "
+                        + "be delivered without first waiting out its redrive count")
                 .isEqualTo(BatchStatus.COMPLETED);
         assertThat(executionsFor(malformedId))
                 .as("nothing may be launched for a body the consumer could not bind")
                 .isEmpty();
         assertThat(remainingMessages())
                 .as("both messages are acknowledged, the unbindable one included")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("an inverted window is launched like any other submission and does not stall its group")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void anInvertedWindowRunsAndDoesNotStallItsGroup() {
+        // FINDING B-15, severity MAJOR. This is the exact delivery that used to stop the report tier. The
+        // online tier is faithful to app/cbl/CORPT00C.cbl, which compares no bound against the other, so
+        // POST /api/reports answered 202 for an inverted window; the batch tier then refused it with a
+        // ValidationException that reached this listener as neither a binding failure nor a
+        // JobParametersInvalidException, so the delivery was returned to the queue. On a FIFO queue with one
+        // message group that is not a retry, it is a stop: the message came back every fifteen minutes and
+        // every later submission waited behind it, with no dead-letter target to divert into. Recovery took
+        // an sqs purge-queue, which discards legitimate queued work as well.
+        //
+        // The fix is agreement with the source rather than a better error: an inverted window selects nothing
+        // - app/proc/TRANREPT.prc:45-46 INCLUDE COND cannot be satisfied by any record when the bounds cross
+        // - so the run completes and writes a report carrying its closing block and no detail line.
+        final String invertedId = runId() + "-inverted";
+        final String followerId = runId() + "-follower";
+        final String group = runId();
+
+        publish(submissionBody("Custom", PERIOD_END, PERIOD_START), invertedId, group);
+        publish(submissionBody("Monthly", PERIOD_START, PERIOD_END), followerId, group);
+
+        final JobExecution inverted = awaitExecution(invertedId, LAUNCH_DEADLINE);
+        assertThat(inverted.getStatus())
+                .as("the inverted window is a selection outcome and not an invalid request, so the launch "
+                        + "reaches a terminal success exactly as an ordered window does")
+                .isEqualTo(BatchStatus.COMPLETED);
+
+        final JobExecution follower = awaitExecution(followerId, LAUNCH_DEADLINE);
+        assertThat(follower.getStatus())
+                .as("and the submission behind it in the same ordered group runs too. This is the assertion "
+                        + "the defect failed: a message the consumer could never acknowledge held the group, "
+                        + "so a perfectly valid Monthly submission was never processed at all")
+                .isEqualTo(BatchStatus.COMPLETED);
+        assertThat(remainingMessages())
+                .as("both deliveries are acknowledged, so nothing is left to be redelivered forever")
                 .isZero();
     }
 

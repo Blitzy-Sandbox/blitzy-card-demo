@@ -729,6 +729,13 @@ public record AccountDto(
     /**
      * Rejects a component value wider than the screen field it is declared from.
      *
+     * <p>The width is counted in Unicode code points, because a character position is what the map
+     * declares and what the {@code character(n)} column this payload is projected from pads to. A Java
+     * {@code String} counts UTF-16 code units instead, and the two differ for any supplementary-plane
+     * character, so counting code units would let a stored, padded value fail on the way out after having
+     * been accepted on the way in. A code point count never exceeds a code unit count, so this measures
+     * the same bound the write path applies rather than a looser one.
+     *
      * @param value         the component value as supplied; {@code null}, empty, blank and
      *                      {@code LOW-VALUES} are all accepted, because the source distinguishes them and
      *                      none of them can overflow a field
@@ -737,18 +744,22 @@ public record AccountDto(
      *                      field in the diagnostic message
      * @param provenance    the COBOL field name, PIC clause and source locator, quoted in the diagnostic
      *                      message so that a reader can verify the width without leaving the stack trace
-     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}; the offending
-     *         value is deliberately never reproduced, because several components on this payload are
-     *         protected data
+     * @throws IllegalArgumentException if {@code value} holds more code points than {@code maxLength}; the
+     *         offending value is deliberately never reproduced, because several components on this payload
+     *         are protected data
      */
     private static void requireWidthWithinLimit(String value, int maxLength, String componentName,
             String provenance) {
-        if (value != null && value.length() > maxLength) {
+        if (value == null) {
+            return;
+        }
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw new IllegalArgumentException(String.format(Locale.ROOT,
                     "Component %s holds %d characters, but the symbolic map declares %s, so a value this "
                             + "long cannot have come from that screen field. The offending value is not "
                             + "reproduced because this payload carries protected data.",
-                    componentName, value.length(), provenance));
+                    componentName, Integer.valueOf(characterPositions), provenance));
         }
     }
 

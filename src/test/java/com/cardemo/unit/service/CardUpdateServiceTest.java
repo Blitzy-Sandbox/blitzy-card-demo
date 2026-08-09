@@ -58,10 +58,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -291,6 +293,12 @@ final class CardUpdateServiceTest {
 
     /** Attention identifier for {@code PF05}, the save key {@code 2000-DECIDE-ACTION} gates on. */
     private static final String AID_PF05 = "DFHPF5";
+
+    /**
+     * Attention identifier for {@code PF03}, the back key {@code app/cpy/CSSTRPFY.cpy:34-35} names and the
+     * first {@code WHEN} of the dispatch at {@code app/cbl/COCRDUPC.cbl:430} gates on.
+     */
+    private static final String AID_PF03 = "DFHPF3";
 
     /** Account filter, {@code ACCTSIDI PIC X(11)} of {@code app/cpy-bms/COCRDUP.CPY}. */
     private static final String ACCOUNT_ID = "00000000001";
@@ -2659,6 +2667,124 @@ final class CardUpdateServiceTest {
     }
 
     /**
+     * The {@code EXEC CICS XCTL} arm of {@code 0000-MAIN} at {@code COCRDUPC.cbl:430-475}, which the rest of
+     * this suite never entered.
+     *
+     * <p>A coverage review found the whole arm dead in test. Not one line of
+     * {@link CardUpdateService}'s transfer body was covered, and {@code CardUpdateService$Navigation} was one
+     * of only two production classes in the entire tree with nothing covered at all - its canonical
+     * constructor is reachable from that body and from nowhere else. That matters beyond the figure.
+     * Transformation Rule 7 turns {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} into URL navigation, and the target
+     * resolution at {@code :436-447} - defaulting a blank or low-values caller context to the main menu - is
+     * the observable part of that translation: it is what tells the caller which screen the legacy would have
+     * reached. Untested, it could resolve to anything and no assertion would notice.
+     *
+     * <p>Three of the arm's five effects are asserted here because each is a separate decision of the source:
+     * the response kind and the absent screen ({@code XCTL} sends no map), the resolved target and the origin
+     * the source stamps in its place at {@code :448-449}, and the key normalisation at {@code :435}, which is
+     * why two of the three entry conditions can be reached without {@code PF03} having been pressed at all.
+     *
+     * <p><strong>Two lines of the arm stay uncovered after this, and deliberately so.</strong> They are the
+     * {@code ELSE} halves of {@code :446} and {@code :453}, which carry a supplied caller context through
+     * instead of defaulting it. {@code CDEMO-FROM-TRANID} and {@code CDEMO-FROM-PROGRAM} arrived in the
+     * COMMAREA, and under transformation Rule 7 no request member replaces them, so through the public entry
+     * point they are always absent and the defaulting halves are always the ones taken. Both halves are
+     * implemented anyway, so the resolution logic is complete and provable rather than assumed; the same
+     * disposition is recorded for the same reason in {@code DECISION_LOG.md} under {@code DL-MS-06}. Reaching
+     * them from a test would mean reaching past the entry point into private state, which is exactly what
+     * {@link StatelessnessContract} exists to forbid, so the gap is disclosed here instead of closed.
+     */
+    @Nested
+    @DisplayName("0000-MAIN :430-475 - the EXEC CICS XCTL arm resolves a target and sends no map")
+    class TransferArm {
+
+        /**
+         * {@code PF03} with no caller context resolves the main menu and returns a transfer, not a screen.
+         *
+         * <p>{@code :430} is the first {@code WHEN} of the {@code EVALUATE TRUE}, so this is the arm a plain
+         * {@code PF03} takes whatever else the request carries. {@code :436-447} then default both halves of
+         * the target, because this request supplies neither: the flat header members that would carry a
+         * caller context are {@code null}, which is the {@code LOW-VALUES} case the source tests for.
+         */
+        @Test
+        @DisplayName(":430 PF03 transfers to the main menu, sends no map, and stamps this program as origin")
+        void pressingPf03TransfersToTheMainMenuAndSendsNoMap() {
+            final CardUpdateRequest request = requestWith(matchingSnapshot(), STORED_NAME, STORED_STATUS,
+                    STORED_MONTH, STORED_YEAR, STORED_DAY);
+
+            final CardUpdateService.CardUpdateResult result = service.processRequest(request,
+                    openedSnapshot(request), AID_PF03, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(result.responseKind())
+                    .as(":472-475 EXEC CICS XCTL transfers control and terminates the caller, so the pass "
+                            + "reports a transfer rather than a rendered screen")
+                    .isEqualTo(CardUpdateService.ResponseKind.TRANSFER);
+            assertThat(result.screen())
+                    .as("and it sends no map: 3000-SEND-MAP is not on this arm at all")
+                    .isNull();
+            assertThat(result.navigation())
+                    .as("the arm's whole observable output is the resolved navigation target")
+                    .isNotNull();
+            assertThat(result.navigation().toTransactionId())
+                    .as(":436-441 a blank or low-values CDEMO-FROM-TRANID defaults to the main menu "
+                            + "transaction")
+                    .isEqualTo("CM00");
+            assertThat(result.navigation().toProgram())
+                    .as(":442-447 and a blank or low-values CDEMO-FROM-PROGRAM defaults to the main menu "
+                            + "program")
+                    .isEqualTo("COMEN01C");
+            assertThat(result.navigation().fromTransactionId())
+                    .as(":448 MOVE LIT-THISTRANID TO CDEMO-FROM-TRANID - the outgoing context names THIS "
+                            + "transaction, not the one that arrived")
+                    .isEqualTo("CCUP");
+            assertThat(result.navigation().fromProgram())
+                    .as(":449 MOVE LIT-THISPGM TO CDEMO-FROM-PROGRAM")
+                    .isEqualTo("COCRDUPC");
+            assertThat(result.navigation().lastMapset())
+                    .as(":456 MOVE LIT-THISMAPSET TO CDEMO-LAST-MAPSET. The trailing blank is part of the "
+                            + "value: app/cbl/COCRDUPC.cbl:223-224 declares LIT-THISMAPSET as PIC X(8) with "
+                            + "VALUE 'COCRDUP ', and dispatch0000 compares CDEMO-LAST-MAPSET against the "
+                            + "seven-character LIT-CCLISTMAPSET, so padding is load-bearing and is not "
+                            + "trimmed here")
+                    .isEqualTo("COCRDUP ");
+            assertThat(result.navigation().lastMap())
+                    .as(":457 MOVE LIT-THISMAP TO CDEMO-LAST-MAP")
+                    .isEqualTo("CCRDUPA");
+        }
+
+        /**
+         * The transfer arm is reached under {@code PF03} regardless of how far the pass would otherwise have
+         * got, which is what makes it the first {@code WHEN} rather than one of the later ones.
+         *
+         * <p>Driven with no snapshot at all - the {@code CCUP-DETAILS-NOT-FETCHED} state of {@code :278-280}
+         * in which the write is unreachable - so a reader can see that the arm depends on the attention key
+         * and not on the request having been through a first turn.
+         */
+        @Test
+        @DisplayName(":430-435 the arm is taken on the key alone, and normalises that key to PF03")
+        void theTransferArmIsTakenOnTheKeyAloneAndNormalisesIt() {
+            final CardUpdateRequest request = requestWith(null, SUBMITTED_NAME, STORED_STATUS,
+                    STORED_MONTH, STORED_YEAR, STORED_DAY);
+
+            final CardUpdateService.CardUpdateResult result = service.processRequest(request, null,
+                    AID_PF03, CardUpdateService.EntryMode.ENTER);
+
+            assertThat(result.responseKind())
+                    .as("an absent snapshot cannot keep the pass off this arm; :430 tests the key and "
+                            + "nothing else")
+                    .isEqualTo(CardUpdateService.ResponseKind.TRANSFER);
+            assertThat(result.navigation().toProgram())
+                    .as("and the target still resolves, because :436-447 runs before anything reads the card")
+                    .isEqualTo("COMEN01C");
+            assertThat(result.changeAction())
+                    .as(":435 SET CCARD-AID-PFK03 TO TRUE normalises the key rather than changing the state, "
+                            + "so the change action arrives at the caller as the source left it")
+                    .isEqualTo(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED);
+            verifyNoInteractions(cardRepository);
+        }
+    }
+
+    /**
      * Pins the consequence of the procedural {@code COPY 'CSSTRPFY'} at
      * {@code COCRDUPC.cbl:1526}: the attention identifier is an argument, so the bean retains no
      * PF-key or screen state between calls.
@@ -2994,10 +3120,38 @@ final class CardUpdateServiceTest {
 
             final String sealed = service.sealSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER, SUBJECT);
 
+            // The two LONG values are searched in the token text directly. At 10 and 16 characters over a
+            // 64-symbol alphabet a chance occurrence is around 1e-16 across a token of this length, so a hit
+            // here really does mean the value was carried rather than encrypted.
             assertThat(sealed)
+                    .as("the cardholder name is not carried in the token text")
                     .doesNotContain(STORED_NAME)
-                    .doesNotContain(CARD_NUMBER)
+                    .as("nor are the sixteen digits CardResponse otherwise masks")
+                    .doesNotContain(CARD_NUMBER);
+
+            // ==========================================================================================
+            // THE THREE-CHARACTER VALUE IS CHECKED AGAINST THE DECODED BYTES, NOT THE TOKEN TEXT.
+            // ==========================================================================================
+            // Searching a random base64url string for a THREE-character needle is a coin toss, not a
+            // security property: (1/64)^3 per position across a token of this length is roughly one run in
+            // six hundred. It was not a theoretical concern - this assertion failed exactly that way, on a
+            // token reading ...VFhuhvTXSB007urpv..., where the "007" the assertion tripped on was three
+            // adjacent characters of ciphertext and nothing to do with CARD-CVV-CD. Decoding first drops the
+            // needle into a 256-symbol alphabet and removes the base64 coincidence entirely.
+            final byte[] decoded = Base64.getUrlDecoder().decode(sealed);
+            assertThat(new String(decoded, StandardCharsets.ISO_8859_1))
+                    .as("the verification value is not recoverable from the sealed payload's own bytes")
                     .doesNotContain(STORED_VERIFICATION_VALUE);
+
+            // And the deterministic half of opacity, which no substring search can establish: sealing the
+            // same snapshot twice must not produce the same token. A readable encoding is a pure function of
+            // its input and would repeat; authenticated encryption under a fresh nonce cannot. This is the
+            // assertion that would fail if the payload were ever swapped for base64-of-plaintext, which is
+            // the regression the substring searches above are really guarding against.
+            final String sealedAgain = service.sealSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER, SUBJECT);
+            assertThat(sealedAgain)
+                    .as("a second seal of the same snapshot differs, so the token is encrypted and not encoded")
+                    .isNotEqualTo(sealed);
         }
 
         /**

@@ -81,10 +81,13 @@ import com.cardemo.batch.readers.CardCrossReferenceReader;
 import com.cardemo.batch.readers.CardReader;
 import com.cardemo.batch.readers.CustomerReader;
 import com.cardemo.batch.processors.TransactionReportProcessor;
+import com.cardemo.exception.ValidationException;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Customer;
+import com.cardemo.exception.ValidationException;
 import com.cardemo.model.enums.FileStatus;
+import com.cardemo.observability.BatchJobSpanNamingConvention;
 import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
@@ -117,6 +120,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -134,8 +138,10 @@ import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
+import org.springframework.batch.core.job.AbstractJob;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.observability.BatchJobObservationConvention;
 import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.repository.JobRepository;
@@ -538,7 +544,12 @@ import org.springframework.util.StringUtils;
  *       identifiers: {@code app/cbl/CBACT04C.cbl} concatenates the ten character date with a run-sequential
  *       suffix, and {@code app/jcl/COMBTRAN.jcl:L48} then loads the combined generation into the transaction
  *       cluster. Surfacing it as a duplicate-record failure is correct; a silent upsert would hide a repeated
- *       run and is never the remedy. Re-run the interest job with the intended date.</dd>
+ *       run and is never the remedy. Re-run the interest job with the intended date.
+ *       <p>The transaction master is intact. Even when the run was instructed to archive and reset, the
+ *       emptying is performed inside the load step's own transaction, immediately before the first insert, so a
+ *       failed load rolls it back with the inserts and no restore from
+ *       {@code TRANSACT.BKUP} is needed. See
+ *       {@code com.cardemo.batch.jobs.CombineTransactionsJob#emptyMasterForReload}.</dd>
  *   <dt>A batch log line carries no {@code jobInstanceId}</dt>
  *   <dd>The job was launched without a {@code JobExecutionListener} registered on it. A listener bean is not
  *       applied to a job implicitly - neither the batch framework nor the Boot auto-configuration collects
@@ -771,6 +782,28 @@ public class BatchConfig {
      * and the extension can never disagree.
      */
     private static final int REPORT_QUEUE_VISIBILITY = Integer.parseInt(REPORT_QUEUE_VISIBILITY_SECONDS);
+
+    /**
+     * How many times one delivery may be attempted before it is treated as a poison message.
+     *
+     * <p><b>Finding B-15, severity Major.</b> This is the bound that makes head-of-line blocking finite. The
+     * queue that replaces {@code DEFINE TDQUEUE(JOBS)} is FIFO with a single message group, so a delivery this
+     * consumer keeps returning is not merely retried - it holds every later submission behind it, for as long
+     * as it keeps failing. Classifying individual failures as retryable or not protects against the failures
+     * already known; a bound protects against the ones that are not. After this many attempts the delivery is
+     * consumed with a remediation naming the delivery, and the group moves on.
+     *
+     * <p>Three, not one: a genuinely transient failure - an unavailable database, an object store refusing a
+     * write mid-run - deserves more than a single attempt, and the visibility window means three attempts span
+     * roughly three quarters of an hour, which is long enough for an operator to notice the {@code ERROR} and
+     * short enough that a permanently broken submission does not stop the report tier for a day.
+     *
+     * <p>A value the transport supplies is untrusted, so it is parsed defensively where it is read: a header
+     * that is absent, unparseable or negative counts as a first attempt, which errs towards redelivery -
+     * losing a submission is worse than delaying it, and the classification arms above already discard the
+     * failures that can never succeed.
+     */
+    private static final int REPORT_QUEUE_MAX_DELIVERY_ATTEMPTS = 3;
 
     /**
      * The bean name of the job every message on the report queue names.
@@ -1538,10 +1571,18 @@ public class BatchConfig {
      *
      * <p><b>Failure modes and troubleshooting.</b> A payload that cannot be bound, or that carries a date the
      * job's own validator refuses, is logged at {@code ERROR} and <em>consumed</em>. That choice is
-     * deliberate and is the opposite of what a service with a dead-letter queue should do: this topology
-     * declares none, so a rethrow would return the message to the queue, redeliver it, fail identically, and
-     * occupy the listener forever - a poison message would stop every later submission behind it, because a
-     * FIFO message group is ordered. Consuming it keeps the queue moving and leaves the evidence in the log.
+     * deliberate. A rethrow would return the message to the queue, redeliver it and fail identically, and
+     * because a FIFO message group is ordered, every later submission would wait behind it for a visibility
+     * window per attempt. Consuming it keeps the queue moving and leaves the evidence in the log.
+     *
+     * <p>{@code localstack-init/init-aws.sh} does now provision a dead-letter target with a
+     * {@code RedrivePolicy}, and that does <em>not</em> make the decision above redundant - the two act at
+     * different scopes and both are wanted. This listener knows <em>why</em> a particular submission can
+     * never run, so it drops that one on its first delivery and the group loses nothing. The redrive policy
+     * knows nothing about any submission and bounds the cases this listener cannot classify: a job that fails
+     * deterministically, for instance, is returned to the queue here because a failure might be transient,
+     * and it is the redrive count that eventually stops it circulating. Leaving a known-unrunnable message to
+     * exhaust that count instead would cost the group one visibility window per attempt for no information.
      * A submission that never produces a job execution therefore has its reason in the log at {@code ERROR};
      * a submission that produces none and logs nothing means the listener is not running, which
      * {@value #KEY_REPORT_QUEUE} governs.
@@ -1604,7 +1645,9 @@ public class BatchConfig {
          * <p>The payload is taken as text and bound here rather than declared as the record type, so that a
          * binding failure is this method's to handle. Declaring the record would move the failure into the
          * framework's conversion step, where the only available outcomes are acknowledge-everything or
-         * redeliver-forever, and neither is right for a topology with no dead-letter queue.
+         * redeliver-until-the-redrive-count-expires, and neither distinguishes a body that can never bind
+         * from one whose job might succeed on a later attempt - which is the distinction this method exists
+         * to make.
          *
          * <p><b>Three decisions this method makes, and why each is what it is.</b>
          *
@@ -1634,13 +1677,39 @@ public class BatchConfig {
          * delivery that arrives while an earlier one is still running: it is not a duplicate to discard, it is
          * a delivery that is simply early, so it is returned rather than consumed.
          *
-         * <p>Two failures are still <em>consumed</em>, deliberately, and the distinction is between a message
-         * that might succeed later and one that never can. A body that cannot be bound, an envelope code that
-         * does not verify, and parameters the job refuses are all permanently unrunnable: redelivering them
-         * would fail identically forever, and because this topology declares no dead-letter target and a
-         * message group is ordered, one such message would stall every later submission behind it. Those are
-         * logged at {@code ERROR} with their reason and dropped. Everything that could succeed on a later
-         * attempt is returned to the queue.
+         * <p>Several failures are still <em>consumed</em>, deliberately, and the distinction is between a
+         * message that might succeed later and one that never can. A body that cannot be bound, an envelope
+         * code that does not verify, parameters the job refuses, and a validation failure raised anywhere on
+         * the launch path are all permanently unrunnable: redelivering them would fail identically, and
+         * because a message group is ordered, one such message makes every later submission wait a visibility
+         * window per attempt. Those are logged at {@code ERROR} with their reason and dropped on the first
+         * delivery. Everything that could succeed on a later attempt is returned to the queue, where the
+         * {@code RedrivePolicy} that {@code localstack-init/init-aws.sh} provisions bounds how long it may
+         * circulate.
+         *
+         * <p><b>Finding B-15, severity Major - and the reason the classification above is not sufficient on
+         * its own.</b> A validation failure from the job's own {@code JobParametersValidator} used to reach
+         * this method as {@link com.cardemo.exception.ValidationException} and <em>not</em> as
+         * {@code JobParametersInvalidException}, because that validator raised this application's typed
+         * exception rather than the framework's checked one. It was therefore not consumed but propagated: the
+         * message was never deleted, the single FIFO message group was blocked behind it, and with a
+         * fifteen-minute visibility window it was retried for the whole of the queue's retention. All report
+         * generation stopped until an operator purged the queue, and the request that caused it had been
+         * answered {@code 202} at the public API. The disagreement that produced it is fixed at its root -
+         * {@code com.cardemo.batch.jobs.TransactionReportJob} no longer adds an ordering guard the source
+         * lacks, and its validator now raises the checked type its own interface declares - and this method
+         * also treats that exception as what it is wherever it still arrives unwrapped.
+         *
+         * <p><b>And a bound, so that no future disagreement can repeat it.</b> Classifying failures one by one
+         * only protects against the failures already named; a delivery whose failure looks retryable but never
+         * succeeds would still hold the group for the whole retention. The receive count the transport reports
+         * is therefore consulted before the launch, and a delivery that has already been attempted
+         * {@value #REPORT_QUEUE_MAX_DELIVERY_ATTEMPTS} times is consumed with a remediation the operator can
+         * act on rather than returned again. That is the semantic of a redrive policy applied in the consumer,
+         * because the consumer is where it can be immediate and can name the reason: the transport-side
+         * {@code RedrivePolicy} diverts only after its own count multiplied by the
+         * {@value #REPORT_QUEUE_VISIBILITY_SECONDS}-second window, so it bounds the cases this listener
+         * cannot classify rather than replacing them.
          *
          * @param payload the raw JSON body, exactly as published
          * @param headers the message headers, carrying the envelope code, the propagated diagnostic context,
@@ -1674,8 +1743,10 @@ public class BatchConfig {
                 // one says a publisher is not honouring the published contract, and the mapper wraps a
                 // constructor's own exception in this type rather than letting it propagate.
                 //
-                // Discarded on the same terms as a parse failure, and for the same reason: no dead-letter
-                // target exists, so returning the message would stall its FIFO group. Neither the exception's
+                // Discarded on the same terms as a parse failure, and for the same reason: a message that
+                // can never bind gains nothing from redelivery, and its FIFO group waits behind every
+                // attempt. The dead-letter target now provisioned by localstack-init/init-aws.sh bounds the
+                // cases this listener cannot classify; this is not one of them. Neither the exception's
                 // message nor its cause is logged - the wrapped message names the offending field and can quote
                 // the value, which is exactly what this remediation withholds.
                 LOG.error("Report job delivery {} carried values outside the published submission contract and"
@@ -1686,9 +1757,10 @@ public class BatchConfig {
                         deliveryId, outOfContract.getClass().getSimpleName());
                 return;
             } catch (final JsonProcessingException | IllegalArgumentException malformed) {
-                // Consumed, not rethrown. See the failure-modes paragraph on this class: there is no
-                // dead-letter queue, and a FIFO group is ordered, so returning this message would block
-                // every submission behind it indefinitely. IllegalArgumentException is caught alongside the
+                // Consumed, not rethrown. See the failure-modes paragraph on this class: a FIFO group is
+                // ordered, so returning a message that cannot bind makes every submission behind it wait one
+                // visibility window per redelivery for no possibility of a different outcome.
+                // IllegalArgumentException is caught alongside the
                 // binding failure because the record's own constructor raises it directly for a report name
                 // outside the closed set of app/cbl/CORPT00C.cbl:L214, :L240 and :L433 and for a date of the
                 // wrong shape - finding M-12 - and such a message is as permanently unrunnable as an
@@ -1700,9 +1772,9 @@ public class BatchConfig {
                 // very bytes this remediation withholds. The exception's TYPE names the failure class, which
                 // is what an operator acts on; the bytes stay on the queue's own retention.
                 LOG.error("Report job delivery {} could not be bound and has been discarded, reason {}; the"
-                                + " queue that replaces app/csd/CARDDEMO.CSD DEFINE TDQUEUE(JOBS) has no"
-                                + " dead-letter target, so returning it would stall every later submission"
-                                + " in the same FIFO group.",
+                                + " queue that replaces app/csd/CARDDEMO.CSD DEFINE TDQUEUE(JOBS) carries"
+                                + " every submission in one ordered FIFO group, so returning a body that can"
+                                + " never bind would make every later submission wait behind it.",
                         deliveryId, malformed.getClass().getSimpleName());
                 return;
             }
@@ -1751,10 +1823,45 @@ public class BatchConfig {
 
             final Map<String, String> restored = restoreDiagnosticContext(headers, deliveryId);
             try {
-                launchAndInspect(deliveryId, parameters);
+                launchAndInspect(deliveryId, parameters, deliveryAttempt(headers));
             } finally {
                 releaseDiagnosticContext(restored);
             }
+        }
+
+        /**
+         * Reads which attempt at this delivery is in progress, from the count the transport maintains.
+         *
+         * <p>Finding B-15. The header is {@code ApproximateReceiveCount}, which SQS increments on every
+         * receive, so a value of one is the first attempt. It is untrusted input arriving as an untyped header
+         * value, and every way it can be unusable - absent, a non-numeric string, zero or negative - is
+         * normalised to one, which errs towards redelivery: this value only ever <em>ends</em> a retry
+         * sequence, so a wrong reading that is too low costs an extra attempt while one that is too high would
+         * discard a submission that deserved another.
+         *
+         * @param headers the message headers, possibly {@code null} when this method is invoked directly
+         * @return the one-based attempt number, at least one
+         */
+        private static int deliveryAttempt(final Map<String, Object> headers) {
+            if (headers == null) {
+                return 1;
+            }
+            final Object reported =
+                    headers.get(SqsHeaders.MessageSystemAttributes.SQS_APPROXIMATE_RECEIVE_COUNT);
+            if (reported == null) {
+                return 1;
+            }
+            final int attempt;
+            if (reported instanceof Number counted) {
+                attempt = counted.intValue();
+            } else {
+                try {
+                    attempt = Integer.parseInt(reported.toString().strip());
+                } catch (final NumberFormatException unusable) {
+                    return 1;
+                }
+            }
+            return Math.max(attempt, 1);
         }
 
         /**
@@ -1791,9 +1898,11 @@ public class BatchConfig {
          *     by; see {@link #mintedDeliveryId(String)}
          * @param parameters the identifying parameters built from the submission, which carry the transport
          *     identifier as the idempotency key without ever logging it
+         * @param attempt which attempt at this delivery this is, one-based, from {@link #deliveryAttempt(Map)}
          * @throws IllegalStateException when the message must be redelivered rather than acknowledged
          */
-        private void launchAndInspect(final String deliveryId, final JobParameters parameters) {
+        private void launchAndInspect(final String deliveryId, final JobParameters parameters,
+                final int attempt) {
 
             try {
                 final JobExecution execution = this.jobLauncher.run(this.transactionReportJob, parameters);
@@ -1814,7 +1923,7 @@ public class BatchConfig {
                                 + " app/cbl/CORPT00C.cbl:L517-L523. The period is recorded as job parameters"
                                 + " of that execution and is deliberately not repeated here.",
                         deliveryId, this.transactionReportJob.getName(), execution.getId());
-                requireTerminalSuccess(execution, deliveryId);
+                requireTerminalSuccess(execution, deliveryId, attempt);
             } catch (final JobInstanceAlreadyCompleteException alreadyDone) {
                 LOG.info("Report job delivery {} names a submission already processed to completion, so this"
                                 + " delivery is a redelivery and no second execution has been started."
@@ -1836,17 +1945,56 @@ public class BatchConfig {
                 // and the exception was attached as the record's cause, so the value reached the log twice.
                 // The reason code below is the exception type; the two validators disagreeing is a code defect
                 // an operator reports rather than a value they inspect.
+                // The wording here was corrected once the containment finding was resolved, because the
+                // earlier text told an operator the wrong thing. It said a delivery reaching this arm
+                // indicates the submission validators and the job's validator disagree - which reads as a code
+                // defect to report. There is one entirely legitimate cause: app/cbl/CORPT00C.cbl:L381-L410
+                // validates the six custom-range components individually and never compares the two assembled
+                // dates, so an inverted range IS accepted at submission, by parity. This arm is therefore the
+                // expected record for such a submission, and the operator's action is to resubmit the period
+                // the right way round rather than to file a defect.
                 LOG.error("Report job delivery {} carried parameters the {} job refuses and has been"
-                                + " discarded, reason {}. The period is validated on submission by"
-                                + " com.cardemo.service.report.ReportSubmissionService and again by"
-                                + " JobSubmissionMessage, so a delivery that reaches here and is refused"
-                                + " indicates those validators and the job's own validator disagree.",
+                                + " discarded, reason {}. The commonest cause is a custom period whose start"
+                                + " date is after its end date: app/cbl/CORPT00C.cbl:L381-L410 validates the"
+                                + " six range components individually and never compares the two assembled"
+                                + " dates, so submission accepts an inverted range by parity and this job"
+                                + " refuses it. Resubmit the period in order. Any other refusal here means"
+                                + " the submission validators and the job's own validator disagree.",
                         deliveryId, this.transactionReportJob.getName(),
                         refused.getClass().getSimpleName());
             } catch (final JobRestartException refused) {
                 LOG.error("Report job delivery {} names a job instance that cannot be restarted and has"
                                 + " been discarded, reason {}.", deliveryId,
                         refused.getClass().getSimpleName());
+            } catch (final ValidationException refused) {
+                // FINDING, severity MAJOR - remediated here and in
+                // com.cardemo.batch.jobs.TransactionReportJob's parameter validator. A validation refusal is
+                // a business outcome of an unrunnable submission, exactly like the refusal above, and it must
+                // be consumed for the same reason: it will refuse identically on every redelivery, and one
+                // FIFO group carries every submission, so returning it starves every later submission behind
+                // it for as long as the queue retains it.
+                //
+                // The arm is typed on this application's own validation exception rather than on
+                // RuntimeException, and that narrowness is the point. A validation refusal is known to be
+                // permanent; an arbitrary runtime failure is not - a store that is briefly unreachable, for
+                // instance, would succeed on the next attempt - so widening this catch would silently
+                // convert every transient fault into a discarded submission. Everything not named here still
+                // propagates and is redelivered.
+                //
+                // Reached when a refusal arrives unwrapped: the job's own validator now honours its declared
+                // JobParametersInvalidException and takes the arm above, so this one covers a refusal raised
+                // anywhere else on the launch path - a repository interaction or an incrementer - where no
+                // declared checked type applies. The field name is a parameter name and is safe to record;
+                // the message is not recorded, because a validation message elsewhere in this application may
+                // quote the value it refused.
+                LOG.error("Report job delivery {} was refused by validation before {} could produce an"
+                                + " outcome and has been discarded, reason {} on field {}. A validation"
+                                + " refusal cannot succeed on a later attempt, and the queue that replaces"
+                                + " app/csd/CARDDEMO.CSD DEFINE TDQUEUE(JOBS) carries every submission in"
+                                + " one ordered FIFO group, so returning it would starve every submission"
+                                + " behind it.",
+                        deliveryId, this.transactionReportJob.getName(),
+                        refused.getClass().getSimpleName(), refused.getFieldName());
             }
         }
 
@@ -1862,11 +2010,20 @@ public class BatchConfig {
          * <p>The recorded failures are attached as the cause of the raised exception, so nothing is lost:
          * the reason the run failed travels with the reason the message was not acknowledged.
          *
+         * <p><b>Finding B-15 - and bounded, so redelivery cannot be endless.</b> A run that fails for a reason
+         * that never resolves would otherwise be returned on every delivery, and on a FIFO queue with one
+         * message group that stops the whole report tier rather than just this submission. Once this delivery
+         * has been attempted {@value #REPORT_QUEUE_MAX_DELIVERY_ATTEMPTS} times the failure is published with a
+         * remediation and the message is consumed, which is what an SQS redrive policy would do at the
+         * transport - later, and into a queue nothing here reads.
+         *
          * @param execution the finished execution
          * @param deliveryId the derived, non-disclosing identifier that names this delivery in the diagnostic
-         * @throws IllegalStateException if the execution did not end in success
+         * @param attempt which attempt at this delivery this is, one-based
+         * @throws IllegalStateException if the execution did not end in success and further attempts remain
          */
-        private static void requireTerminalSuccess(final JobExecution execution, final String deliveryId) {
+        private static void requireTerminalSuccess(final JobExecution execution, final String deliveryId,
+                final int attempt) {
             final boolean unsuccessfulStatus = execution.getStatus().isUnsuccessful();
             final String exitCode = execution.getExitStatus() == null
                     ? ExitStatus.UNKNOWN.getExitCode()
@@ -1874,6 +2031,21 @@ public class BatchConfig {
             final boolean unsuccessfulExit = ExitStatus.FAILED.getExitCode().equals(exitCode)
                     || ExitStatus.UNKNOWN.getExitCode().equals(exitCode);
             if (!unsuccessfulStatus && !unsuccessfulExit) {
+                return;
+            }
+
+            if (attempt >= REPORT_QUEUE_MAX_DELIVERY_ATTEMPTS) {
+                final IllegalStateException exhausted = new IllegalStateException("Report job delivery "
+                        + deliveryId + " ended with batch status " + execution.getStatus() + " and exit code "
+                        + exitCode + " on attempt " + attempt);
+                execution.getAllFailureExceptions().forEach(exhausted::addSuppressed);
+                LOG.error("Report job delivery {} has now failed {} times and is being discarded rather than"
+                                + " returned to the queue: the queue that replaces DEFINE TDQUEUE(JOBS) is"
+                                + " FIFO with a single message group, so returning it again would hold every"
+                                + " later submission behind a run that is not recovering. Re-submit the period"
+                                + " through POST /api/reports once the cause below is cleared; the parameters"
+                                + " of every attempt are recorded against this job in the batch repository.",
+                        deliveryId, Integer.valueOf(attempt), exhausted);
                 return;
             }
 
@@ -2299,6 +2471,11 @@ public class BatchConfig {
 
         return new JobBuilder(DATASET_VERIFICATION_JOB_BEAN_NAME,
                 Objects.requireNonNull(jobRepository, "jobRepository must not be null"))
+                // Finding B-12: registered here for the same reason as on the six stage jobs. This job's
+                // name is lower camel case rather than a JCL member name, so toLowerHyphen would render it
+                // as dataset-verification-job rather than as single characters - legible, but a different
+                // shape from every other batch span. One convention keeps all seven consistent.
+                .observationConvention(BatchJobSpanNamingConvention.INSTANCE)
                 .listener(new DatasetVerificationJobListener())
                 .start(Objects.requireNonNull(datasetVerificationReadAccountStep,
                         "datasetVerificationReadAccountStep must not be null"))
@@ -2528,6 +2705,61 @@ public class BatchConfig {
     // guard on the value is still applied in exactly one place - which is the whole property this bean was
     // said to provide. See CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID for that contract, and the
     // troubleshooting entry above for what to check when a batch log line carries no jobInstanceId.
+
+    /**
+     * Gives every batch job a span name a human can read, without renaming the job.
+     *
+     * <p><strong>The defect this closes.</strong> A job's span arrived in the trace store as
+     * {@code t-r-a-n-r-e-p-t}, one hyphen per letter, and {@code p-o-s-t-t-r-a-n} beside it. The mechanism is
+     * exact and worth recording, because the obvious reading - that something is escaping the name - is
+     * wrong. {@code AbstractJob.execute} sets the observation's contextual name to the job name verbatim;
+     * {@code io.micrometer.tracing.handler.TracingObservationHandler#getSpanName} then passes it through
+     * {@code SpanNameUtil.toLowerHyphen}, which inserts a hyphen before every upper-case character and
+     * lower-cases it. That is the right transformation for a {@code CamelCase} name and a destructive one for
+     * an all-capitals name - and the job names here are all capitals because they are the JCL member names,
+     * {@code POSTTRAN}, {@code INTCALC}, {@code COMBTRAN}, {@code CREASTMT} and {@code TRANREPT}. The step
+     * spans were never affected: they are named from camel-case bean names, so the same rule produces
+     * {@code daily-transaction-posting-step}.
+     *
+     * <p><strong>Why the fix is here and not in the job names.</strong> The member name is the parity anchor.
+     * {@code spring.batch.job.name} is what an operator passes to submit a job, what
+     * {@code app/jcl/POSTTRAN.jcl} is called, and what {@code TRACEABILITY_MATRIX.md} cites; renaming any of
+     * them to suit a span-naming rule would trade a readable trace for a broken submission command. So the
+     * name is left exactly as it is and only the CONTEXTUAL name - which exists precisely to be the
+     * human-facing label - is supplied, already in the lower-hyphen form the tracing bridge would otherwise
+     * derive. {@code toLowerHyphen} applied to a string with no upper-case character is the identity, so the
+     * value below survives the bridge unchanged.
+     *
+     * <p><strong>Why a bean post-processor rather than six builder calls.</strong>
+     * {@code JobBuilderHelper#observationConvention} would let each job class set this on its own builder, and
+     * that was rejected: six call sites is six chances for the seventh job to be added without one, and the
+     * omission would be invisible until someone read a trace. Spring Boot applies the observation REGISTRY to
+     * these same beans by exactly this mechanism - {@code BatchObservationAutoConfiguration} contributes
+     * {@code BatchObservabilityBeanPostProcessor}, which walks every {@code AbstractJob} - so this follows the
+     * framework's own pattern rather than inventing one. It is declared {@code static} because a
+     * {@code BeanPostProcessor} is instantiated before ordinary singletons, and a non-static declaration would
+     * force this configuration class into existence early.
+     *
+     * <p>Nothing else about the observation changes. The key values, and therefore every tag on
+     * {@code spring_batch_job_seconds}, still come from {@code DefaultBatchJobObservationConvention}, so the
+     * dashboard, the metric names and the {@code spring.batch.job.name} tag are all untouched.
+     *
+     * @return the post-processor that installs the convention on every job bean, never {@code null}
+     */
+    @Bean
+    public static BeanPostProcessor batchJobSpanNamePostProcessor() {
+        final BatchJobObservationConvention convention = BatchJobSpanNamingConvention.INSTANCE;
+        return new BeanPostProcessor() {
+            @Override
+            public Object postProcessAfterInitialization(final Object bean, final String beanName) {
+                if (bean instanceof AbstractJob job) {
+                    job.setObservationConvention(convention);
+                }
+                return bean;
+            }
+        };
+    }
+
 
     // Record rendering. Field widths come from the copybooks named on each method, never from a
     // measurement of the data, so a short or wide value is a startup or read failure rather than a

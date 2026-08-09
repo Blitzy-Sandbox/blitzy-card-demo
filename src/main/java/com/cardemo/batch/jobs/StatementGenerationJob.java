@@ -84,6 +84,7 @@ import com.cardemo.model.dto.StatementTransaction;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
+import com.cardemo.observability.BatchJobSpanNamingConvention;
 import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileService;
@@ -698,6 +699,25 @@ public class StatementGenerationJob {
     /** Return code 12, the abend arm. */
     private static final String EXIT_CODE_ABEND = "ABEND";
 
+    /**
+     * Exit status published on the job when an abend was recorded, naming the abend code and the return code.
+     *
+     * <p><b>Finding B-13, severity Minor.</b> This job already <em>classified</em> abends -
+     * {@link #containsAbend(JobExecution, StepExecution)} is consulted before any exit code is - but the
+     * flow's {@code .fail()} transition publishes {@code FAILED} on the job whatever the decider
+     * decided, and nothing put the abend back. So an empty transaction relation, which abends at the priming
+     * read of {@code CBSTM03A 8100-TRNXFILE-OPEN}, was recorded as an ordinary return code 8 with an
+     * <em>empty</em> exit description, and an operator had to read {@code BATCH_STEP_EXECUTION} to learn that
+     * a genuine abend had occurred. {@code POSTTRAN} and {@code INTCALC} publish this status from their own
+     * listeners; the vocabulary is now uniform across all four jobs.
+     *
+     * <p>Composed from {@link FatalProcessingException}'s constants so the abend code and return code have one
+     * definition tree-wide.
+     */
+    private static final ExitStatus ABEND_EXIT_STATUS = new ExitStatus(EXIT_CODE_ABEND,
+            "abend code " + FatalProcessingException.BATCH_ABEND_CODE
+                    + ", return code " + FatalProcessingException.BATCH_RETURN_CODE);
+
     /** The wildcard transition, without which a failed step would short-circuit the flow. */
     private static final String EXIT_CODE_ANY = "*";
 
@@ -1168,6 +1188,12 @@ public class StatementGenerationJob {
             @Qualifier(FLOW_BEAN_NAME) final Flow statementGenerationFlow) {
 
         return new JobBuilder(jobName, jobRepository)
+                // Finding B-12: without this the framework hands the ALL-CAPS job name to
+                // Micrometer Tracing, whose SpanNameUtil.toLowerHyphen hyphenates every
+                // upper-case character, so the run reached the trace store under a name no
+                // operator could search for. Registered per builder because Spring Batch
+                // resolves no convention bean from the context.
+                .observationConvention(BatchJobSpanNamingConvention.INSTANCE)
                 .listener(new StatementGenerationJobListener())
                 .start(statementGenerationFlow)
                 .end()
@@ -2691,6 +2717,29 @@ public class StatementGenerationJob {
         return false;
     }
 
+    /**
+     * Publishes {@link #ABEND_EXIT_STATUS} on the job when an abend is among the recorded failures.
+     *
+     * <p>Finding B-13. The decider's {@value #EXIT_CODE_ABEND} outcome routes to {@code .fail()}, which
+     * publishes {@code FAILED} on the job, so the classification the decider performed was lost
+     * before it reached the batch repository. This restores it, and also covers the abends the decider cannot
+     * see at all - one raised before the flow is entered, such as the priming read of the work relation.
+     *
+     * <p>Deliberately narrower than "the job failed": only a {@link FatalProcessingException} publishes this
+     * status, so return code 8 and return code 12 stay distinguishable at job level, which is the whole
+     * distinction the exit-status contract rests on.
+     *
+     * @param jobExecution the finishing execution, never {@code null}
+     */
+    private static void applyAbendExitStatus(final JobExecution jobExecution) {
+        for (final Throwable failure : jobExecution.getAllFailureExceptions()) {
+            if (failure instanceof FatalProcessingException) {
+                jobExecution.setExitStatus(ABEND_EXIT_STATUS);
+                return;
+            }
+        }
+    }
+
     // Nested collaborators. All four are plain objects, never beans: this folder contributes only the Job,
     // Step and Flow beans above, and declaring a decider or a listener as a bean would both add a container
     // singleton and risk colliding with one that com.cardemo.config.BatchConfig may declare.
@@ -2872,6 +2921,10 @@ public class StatementGenerationJob {
         @Override
         public void afterJob(final JobExecution jobExecution) {
             try {
+                // Finding B-13. Applied before the end-of-run line so the exit code this log reports is the
+                // one the batch repository will hold; Spring Batch persists the execution after this method
+                // returns, which is what makes setting it here effective.
+                applyAbendExitStatus(jobExecution);
                 final ExecutionContext context = jobExecution.getExecutionContext();
                 LOG.info("END OF EXECUTION OF JOB {}: status={} exit={} projected={} loaded={} "
                                 + "preDeleted={} statements={} objects={}",

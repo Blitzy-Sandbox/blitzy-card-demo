@@ -1000,20 +1000,27 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      * it is uniformity with the rest of the DTO package, where the same helper shape guards values that
      * are.</p>
      *
+     * <p>The width is counted in Unicode code points, uniformly with every other width guard in this
+     * package: a {@code PIC X(n)} clause declares n character positions, and a Java {@code String} counts
+     * UTF-16 code units, which differ for any supplementary-plane character. The two menu tables hold only
+     * ASCII literals, so the unit makes no difference to them - it is adopted here so that the package has
+     * one rule with one meaning rather than a guard whose unit depends on which type it sits on.</p>
+     *
      * @param value      the value to check; must already have been checked for {@code null}
-     * @param maxLength  the declared width of the source field, either {@link #OPTION_NAME_LENGTH} or
-     *                   {@link #PROGRAM_NAME_LENGTH}
+     * @param maxLength  the declared width of the source field, in character positions, either
+     *                   {@link #OPTION_NAME_LENGTH} or {@link #PROGRAM_NAME_LENGTH}
      * @param fieldName  the component name to name in the failure message
      * @param picClause  the source {@code PICTURE} clause to quote in the failure message, so the reason
      *                   for the bound is legible without opening the copybook
-     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}
+     * @throws IllegalArgumentException if {@code value} holds more code points than {@code maxLength}
      */
     private static void requireWidthWithinLimit(final String value, final int maxLength,
             final String fieldName, final String picClause) {
-        if (value.length() > maxLength) {
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw new IllegalArgumentException(fieldName + " must be at most " + maxLength
                     + " characters because the source field is " + picClause + ", but was "
-                    + value.length() + " characters long");
+                    + characterPositions + " characters long");
         }
     }
 }

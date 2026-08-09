@@ -70,6 +70,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -162,7 +170,32 @@ class RejectWriterTest {
     /** The whole record: {@value #TRAN_DATA_LENGTH} plus {@value #TRAILER_LENGTH}. */
     private static final int RECORD_LENGTH = TRAN_DATA_LENGTH + TRAILER_LENGTH;
 
+    /**
+     * How many keys one listing page carries here, matching the service's own maximum so the paging boundary
+     * the tests cross is the real one.
+     */
+    private static final int KEYS_PER_PAGE = 1000;
+
     private S3Operations s3Operations;
+
+    /**
+     * The paging and batch-deleting half of the object store.
+     *
+     * <p><b>Why a second collaborator rather than more of the first.</b> {@code S3Operations.listObjects}
+     * issues one {@code ListObjectsV2} and hands back that single page of at most {@value #KEYS_PER_PAGE}
+     * keys, which is finding H-11: a run rejecting more than a page's worth of records staged more parts than
+     * one listing could name, so the concatenation read a prefix of them and reported it as the whole
+     * generation. The writer now pages through {@code S3Client.listObjectsV2Paginator} and deletes in batched
+     * requests, so both have to be stubbed here, and the paging stub below returns a <em>real</em>
+     * {@link ListObjectsV2Iterable} so the protocol is exercised rather than simulated.
+     */
+    private S3Client objectStoreClient;
+
+    /** Every listing request the writer issued, so the page count can be asserted rather than inferred. */
+    private List<ListObjectsV2Request> listingRequests;
+
+    /** Every batched delete request the writer issued, in order, so the batching bound can be asserted. */
+    private List<DeleteObjectsRequest> deleteRequests;
 
     /**
      * A fake object store: every object it currently holds, keyed by object key, insertion ordered.
@@ -202,16 +235,19 @@ class RejectWriterTest {
     @BeforeEach
     void buildWriterAndCaptureLogs() {
         s3Operations = Mockito.mock(S3Operations.class);
+        objectStoreClient = Mockito.mock(S3Client.class);
         store = new LinkedHashMap<>();
         uploadOrder = new ArrayList<>();
         openedMetadata = new LinkedHashMap<>();
+        listingRequests = new ArrayList<>();
+        deleteRequests = new ArrayList<>();
         generationClosed = false;
         stubObjectStore();
         meterRegistry = new SimpleMeterRegistry();
         metricsConfig = new MetricsConfig(meterRegistry);
         stepExecution = stepExecution(JOB_INSTANCE_ID, JOB_EXECUTION_ID);
-        writer = new RejectWriter(s3Operations, metricsConfig, new FileStatusMapper(), BUCKET, REJECT_PREFIX,
-                stepExecution);
+        writer = new RejectWriter(s3Operations, objectStoreClient, metricsConfig, new FileStatusMapper(),
+                BUCKET, REJECT_PREFIX, stepExecution);
 
         logger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(RejectWriter.class);
         originalLevel = logger.getLevel();
@@ -352,26 +388,77 @@ class RejectWriterTest {
                     openedMetadata.put(key, invocation.getArgument(3, ObjectMetadata.class));
                     return storedResource(key);
                 });
-        Mockito.when(s3Operations.listObjects(Mockito.anyString(), Mockito.anyString()))
-                .thenAnswer(invocation -> {
-                    final String prefix = invocation.getArgument(1, String.class);
-                    final List<S3Resource> found = new ArrayList<>();
-                    for (final String key : new ArrayList<>(store.keySet())) {
-                        if (key.startsWith(prefix)) {
-                            found.add(storedResource(key));
-                        }
-                    }
-                    return found;
-                });
         Mockito.when(s3Operations.download(Mockito.anyString(), Mockito.anyString()))
                 .thenAnswer(invocation -> storedResource(invocation.getArgument(1, String.class)));
         Mockito.when(s3Operations.objectExists(Mockito.anyString(), Mockito.anyString()))
                 .thenAnswer(invocation -> Boolean.valueOf(
                         store.containsKey(invocation.getArgument(1, String.class))));
-        Mockito.doAnswer(invocation -> {
-            store.remove(invocation.getArgument(1, String.class));
-            return null;
-        }).when(s3Operations).deleteObject(Mockito.anyString(), Mockito.anyString());
+        stubPagedListing();
+        stubBatchedDelete();
+    }
+
+    /**
+     * Serves the listing one page at a time, exactly as the service does.
+     *
+     * <p>The keys under the requested prefix are sliced into pages of {@value #KEYS_PER_PAGE}, each page
+     * carrying the truncation flag and continuation token the protocol requires, and
+     * {@code listObjectsV2Paginator} returns a real {@link ListObjectsV2Iterable} over this same stub. So the
+     * paging is <em>exercised</em> - one request per page, driven by the token - rather than simulated by
+     * handing back every key at once, which is what would let a single-page regression pass unnoticed.
+     *
+     * <p>The keys are sorted before slicing, so a part on the second page is genuinely a part the first page
+     * did not name.
+     */
+    private void stubPagedListing() {
+        Mockito.when(objectStoreClient.listObjectsV2(Mockito.any(ListObjectsV2Request.class)))
+                .thenAnswer(invocation -> {
+                    final ListObjectsV2Request request =
+                            invocation.getArgument(0, ListObjectsV2Request.class);
+                    listingRequests.add(request);
+                    final List<String> matching = new ArrayList<>();
+                    for (final String key : new ArrayList<>(store.keySet())) {
+                        if (key.startsWith(request.prefix())) {
+                            matching.add(key);
+                        }
+                    }
+                    java.util.Collections.sort(matching);
+                    final int from = request.continuationToken() == null
+                            ? 0
+                            : Integer.parseInt(request.continuationToken().substring("token-".length()));
+                    final int to = Math.min(from + KEYS_PER_PAGE, matching.size());
+                    final List<S3Object> contents = new ArrayList<>(to - from);
+                    for (int index = from; index < to; index++) {
+                        contents.add(S3Object.builder().key(matching.get(index)).build());
+                    }
+                    final boolean truncated = to < matching.size();
+                    return ListObjectsV2Response.builder()
+                            .contents(contents)
+                            .isTruncated(Boolean.valueOf(truncated))
+                            .nextContinuationToken(truncated ? "token-" + to : null)
+                            .build();
+                });
+        Mockito.when(objectStoreClient.listObjectsV2Paginator(Mockito.any(ListObjectsV2Request.class)))
+                .thenAnswer(invocation -> new ListObjectsV2Iterable(objectStoreClient,
+                        invocation.getArgument(0, ListObjectsV2Request.class)));
+    }
+
+    /**
+     * Removes every key a batched delete names, and reports no per-key error.
+     *
+     * <p>The request is recorded so a test can assert that no batch exceeded the store's thousand-key limit -
+     * a bound the writer honours explicitly rather than by hoping a run stays small.
+     */
+    private void stubBatchedDelete() {
+        Mockito.when(objectStoreClient.deleteObjects(Mockito.any(DeleteObjectsRequest.class)))
+                .thenAnswer(invocation -> {
+                    final DeleteObjectsRequest request =
+                            invocation.getArgument(0, DeleteObjectsRequest.class);
+                    deleteRequests.add(request);
+                    for (final ObjectIdentifier identifier : request.delete().objects()) {
+                        store.remove(identifier.key());
+                    }
+                    return DeleteObjectsResponse.builder().build();
+                });
     }
 
     /**
@@ -523,17 +610,28 @@ class RejectWriterTest {
         @DisplayName("a null store is refused by name")
         void aNullStoreIsRefused() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new RejectWriter(null, metricsConfig, new FileStatusMapper(), BUCKET,
-                            REJECT_PREFIX, stepExecution))
+                    .isThrownBy(() -> new RejectWriter(null, objectStoreClient, metricsConfig,
+                            new FileStatusMapper(), BUCKET, REJECT_PREFIX, stepExecution))
                     .withMessage("s3Operations must not be null");
+        }
+
+        @Test
+        @DisplayName("a null object-store client is refused by name")
+        void aNullObjectStoreClientIsRefused() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new RejectWriter(s3Operations, null, metricsConfig,
+                            new FileStatusMapper(), BUCKET, REJECT_PREFIX, stepExecution))
+                    .as("the paging client is what makes the part listing complete at any reject volume, so a "
+                            + "context missing it must fail at startup rather than at a truncated close")
+                    .withMessage("objectStoreClient must not be null");
         }
 
         @Test
         @DisplayName("a null metrics collaborator is refused by name")
         void aNullMetricsConfigIsRefused() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new RejectWriter(s3Operations, null, new FileStatusMapper(), BUCKET,
-                            REJECT_PREFIX, stepExecution))
+                    .isThrownBy(() -> new RejectWriter(s3Operations, objectStoreClient, null,
+                            new FileStatusMapper(), BUCKET, REJECT_PREFIX, stepExecution))
                     .withMessage("metricsConfig must not be null");
         }
 
@@ -541,8 +639,8 @@ class RejectWriterTest {
         @DisplayName("a null status mapper is refused by name")
         void aNullStatusMapperIsRefused() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new RejectWriter(s3Operations, metricsConfig, null, BUCKET,
-                            REJECT_PREFIX, stepExecution))
+                    .isThrownBy(() -> new RejectWriter(s3Operations, objectStoreClient, metricsConfig, null,
+                            BUCKET, REJECT_PREFIX, stepExecution))
                     .withMessage("fileStatusMapper must not be null");
         }
 
@@ -550,8 +648,8 @@ class RejectWriterTest {
         @DisplayName("a null bucket is refused by name")
         void aNullBucketIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new RejectWriter(s3Operations, metricsConfig, new FileStatusMapper(),
-                            null, REJECT_PREFIX, stepExecution))
+                    .isThrownBy(() -> new RejectWriter(s3Operations, objectStoreClient, metricsConfig,
+                            new FileStatusMapper(), null, REJECT_PREFIX, stepExecution))
                     .withMessageContaining(
                             "carddemo.aws.s3.batch-output-bucket must be configured with a non-blank value");
         }
@@ -560,8 +658,8 @@ class RejectWriterTest {
         @DisplayName("a null step execution is tolerated and yields the unassigned identifier")
         void aNullStepExecutionIsTolerated() {
             RejectWriter detached =
-                    new RejectWriter(s3Operations, metricsConfig, new FileStatusMapper(), BUCKET,
-                            REJECT_PREFIX, null);
+                    new RejectWriter(s3Operations, objectStoreClient, metricsConfig, new FileStatusMapper(),
+                            BUCKET, REJECT_PREFIX, null);
 
             detached.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
 
@@ -574,8 +672,8 @@ class RejectWriterTest {
         @DisplayName("outside a step nothing is published to an execution context, and the writer says so")
         void outsideAStepNothingIsPublished() {
             RejectWriter detached =
-                    new RejectWriter(s3Operations, metricsConfig, new FileStatusMapper(), BUCKET,
-                            REJECT_PREFIX, null);
+                    new RejectWriter(s3Operations, objectStoreClient, metricsConfig, new FileStatusMapper(),
+                            BUCKET, REJECT_PREFIX, null);
 
             detached.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
             // The key is published by the close, so the close is what has nothing to publish to.
@@ -957,11 +1055,86 @@ class RejectWriterTest {
                     .startsWith("0000000000000001");
         }
 
+        /**
+         * A run that rejects more records than one listing page can name still lands whole.
+         *
+         * <p>Purpose: assert finding H-11 at the boundary that used to break. The part listing was a single
+         * {@code ListObjectsV2}, which the service truncates at {@value #KEYS_PER_PAGE} keys, so a run staging
+         * more parts than that concatenated only the keys the first page carried - and, because the surplus
+         * parts were also never named for deletion, left them behind as orphans while reporting a complete
+         * generation. The posting step commits once per record by parity contract, so one part per record makes
+         * this boundary a volume of {@value #KEYS_PER_PAGE} rejects, not a theoretical extreme.
+         *
+         * <p>{@value #KEYS_PER_PAGE} plus five parts is deliberately just past the boundary: it needs two
+         * listing pages, so a regression to a single request fails on both the byte count and the leftovers,
+         * and it keeps the fixture small enough to stay a unit test.
+         */
+        @Test
+        @DisplayName("H-11: more parts than one listing page still concatenate whole, and none is orphaned")
+        void aRunPastOneListingPageStillConcatenatesEveryPart() {
+            final int rejects = KEYS_PER_PAGE + 5;
+            for (int index = 0; index < rejects; index++) {
+                writer.writeReject(rejected(String.format(Locale.ROOT, "%016d", Integer.valueOf(index + 1)),
+                        "1.00"), RejectCode.INVALID_CARD_NUMBER);
+            }
+            assertThat(store).as("one part per emission, all staged before the close").hasSize(rejects);
+
+            commitGeneration();
+
+            assertThat(store.keySet())
+                    .as("the close leaves exactly the generation object: every part was named for deletion, "
+                            + "including the ones past the first listing page")
+                    .containsExactly(String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat",
+                            JOB_INSTANCE_ID, JOB_EXECUTION_ID));
+            assertThat(store.values().iterator().next())
+                    .as("and it holds every record - a single-page listing produced " + KEYS_PER_PAGE
+                            + " records here and called it the whole generation")
+                    .hasSize(rejects * RECORD_LENGTH);
+            assertThat(listingRequests)
+                    .as("which took more than one request, because the service pages at " + KEYS_PER_PAGE)
+                    .hasSizeGreaterThan(1);
+        }
+
+        /**
+         * The parts are deleted in batches that honour the store's own request limit.
+         *
+         * <p>Purpose: a per-key delete loop at one part per record meant one sequential round trip per
+         * rejected transaction at the end of an otherwise finished run. Batching is the standard remedy, and
+         * the only thing that can go wrong with it is exceeding the thousand-key limit a single
+         * {@code DeleteObjects} accepts - so that bound is what is asserted, along with the completeness the
+         * batching must not cost.
+         */
+        @Test
+        @DisplayName("the promoted parts are deleted in batches of at most 1000 keys, and every one is named")
+        void thePromotedPartsAreDeletedInBoundedBatches() {
+            final int rejects = KEYS_PER_PAGE + 5;
+            for (int index = 0; index < rejects; index++) {
+                writer.writeReject(rejected(String.format(Locale.ROOT, "%016d", Integer.valueOf(index + 1)),
+                        "1.00"), RejectCode.INVALID_CARD_NUMBER);
+            }
+
+            commitGeneration();
+
+            assertThat(deleteRequests)
+                    .as("more parts than one request may name, so more than one request is issued")
+                    .hasSize(2);
+            int named = 0;
+            for (final DeleteObjectsRequest request : deleteRequests) {
+                assertThat(request.delete().objects())
+                        .as("no batch may exceed the store's own limit for one DeleteObjects request")
+                        .hasSizeLessThanOrEqualTo(KEYS_PER_PAGE);
+                named += request.delete().objects().size();
+            }
+            assertThat(named)
+                    .as("and between them the batches name every staged part exactly once")
+                    .isEqualTo(rejects);
+        }
+
         @Test
         @DisplayName("two job instances write under different prefixes")
         void twoJobInstancesWriteUnderDifferentPrefixes() {
-            RejectWriter other = new RejectWriter(s3Operations, metricsConfig, new FileStatusMapper(),
-                    BUCKET, REJECT_PREFIX, stepExecution(8L, 43L));
+            RejectWriter other = new RejectWriter(s3Operations, objectStoreClient, metricsConfig,
+                    new FileStatusMapper(), BUCKET, REJECT_PREFIX, stepExecution(8L, 43L));
 
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
             other.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
@@ -1050,8 +1223,8 @@ class RejectWriterTest {
             // Asserted before the generation is committed, because the ordering is the safety property: while
             // the generation object does not yet exist the parts are the only copy of the run's rejects, so a
             // failure here cannot lose records that exist nowhere else.
-            Mockito.verify(s3Operations, Mockito.never())
-                    .deleteObject(Mockito.anyString(), Mockito.anyString());
+            Mockito.verify(objectStoreClient, Mockito.never())
+                    .deleteObjects(Mockito.any(DeleteObjectsRequest.class));
 
             assertThat(uploadedKeys())
                     .as("the generation must end as ONE object, with the parts it was assembled from deleted")
@@ -1067,8 +1240,13 @@ class RejectWriterTest {
                             + "padded so lexicographic key order is write order")
                     .isEqualTo("BBBB");
 
-            Mockito.verify(s3Operations).deleteObject(BUCKET, partKey(0L));
-            Mockito.verify(s3Operations).deleteObject(BUCKET, partKey(1L));
+            assertThat(deleteRequests)
+                    .as("both carried parts were named for deletion once the generation was committed")
+                    .singleElement()
+                    .satisfies(request -> assertThat(request.delete().objects().stream()
+                            .map(ObjectIdentifier::key)
+                            .toList())
+                            .contains(partKey(0L), partKey(1L)));
 
             final ExecutionContext published = new ExecutionContext();
             writer.update(published);

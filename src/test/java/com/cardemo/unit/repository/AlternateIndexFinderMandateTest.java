@@ -106,14 +106,32 @@ class AlternateIndexFinderMandateTest {
         @Test
         @DisplayName("CARDDATA.VSAM.AIX -> CardRepository.findByAccountIdOrderByCardNumberAsc")
         void theCardAlternateIndexHasItsFinder() {
-            // The one finder with no production caller. app/cbl/COCRDSLC.cbl:L784 is the corpus's only
-            // procedure-division read of CARDAIX and it sits in an unperformed paragraph, so no faithful
-            // call site exists - which is exactly why this assertion is here.
+            // Its caller is the account-filtered card list, opening its browse; the keyset sibling below
+            // resumes it. It returns a Slice and not a Page because a VSAM browse publishes no cardinality -
+            // the screen's more-records indicator comes from whether the next READNEXT succeeded - so a
+            // count query alongside every window would be work the source never performed.
             final Method finder = declaredFinder(CardRepository.class,
                     "findByAccountIdOrderByCardNumberAsc");
             assertThat(finder.getReturnType().getName())
-                    .isEqualTo("org.springframework.data.domain.Page");
+                    .isEqualTo("org.springframework.data.domain.Slice");
             assertThat(finder.getParameterTypes()[0]).isEqualTo(Long.class);
+        }
+
+        @Test
+        @DisplayName("CARDDATA.VSAM.AIX -> the two account-scoped keyset finders that resume the browse")
+        void theCardAlternateIndexHasItsKeysetFinders() {
+            // STARTBR ... GTEQ positions at a key, so resuming a filtered browse needs the account
+            // predicate AND a bound on the base key. Both directions exist because COCRDLIC browses both:
+            // READNEXT at :L1146 and READPREV at :L1322. Each keys on card_acct_id, so each reads through
+            // the card (card_acct_id) index this alternate index translates into.
+            for (final String name : List.of(
+                    "findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc",
+                    "findByAccountIdAndCardNumberLessThanEqualOrderByCardNumberDesc")) {
+                final Method finder = declaredFinder(CardRepository.class, name);
+                assertThat(finder.getParameterTypes()[0]).isEqualTo(Long.class);
+                assertThat(finder.getParameterTypes()[1]).isEqualTo(String.class);
+                assertThat(finder.getReturnType()).isEqualTo(List.class);
+            }
         }
 
         @Test
@@ -140,10 +158,16 @@ class AlternateIndexFinderMandateTest {
         }
 
         @Test
-        @DisplayName("The three finders key on the three alternate keys and nothing else")
+        @DisplayName("Exactly three finders key on an alternate key ALONE, one per alternate index")
         void thereAreExactlyThree() {
-            // A fourth alternate-key finder would mean either an index the catalogue does not record or a
-            // speculative query; both are forbidden by the same rule that mandates these three.
+            // Counted as finders whose predicate is the alternate key and nothing else, which is the
+            // property Transformation Rule 5 actually mandates: one such finder per catalogued alternate
+            // index, so a fourth would mean either an index the catalogue does not record or a speculative
+            // query. The two account-scoped keyset finders are deliberately NOT counted here - their
+            // predicate is the alternate key PLUS a bound on the base key, because that is what resuming a
+            // key-addressed browse requires - and they are asserted in their own test above. Counting them
+            // would make this assertion about how many methods happen to mention an account rather than
+            // about how many alternate keys are covered.
             assertThat(alternateKeyFinderCount()).isEqualTo(3);
         }
     }
@@ -256,7 +280,10 @@ class AlternateIndexFinderMandateTest {
      * @return {@code true} when the name derives its predicate from {@code accountId} alone
      */
     private static boolean isAccountAlternateKeyFinder(final String name) {
-        return name.startsWith("findByAccountId") || name.startsWith("findFirstByAccountId");
+        // "By the account and nothing else": the prefix must be followed by the ordering clause rather than
+        // by a further And-predicate, so findByAccountIdAndCardNumberGreaterThanEqual... - the keyset form
+        // that resumes a browse - is correctly excluded while findByAccountIdOrderBy... is not.
+        return name.startsWith("findByAccountIdOrderBy") || name.startsWith("findFirstByAccountIdOrderBy");
     }
 
     /**

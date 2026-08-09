@@ -83,7 +83,6 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -388,17 +387,27 @@ class RepositoryContractTest {
             // finder rather than a replacement for either: the ordered account scan still serves the card
             // list's seven-row page, and the unfiltered scan still serves the batch reader.
             assertThat(declaredMethodNames(CardRepository.class))
-                    .as("the account finder serves the alternate index, the unfiltered finder serves the "
-                            + "online base-key browse, the card-number keyset finder serves the sequential "
-                            + "CARDFILE browse of app/cbl/CBACT02C.cbl:L93, and the locking finder serves "
-                            + "the EXEC CICS READ ... UPDATE of app/cbl/COCRDUPC.cbl:1427-1436, while the "
-                            + "two ownership-scoped finders serve 9100-GETCARD-BYACCTCARD - the read-only "
-                            + "one for the snapshot the screen displays and the locking one for the rewrite "
-                            + "that follows it")
-                    .containsExactly("findAllByOrderByCardNumberAsc", "findByAccountIdOrderByCardNumberAsc",
+                    .as("the account finder opens the alternate-index browse, the unfiltered finder opens "
+                            + "the base-key browse, the four half-open keyset finders continue both of "
+                            + "those browses in either direction - which is what makes STARTBR/READNEXT/"
+                            + "READPREV of app/cbl/COCRDLIC.cbl:L1129-L1176 index-addressed rather than "
+                            + "offset-addressed - the descending scalar reproduces the record buffer the "
+                            + "end-of-file arm at :L1236 leaves behind, the card-number keyset finder "
+                            + "serves the sequential CARDFILE browse of app/cbl/CBACT02C.cbl:L93, the "
+                            + "locking finder serves the EXEC CICS READ ... UPDATE of "
+                            + "app/cbl/COCRDUPC.cbl:1427-1436, and the two ownership-scoped finders serve "
+                            + "9100-GETCARD-BYACCTCARD - the read-only one for the snapshot the screen "
+                            + "displays and the locking one for the rewrite that follows it")
+                    .containsExactly("findAllByOrderByCardNumberAsc",
+                            "findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc",
+                            "findByAccountIdAndCardNumberLessThanEqualOrderByCardNumberDesc",
+                            "findByAccountIdOrderByCardNumberAsc",
                             "findByCardNumberAndAccountId",
+                            "findByCardNumberGreaterThanEqualOrderByCardNumberAsc",
                             "findByCardNumberGreaterThanOrderByCardNumberAsc",
-                            "findByIdAndAccountIdForUpdate", "findByIdForUpdate");
+                            "findByCardNumberLessThanEqualOrderByCardNumberDesc",
+                            "findByIdAndAccountIdForUpdate", "findByIdForUpdate",
+                            "findFirstByOrderByCardNumberDesc");
             assertThat(declaredMethodNames(CardCrossReferenceRepository.class))
                     .as("the account finder serves the alternate index as a single-record keyed READ, and "
                             + "the card-number keyset finder serves the sequential XREFFILE browse of "
@@ -472,14 +481,46 @@ class RepositoryContractTest {
     class NonUniqueAlternateKeys {
 
         @Test
-        @DisplayName("the CARDDATA alternate index yields a Page of cards keyed by account")
-        void cardDataAlternateIndexYieldsAPage() {
+        @DisplayName("the CARDDATA alternate index yields a Slice of cards keyed by account")
+        void cardDataAlternateIndexYieldsASlice() {
             final Method finder = declaredMethod(CardRepository.class,
                     "findByAccountIdOrderByCardNumberAsc", Long.class, Pageable.class);
             assertThat(finder.getReturnType())
                     .as("AXRKP 16 at app/catlg/LISTCAT.txt:L283 is NONUNIQKEY at :L285, so one account "
-                            + "may hold several cards and a scalar return would silently drop rows")
-                    .isEqualTo(Page.class);
+                            + "may hold several cards and a scalar return would silently drop rows. It is a "
+                            + "Slice rather than a Page because the browse the finder opens - STARTBR then "
+                            + "READNEXT at app/cbl/COCRDLIC.cbl:L1129-L1146 - never asks how many rows the "
+                            + "path holds, and a Page would issue a count query the source has no verb for")
+                    .isEqualTo(Slice.class);
+        }
+
+        @Test
+        @DisplayName("the CARDDATA alternate index is continued by half-open keyset finders, not by an offset")
+        void cardDataAlternateIndexIsContinuedByKeysetFinders() {
+            // READNEXT and READPREV resume from the key the browse last returned; neither counts the path
+            // nor skips rows to reach a position. An offset-addressed continuation re-walks the index from
+            // the start on every page, which is what made the account-filtered list scan the whole table.
+            final Method forward = declaredMethod(CardRepository.class,
+                    "findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc",
+                    Long.class, String.class, Pageable.class);
+            final Method backward = declaredMethod(CardRepository.class,
+                    "findByAccountIdAndCardNumberLessThanEqualOrderByCardNumberDesc",
+                    Long.class, String.class, Pageable.class);
+            assertThat(forward.getReturnType())
+                    .as("EXEC CICS READNEXT of app/cbl/COCRDLIC.cbl:L1146 yields rows, so the forward "
+                            + "continuation returns a collection")
+                    .isEqualTo(List.class);
+            assertThat(backward.getReturnType())
+                    .as("EXEC CICS READPREV of app/cbl/COCRDLIC.cbl:L1176 yields rows, so the backward "
+                            + "continuation returns a collection")
+                    .isEqualTo(List.class);
+            assertThat(forward.getParameterTypes())
+                    .as("the alternate key is the account and the base key is CARD-NUM PIC X(16), so the "
+                            + "resume point is (account, card number) and never a row ordinal")
+                    .containsExactly(Long.class, String.class, Pageable.class);
+            assertThat(backward.getParameterTypes())
+                    .as("READPREV resumes from the same composite position READNEXT does")
+                    .containsExactly(Long.class, String.class, Pageable.class);
         }
 
         @Test

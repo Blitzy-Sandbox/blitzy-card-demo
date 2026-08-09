@@ -89,7 +89,9 @@ import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.json.AbstractJackson2HttpMessageConverter;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.firewall.RequestRejectedException;
 import org.springframework.security.web.firewall.RequestRejectedHandler;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
@@ -1536,6 +1538,18 @@ public class WebConfig implements WebMvcConfigurer {
     //      with NO body and NO Content-Type at all, because the error render could not be negotiated
     //      either.
     //
+    // A FOURTH condition exists, and it is not a mapping-phase refusal at all: an exception that no
+    // controller handler, no @ResponseStatus and no framework resolver claimed - a store that went away
+    // mid-request being the reachable case. It escaped the dispatcher entirely, so the container logged it
+    // with an empty diagnostic context and Spring Boot's /error page answered it with its default
+    // attributes: no errorCode, no correlationId and Content-Type application/json rather than the
+    // problem+json this application publishes everywhere else. UnhandledFailureExceptionResolver below
+    // closes it, and it is a SEPARATE resolver rather than a fifth arm of the one above because the two
+    // differ in both position and precondition: the framework-boundary resolver must run BEFORE
+    // DefaultHandlerExceptionResolver to pre-empt the default bodies for its four types, while a
+    // catch-everything arm must run AFTER it so that every framework mapping and every controller-local
+    // handler still wins. One class cannot occupy both positions.
+    //
     // Why this is not global advice. @ControllerAdvice, @RestControllerAdvice and a
     // ResponseEntityExceptionHandler subclass are prohibited in this application, and the prohibition is
     // asserted by a test that scans every main source. That prohibition is about where an operation's OWN
@@ -1551,7 +1565,11 @@ public class WebConfig implements WebMvcConfigurer {
     // Ordering is load bearing. The resolver is inserted immediately BEFORE
     // DefaultHandlerExceptionResolver and therefore AFTER ExceptionHandlerExceptionResolver, so every one
     // of the controller-local handlers still wins. Inserting it at the head of the list would silently
-    // disable them.
+    // disable them. The fourth condition's resolver is APPENDED after DefaultHandlerExceptionResolver for
+    // the same reason read the other way round: it must be the last resolver consulted, so that it claims
+    // only what every other layer declined. It also declines two exception families outright - Spring
+    // Security's AccessDeniedException and AuthenticationException - because ExceptionTranslationFilter
+    // sits OUTSIDE the dispatcher and must still see them to publish the 401 and 403 envelopes.
 
     /**
      * The single media type this application reads and writes, used both to advertise what a rejected
@@ -1754,12 +1772,21 @@ public class WebConfig implements WebMvcConfigurer {
             LOGGER.warn("No DefaultHandlerExceptionResolver found among {} resolver(s); appending the "
                     + "framework-boundary resolver at the end of the list", resolvers.size());
             resolvers.add(new FrameworkBoundaryExceptionResolver());
+            resolvers.add(new UnhandledFailureExceptionResolver());
             return;
         }
 
         resolvers.add(insertAt, new FrameworkBoundaryExceptionResolver());
         LOGGER.debug("Inserted the framework-boundary exception resolver at position {} of {}", insertAt,
                 resolvers.size());
+
+        // APPENDED LAST, and the position is the whole point. DefaultHandlerExceptionResolver and every
+        // controller-local @ExceptionHandler are consulted first, so this one sees only what nothing else
+        // answered - the residual set that used to escape the dispatcher, reach the container uncorrelated
+        // and be rendered by Spring Boot's /error page without an errorCode or a correlationId.
+        resolvers.add(new UnhandledFailureExceptionResolver());
+        LOGGER.debug("Appended the unhandled-failure exception resolver at position {} of {}",
+                resolvers.size() - 1, resolvers.size());
     }
 
     /**
@@ -1871,6 +1898,58 @@ public class WebConfig implements WebMvcConfigurer {
                 + "\",\"" + ERROR_CODE_PROPERTY + "\":\"" + errorCode
                 + "\",\"" + CORRELATION_ID_PROPERTY + "\":\"" + safeCorrelationId(correlationId)
                 + "\"}";
+    }
+
+    /**
+     * Writes a refusal envelope onto a raw servlet response, or records why it could not be written.
+     *
+     * <p>Both {@link HandlerExceptionResolver} implementations in this class render the same bytes in the
+     * same way, so the sequence is declared once rather than twice (Rule 1 Clause C, avoid duplication).
+     * Nothing about the shape is decided here: the caller supplies every value, and every value it supplies
+     * is a constant of this class or a correlation identifier already constrained to {@code [A-Za-z0-9_-]}.
+     *
+     * <p><strong>A committed response is left exactly as the client already saw it.</strong> Nothing can be
+     * written over a committed response, so the condition is reported rather than silently swallowed and the
+     * status already on the wire is the one that stands.
+     *
+     * @param response      the response to render onto; never null
+     * @param status        the HTTP status to set
+     * @param title         the short, human-readable summary; must be a constant of this class
+     * @param detail        the explanation; must be a constant of this class
+     * @param errorCode     the machine-readable code; must be a constant of this class
+     * @param correlationId the identifier to publish; may be null or empty
+     */
+    private static void writeProblemEnvelope(final HttpServletResponse response, final int status,
+            final String title, final String detail, final String errorCode, final String correlationId) {
+
+        if (response.isCommitted()) {
+            LOGGER.warn("Response for correlationId {} was already committed; the refusal envelope could "
+                    + "not be written", correlationId);
+            return;
+        }
+
+        final byte[] body = renderProblemEnvelope(status, title, detail, errorCode, correlationId)
+                .getBytes(StandardCharsets.UTF_8);
+
+        response.setStatus(status);
+        // No charset parameter, and none is needed: the document is ASCII by construction - every value
+        // in it is a constant of this class or a correlation identifier restricted to [A-Za-z0-9_-] - and
+        // RFC 8259 fixes JSON's encoding at UTF-8 regardless. Declaring one would also make this refusal
+        // differ, character for character in its Content-Type, from the ones the eight controllers
+        // publish, which is the very inconsistency being closed here.
+        response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+        response.setContentLength(body.length);
+
+        try {
+            response.getOutputStream().write(body);
+            response.flushBuffer();
+        } catch (final IOException broken) {
+            // The client went away mid-write. There is no response left to salvage and nothing to
+            // escalate to, so it is recorded and swallowed - rethrowing would only produce a second,
+            // equally unwritable failure.
+            LOGGER.warn("Could not write the refusal envelope for correlationId {}: {}", correlationId,
+                    broken.getMessage());
+        }
     }
 
     /**
@@ -2172,36 +2251,103 @@ public class WebConfig implements WebMvcConfigurer {
                             + " correlationId {}",
                     status.value(), errorCode, failure.getClass().getSimpleName(), correlationId);
 
-            if (response.isCommitted()) {
-                // Nothing can be written over a committed response. Reported so the gap is visible rather
-                // than silent, and the status the client already saw is the one that stands.
-                LOGGER.warn("Response for correlationId {} was already committed; the refusal envelope could "
-                        + "not be written", correlationId);
-                return new ModelAndView();
+            writeProblemEnvelope(response, status.value(), title, detail, errorCode, correlationId);
+
+            return new ModelAndView();
+        }
+    }
+
+    /**
+     * Answers the one failure class no other layer answers: an exception no controller, no
+     * {@code @ResponseStatus} and no framework resolver claimed.
+     *
+     * <p><strong>Finding, severity Major - remediated here.</strong> With the database stopped,
+     * {@code POST /api/auth/signon} answered {@code 500} with {@code Content-Type: application/json} and
+     * Spring's default error attributes - {@code timestamp}, {@code status}, {@code error}, {@code path} -
+     * carrying <em>no</em> {@code errorCode} and <em>no</em> {@code correlationId}, and the only log record
+     * for it was the container's own, emitted by {@code StandardWrapperValve} with an empty diagnostic
+     * context. An operator could therefore not join the client-visible failure to any log record, for the
+     * one failure class where that join matters most, and the body offered no identifier at all.
+     *
+     * <p><strong>Why the gap existed.</strong> {@link FrameworkBoundaryExceptionResolver} claims four
+     * framework exception types and declines everything else, so a residual exception propagated out of the
+     * {@code DispatcherServlet} to the container, which logged it - by then
+     * {@code CorrelationIdFilter}'s {@code finally} had already restored the logging context, hence the
+     * empty identifiers - and dispatched to Spring Boot's registered {@code /error} page. That page had
+     * already produced a body by the time {@link ProblemJsonErrorReportValve} ran, and that valve correctly
+     * keeps its hands off a response another layer has answered.
+     *
+     * <p><strong>Why answering it here fixes both halves at once.</strong> A resolver runs
+     * <em>inside</em> the filter chain, so the diagnostic context is still installed: the record written
+     * below carries {@code correlationId}, {@code traceId} and {@code spanId}, and because the exception is
+     * answered rather than rethrown, the container never writes its uncorrelated one and never dispatches to
+     * {@code /error} at all. The body is the same envelope every other boundary publishes, so
+     * {@code docs/api-contracts.md}'s statement that {@code errorCode} and {@code correlationId} are always
+     * present, and that the identifier is echoed into every error body and every log line, becomes true of
+     * this path too.
+     *
+     * <p><strong>Two exception families are deliberately NOT claimed, and that exclusion is load bearing.</strong>
+     * {@link org.springframework.security.access.AccessDeniedException} and
+     * {@link org.springframework.security.core.AuthenticationException} must keep propagating out of the
+     * dispatcher so that Spring Security's {@code ExceptionTranslationFilter} reaches its own entry point
+     * and access-denied handler - the two components that publish the {@code 401} and {@code 403} envelopes
+     * configured in {@code com.cardemo.config.SecurityConfig}. Claiming them here would answer a denial with
+     * {@code 500} and silently dismantle the authorisation boundary, so they are declined by type.
+     *
+     * <p><strong>Ordering is load bearing too.</strong> This resolver is appended at the very END of the
+     * resolver list, after {@link DefaultHandlerExceptionResolver}, so every controller-local
+     * {@code @ExceptionHandler}, every {@code @ResponseStatus} and every framework mapping keeps
+     * precedence. It sees only what nothing else answered, which is precisely the set that used to escape.
+     *
+     * <p>It is not advice. It declares no {@code @ControllerAdvice}, no {@code @ExceptionHandler} and no
+     * {@code @ResponseStatus}, so no operation's own refusal is centralised away from the controller that
+     * owns it.
+     */
+    public static final class UnhandledFailureExceptionResolver implements HandlerExceptionResolver {
+
+        /** Creates the resolver. Public because it is registered into the MVC resolver list. */
+        public UnhandledFailureExceptionResolver() {
+            // No state to establish.
+        }
+
+        /**
+         * Answers an unclaimed failure with the {@code 500} refusal envelope, or declines a security denial.
+         *
+         * <p>Side effects: on a claimed exception it writes one ERROR log record and then the status, the
+         * {@code Content-Type} and the body, and flushes. On a security denial it does nothing at all.
+         *
+         * @param request  the request being dispatched; never null
+         * @param response the response to render onto; never null
+         * @param handler  the handler, which is null when the failure preceded handler selection
+         * @param failure  the exception raised; never null
+         * @return an empty {@link ModelAndView} when this resolver answered, so that no view is rendered
+         *         over the body it wrote; null for a security denial, which
+         *         {@code ExceptionTranslationFilter} must still see
+         */
+        @Override
+        public ModelAndView resolveException(final HttpServletRequest request,
+                final HttpServletResponse response, final Object handler, final Exception failure) {
+
+            if (failure instanceof AccessDeniedException || failure instanceof AuthenticationException) {
+                return null;
             }
 
-            final byte[] body = renderProblemEnvelope(status.value(), title, detail, errorCode,
-                    correlationId).getBytes(StandardCharsets.UTF_8);
+            final String correlationId = currentCorrelationId();
 
-            response.setStatus(status.value());
-            // No charset parameter, and none is needed: the document is ASCII by construction - every value
-            // in it is a constant of this class or a correlation identifier restricted to [A-Za-z0-9_-] - and
-            // RFC 8259 fixes JSON's encoding at UTF-8 regardless. Declaring one would also make this refusal
-            // differ, character for character in its Content-Type, from the ones the eight controllers
-            // publish, which is the very inconsistency being closed here.
-            response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
-            response.setContentLength(body.length);
+            // The throwable IS passed, deliberately, so the stack trace survives. Before this resolver
+            // existed the container logged the same trace with an empty diagnostic context; logging it here
+            // adds the correlation, trace and span identifiers and takes nothing away. Neither the request
+            // method nor the request URI is logged - finding C-01 records why: both are caller-chosen text
+            // on a boundary an unauthenticated caller reaches, so either can carry a card number, a
+            // password or a government identifier, and the masking in logback-spring.xml redacts LABELLED
+            // values only. The exception's own type and the correlation identifier are what make the record
+            // actionable, and both are safe to publish.
+            LOGGER.error("Answered an unhandled failure with 500: errorCode {}, condition {},"
+                            + " correlationId {}",
+                    ERROR_CODE_INTERNAL_FAILURE, failure.getClass().getName(), correlationId, failure);
 
-            try {
-                response.getOutputStream().write(body);
-                response.flushBuffer();
-            } catch (final IOException broken) {
-                // The client went away mid-write. There is no response left to salvage and nothing to
-                // escalate to, so it is recorded and swallowed - rethrowing would only produce a second,
-                // equally unwritable failure.
-                LOGGER.warn("Could not write the refusal envelope for correlationId {}: {}", correlationId,
-                        broken.getMessage());
-            }
+            writeProblemEnvelope(response, HttpStatus.INTERNAL_SERVER_ERROR.value(), TITLE_INTERNAL_FAILURE,
+                    DETAIL_INTERNAL_FAILURE, ERROR_CODE_INTERNAL_FAILURE, correlationId);
 
             return new ModelAndView();
         }

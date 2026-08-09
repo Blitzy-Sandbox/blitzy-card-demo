@@ -49,10 +49,13 @@ import com.cardemo.model.dto.AccountDto;
 import com.cardemo.model.dto.AccountUpdateRequest;
 import com.cardemo.model.dto.AccountUpdateResponse;
 import com.cardemo.model.dto.AccountViewResponse;
+import com.cardemo.model.entity.Account;
+import com.cardemo.model.entity.Customer;
 import com.cardemo.service.account.AccountUpdateService;
 import com.cardemo.service.account.AccountViewService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.RecordComponent;
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -201,6 +204,27 @@ class AccountControllerTest {
     }
 
     /**
+     * Builds what one traversal of the cross-reference, account and customer chain hands back: the
+     * projection plus the two master records the sealed snapshot is projected from.
+     *
+     * <p>The records travel because the {@code GET} answers with the projection <em>and</em> with the
+     * snapshot, and both are projections of the same three rows. Reading them twice - once for the screen
+     * and once for the snapshot - opened two read-only transactions and issued the identical three
+     * statements again for one request.
+     *
+     * @return the projection and its two records
+     */
+    private static AccountViewService.AccountViewRecords viewRecords() {
+        final Account account = new Account(1L, "Y", new BigDecimal("194.00"), new BigDecimal("2020.00"),
+                new BigDecimal("1020.00"), "2000-01-01", "2025-12-31", "2020-06-15",
+                BigDecimal.ZERO, BigDecimal.ZERO, "98101", "ZEROBAL");
+        final Customer customer = new Customer(1L, "MARGARET", "A", "GOLD", "100 MAIN ST", "APT 1",
+                "SEATTLE", "WA", "USA", "98101", PHONE_1, "(425)555-0199", SSN, GOVERNMENT_ID,
+                DATE_OF_BIRTH, EFT_ACCOUNT_ID, "Y", "750");
+        return new AccountViewService.AccountViewRecords(viewProjection(), account, customer);
+    }
+
+    /**
      * Builds a submitted map, with the sealed snapshot either present or absent.
      *
      * @param snapshot the sealed as-displayed snapshot, or null to omit it
@@ -268,8 +292,8 @@ class AccountControllerTest {
         @Test
         @DisplayName("the read response neither declares nor carries any of the nine withheld values")
         void theReadResponseWithholdsTheNineProtectedValues() {
-            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+            when(accountViewService.viewAccountWithRecords(ACCOUNT_ID)).thenReturn(viewRecords());
+            when(accountUpdateService.sealSnapshotForUpdate(any(AccountViewService.AccountViewRecords.class), eq(SUBJECT)))
                     .thenReturn(SEALED_SNAPSHOT);
 
             final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
@@ -295,8 +319,8 @@ class AccountControllerTest {
         @Test
         @DisplayName("the read response still carries every value the account screen needs")
         void theReadResponseCarriesWhatTheScreenNeeds() {
-            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+            when(accountViewService.viewAccountWithRecords(ACCOUNT_ID)).thenReturn(viewRecords());
+            when(accountUpdateService.sealSnapshotForUpdate(any(AccountViewService.AccountViewRecords.class), eq(SUBJECT)))
                     .thenReturn(SEALED_SNAPSHOT);
 
             final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
@@ -398,8 +422,8 @@ class AccountControllerTest {
         @Test
         @DisplayName("the read publishes the sealed as-displayed snapshot, exactly as the service issued it")
         void theReadPublishesTheSealedSnapshot() {
-            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+            when(accountViewService.viewAccountWithRecords(ACCOUNT_ID)).thenReturn(viewRecords());
+            when(accountUpdateService.sealSnapshotForUpdate(any(AccountViewService.AccountViewRecords.class), eq(SUBJECT)))
                     .thenReturn(SEALED_SNAPSHOT);
 
             final ResponseEntity<AccountViewResponse> response =
@@ -420,13 +444,13 @@ class AccountControllerTest {
         @Test
         @DisplayName("the read seals for the authenticated principal, not for the account alone")
         void theReadSealsForTheAuthenticatedPrincipal() {
-            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+            when(accountViewService.viewAccountWithRecords(ACCOUNT_ID)).thenReturn(viewRecords());
+            when(accountUpdateService.sealSnapshotForUpdate(any(AccountViewService.AccountViewRecords.class), eq(SUBJECT)))
                     .thenReturn(SEALED_SNAPSHOT);
 
             controller.viewAccount(ACCOUNT_ID, principal);
 
-            verify(accountUpdateService).sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT);
+            verify(accountUpdateService).sealSnapshotForUpdate(any(AccountViewService.AccountViewRecords.class), eq(SUBJECT));
         }
 
         /**
@@ -439,8 +463,8 @@ class AccountControllerTest {
         @Test
         @DisplayName("no protected value appears in the serialised read response")
         void theSerialisedReadResponseCarriesNoProtectedValue() throws Exception {
-            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+            when(accountViewService.viewAccountWithRecords(ACCOUNT_ID)).thenReturn(viewRecords());
+            when(accountUpdateService.sealSnapshotForUpdate(any(AccountViewService.AccountViewRecords.class), eq(SUBJECT)))
                     .thenReturn(SEALED_SNAPSHOT);
 
             final String json = new ObjectMapper()
@@ -468,8 +492,8 @@ class AccountControllerTest {
         @Test
         @DisplayName("a failure to seal the snapshot propagates rather than yielding a valueless 200")
         void aFailedSnapshotAcquisitionPropagates() {
-            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.sealSnapshotForUpdate(ACCOUNT_ID, SUBJECT))
+            when(accountViewService.viewAccountWithRecords(ACCOUNT_ID)).thenReturn(viewRecords());
+            when(accountUpdateService.sealSnapshotForUpdate(any(AccountViewService.AccountViewRecords.class), eq(SUBJECT)))
                     .thenThrow(new RecordNotFoundException("account not found", "account", ACCOUNT_ID));
 
             assertThatThrownBy(() -> controller.viewAccount(ACCOUNT_ID, principal))

@@ -51,6 +51,7 @@
 package com.cardemo.unit.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -392,19 +393,32 @@ class TransactionReportProcessorScopeIsolationTest {
         }
 
         @Test
-        @DisplayName("the constructor still validates the window, so nothing was lost with the binding")
+        @DisplayName("the constructor still validates each date, and still declines to validate the pair")
         void theConstructorStillValidatesTheWindow() {
-            // Moving the binding out of the constructor must not move the validation out with it. An inverted
-            // period and a blank date were rejected before F-008 and are rejected now, by the same
-            // requireReportingDate and requireOrderedPeriod calls, at the same point in the lifecycle.
+            // Moving the binding out of the constructor must not move the validation out with it. What that
+            // validation is, however, is decided by the source and not by intuition.
+            //
+            // FINDING B-15, severity Major. The inverted-period half of this test used to assert an abend and
+            // now asserts the opposite, for the reason set out at TransactionReportProcessorTest's
+            // anInvertedPeriodIsAcceptedAndSelectsNothing: the corpus contains no start-before-end comparison
+            // anywhere. app/cbl/CORPT00C.cbl - the only producer of this period - tests each field and each
+            // date and never the pair, and app/proc/TRANREPT.prc:L45-L46 expresses the window as
+            // INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE), which simply
+            // selects nothing when the bounds cross. An inverted window is therefore a request that matches
+            // no record, not an invalid one, and rejecting it turned every such submission into a poison
+            // message on a single-group FIFO queue.
             StepExecution inverted = executionFor(90L, "2026-03-31", "2026-03-01");
-            assertThatThrownBy(() -> processorFor(inverted))
-                    .as("an inverted period would silently produce an empty report")
-                    .isInstanceOf(FatalProcessingException.class);
+            assertThatCode(() -> processorFor(inverted))
+                    .as("an inverted period is constructible: both bounds are present and ten characters, "
+                            + "which is everything the parameter card's OPEN and READ can establish")
+                    .doesNotThrowAnyException();
 
+            // The per-date guards the source does have are still enforced here, at the same point in the
+            // lifecycle and by the same requireReportingDate call. WS-END-DATE is declared PIC X(10), so a
+            // three-character value is not a period bound that any lexical comparison could use.
             StepExecution blank = executionFor(91L, "2026-03-01", "   ");
             assertThatThrownBy(() -> processorFor(blank))
-                    .as("a blank WS-END-DATE cannot be compared lexically")
+                    .as("a WS-END-DATE that is not ten characters cannot be compared lexically")
                     .isInstanceOf(FatalProcessingException.class);
         }
 

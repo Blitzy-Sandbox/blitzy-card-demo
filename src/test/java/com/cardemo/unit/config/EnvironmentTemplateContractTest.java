@@ -906,17 +906,24 @@ final class EnvironmentTemplateContractTest {
                     .filter(line -> PUBLISHED_PORT.matcher(line).matches())
                     .count();
 
-            // Seven mappings across six services: the application, PostgreSQL, the object-store emulator,
-            // the trace store's UI and its OTLP/HTTP receiver, Prometheus and Grafana. One spelling, so a
-            // change of default cannot reach only some of them.
+            // Eight mappings across seven services: the application, PostgreSQL, the object-store emulator,
+            // the trace store's UI and its OTLP/HTTP receiver, the Pushgateway, Prometheus and Grafana. One
+            // spelling, so a change of default cannot reach only some of them.
             //
-            // Seven and not eight because the trace store's OTLP/gRPC receiver is deliberately NOT published:
+            // The Pushgateway's mapping is the eighth, and it is published rather than left internal for one
+            // reason: the documented operator batch submission runs on the HOST, as a java -jar launch, so it
+            // reaches the gateway through this published port. Prometheus reaches it over the compose network
+            // and needs no publication at all. Like every other mapping here it is loopback-bound, which
+            // matters more for this service than for the others because /metrics/job/... accepts a push with
+            // no credential by design - reach is the only control there is.
+            //
+            // Eight and not nine because the trace store's OTLP/gRPC receiver is deliberately NOT published:
             // the exporter this application is configured with speaks OTLP over HTTP, and the collector
             // reaches the store over the compose network without either receiver being published at all. A
             // port published for nothing is reach granted for nothing, which is the position Rule 1 clause D
             // takes. Should a gRPC exporter ever be configured, publishing 4317 must add a mapping here
             // rather than change this count silently.
-            assertThat(qualified).isEqualTo(7L);
+            assertThat(qualified).isEqualTo(8L);
         }
 
         @Test

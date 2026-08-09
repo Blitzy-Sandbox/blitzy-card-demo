@@ -507,6 +507,14 @@ public class TransactionCategory {
     /**
      * Validates a candidate description against its source picture clause {@code PIC X(50)}.
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param value the candidate description exactly as supplied, possibly {@code null}
      * @return {@code value} unchanged when valid, including when it is blank or empty
      * @throws IllegalArgumentException if {@code value} is {@code null}, or is longer than the 50 characters
@@ -517,9 +525,11 @@ public class TransactionCategory {
             throw new IllegalArgumentException(
                     "categoryDescription (TRAN-CAT-TYPE-DESC PIC X(50)) is required and must not be null");
         }
-        if (value.length() > CATEGORY_DESCRIPTION_LENGTH) {
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > CATEGORY_DESCRIPTION_LENGTH) {
             throw new IllegalArgumentException("categoryDescription (TRAN-CAT-TYPE-DESC PIC X(50)) must be at most "
-                    + CATEGORY_DESCRIPTION_LENGTH + " characters but was " + value.length() + ": [" + value + "]");
+                    + CATEGORY_DESCRIPTION_LENGTH + " characters but was " + characterPositions
+                    + ": [" + value + "]");
         }
         return value;
     }

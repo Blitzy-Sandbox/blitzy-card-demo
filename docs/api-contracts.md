@@ -452,14 +452,58 @@ This is a correctness requirement, not a stylistic note. The legacy transaction-
 uses **two different numeric intrinsics on the same screen**, and reproducing only one of
 them either accepts input the system should reject or rejects input it should accept.
 
-| Input | Intrinsic used by the source | Locator | Target parser |
-|---|---|---|---|
-| Account identifier | `FUNCTION NUMVAL` | [`app/cbl/COTRN02C.cbl:L204`] | **Strict digits-only** |
-| Card number | `FUNCTION NUMVAL` | [`:L218`] | **Strict digits-only** |
-| Transaction amount | `FUNCTION NUMVAL-C` | [`:L383`], [`:L456`] | **Currency-tolerant** |
+| Input | Intrinsic used by the source | Locator | Target parser | What a caller may send |
+|---|---|---|---|---|
+| Account identifier | `FUNCTION NUMVAL` | [`app/cbl/COTRN02C.cbl:L204`] | **Strict digits-only** | Digits only |
+| Card number | `FUNCTION NUMVAL` | [`:L218`] | **Strict digits-only** | Digits only |
+| Transaction amount | `FUNCTION NUMVAL-C` | [`:L383`], [`:L456`] | **Currency-tolerant — but unreachable** | **Exactly `[+-]NNNNNNNN.NN`**, 12 characters, nothing else |
 
 `FUNCTION NUMVAL-C` is the currency-aware form: it additionally tolerates a currency symbol
 and thousands separators. `FUNCTION NUMVAL` does not.
+
+> **The amount's currency tolerance can never be reached, and a client must not rely on it.**
+> This is the one row of the table above where the intrinsic does not describe the contract,
+> and an earlier revision of this section published "currency-tolerant" as though it did —
+> which made the published amount contract unusable, because every currency-shaped value it
+> implied was accepted is in fact refused (finding QA-4).
+>
+> The reason is ordering. Before the amount reaches `NUMVAL-C`, the source gates it
+> **positionally**, character by character [`app/cbl/COTRN02C.cbl:L339-L351`]:
+>
+> ```cobol
+>            EVALUATE TRUE
+>                WHEN TRNAMTI OF COTRN2AI(1:1) NOT EQUAL '-' AND '+'
+>                WHEN TRNAMTI OF COTRN2AI(2:8) NOT NUMERIC
+>                WHEN TRNAMTI OF COTRN2AI(10:1) NOT = '.'
+>                WHEN TRNAMTI OF COTRN2AI(11:2) IS NOT NUMERIC
+>                    MOVE 'Y'     TO WS-ERR-FLG
+>                    MOVE 'Amount should be in format -99999999.99' TO
+>                                    WS-MESSAGE
+> ```
+>
+> Position 1 must be `+` or `-`; positions 2–9 must be eight digits; position 10 must be a
+> literal `.`; positions 11–12 must be two digits. **A currency symbol fails the sign test at
+> position 1 and a thousands separator fails the digit test at positions 2–9**, so any value
+> `NUMVAL-C`'s tolerance would have handled is rejected before `NUMVAL-C` is ever called. The
+> tolerance is real in the source and is preserved in the target; it is simply unreachable, and
+> that is parity rather than a defect.
+>
+> **The refusal literal is `'Amount should be in format -99999999.99'`**, with `field` =
+> `amount`. Note that the message shows a `-` where a `+` is equally acceptable — the source's
+> own wording, relayed byte for byte.
+>
+> | Sent | Result |
+> |---|--:|
+> | `+00000010.00`, `+00000000.00`, `-00000000.00`, `+99999999.99`, `-99999999.99` | accepted |
+> | `100.00` — no sign | `400` |
+> | `+100.00` — right shape, wrong width | `400` |
+> | `$1,234.56` — the currency form `NUMVAL-C` would have parsed | `400` |
+> | `+0000010.00` — eleven characters, one digit short | `400` |
+> | `+0000010,00` — comma for the decimal point | `400` |
+>
+> So: **pad the integer part to eight digits, always send a sign, always send two decimals,
+> and always use `.`** — twelve characters exactly. This is a width, not a range: a value is
+> refused for being eleven characters long even when its magnitude is perfectly valid.
 
 Before the account identifier and the card number are parsed at all, the source tests them
 with `IF … IS NOT NUMERIC` and rejects a non-numeric value outright with
@@ -661,6 +705,59 @@ record key read with `READ … EQUAL`, where a value the key cannot hold has no 
 and is a client error. Both behaviours are faithful; the asymmetry is in the source, not in
 the translation.
 
+#### 7.1.2 The response envelope, member by member
+
+**Everything above describes what a client SENDS. This is what it receives**, and it is set
+out here because an earlier revision of this document described the paging *values* in prose
+without ever naming the JSON members that carry them. Six live members were consequently
+absent from the file as member names — `pageSize` on all three lists, `rowSelectionAvailable`
+on the card list, `transactionDate` on a transaction row, `updateApplied` on user update, and
+`rows` and `published`, which appeared only as ordinary English words. A client written from
+the document alone could not find the row array or the page size (finding QA-7). The tables
+below are the serialised member names as the operations emit them.
+
+**Common to all three list responses.** These five members are present on every one, spelled
+identically:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `rows` | array | **The page itself.** One element per row, in screen order. Empty array at end of file — never `null`, and never omitted |
+| `pageNumber` | number | The page just returned. Echo into `page`. Zero on an unstarted browse |
+| `pageSize` | number | Rows per page: **`7`** on the card list, **`10`** on the other two. Fixed by the map geometry and **not** client-configurable, so it is an echo of the contract rather than a setting |
+| `nextPageAvailable` | boolean | Whether a further page is known to exist. Echo it back on a forward step |
+| *a message member* | string | The screen message line, **spelled differently on each operation** — see the per-operation tables |
+
+`pageSize` is worth one further note: because it is fixed, a client should use it to size its
+own display rather than assume a number, and must not send it back as a request parameter —
+there is none, and one would be ignored ([§7](#7-pagination-contract)).
+
+**Per-operation members, including the cursor pair and the message member:**
+
+| Operation | Cursor members | Message member | Additional |
+|---|---|---|---|
+| [List cards](#121-list-cards) | `firstCursor`, `lastCursor` | `informationMessage` **and** `errorMessage` — two members, not one | **`rowSelectionAvailable`** (boolean): whether any row on this page carries a usable `cardKey` |
+| [List transactions](#131-list-transactions) | `firstCursor`, `lastCursor` | `statusMessage` — spelled thus, **not** `errorMessage`; see [§13.2](#132-view-transaction) | — |
+| [List users](#161-list-users) | **`firstUserId`**, **`lastUserId`** | `errorMessage` | — |
+
+**Row members, per operation.** A row is a flat object; there is no nesting:
+
+| Operation | Row members |
+|---|---|
+| [List cards](#121-list-cards) | `rowNumber`, `accountNumber`, `maskedCardNumber`, `statusCode`, `cardKey` — the card number is **masked** and the `cardKey` is the opaque handle that stands in for it ([§12.1.1](#1211-labelled-deviation-a-list-row-masks-the-card-number-and-carries-a-handle-instead)) |
+| [List transactions](#131-list-transactions) | `selectionFlag`, `transactionId`, **`transactionDate`**, `description`, `amount` |
+| [List users](#161-list-users) | `userId`, `firstName`, `lastName`, `userType` — and **no password member in any form**, by construction ([§16.1](#161-list-users)) |
+
+> **`rowCount` is a request parameter, never a response member.** It is easy to assume the
+> symmetry and there is none: the number of rows returned is `rows.length`, and the page size
+> is `pageSize`. No list response carries a row-count member under any spelling.
+
+**The two non-list responses whose members were likewise unnamed:**
+
+| Operation | Members |
+|---|---|
+| [Submit transaction report](#151-submit-transaction-report) | **`published`** (boolean — whether the job reached the queue) and **`message`** (string). Two members, and that is the whole body; a `202` carries no job identifier ([§15.1.1](#1511-this-endpoint-accepts-a-job-it-does-not-return-a-report)) |
+| [Update user](#163-update-user) | `userId`, `firstName`, `lastName`, `userType`, `errorMessage`, **`updateApplied`** (boolean). The last is the one that matters: see [§16.3](#163-update-user) |
+
 ### 7.2 Boundary behaviour
 
 The legacy programs distinguish four paging edges, each with its own message, and all four
@@ -723,12 +820,12 @@ members, plus `type`, `title` and `status`, are present on **every** error body 
 | `type` | yes | Problem type URI |
 | `title` | yes | Short, stable, human-readable summary of the problem class |
 | `status` | yes | The HTTP status code, repeated in the body |
-| `detail` | when a message exists | **The exact legacy message literal**, relayed byte for byte, whenever the failure carries one. When it does not, the member is omitted rather than invented |
+| `detail` | when a message exists | **The exact legacy message literal**, relayed byte for byte, whenever the failure carries one. When it does not, the member is omitted rather than invented. **Two classes of refusal have no legacy literal to relay and carry an authored message instead** — the framework's own body-level refusals of [§8.5](#85-refusals-decided-before-an-operation-is-reached). Never parse `detail`; match on `errorCode` |
 | `instance` | **controller-decided refusals only** | The request path. **Absent at the security boundary** — see [§8.1.1](#811-the-security-boundary-shape-six-members-and-no-instance) |
 | `errorCode` | **yes** | Stable machine-readable outcome code — match on this, not on `title` or `detail` |
 | `correlationId` | **yes** | The correlation identifier for this request, from the `X-Correlation-Id` header when the caller supplied one and generated otherwise. The literal `unavailable` appears when no identifier could be resolved |
-| `field` | field-level failures | The **name** of the offending input. Never its value |
-| `failureKind` | validation failures | Two-state discriminator distinguishing an input left **blank** from one supplied and **invalid** |
+| `field` | **legacy-edit** field-level failures | The **name** of the offending input. Never its value. **Absent on a bean-validation refusal**, which names no field at all — see the row below and [§8.5](#85-refusals-decided-before-an-operation-is-reached) |
+| `failureKind` | **legacy-edit** validation failures | Two-state discriminator distinguishing an input left **blank** from one supplied and **invalid**. **Absent on a bean-validation refusal.** An earlier revision described this row and the one above as present on "validation failures" without qualification, which is wrong for one whole class of them: a request refused by `@Valid`/`@Size` before any legacy edit runs answers `CARDDEMO-VALIDATION-REJECTED` with **neither** member (finding QA-8) |
 | `outcome` | conflict failures | Which concurrency outcome occurred |
 | `changeAction` | account update | The source's own outcome vocabulary for the write attempt |
 | `code` | **two account-resource refusals only** | An **additional** code carried alongside `errorCode`, on `AccountController` and on no other controller. Exactly two values, on exactly two statuses — see below |
@@ -797,7 +894,7 @@ and `failureKind`.
 | `CARDDEMO-RESOURCE-UNAVAILABLE` | `503` | A required store or queue could not be opened |
 | `CARDDEMO-IO-FAILURE` | `502`, **and `503` on sign-on alone** | The store was reachable but the read or write failed. [Sign on](#91-sign-on) is the one operation that answers `503` here — see the note below |
 | `CARDDEMO-PROCESSING-ABEND` | `500` | The operation ended the way the legacy abend routine ended the task |
-| `CARDDEMO-INTERNAL-FAILURE` | `500`, `501` | A typed failure no other mapper on the controller claims, or a container-level failure at or above `500` |
+| `CARDDEMO-INTERNAL-FAILURE` | `500`, `501` | A typed failure no other mapper on the controller claims, a failure **no** layer claims — the terminal resolver of [§18.3](#183-medium)'s M-33 answers that one — or a container-level failure at or above `500` |
 
 **`CARDDEMO-CONSTRAINT-REFUSED` is `409` and only `409`.** An earlier revision of that row
 published `409` / `422`. **No executable path in this application returns `422`** — the status
@@ -1084,6 +1181,61 @@ because that value is supplied by the caller and echoing it would both reflect i
 describe the firewall's rules to whoever is probing them. The reason is written to the log,
 against a `correlationId` the caller also receives — so the refusal is diagnosable without
 being self-documenting to an attacker.
+
+#### The body-level refusals: a sixth shape, owned by the controller
+
+**Two further refusals are decided before an operation runs, and they are *not* among the five
+above** — they publish the **controller** shape, `instance` included, because a controller
+method *was* selected and its own `@ExceptionHandler` answered. What never happens is the
+operation: the body is refused before a single legacy edit executes. An earlier revision of
+this section enumerated the five pre-controller boundaries and omitted these two entirely, so
+the most common `400` an integrator meets was undocumented (finding QA-8).
+
+| Refuses | `errorCode` | `detail` |
+|---|---|---|
+| A body that deserialised but failed **bean validation** — any `@Size` bound exceeded, on any member of any body | `CARDDEMO-VALIDATION-REJECTED` | `One or more fields of the request body failed validation. Correct the body and resubmit.` |
+| A body that could not be **deserialised at all** — malformed JSON, a member the schema does not declare, or a required opaque token absent | `CARDDEMO-REQUEST-BODY-UNREADABLE` | `The request body could not be read as JSON matching this operation's schema.` |
+
+Both answer `400` with the owning controller's own `title` — `Sign-on rejected`,
+`User administration request rejected`, `Transaction request rejected`, `Card request
+rejected`, `Report submission rejected`, `Bill payment rejected` — and exactly seven members:
+`type`, `title`, `status`, `detail`, `instance`, `errorCode`, `correlationId`.
+
+**Neither carries `field` and neither carries `failureKind`, and that is deliberate rather than
+an omission.** It is the one place where this document's general rule — that a validation
+failure names its field — does not hold, so the reason is worth giving in full:
+
+* **Disclosure.** Spring's `FieldError` retains the *submitted value*. On the add-user body
+  that value is a plaintext password; on the account-update body it is a social security
+  number. Publishing the violation would publish the input.
+* **Determinism.** A violation set has no stable iteration order, so a named field would vary
+  between two byte-identical requests — a contract that cannot be relied on is worse than one
+  that says nothing.
+* **Probing.** Because the answer does not vary with the offending input, two different
+  violations on two different members produce byte-identical bodies, so the schema cannot be
+  mapped by probing it.
+* **And there is no counterpart to relay.** `failureKind` transcribes the `CSSETATY` two-state
+  marker of a legacy edit. The framework refusal has no legacy edit behind it and therefore no
+  marker — a value here would be invented, not relayed.
+
+All four properties are asserted rather than described, by
+`BodyFailureEnvelopeContractTest` — including that two different bodies produce byte-identical
+answers on the same controller. So **populating these two members from the constraint violation
+is not an available fix for the documentation gap**: it would breach the disclosure guarantee,
+make the body non-deterministic and make the schema probeable, all to satisfy a sentence. The
+sentence was corrected instead ([§8](#8-error-response-envelope)).
+
+**`detail` here is authored, not a legacy literal.** These are the two refusals the `detail`
+row of [§8](#8-error-response-envelope) excepts: no legacy edit ran, so there is no message
+literal to relay byte for byte. Match on `errorCode`.
+
+**Practical consequence for a client.** A `CARDDEMO-VALIDATION-REJECTED` with no `field` means
+*some* member of the body is over its declared width, and the response will not say which:
+check the widths in the operation's own request table, all of which are published from the
+symbolic map ([§4](#4-field-contract-provenance)). A
+`CARDDEMO-REQUEST-BODY-UNREADABLE` means the body did not match the schema at all — most often
+a misspelled member name, since unknown members are refused rather than ignored, or a missing
+`snapshot` on an operation that requires one.
 
 **An unpublished path is a `403`, not a `404`.** `GET /api/nosuchthing` and
 `GET /api/accounts/00000000001/extra` answer `403` with `CARDDEMO-AUTHORIZATION-DENIED`. That
@@ -1475,8 +1627,10 @@ Authorization: Bearer <token>
 > because the account-update map declares the same logical value as `ACCTSIDI X(11)`
 > ([§11.2](#112-update-account)) — the two maps disagree, and both are published as
 > declared. For a caller the practical effect is the same: **digits only**, eleven of them,
-> and the source additionally refuses zero with
-> `'Account number must be a non zero 11 digit number'`.
+> and the source additionally refuses zero — with the literal
+> `'Account Filter must  be a non-zero 11 digit number'`, **two spaces after `must`**, which is
+> the string this operation actually emits. It is *not* the wording the two similarly-named
+> condition names carry; the observable-literals table further down sets that distinction out.
 
 **Response — `200 OK`.** `AccountViewResponse` declares **exactly 23 record components**,
 and the table below is that component list — **not** the map's field list, and the difference is a
@@ -1584,9 +1738,13 @@ the snapshot group; that read is not a write.
 **Validation and lookup order.** Preserved from the source:
 
 1. **Input validation.** No input at all → `'No input received'`. Zero or non-numeric
-   account identifier → `'Account number must be a non zero 11 digit number'`
-   [`app/cbl/COACTVWC.cbl:L125-L128`] — both the zeroes and the not-numeric condition names
-   carry that **same** literal.
+   account identifier → `'Account Filter must  be a non-zero 11 digit number'`, the inline
+   literal `2210-EDIT-ACCOUNT` moves [`app/cbl/COACTVWC.cbl:L672`], carrying **two spaces
+   after `must`**. The response names `accountFilter` as the `field` and `INVALID` as the
+   `failureKind`. One predicate covers both conditions —
+   `IF CC-ACCT-ID IS NOT NUMERIC OR CC-ACCT-ID EQUAL ZEROES` — so zero and non-numeric are
+   answered by the *same* string, and it is this one rather than the wording of the two
+   condition names declared for those conditions, which are never set.
 2. **Cross-reference lookup** (card cross-reference by account).
 3. **Account master lookup.**
 4. **Customer master lookup.**
@@ -1601,12 +1759,25 @@ each is published where it actually occurs:
 | Condition name | Literal | Locator |
 |---|---|---|
 | — | `'No input received'` | [`app/cbl/COACTVWC.cbl:L124`] |
-| `SEARCHED-ACCT-ZEROES` | `'Account number must be a non zero 11 digit number'` | [`:L125-L126`] |
-| `SEARCHED-ACCT-NOT-NUMERIC` | `'Account number must be a non zero 11 digit number'` | [`:L127-L128`] |
+| — (inline `MOVE` in `2210-EDIT-ACCOUNT`) | `'Account Filter must  be a non-zero 11 digit number'` — **two spaces after `must`** | [`:L672`] |
 | `DID-NOT-FIND-ACCT-IN-CARDXREF` | `'Did not find this account in account card xref file'` | [`:L129-L130`] |
 | `DID-NOT-FIND-ACCT-IN-ACCTDAT` | `'Did not find this account in account master file'` | [`:L131-L132`] |
 | `DID-NOT-FIND-CUST-IN-CUSTDAT` | `'Did not find associated customer in master file'` | [`:L133-L134`] |
 | `XREF-READ-ERROR` | `'Error reading account card xref File'` | [`:L135-L136`] |
+
+**Two declared literals are never emitted, and an earlier revision of this section published
+one of them as the contract.** `SEARCHED-ACCT-ZEROES` [`:L125-L126`] and
+`SEARCHED-ACCT-NOT-NUMERIC` [`:L127-L128`] both carry
+`'Account number must be a non zero 11 digit number'`, and both are **declared but never
+`SET`** — each name occurs exactly once in the program, at its own declaration, and nowhere
+in the procedure division. The condition they were written for is answered instead by the
+inline `MOVE` in `2210-EDIT-ACCOUNT` above, whose wording differs in three ways at once: it
+says *Filter* rather than *number*, it hyphenates *non-zero*, and it carries a **double
+space**. So a client waiting for the declared wording waits forever, and a test asserting it
+tests nothing. This is the same disposition the document gives every other unreachable legacy
+construct — recorded, cited and *not* repaired, because deleting a dead `88` from the frozen
+corpus is not available and inventing a code path that sets it would be a behaviour change
+(finding QA-2).
 
 **Failure and status mapping.**
 
@@ -2144,8 +2315,28 @@ Each row additionally carries one member that is **not** a map field:
 |---|---|
 | `cardKey` | An opaque, sealed, server-issued reference to *that row's* card, accepted in place of the two filters by [`GET /api/cards/detail`](#122-view-card) and [`PUT /api/cards`](#123-update-card). See [§12.1.1](#1211-labelled-deviation-a-list-row-masks-the-card-number-and-carries-a-handle-instead) |
 
-Plus paging metadata per [§7](#7-pagination-contract), and the two message fields
-`INFOMSGI X(45)` and `ERRMSGI X(78)`.
+**The JSON body, member by member.** The two tables above give the map provenance of each row
+field; this is the envelope a client actually parses, and the row members under their
+serialised names:
+
+| Member | Type | Notes |
+|---|---|---|
+| `rows` | array | The page. Up to **seven** elements, in screen order; an empty array at end of file, never `null` |
+| `rows[].rowNumber` | string | The row's ordinal on the page |
+| `rows[].accountNumber` | string | `ACCTNOnI`, in full |
+| `rows[].maskedCardNumber` | string | `CRDNUMnI`, **masked** |
+| `rows[].statusCode` | string | `CRDSTSnI`, in full |
+| `rows[].cardKey` | string | The opaque row reference described above |
+| `pageNumber` | number | Echo into `page` |
+| `pageSize` | number | **`7`** — fixed by the map's seven row groups, not client-configurable |
+| `nextPageAvailable` | boolean | Echo it back on a forward step |
+| `firstCursor`, `lastCursor` | string | The **opaque sealed** cursors — echo into `firstKey` / `lastKey`; see [§7.1.1](#711-the-cursor-is-not-the-same-object-on-all-three-operations) |
+| `rowSelectionAvailable` | boolean | Whether any row on this page carries a usable `cardKey`. False on a refused page, because the source protects the selection fields |
+| `informationMessage` | string | `INFOMSGI X(45)` |
+| `errorMessage` | string | `ERRMSGI X(78)` |
+
+This operation is the one list of the three that publishes **two** message members rather than
+one. The full cross-operation comparison is [§7.1.2](#712-the-response-envelope-member-by-member).
 
 > **Source asymmetry worth knowing.** Row 1 declares only four fields — `CRDSEL1I X(1)`,
 > `ACCTNO1I X(11)`, `CRDNUM1I X(16)`, `CRDSTS1I X(1)` — while rows 2 through 7 declare
@@ -2629,7 +2820,24 @@ Authorization: Bearer <token>
 | `TDESCnnI` | **`X(26)`** | Description — **truncated to 26 characters on the list** |
 | `TAMT00nI` | `X(12)` | Amount, on the edited mask of [§6.1](#61-the-amount-echo-mask) |
 
-Plus paging metadata and `ERRMSGI X(78)`.
+**The JSON body, member by member.** The table above gives the map provenance; this is the
+envelope a client parses, with the row members under their serialised names:
+
+| Member | Type | Notes |
+|---|---|---|
+| `rows` | array | The page. Up to **ten** elements, in screen order; an empty array at end of file, never `null` |
+| `rows[].selectionFlag` | string | The row's selection column, carried as declared |
+| `rows[].transactionId` | string | `TRNIDnnI`. Identical to the value `firstCursor` / `lastCursor` carry for that row |
+| `rows[].transactionDate` | string | `TDATEnnI` |
+| `rows[].description` | string | `TDESCnnI` — **26 characters**, truncated, per the note below |
+| `rows[].amount` | string | `TAMT00nI`, on the edited mask |
+| `pageNumber` | number | Echo into `page` |
+| `pageSize` | number | **`10`** — fixed by the map's ten row groups, not client-configurable |
+| `nextPageAvailable` | boolean | Echo it back on a forward step |
+| `firstCursor`, `lastCursor` | string | The **raw 16-digit transaction identifier** of the first and last row — readable, not sealed; see [§7.1.1](#711-the-cursor-is-not-the-same-object-on-all-three-operations) |
+| `statusMessage` | string | `ERRMSGI X(78)`. **Spelled `statusMessage`, not `errorMessage`** — this operation and [§13.2](#132-view-transaction) are the two that differ |
+
+Cross-operation comparison: [§7.1.2](#712-the-response-envelope-member-by-member).
 
 > **The list truncates the description and this document publishes the truncated width.**
 > `TDESCnnI` is `X(26)` on `COTRN00.CPY` while `TDESCI` is `X(60)` on `COTRN01.CPY`
@@ -2749,7 +2957,7 @@ Content-Type: application/json
 | category code | `TCATCDI` | `X(4)` | **yes** | Numeric |
 | source | `TRNSRCI` | `X(10)` | **yes** | |
 | description | `TDESCI` | `X(60)` | **yes** | |
-| amount | `TRNAMTI` | `X(12)` | **yes** | **Currency-tolerant** [`:L383`, `:L456`] |
+| amount | `TRNAMTI` | `X(12)` | **yes** | **Exactly `[+-]NNNNNNNN.NN`** — twelve characters, positionally gated [`:L339-L351`] *before* `NUMVAL-C` [`:L383`, `:L456`] is reached, so the intrinsic's currency tolerance is unreachable. Anything else is `400` with `'Amount should be in format -99999999.99'` on `field` `amount`. See [§6](#6-two-numeric-parsers-used-deliberately) |
 | originating date | `TORIGDTI` | `X(10)` | **yes** | Validated as a date, format `YYYY-MM-DD` [`:L60`] |
 | processing date | `TPROCDTI` | `X(10)` | **yes** | As above |
 | merchant identifier | `MIDI` | `X(9)` | **yes** | Numeric |
@@ -3082,6 +3290,8 @@ Base path `/api/reports`.
 POST /api/reports HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: application/json
+
+{ "monthlySelected": "Y", "confirmation": "Y" }
 ```
 
 **Role.** USER or ADMIN.
@@ -3124,42 +3334,96 @@ against LocalStack will not find it.
 > was queued*, not *the report is ready*. No report body is ever returned by this endpoint,
 > and no report content is available from it.
 
-**Correlating a submission with the job run it caused — what actually works.** An earlier
-revision of this section promised that the correlation identifier is "carried into the queue
-message and into every batch log record for the run", and that a `jobInstanceId` is available
-to the caller. **Both are withdrawn.** The identifier does reach the queue, as a bounded
-message header named by `CorrelationIdFilter.CORRELATION_ID_HEADER`, but
-`BatchConfig.ReportJobQueueListener` builds its job parameters from the report name, the two
-dates and the SQS **deduplication identifier** only: it neither reads that header nor restores
-it into the diagnostic context. No `jobInstanceId` is returned on the `202` either.
+**Correlating a submission with the job run it caused — one identifier, end to end.** Send
+`X-Correlation-Id` on the request, or read the generated value back from the response body and
+the `X-Correlation-Id` response header, and that single value labels **every** log record the
+submission produces: the HTTP request's own records, the publish record, the listener's records,
+the launch record, and every record the batch job and each of its steps emit.
 
-So the correlation is a two-hop join rather than one identifier end to end:
+How it works, in the two symbols that implement it. The identifier travels onto the queue as a
+bounded message header named by `CorrelationIdFilter.CORRELATION_ID_HEADER`, set by
+`ReportSubmissionService`. `BatchConfig.ReportJobQueueListener` then **reads that header and
+installs it into the diagnostic context** for the duration of the launch:
+`restoreDiagnosticContext` puts it under `CorrelationIdFilter.MDC_KEY_CORRELATION_ID` before the
+job is launched, and `releaseDiagnosticContext` removes afterwards exactly the keys it
+installed — by key rather than by clearing the context, because the listener container's threads
+are pooled and reused, so clearing would discard entries another scope owns and leaving them
+would label the next submission with this one's identity. The W3C `traceparent` header is
+restored the same way when present, which is what lets a trace span the publish hop as well.
 
-| Hop | Join key | Where to read it |
-|---|---|---|
-| HTTP request → publish | `correlationId` | Send `X-Correlation-Id`, or read it back from the response body and the response header. It appears on the submitting request's own log records and on the publish record |
-| publish → job launch | the SQS message deduplication identifier | The listener logs it against the launched job name and the Spring Batch execution id on every launch, refusal and failure arm |
+*A previous revision of this section stated the opposite* — that the listener "neither reads
+that header nor restores it into the diagnostic context", that the correlation was a **two-hop
+join** through the SQS deduplication identifier, and that closing the gap was "real work that has
+not been done". **All three statements are withdrawn.** They described behaviour this application
+does not have, and a stale operator contract is worse than none: an operator following that
+advice would have looked for a join that is not needed and would have concluded, wrongly, that
+the batch records could not be reached from a caller's identifier.
 
-A caller therefore quotes its `correlationId` in a support request, and an operator follows it
-to the publish record and from there to the launch record by the deduplication identifier.
-Closing that gap — propagating the correlation identifier into the batch run's diagnostic
-context — is real work that has not been done, and it is recorded as such rather than implied
-to be in place.
+**Two qualifications, because neither is implied by the above.**
+
+| Qualification | What it means for you |
+|---|---|
+| Your value is validated at the **HTTP boundary**, not at the queue. `CorrelationIdFilter` accepts an inbound `X-Correlation-Id` only up to `MAX_CORRELATION_ID_LENGTH` = **64** characters and only if it matches that class's anchored pattern; anything else is **refused and replaced with a generated identifier** | The propagation still spans the whole path — it simply spans it under the *substituted* value, which is the one returned in the response body and the `X-Correlation-Id` response header. **Always take the identifier you quote in a support request from the response, never from what you sent.** Verified: a 200-character value came back as a 36-character generated identifier, and that generated identifier is what labelled all 86 records of the run |
+| The listener applies its **own, looser** guard — non-blank, at most **128** characters, entirely visible ASCII — and falls back to the SQS **deduplication identifier** when the header fails it | This is defence in depth rather than a path a caller can reach: a submission through this API has already been sanitised at 64 characters, so the fallback exists for a message published by something *other* than this application's HTTP boundary, or one whose header was stripped in transit. Batch records are therefore always labelled with something, even for a message this API did not produce |
+| The correlation identifier is **not** a Spring Batch job parameter | The parameter set is still the report name, the two dates and the deduplication identifier. The identifier travels in the diagnostic context instead. This is deliberate: a correlation identifier in the parameter set would make every resubmission a distinct job instance, defeating the duplicate-submission behaviour the parameters exist to define |
+
+**No `jobInstanceId` is returned on the `202`.** That remains true — the response is an
+acceptance, so there is nothing to report an instance for yet. Reach the run by your correlation
+identifier instead, which is exactly what the propagation above is for.
 
 **Request body.**
 
-| JSON field | Map field | PIC | Required | Notes |
+| JSON member | Map field | PIC | Required | Notes |
 |---|---|---|:--:|---|
-| monthly selector | `MONTHLYI` | `X(1)` | one of three | Any non-blank value selects it |
-| yearly selector | `YEARLYI` | `X(1)` | one of three | |
-| custom selector | `CUSTOMI` | `X(1)` | one of three | Requires the six date components below |
-| start month | `SDTMMI` | `X(2)` | custom only | |
-| start day | `SDTDDI` | `X(2)` | custom only | |
-| start year | `SDTYYYYI` | `X(4)` | custom only | |
-| end month | `EDTMMI` | `X(2)` | custom only | |
-| end day | `EDTDDI` | `X(2)` | custom only | |
-| end year | `EDTYYYYI` | `X(4)` | custom only | |
-| confirmation | `CONFIRMI` | `X(1)` | **yes**, to publish | Four arms, below |
+| `monthlySelected` | `MONTHLYI` | `X(1)` | one of three | Any non-blank value selects it |
+| `yearlySelected` | `YEARLYI` | `X(1)` | one of three | |
+| `customSelected` | `CUSTOMI` | `X(1)` | one of three | Requires the six date components below |
+| `startDateMonth` | `SDTMMI` | `X(2)` | custom only | |
+| `startDateDay` | `SDTDDI` | `X(2)` | custom only | |
+| `startDateYear` | `SDTYYYYI` | `X(4)` | custom only | |
+| `endDateMonth` | `EDTMMI` | `X(2)` | custom only | |
+| `endDateDay` | `EDTDDI` | `X(2)` | custom only | |
+| `endDateYear` | `EDTYYYYI` | `X(4)` | custom only | |
+| `confirmation` | `CONFIRMI` | `X(1)` | **yes**, to publish | Four arms, below |
+| `transactionName`, `title01`, `currentDate`, `programName`, `title02`, `currentTime`, `errorMessage` | the six screen-header fields and the error line | — | no | Accepted and ignored. They exist because the record mirrors all **seventeen** fields of `app/cpy-bms/CORPT00.CPY`; a client has no reason to send them |
+
+**The left-hand column is the wire name, and this table published a description in its place for
+a commit.** The nine period members above appeared **nowhere** in this document under their real
+spellings, so a client built from the *map field* column sent `MONTHLYI` and `CONFIRMI` and got a
+`400` — measured: `{"MONTHLYI":"Y","CONFIRMI":"Y"}` returns
+`400 CARDDEMO-REQUEST-BODY-UNREADABLE`. `ReportRequest` declares **no** `@JsonProperty`
+anywhere, so the record component names **are** the JSON names; and it carries a
+`@JsonAnySetter` that **throws on any unrecognised property**, so a near-miss spelling is a
+`400` rather than a silently-ignored field. That strictness is deliberate and it is why the exact
+names matter here more than on a lenient endpoint.
+
+Two worked examples, both exercised against a running instance:
+
+```json
+{ "monthlySelected": "Y", "confirmation": "Y" }
+```
+
+```json
+{ "customSelected": "Y",
+  "startDateMonth": "01", "startDateDay": "01", "startDateYear": "2022",
+  "endDateMonth": "07", "endDateDay": "06", "endDateYear": "2022",
+  "confirmation": "Y" }
+```
+
+Measured outcomes for those bodies and their neighbours:
+
+| Body | Status | Response |
+|---|--:|---|
+| `{"monthlySelected":"Y","confirmation":"Y"}` | **202** | `{"published":true,"message":"Monthly report submitted for printing ..."}` |
+| The custom example above | **202** | `{"published":true,"message":"Custom report submitted for printing ..."}` |
+| All seventeen members present, `yearlySelected` set | **202** | `{"published":true,"message":"Yearly report submitted for printing ..."}` |
+| `{"monthlySelected":"Y"}` — confirmation omitted | **200** | `{"published":false,"message":"Please confirm to print the Monthly report..."}` |
+| `{"MONTHLYI":"Y","CONFIRMI":"Y"}` — map field names | **400** | `CARDDEMO-REQUEST-BODY-UNREADABLE` |
+
+Note the first two rows against the fourth: **`200` and `202` are both success statuses here and
+they mean different things** — `200` is the confirmation prompt and publishes nothing, `202` is
+the acceptance. A client that treats any 2xx as "submitted" will report a report that was never
+queued.
 
 With no selector at all the source answers
 `'Select a report type to print report...'` [`app/cbl/CORPT00C.cbl:L438`].
@@ -3284,6 +3548,19 @@ service, then the confirmation gate, then the publish.
 | Declined at the confirmation gate, or a prompt is required | `200 OK` | **Nothing was published** |
 | Validation refused | `400` | Nothing was published |
 
+**The body carries exactly two members**, on both the `202` and the `200` arms:
+
+| Member | Type | Notes |
+|---|---|---|
+| `published` | boolean | **The outcome a client branches on.** `true` only on the `202` arm. On every `200` arm it is `false`, which is how the four no-publish terminations are distinguished from the accepted one — a `200` is *not* a failure and *not* a publication |
+| `message` | string | The source's own screen message for that arm, relayed byte for byte; the four-state gate's wordings are tabulated above |
+
+And that is the whole body. **There is no job identifier, no queue receipt, no message
+identifier and no `jobInstanceId`** — for the correlation route that does work, see
+[§15.1.1](#1511-this-endpoint-accepts-a-job-it-does-not-return-a-report). A client that needs
+to know whether the job ran, rather than whether it was accepted, is asking a question this
+endpoint does not answer.
+
 **Side effects.** On the accepted arm: **one message published to the SQS FIFO queue whose
 logical name is `carddemo-report-jobs` and whose physical name is
 `carddemo-report-jobs.fifo`** ([§15.1.1](#1511-this-endpoint-accepts-a-job-it-does-not-return-a-report)).
@@ -3360,7 +3637,24 @@ Authorization: Bearer <token>
 | `LNAMEnnI` | `X(20)` | Last name |
 | `UTYPEnnI` | `X(1)` | User type, `A` or `U` |
 
-Plus paging metadata and `ERRMSGI X(78)`.
+**The JSON body, member by member.** The table above gives the map provenance; this is the
+envelope a client parses, with the row members under their serialised names:
+
+| Member | Type | Notes |
+|---|---|---|
+| `rows` | array | The page. Up to **ten** elements, in identifier order; an empty array at end of file, never `null` |
+| `rows[].userId` | string | `USRIDnnI` |
+| `rows[].firstName` | string | `FNAMEnnI` |
+| `rows[].lastName` | string | `LNAMEnnI` |
+| `rows[].userType` | string | `UTYPEnnI`, `A` or `U` |
+| `pageNumber` | number | Echo into `page` |
+| `pageSize` | number | **`10`** — fixed by the map's ten row groups, not client-configurable |
+| `nextPageAvailable` | boolean | Echo it back on a forward step |
+| `firstUserId`, `lastUserId` | string | The **raw 8-character user identifier** of the first and last row. **These are this operation's cursor members** — echo them into `firstKey` / `lastKey`; it does *not* publish `firstCursor` / `lastCursor`, and assuming otherwise yields a null cursor ([§7.1.1](#711-the-cursor-is-not-the-same-object-on-all-three-operations)). `lastUserId` is populated only on a full page |
+| `errorMessage` | string | `ERRMSGI X(78)`. Carries the boundary notice of [§7.2](#72-boundary-behaviour), which is why it is present on an ordinary successful page |
+
+There is **no** row-count member: the count is `rows.length`. `rowCount` is a *request*
+parameter only. Cross-operation comparison: [§7.1.2](#712-the-response-envelope-member-by-member).
 
 > **No password field appears on this map, and none appears in the response.**
 > `COUSR00.CPY` declares 59 input fields and **not one of them is a password**. Neither the
@@ -3610,7 +3904,25 @@ with the wrong reason and the wrong message.
 > with no lower-case letters. See [§18.3](#183-medium), finding M-11.
 
 **Response — `200 OK`.** The updated user **without any password member**, plus the source's
-message.
+message. An earlier revision of this section described the body in prose only, which left the
+one member a client most needs unnamed:
+
+| Member | Type | Notes |
+|---|---|---|
+| `userId` | string | The record's identifier |
+| `firstName` | string | As stored after the operation |
+| `lastName` | string | As stored after the operation |
+| `userType` | string | `A` or `U` |
+| `errorMessage` | string | The source's own message for the arm taken |
+| **`updateApplied`** | boolean | **Whether the row was actually rewritten.** `false` means every submitted field equalled the stored one and the source deliberately wrote nothing |
+
+**`updateApplied` is the member to branch on, and a `200` alone does not mean a write
+happened.** It is the transcription of `WS-USR-MODIFIED` as it stood at the write decision
+[`app/cbl/COUSR02C.cbl:L236`]. Both arms are successes — the no-change arm is the source
+declining to rewrite an identical record, not a failure — so both answer `200`, and the status
+code cannot distinguish them. A client that treats `200` as "updated" will report a write that
+never occurred. **There is no password member under any spelling**, on this or any other
+operation.
 
 **Side effects.** One user row updated — **but only when at least one field actually
 differs**, see below.
@@ -4648,6 +4960,42 @@ published `502` for it.**
   one operation that must not carry it.
 * **Remediation.** Complete.
 
+**M-33 — An unhandled failure answered `500` with Spring's default body and no `correlationId`,
+and its only log record carried an empty diagnostic context.**
+
+* **Severity: Medium.** Every *claimed* failure — a controller's own refusal, a framework-boundary
+  refusal, a container-level refusal — already carried `errorCode` and `correlationId` in the
+  envelope. An **unclaimed** one did not. With the database stopped,
+  `POST /api/auth/signon` answered `500` with `Content-Type: application/json` and
+  `{timestamp, status, error, path}`: no `errorCode`, no `correlationId`, and not the
+  `application/problem+json` this API publishes everywhere else. Worse, the response header carried
+  `X-Correlation-Id` while the matching log record — the container's own, from
+  `StandardWrapperValve` — carried `correlationId=""`, `traceId=""` and `spanId=""`, so the one
+  identifier the client held joined to nothing. That is the failure class in which an incident
+  starts, so it is the class where the join matters most, and it contradicted
+  [§1.2](#12-how-to-exercise-this-api)'s statement that the identifier is echoed into every error
+  body and every log line and [§8.1](#81-stable-error-codes)'s that `correlationId` is always
+  present.
+* **Locator.** Not a source finding; the corpus has no correlation identifier to lose. The
+  mechanism is mechanical: `WebConfig.FrameworkBoundaryExceptionResolver` claims four framework
+  exception types and declines the rest, so a residual exception propagated out of the
+  `DispatcherServlet`; the container logged it *after* `CorrelationIdFilter`'s `finally` had
+  restored the diagnostic context, then dispatched to Spring Boot's registered `/error` page, whose
+  body `WebConfig.ProblemJsonErrorReportValve` correctly refuses to overwrite.
+* **Status. Remediated.** `WebConfig.UnhandledFailureExceptionResolver` is appended as the **last**
+  MVC exception resolver, so it claims only what every other layer declined. Because a resolver runs
+  inside the filter chain, the ERROR record it writes carries `correlationId`, `traceId` and
+  `spanId`; because the exception is answered rather than rethrown, the container writes no
+  uncorrelated record and never dispatches to `/error`. The body is the standard envelope with
+  `CARDDEMO-INTERNAL-FAILURE` and the request's `correlationId` under
+  `Content-Type: application/problem+json`. **No security relaxation:**
+  `AccessDeniedException` and `AuthenticationException` are declined by type, so
+  `ExceptionTranslationFilter` still publishes the `401` and `403` envelopes unchanged — asserted by
+  a test rather than trusted.
+* **Remediation.** Complete. The stack trace is still logged, so nothing diagnostic was traded for
+  the correlation; the request method and URI are still withheld, per the same disclosure rule that
+  governs the framework boundary.
+
 ### 18.4 Low
 
 **L-1 — The source's sign-on messages distinguish an unknown identifier from a wrong
@@ -4795,14 +5143,40 @@ registered in the `nav`, and every document it links to is present - so the read
 unconditional, measured with MkDocs 1.6.1 on Friday 7 August 2026. That run publishes eight
 pages - `index.md`, `project-guide.md`, `technical-specifications.md`, this page,
 `architecture-before-after.md`, `onboarding-guide.md`, `validation-gates.md` and the static
-`executive-presentation.html` - and every internal link in every one of them resolves.
-Reproduce it with `mkdocs build --strict` from the repository root, MkDocs 1.6.1 with
-`techdocs-core` and `mermaid2`.
+`executive-presentation.html`.
 
-**The rendered page carries 107 tables and 32 fenced code blocks, and all 92 of its distinct
+What that exit status does and does not establish is worth separating, because an earlier
+generation of this paragraph ran the two together and asserted that every internal link in
+every one of the eight pages resolves. A clean strict build establishes it for the **seven
+Markdown pages** only. It establishes nothing about the eighth: MkDocs copies
+`executive-presentation.html` to the site root byte-identically and parses no part of it, so
+no `validation` setting can see its hrefs, and a wrong one there produces a 404 on the
+published site while the build still exits 0 with no warning. That is exactly what had
+happened - the static page carried 45 source-file hrefs, every one of which 404ed once
+published - and the strict build reported nothing, because there was nothing in its remit to
+report. Its 32 cross-document hrefs now use the published directory form (`validation-gates/`
+and so on) and its 13 repository-root references are named as code spans rather than linked,
+so all 45 are correct today; but they are hand-maintained, and the only thing that proves them
+is requesting each one from a served copy of the built site. Reproduce both halves with MkDocs
+1.6.1, `techdocs-core` and `mermaid2`:
+
+```bash
+mkdocs build --strict --site-dir /tmp/carddemo-site        # the seven Markdown pages
+cd /tmp/carddemo-site && python3 -m http.server 8600 &     # then request each href
+grep -o 'href="[^"#]*"' executive-presentation.html | sort -u
+```
+
+Build into a path **outside** the repository. A bare `mkdocs build --strict` writes `./site/`,
+which is git-ignored but still on disk, and the credential-hygiene walk in `GateVerificationTest`
+then has a tree of generated HTML to scan; §5.1 of `docs/onboarding-guide.md` gives the same
+command with the same `--site-dir` for the same reason.
+
+**The rendered page carries 107 tables and 33 fenced code blocks, and all 92 of its distinct
 in-page anchors resolve to a heading.** The page publishes 92 heading identifiers, so the two
 figures being equal is itself a fact rather than a coincidence: every anchor resolves **and**
-every heading is reachable from at least one link in the body.
+every heading is reachable from at least one link in the body. *The fence count was 32 until
+the two-command reproduction block above was added; it is restated here rather than left to
+drift, which is the whole point of publishing a count.*
 
 *Three earlier readings are withdrawn, and the last of them is withdrawn for a reason worth
 recording rather than a stale one.* The first published 83 tables with 81 anchors and the second

@@ -48,7 +48,7 @@
  * configurations and defaults, and its common failure modes and troubleshooting. This docstring is that
  * artefact - chosen over a README deliberately, so the documentation travels with the compilation unit and is
  * gated by the same build - and the four headings below are those four bullets in order. Clause B adds
- * <em>"document public APIs: purpose, inputs/outputs, side effects, error modes"</em>, which the four sibling
+ * <em>"document public APIs: purpose, inputs/outputs, side effects, error modes"</em>, which the five sibling
  * classes discharge member by member; this file documents the seam between them.
  *
  * <h2>What it does</h2>
@@ -81,7 +81,7 @@
  * empty-but-reachable {@code 1400-COMPUTE-FEES} paragraph of {@code app/cbl/CBACT04C.cbl}; and a redundant
  * index assignment in {@code app/cbl/CBSTM03A.CBL}.
  *
- * <h3>The four classes, and what each replaces</h3>
+ * <h3>The five classes, and what each replaces</h3>
  *
  * <dl>
  *   <dt>{@link CorrelationIdFilter}</dt>
@@ -119,6 +119,19 @@
  *       administrative routes and {@code ACCT-ID} of {@code app/cpy/CVACT01Y.cpy:L18} on the account route
  *       into the trace store. It substitutes the route template, so the attribute still says which route ran
  *       and identifies nobody. Rule 1 Clause D, principle of least privilege.</dd>
+ *
+ *   <dt>{@link BatchJobSpanNamingConvention}</dt>
+ *   <dd>Replaces nothing, for the same reason as its sibling above: the corpus exports no spans. It exists
+ *       because exporting them introduced a legibility defect the corpus could not have. Every job name in
+ *       this system is a JCL member name and therefore upper case, {@code AbstractJob} hands that name to
+ *       Micrometer Tracing as the observation's contextual name, and
+ *       {@code SpanNameUtil.toLowerHyphen} inserts a hyphen before every upper-case character - so
+ *       {@code POSTTRAN} reached the trace store as {@code p-o-s-t-t-r-a-n} and {@code CARDDEMO-PIPELINE} as
+ *       {@code c-a-r-d-d-e-m-o--p-i-p-e-l-i-n-e}, traced but findable under no name an operator would search
+ *       for. It supplies an already-lower-case contextual name, which that transform leaves untouched, and
+ *       leaves the observation name and every tag inherited so the metric contract above is unchanged. QA
+ *       finding B-12, Rule 1 Clause A, measurable behaviour. Registered on each of the seven job builders
+ *       explicitly, because Spring Batch resolves no convention bean from the context.</dd>
  * </dl>
  *
  * <h3>The four instruments: four counters, ten series</h3>
@@ -204,7 +217,11 @@
  *       {@code MeterRegistry}, the Prometheus scrape endpoint, the Micrometer tracer and the OTLP exporter from
  *       the {@code management.*} properties in {@code application.yml}. {@link MetricsConfig} <em>defines</em>
  *       the four metric names and registers their ten series against the injected registry. Nothing
- *       duplicates anything.</li>
+ *       duplicates anything. It declares one bean and one only, and that bean defines no instrument: a
+ *       {@code MeterFilter} that removes Spring Batch 5.2.4's <em>duplicate</em> registration of
+ *       {@code spring.batch.job.active}, which the framework binds twice under one name with two different
+ *       tag-key sets. That is de-duplicating auto-configured telemetry, not registering any, and
+ *       {@code MetricsConfig} states the conflict, the order that decides it and the alternatives rejected.</li>
  *   <li><strong>Nothing here restates root-owned configuration.</strong> The scrape configuration lives only
  *       in {@code observability/prometheus.yml}; the Grafana datasource and dashboard live only in
  *       {@code observability/grafana/provisioning/datasources/datasource.yml} and
@@ -297,7 +314,11 @@
  *       <em>readiness</em> path with a five-second timeout, which is the budget the probes below are sized
  *       against.</li>
  *   <li>{@code /actuator/prometheus} - the scrape target, polled every <strong>15 seconds</strong> by
- *       {@code observability/prometheus.yml} under the job name {@code carddemo-app}.</li>
+ *       {@code observability/prometheus.yml} under the job name {@code carddemo-app}. It is not the only
+ *       collection path: three of the four counters below are written by the batch submission process, which
+ *       ends when its job ends and has no endpoint to scrape, so it <em>pushes</em> its final values to the
+ *       Pushgateway and {@code observability/prometheus.yml} scrapes that under the job name
+ *       {@code carddemo-pushgateway}.</li>
  *   <li><strong>Jaeger</strong> - the trace user interface in the Compose topology, receiving spans through
  *       {@code management.otlp.tracing.endpoint}.</li>
  *   <li><strong>Grafana</strong> - dashboards provisioned from
@@ -305,12 +326,12 @@
  *       no manual configuration step.</li>
  * </ul>
  *
- * <p><strong>Bringing the topology up. {@code docker compose up -d} starts all six services, and the
+ * <p><strong>Bringing the topology up. {@code docker compose up -d} starts all seven services, and the
  * application is one of them.</strong> The application is a Compose service, so it does not have to be run
  * separately from a built JAR.
- * {@code docker-compose.yml} declares <strong>six</strong> services on the {@code carddemo} network - the
- * {@code app} service itself, PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana - plus three named
- * volumes. So a single {@code docker compose up -d} builds the image from the repository {@code Dockerfile},
+ * {@code docker-compose.yml} declares <strong>seven</strong> services on the {@code carddemo} network - the
+ * {@code app} service itself, PostgreSQL 16, LocalStack, Jaeger, the Pushgateway, Prometheus and Grafana -
+ * plus four named volumes. So a single {@code docker compose up -d} builds the image from the repository {@code Dockerfile},
  * brings the application up alongside its dependencies, and gives Prometheus a scrape target reachable on the
  * Compose network as {@code app:8080}, which is the literal
  * {@code observability/prometheus.yml} names and cannot resolve any other way. The application waits on the
@@ -352,8 +373,14 @@
  *       {@code true}. This is why naming a contributor in a group before its bean exists makes the
  *       application unbootable - a fail-fast that is wanted.</li>
  *   <li>{@code management.endpoint.health.group.readiness.include} is
- *       {@code readinessState,db,s3,sqs} - the substrate: the auto-configured datasource contributor plus the
- *       two declared in {@link HealthIndicators}. {@code group.liveness.include} is {@code livenessState}
+ *       {@code readinessState,db,s3,sqs} - the substrate, and all three substrate contributors are declared
+ *       in {@link HealthIndicators}. {@code db} is deliberately <em>not</em> the auto-configured datasource
+ *       contributor: that one has no deadline of its own, so it inherited the pool's 30 s
+ *       {@code connection-timeout} and a measured readiness probe with the database stopped took 30 009 ms -
+ *       six times the container health check's own five-second timeout - while the two AWS probes answered
+ *       inside 1 500 ms. {@code management.health.db.enabled} is therefore {@code false} and
+ *       {@code dbHealthIndicator} takes the same {@code db} key with the same 1 500 ms budget, so all three
+ *       contributors now share one deadline. {@code group.liveness.include} is {@code livenessState}
  *       alone, so a dependency outage takes the instance out of rotation <strong>without</strong> triggering
  *       a restart.</li>
  *   <li>{@code management.tracing.sampling.probability} is set explicitly to {@code 1.0} in the base profile
@@ -527,7 +554,7 @@
  *
  *   <dt>Live evidence for the container-dependent gates - what remains {@code Not available}, and what no
  *       longer does. Severity <strong>Medium</strong></dt>
- *   <dd><strong>A container runtime is present and the six-service stack is provisioned</strong>, so the
+ *   <dd><strong>A container runtime is present and the seven-service stack is provisioned</strong>, so the
  *       container prerequisite is not the obstacle, and {@code Not available} is reserved
  *       for evidence that is genuinely absent. What is genuinely absent is a captured run of the frozen
  *       COBOL on real z/OS: {@code src/test/java/com/cardemo/e2e} is authored and the Gate 1 expectation is

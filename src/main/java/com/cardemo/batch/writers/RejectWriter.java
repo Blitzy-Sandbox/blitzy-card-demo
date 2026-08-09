@@ -47,7 +47,15 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
-import io.awspring.cloud.s3.S3Resource;
+
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.Delete;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Error;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -680,6 +688,16 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     private static final String WRITE_IO_ERROR_STATUS = FileStatus.IO_ERROR_FIRST_BYTE + "0";
 
     /**
+     * How many keys one batched delete request may carry.
+     *
+     * <p>The object store's own limit for a multiple-object delete, and the same thousand-key page size whose
+     * silent application to the <em>listing</em> is the defect {@link #objectStoreClient} exists to prevent.
+     * Here the limit is honoured explicitly by batching rather than encountered implicitly by truncation, which
+     * is the difference between the two.
+     */
+    private static final int DELETE_BATCH_LIMIT = 1000;
+
+    /**
      * Object-storage operations, injected already configured.
      *
      * <p>Declared as the {@code S3Operations} interface that {@code io.awspring.cloud.s3.S3Template}
@@ -688,6 +706,30 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * credential is read here, and no environment variable is consulted directly.
      */
     private final S3Operations s3Operations;
+
+    /**
+     * The object-store client, held for exactly one purpose: paging a listing.
+     *
+     * <p><strong>Why a second storage dependency exists at all.</strong> {@code S3Operations.listObjects}
+     * issues one {@code ListObjectsV2} request and returns that single page, and a page carries at most a
+     * thousand keys. This generation's durable parts are listed three times - to adopt a prior attempt, to
+     * concatenate them into the generation object, and to remove them afterwards - so a run that rejected more
+     * records than a thousand chunks can hold saw only the first thousand parts on every one of those three
+     * passes. The generation object was then assembled from a <em>prefix</em> of the run's rejects and reported
+     * as the whole of it, the remaining parts were left behind under the staging prefix, and nothing failed:
+     * a regulated audit trail silently truncated at exactly a thousand parts, which looks identical to success.
+     *
+     * <p>The paginator walks every page, which is what makes the concatenation complete at any reject volume.
+     * The same client is used for the same reason by
+     * {@code com.cardemo.batch.readers.TransactionBackupReader} and
+     * {@code com.cardemo.batch.readers.CombinedTransactionReader}, so this is the codebase's one established
+     * remedy for the defect rather than a second approach to it.
+     *
+     * <p>It is injected, never constructed; no endpoint and no credential is read here. It is used read-only,
+     * for {@code listObjectsV2Paginator} and nothing else - every upload, download and delete still goes
+     * through {@code S3Operations}.
+     */
+    private final S3Client objectStoreClient;
 
     /**
      * The application's sole meter owner, through which this writer reports a rejected record.
@@ -776,6 +818,8 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      *
      * @param s3Operations the object-storage operations, ordinarily the auto-configured
      *        {@code io.awspring.cloud.s3.S3Template}; must not be {@code null}
+     * @param objectStoreClient the object-store client, used read-only and for paging a listing alone; see the
+     *        field documentation for the truncation it exists to prevent; must not be {@code null}
      * @param metricsConfig the application's sole meter owner, through which the rejected-record counter is
      *        reported; must not be {@code null}
      * @param fileStatusMapper the file-status-to-exception mapper; must not be {@code null}
@@ -801,12 +845,15 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      */
     public RejectWriter(
             final S3Operations s3Operations,
+            final S3Client objectStoreClient,
             final MetricsConfig metricsConfig,
             final FileStatusMapper fileStatusMapper,
             @Value("${carddemo.aws.s3.batch-output-bucket}") final String outputBucket,
             @Value("${carddemo.aws.s3.gdg-prefixes.daly-rejs}") final String rejectGdgPrefix,
             @Value("#{stepExecution}") final StepExecution stepExecution) {
         this.s3Operations = Objects.requireNonNull(s3Operations, "s3Operations must not be null");
+        this.objectStoreClient =
+                Objects.requireNonNull(objectStoreClient, "objectStoreClient must not be null");
         this.metricsConfig = Objects.requireNonNull(metricsConfig, "metricsConfig must not be null");
         this.fileStatusMapper = Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
         if (outputBucket == null || outputBucket.isBlank()) {
@@ -1022,35 +1069,38 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * written in - which is the order they must be concatenated in for the generation to hold the run in
      * production order.
      *
+     * <p><strong>EVERY page, not the first.</strong> This is the whole of the truncation described on
+     * {@link #objectStoreClient}: a single {@code ListObjectsV2} carries at most a thousand keys, and every one
+     * of this writer's three uses of the listing - adopting a prior attempt, concatenating the generation, and
+     * removing the parts afterwards - would then see a prefix of the parts and treat it as all of them. The
+     * paginator issues one request per page and streams the results, so peak memory is one page while the
+     * returned list is complete.
+     *
+     * <p>The keys are sorted explicitly rather than relying on the store's own ordering. The listing does
+     * arrive in UTF-8 binary key order, so the sort is a no-op in practice; it is kept because the
+     * concatenation order <em>is</em> the record order of a regulated audit file, and a guarantee that
+     * load-bearing belongs in this method rather than in an assumption about the store.
+     *
+     * <p>A directory marker - a key ending in the separator, which some tools create - is skipped: it holds no
+     * record and concatenating its zero bytes would still add it to the part census.
+     *
      * @return the part keys, never {@code null} and possibly empty
      */
     private List<String> listParts() {
         final List<String> keys = new ArrayList<>();
-        for (final S3Resource part : s3Operations.listObjects(outputBucket, partPrefix())) {
-            final String key = partKeyOf(part);
-            if (key != null) {
-                keys.add(key);
+        for (final S3Object listed : objectStoreClient.listObjectsV2Paginator(ListObjectsV2Request.builder()
+                        .bucket(outputBucket)
+                        .prefix(partPrefix())
+                        .build())
+                .contents()) {
+            final String key = listed.key();
+            if (key == null || key.isBlank() || key.charAt(key.length() - 1) == KEY_SEGMENT_SEPARATOR) {
+                continue;
             }
+            keys.add(key);
         }
         Collections.sort(keys);
         return keys;
-    }
-
-    /**
-     * The key of one listed part.
-     *
-     * @param part the listed resource
-     * @return its key, or {@code null} when the store did not report one
-     */
-    private static String partKeyOf(final S3Resource part) {
-        try {
-            final String location = part.getFilename();
-            return location == null || location.isBlank() ? null : location;
-        } catch (final RuntimeException unavailable) {
-            LOGGER.debug("A listed {} part did not report a filename ({}), so it is not adopted",
-                    DALYREJS_DD_NAME, unavailable.getClass().getName());
-            return null;
-        }
     }
 
     /**
@@ -1228,17 +1278,49 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * <p>A failure to delete is reported and does not fail the step. The records are safe either way, and
      * turning a completed posting run into a failure over a leftover staging object would be the worse
      * outcome; a subsequent attempt would in any case overwrite the same deterministic keys.
+     *
+     * <p>The keys are removed in batches rather than one request each. A run that rejects heavily produces one
+     * part per commit interval, so a per-key loop meant thousands of sequential round trips at the end of an
+     * otherwise finished run - the "obvious inefficiency" the engineering standard asks to be avoided when the
+     * remedy is a standard one. The batch request reports failures per key, so nothing about the diagnostic is
+     * coarsened by grouping them.
      */
     private void discardParts() {
-        for (final String part : listPartsQuietly()) {
-            try {
-                s3Operations.deleteObject(outputBucket, part);
-            } catch (final RuntimeException deleteFailure) {
-                LOGGER.warn("{} could not delete the promoted part {} of generation {}; the generation object"
-                                + " is committed and holds every record, so an operator can remove the"
+        final List<String> parts = listPartsQuietly();
+        for (int from = 0; from < parts.size(); from += DELETE_BATCH_LIMIT) {
+            final List<String> batch = parts.subList(from, Math.min(from + DELETE_BATCH_LIMIT, parts.size()));
+            discardPartBatch(batch);
+        }
+    }
+
+    /**
+     * Removes one batch of promoted parts, reporting rather than raising.
+     *
+     * @param batch the part keys to remove, at most {@link #DELETE_BATCH_LIMIT} of them
+     */
+    private void discardPartBatch(final List<String> batch) {
+        try {
+            final DeleteObjectsResponse outcome = objectStoreClient.deleteObjects(DeleteObjectsRequest.builder()
+                    .bucket(outputBucket)
+                    .delete(Delete.builder()
+                            .objects(batch.stream()
+                                    .map(key -> ObjectIdentifier.builder().key(key).build())
+                                    .toList())
+                            .build())
+                    .build());
+            for (final S3Error refused : outcome.errors()) {
+                LOGGER.warn("{} could not delete the promoted part {} of generation {} ({}); the generation"
+                                + " object is committed and holds every record, so an operator can remove the"
                                 + " leftover part safely",
-                        DALYREJS_DD_NAME, part, generationPrefix);
+                        DALYREJS_DD_NAME, refused.key(), generationPrefix, refused.code());
             }
+        } catch (final RuntimeException deleteFailure) {
+            // The throwable is carried so the root cause is preserved rather than swallowed. It is the store's
+            // own failure and names no reject record, no field and no customer datum.
+            LOGGER.warn("{} could not delete {} promoted part(s) of generation {}; the generation object is"
+                            + " committed and holds every record, so an operator can remove the leftover"
+                            + " parts safely",
+                    DALYREJS_DD_NAME, Integer.valueOf(batch.size()), generationPrefix, deleteFailure);
         }
     }
 

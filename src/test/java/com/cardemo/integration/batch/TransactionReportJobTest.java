@@ -34,7 +34,6 @@
 package com.cardemo.integration.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -60,7 +59,6 @@ import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
-import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.job.builder.JobBuilder;
@@ -1371,31 +1369,63 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
 
         /**
-         * An inverted window is refused before any step runs, and nothing is written.
+         * An inverted window runs to completion and selects nothing, which is what the source does with one.
          *
-         * <p>Purpose: an inverted range is an invalid request rather than an empty report, and the refusal names the
-         * offending parameter. Asserting that no generation exists afterwards is what proves the refusal happened
-         * before the first step rather than inside it.
+         * <p>Purpose: assert the resolution of finding B-15, severity Major. This case previously asserted that an
+         * inverted window was <em>refused</em>, and that was an invented behaviour. Nothing in the corpus compares
+         * the two bounds: {@code app/cbl/CORPT00C.cbl}, the only producer of this period, validates each field and
+         * each assembled date and never the pair, and {@code app/cbl/CBTRN03C.cbl:466-482} and {@code :605-621}
+         * test {@code DATEPARM-STATUS} - the outcome of the {@code OPEN} and the {@code CLOSE} - and nothing else.
+         * An inverted window on the mainframe is a request that selects nothing, because
+         * {@code app/proc/TRANREPT.prc:45-46} expresses it as
+         * {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)} and no record
+         * satisfies both halves when the bounds cross.
+         *
+         * <p>The added guard was not merely unfaithful, it was load-bearing in a failure: the online tier is
+         * faithful and accepts such a submission with HTTP 202, so the two tiers disagreed about validity, and the
+         * FIFO queue that carries submissions has a single message group - which a submission that can never be
+         * accepted blocks indefinitely.
+         *
+         * <p>Inputs: a record squarely inside the ordered window, then the window inverted. Output: a completed run
+         * whose report is the three-line end-of-data closing block with zero totals - byte-for-byte the shape
+         * {@code anEmptyInWindowSetStillEmitsTheClosingBlock} asserts, reached here by filtering rather than by
+         * having nothing to filter. Side effects: the ordinary generations are written, because every step runs.
+         *
+         * <p>Error modes: a tier that still refuses the window throws instead of completing; a tier that ignored
+         * the window altogether would emit the seeded record's detail line and fail on the line count.
          */
         @Test
-        @DisplayName("a window whose start is after its end is refused before any step runs")
+        @DisplayName("a window whose start is after its end completes and selects nothing, as the INCLUDE COND "
+                + "of app/proc/TRANREPT.prc:45-46 does")
         @Transactional(propagation = Propagation.NOT_SUPPORTED)
-        void aWindowWhoseStartIsAfterItsEndIsRefused() {
-            final Job job = transactionReportJob;
-            final JobParameters inverted = runIdParameters(Map.of(
-                    TransactionReportProcessor.START_DATE_JOB_PARAMETER, reportEndDate,
-                    TransactionReportProcessor.END_DATE_JOB_PARAMETER, reportStartDate));
+        void aWindowWhoseStartIsAfterItsEndSelectsNothing() {
+            final String transactionId = probeTransactionId(1);
+            seedTransaction(transactionId, firstSeededCardNumber(), new BigDecimal("1234.56"),
+                    fixedClockProcessingTimestamp());
 
-            assertThatThrownBy(() -> launchJob(job, inverted))
-                    .as("PARM-START-DATE and PARM-END-DATE at app/proc/TRANREPT.prc:41-42 bound an inclusive "
-                            + "range, and an inverted range is not an empty report but an invalid request; the "
-                            + "validator names the offending parameter rather than failing anonymously")
-                    .isInstanceOf(RuntimeException.class)
-                    .hasMessageContaining(TransactionReportProcessor.START_DATE_JOB_PARAMETER)
-                    .hasMessageContaining("must not be after");
-            assertThat(objectsUnder(batchOutputBucket, backupPrefix))
-                    .as("a refused launch reaches no step, so no generation is created")
+            final JobExecution execution = launchJob(transactionReportJob, runIdParameters(Map.of(
+                    TransactionReportProcessor.START_DATE_JOB_PARAMETER, reportEndDate,
+                    TransactionReportProcessor.END_DATE_JOB_PARAMETER, reportStartDate)));
+
+            assertRunCompleted(execution);
+
+            final List<String> lines = reportLines(execution);
+            assertThat(lines)
+                    .as("the crossed window filters every record, so the driving read reaches end of data "
+                            + "immediately and app/cbl/CBTRN03C.cbl:197-203 emits exactly the closing block: a "
+                            + "page total, the PIC X(133) VALUE ALL '-' rule line, and a grand total")
+                    .hasSize(3);
+            assertThat(linesStartingWith(lines, transactionId))
+                    .as("and the record that sits inside the ORDERED window contributes no detail line to the "
+                            + "crossed one, which is the whole of the inclusive filter's behaviour")
                     .isEmpty();
+            assertThat(editedTotalOf(onlyLineStartingWith(lines, grandTotalLabel)))
+                    .as("nothing was selected, so the grand total is zero - not absent, and not an error")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(objectsUnder(batchOutputBucket, backupPrefix))
+                    .as("every step ran, so STEP01R catalogued its backup generation exactly as an ordered "
+                            + "window would have - an inverted window is a selection outcome, not a refusal")
+                    .isNotEmpty();
         }
     }
 

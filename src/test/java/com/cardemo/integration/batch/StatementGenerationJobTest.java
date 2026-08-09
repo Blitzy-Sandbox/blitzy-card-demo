@@ -1357,6 +1357,21 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                 .anySatisfy(message -> assertThat(message)
                         .contains(FileService.Dd.TRNXFILE.ddName()));
 
+        // FINDING B-13, severity Minor. The job-level exit code and message, which used to be an ordinary
+        // FAILED with an EMPTY description for this abend. A FatalProcessingException carries abend 999 and
+        // return code 12 (AAP 0.7.2.2), and POSTTRAN and INTCALC both publish that at job level - so an
+        // operator reading BATCH_JOB_EXECUTION for this job could not tell return code 8 from 12 and had to
+        // descend into BATCH_STEP_EXECUTION to find out that a genuine abend had occurred.
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("an abend is return code 12, and the exit vocabulary is shared with the other three "
+                        + "jobs: COMPLETED, COMPLETED WITH REJECTS, FAILED, ABEND")
+                .isEqualTo("ABEND");
+        assertThat(execution.getExitStatus().getExitDescription())
+                .as("and it carries the abend code and the return code, so the batch metadata alone is "
+                        + "enough to classify the failure")
+                .contains("abend code 999")
+                .contains("return code 12");
+
         final ExecutionContext jobContext = execution.getExecutionContext();
         assertThat(jobContext.getInt(workRecordCountContextEntry))
                 .as("an empty SORTIN yields an empty SORTOUT rather than a failed sort step")

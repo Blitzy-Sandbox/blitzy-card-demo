@@ -55,7 +55,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 7,
         "w": 6,
         "x": 0,
         "y": 1
@@ -124,7 +124,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 7,
         "w": 6,
         "x": 6,
         "y": 1
@@ -223,7 +223,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 7,
         "w": 12,
         "x": 12,
         "y": 1
@@ -234,7 +234,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -284,7 +284,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 8
       },
       "id": 5,
       "panels": [],
@@ -318,10 +318,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 12,
         "x": 0,
-        "y": 7
+        "y": 9
       },
       "id": 6,
       "options": {
@@ -413,7 +413,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Rejections per second over a five-minute window, broken out by the same five exact reject codes as the panel to the left, so a burst can be attributed to a specific validation failure while a run is still in progress.\n\nSame source, same labels and the same two caveats as that panel: 103 shadows 102 whenever both conditions fail, because the checks at app/cbl/CBTRN02C.cbl:L407-L420 are sequential and unguarded; and 109 is expected to remain flat at zero because it is assigned only on the already-validated path at :L554-L557 and is never consumed as a reject.\n\nUNIT. The panel unit is cps (counts/sec), a pinned-Grafana Throughput unit, so the y-axis and the tooltip read in the same per-second terms the rate() query returns. It was previously the unitless short, which rendered a per-second value as a bare count and invited a reader to take it for a cumulative total.",
+      "description": "Rejections per second over a five-minute window, broken out by the same five exact reject codes as the panel to the left, so a burst can be attributed to a specific validation failure while a run is still in progress.\n\nSame source, same labels and the same two caveats as that panel: 103 shadows 102 whenever both conditions fail, because the checks at app/cbl/CBTRN02C.cbl:L407-L420 are sequential and unguarded; and 109 is expected to remain flat at zero because it is assigned only on the already-validated path at :L554-L557 and is never consumed as a reject.\n\nUNIT. The panel unit is cps (counts/sec), a pinned-Grafana Throughput unit, so the y-axis and the tooltip read in the same per-second terms the rate() query returns. It was previously the unitless short, which rendered a per-second value as a bare count and invited a reader to take it for a cumulative total.\n\nNarrow viewports: at a 375 px width this legend's longest label, the forty-six characters of 103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION, exceeds the 325 px legend box and is clipped without an ellipsis, and that one row's per-second value is reachable only by scrolling the legend sideways. The label is NOT shortened, because it is byte-identical to the legacy description at app/cbl/CBTRN02C.cbl:L419 and that fidelity is deliberate. Read the full five labels with their values from the cumulative bar gauge to the left, which truncates with a proper ellipsis and keeps every value visible at that width. See DECISION_LOG.md DL-RM-15.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -466,10 +466,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 12,
         "x": 12,
-        "y": 7
+        "y": 9
       },
       "id": 7,
       "options": {
@@ -563,7 +563,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 22
       },
       "id": 8,
       "panels": [],
@@ -631,7 +631,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 19
+        "y": 23
       },
       "id": 9,
       "options": {
@@ -709,7 +709,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 19
+        "y": 23
       },
       "id": 10,
       "options": {
@@ -758,7 +758,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 29
       },
       "id": 11,
       "panels": [],
@@ -811,7 +811,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 26
+        "y": 30
       },
       "id": 12,
       "options": {
@@ -910,7 +910,7 @@
         "h": 7,
         "w": 16,
         "x": 8,
-        "y": 26
+        "y": 30
       },
       "id": 13,
       "options": {

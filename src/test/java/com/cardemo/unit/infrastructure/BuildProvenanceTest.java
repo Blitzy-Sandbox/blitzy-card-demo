@@ -362,6 +362,168 @@ final class BuildProvenanceTest {
         }
     }
 
+    /**
+     * The check that stops a half-run build from publishing a whole-run coverage figure.
+     *
+     * <p>The floor above is only worth asserting if the data it is applied to is complete, and until this
+     * guard existed it was not. {@code clean verify -DskipITs=true} reported BUILD SUCCESS:
+     * {@code jacoco:merge} is a fileSet include of two names, an absent member is not an error, so it
+     * merged the unit tier alone and {@code jacoco:check} then reported "All coverage checks have been met"
+     * against a ratio measured over half the evidence - while the validation-gate evidence directory was
+     * absent entirely, because the harness that writes it lives in the skipped tier.
+     *
+     * <p>Two things about the fix are easy to undo by accident, so both are pinned here. The phase must stay
+     * {@code post-integration-test}, which is the only one after both tiers write and before the merge
+     * reads; and the size rule's {@code maxsize} must stay stated, because the rule's own default is ten
+     * thousand bytes and every real execution data file is far larger, so an omitted {@code maxsize} would
+     * fail every green build rather than only the broken ones.
+     */
+    @Nested
+    @DisplayName("coverage data completeness - a partial run must not reach the merge")
+    final class CoverageDataCompleteness {
+
+        /** The profile that carries the guard, and the only profile in this build. */
+        private static final String PROFILE_ID = "coverage-data-completeness";
+
+        /** The execution the profile contributes. */
+        private static final String EXECUTION_ID = "enforce-coverage-data-completeness";
+
+        /**
+         * Returns the profile's own lines, so an assertion cannot be satisfied by text elsewhere.
+         *
+         * @return the lines from {@code <profiles>} to {@code </profiles>}, never {@code null}
+         */
+        private List<String> profileLines() {
+            final int from = indexOfStripped("<profiles>");
+            final int to = indexOfStripped("</profiles>");
+            assertThat(from)
+                    .as("the POM must declare a <profiles> section for the coverage-data guard to live in")
+                    .isNotNegative();
+            assertThat(to)
+                    .as("the <profiles> section must be closed")
+                    .isGreaterThan(from);
+            // Stripped, so every assertion below is indifferent to indentation: a reformatted POM must not
+            // be able to turn a guard about build semantics red.
+            return POM.subList(from, to + 1).stream().map(String::strip).toList();
+        }
+
+        /**
+         * Finds the first non-comment line whose stripped form equals the given text.
+         *
+         * @param text the exact stripped line to find; must not be {@code null}
+         * @return its index, or {@code -1}
+         */
+        private int indexOfStripped(final String text) {
+            for (int index = 0; index < POM.size(); index++) {
+                if (!insideComment(index) && POM.get(index).strip().equals(text)) {
+                    return index;
+                }
+            }
+            return -1;
+        }
+
+        @Test
+        @DisplayName("one profile, and its off switch is a command-line property rather than a POM skip")
+        void theGuardLivesInOneProfileWhoseOffSwitchLeavesATrace() {
+            final List<String> profile = profileLines();
+
+            assertThat(profile)
+                    .as("""
+                        the guard is carried by exactly one profile. A second profile would make the \
+                        effective build depend on which ones activated, which is the property this class \
+                        exists to deny.""")
+                    .containsOnlyOnce("<profile>")
+                    .containsOnlyOnce("<id>" + PROFILE_ID + "</id>");
+
+            assertThat(profile)
+                    .as("""
+                        the off switch is the jacoco.skip user property, negated. Profile activation reads \
+                        user and system properties only and never this POM's own <properties>, so !true \
+                        means "anything other than the string true, including undefined": the profile is \
+                        ACTIVE by default and can only be switched off from the command line, where the \
+                        invocation records it. That is the same guarantee theScanGateIsNotWeakened protects \
+                        for the vulnerability scan, which is why a <skip> element was NOT used here.""")
+                    .contains("<name>jacoco.skip</name>")
+                    .contains("<value>!true</value>");
+        }
+
+        @Test
+        @DisplayName("the guard runs at post-integration-test, after both tiers write and before the merge")
+        void theGuardIsBoundToThePhaseThatIsBothLateAndEarlyEnough() {
+            final List<String> profile = profileLines();
+            final int execution = profile.indexOf("<id>" + EXECUTION_ID + "</id>");
+
+            assertThat(execution)
+                    .as("the profile must contribute the coverage-data execution")
+                    .isNotNegative();
+
+            assertThat(profile.subList(execution, Math.min(execution + 6, profile.size())))
+                    .as("""
+                        post-integration-test is the ONLY phase that works, and the phase element must \
+                        follow the execution id closely enough that it plainly belongs to it. Earlier and \
+                        the integration tier has not written its data yet; at verify the merge, the report \
+                        and the floor are bound too, so ordering would decide whether the check ran before \
+                        or after the very goals it exists to protect.""")
+                    .contains("<phase>post-integration-test</phase>");
+        }
+
+        @Test
+        @DisplayName("both execution data files are required, present and non-empty, with maxsize stated")
+        void bothTiersDataIsRequiredAndTheSizeRuleIsUsable() {
+            final String profile = String.join("\n", profileLines());
+
+            assertThat(profile)
+                    .as("""
+                        both files are named, twice over. requireFilesExist catches a skipped tier; \
+                        requireFilesSize catches a fork that died before the agent flushed, which leaves a \
+                        zero-byte file that exists, merges to nothing, and drops a whole tier from the \
+                        report with no error anywhere.""")
+                    .contains("<requireFilesExist>")
+                    .contains("<requireFilesSize>");
+            assertThat(profile.split("\\$\\{project\\.build\\.directory\\}/jacoco\\.exec", -1))
+                    .as("target/jacoco.exec must be named by both rules")
+                    .hasSize(3);
+            assertThat(profile.split("\\$\\{project\\.build\\.directory\\}/jacoco-it\\.exec", -1))
+                    .as("target/jacoco-it.exec must be named by both rules")
+                    .hasSize(3);
+
+            assertThat(profile)
+                    .as("minsize 1 is what makes a zero-byte file a failure rather than a pass")
+                    .contains("<minsize>1</minsize>");
+
+            final Matcher maxsize = Pattern.compile("<maxsize>(\\d+)</maxsize>").matcher(profile);
+            assertThat(maxsize.find())
+                    .as("""
+                        maxsize must be STATED. RequireFilesSize defaults it to 10000 bytes and every real \
+                        execution data file is far larger - the unit tier's is over half a megabyte - so \
+                        omitting it turns this guard from one that fails broken builds into one that fails \
+                        every build.""")
+                    .isTrue();
+            assertThat(Long.parseLong(maxsize.group(1)))
+                    .as("and it must be comfortably above any execution data file this project produces, "
+                            + "so growth in the suite never trips it")
+                    .isGreaterThan(1_000_000_000L);
+        }
+
+        @Test
+        @DisplayName("the guard is declared nowhere but the profile, so it cannot run unconditionally")
+        void theGuardIsNotAlsoDeclaredInTheBaseBuild() {
+            final int profilesStart = indexOfStripped("<profiles>");
+            final List<String> outsideTheProfile = new ArrayList<>();
+            for (int index = 0; index < profilesStart; index++) {
+                if (!insideComment(index) && POM.get(index).contains(EXECUTION_ID)) {
+                    outsideTheProfile.add("pom.xml:" + (index + 1) + " " + POM.get(index).strip());
+                }
+            }
+            assertThat(outsideTheProfile)
+                    .as("""
+                        a copy of this execution in the base build would run even when the profile is \
+                        deactivated, so -Djacoco.skip=true would fail instead of skipping and every narrow \
+                        local run the test suites recommend would break. Offending lines are listed.""")
+                    .isEmpty();
+        }
+    }
+
     /** Determinism - every version is an exact coordinate. */
     @Nested
     @DisplayName("determinism - every version is an exact coordinate")
@@ -1934,6 +2096,92 @@ final class BuildProvenanceTest {
                             + "parent - so this loop measures something. Zero would mean the expiry "
                             + "machinery is asserted against nothing")
                     .isGreaterThanOrEqualTo(1);
+        }
+
+        /**
+         * The zero-match register: its numeral, its list and the file's own entries must agree.
+         *
+         * <p>The file names the entries the Unused Suppression Rule Analyzer reported as matching nothing,
+         * and that reading is the one claim here with a shelf life - a record the feed re-attributes starts
+         * or stops matching without anybody editing anything. It went stale exactly that way once: the
+         * paragraph said two while three had gone unused, and the extra one was an entry that stopped
+         * matching rather than an entry newly added, so no edit to this repository could have prompted a
+         * reader to recount.
+         *
+         * <p>What this holds is internal agreement, which is what a partial update breaks: the numeral
+         * against the number of coordinates the paragraph names, and each named coordinate against an entry
+         * the file actually declares. What it deliberately does not claim to hold is CURRENCY. The analyzer
+         * writes only to the Maven log and no artefact records which rules went unused, so no test can
+         * measure the reading - which is why the paragraph carries its date and its reproduce command, and
+         * why this test asserts those are present rather than pretending to verify the count itself.
+         */
+        @Test
+        @DisplayName("the zero-match register agrees with itself, and every entry it names is declared")
+        void theZeroMatchRegisterAgreesWithItself() {
+            final String suppressions = suppressionText();
+
+            final Matcher headline = Pattern.compile(
+                    "(?<count>[A-Z]+) OF THE [A-Z]+ MATCHED NOTHING in the (?<date>\\d+ [A-Za-z]+ \\d{4}) "
+                            + "scan").matcher(suppressions);
+            assertThat(headline.find())
+                    .as("""
+                        the file must state how many entries matched nothing, and WHEN. The date is part of \
+                        the claim rather than decoration: the analyzer reports only to the Maven log, so \
+                        nothing downstream can re-measure this and a reader has only the vintage to judge \
+                        it by.""")
+                    .isTrue();
+
+            final List<String> numberWords = List.of("ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX",
+                    "SEVEN", "EIGHT", "NINE", "TEN");
+            final int published = numberWords.indexOf(headline.group("count"));
+            assertThat(published)
+                    .as("'%s' must be a cardinal number word between ZERO and TEN so it can be compared "
+                            + "with the list that follows it", headline.group("count"))
+                    .isNotNegative();
+
+            // The numbered list that follows the headline, one line per named entry.
+            final Matcher named = Pattern.compile("(?m)^\\s{4}\\d+\\. the (?<what>[A-Za-z0-9.\\-]+) "
+                    + "(?:Tier \\d )?entry").matcher(suppressions);
+            final List<String> namedEntries = new ArrayList<>();
+            while (named.find()) {
+                namedEntries.add(named.group("what"));
+            }
+            assertThat(namedEntries)
+                    .as("""
+                        the paragraph must enumerate the entries behind its numeral, as a numbered list, so \
+                        a reader can check them one by one and so this test has something to reconcile. A \
+                        bare count is not evidence.""")
+                    .isNotEmpty()
+                    .doesNotHaveDuplicates()
+                    .hasSize(published);
+
+            // Every entry is scoped by exactly one packageUrl, so those lines ARE the coordinate inventory.
+            final List<String> packageUrls = suppressions.lines()
+                    .filter(line -> line.contains("<packageUrl"))
+                    .toList();
+            assertThat(packageUrls)
+                    .as("the file scopes every entry by packageUrl, so these lines are what a named "
+                            + "coordinate has to be found in")
+                    .isNotEmpty();
+            for (final String entry : namedEntries) {
+                // A group name such as io.netty is followed by '/' in the coordinate and an artifact name
+                // such as log4j-api by '@', so only the name itself is matched - escaped, because the
+                // packageUrl values are regular expressions and every dot in them is written \.
+                final String asWritten = entry.replace(".", "\\.");
+                assertThat(packageUrls)
+                        .as("""
+                            the register names the %s entry as having matched nothing, but no <suppress> in \
+                            this file is scoped to that coordinate. Either the entry was deleted and this \
+                            line should have gone with it, or the name is a typo - and a typo here reads as \
+                            evidence about an entry nobody can find.""", entry)
+                        .anySatisfy(url -> assertThat(url).contains(asWritten));
+            }
+
+            assertThat(suppressions)
+                    .as("""
+                        and the reading must name the command that reproduces it, because that command is \
+                        the authority this paragraph defers to for currency.""")
+                    .contains("./mvnw -B -ntp clean verify");
         }
 
         @Test

@@ -36,8 +36,12 @@
 #
 #   * 3 S3 buckets .......... input, output, statements
 #                             VERSIONING ON THE OUTPUT BUCKET ONLY
-#   * 2 SQS queues .......... carddemo-report-jobs.fifo, the report-job queue,
-#                             FifoQueue=true ContentBasedDeduplication=false;
+#   * 3 SQS queues .......... carddemo-report-jobs.fifo, the report-job queue,
+#                             FifoQueue=true ContentBasedDeduplication=false,
+#                             carrying a RedrivePolicy;
+#                             carddemo-report-jobs-dlq.fifo, its dead-letter
+#                             target, provisioned FIRST because the policy names
+#                             it - see the SQS section below for why this exists;
 #                             and carddemo-notifications-inbox, a STANDARD queue
 #                             that exists solely to receive the topic's notices
 #   * 1 SNS topic ........... notifications
@@ -608,6 +612,23 @@ readonly HEALTH_TIMEOUT_SECONDS="${INIT_HEALTH_TIMEOUT_SECONDS-5}"
 readonly QUEUE_LOGICAL="${REPORT_QUEUE%.fifo}"
 readonly QUEUE_PHYSICAL="${QUEUE_LOGICAL}.fifo"
 
+# The dead-letter target's name is DERIVED from the report queue's rather than
+# configured separately, and deliberately so: two independent variables could be
+# pointed at each other's queue, or at the same one, and a queue that is its own
+# dead-letter target quarantines nothing. Deriving it makes the pairing
+# structural. A FIFO queue's dead-letter target must itself be FIFO, hence the
+# suffix.
+readonly DLQ_PHYSICAL="${QUEUE_LOGICAL}-dlq.fifo"
+
+# How many deliveries a message may fail before SQS moves it to the dead-letter
+# queue. Four, not one and not the service maximum: one would quarantine a
+# submission on a single transient store outage, while a large count multiplied
+# by the 900-second visibility window is measured in hours of head-of-line
+# blocking. Four attempts across four windows is one hour of retry, which is long
+# enough to ride out a restart of the database or the emulator and short enough
+# that a genuinely unrunnable message stops blocking the group the same morning.
+readonly QUEUE_MAX_RECEIVE_COUNT='4'
+
 # Input validation. Inputs are untrusted and are checked BEFORE any AWS call, so
 # a misconfiguration can never leave a half-provisioned stack behind.
 # require_value <var-name> <resolved-value> <regex> <min-len> <max-len> <hint>
@@ -649,6 +670,19 @@ require_value 'CARDDEMO_S3_STATEMENTS_BUCKET'   "${STATEMENTS_BUCKET}"  "${BUCKE
 require_value 'CARDDEMO_SQS_REPORT_QUEUE'       "${QUEUE_LOGICAL}"      "${NAME_PATTERN}"   1 75  "${NAME_HINT}"
 require_value 'CARDDEMO_SNS_NOTIFICATION_TOPIC' "${NOTIFICATION_TOPIC}" "${NAME_PATTERN}"   1 256 "${NAME_HINT}"
 require_value 'AWS_REGION'                      "${REGION}"             "${REGION_PATTERN}" 2 32  "${REGION_HINT}"
+
+# The dead-letter name is composed, so its LENGTH has to be checked even though
+# the name it derives from already passed. AWS caps a queue name at 80
+# characters and the derived name adds nine ('-dlq' plus the mandatory '.fifo'),
+# so a report-queue name above 71 characters provisions a main queue and then
+# fails to provision its quarantine target. Refusing here, with the arithmetic
+# stated, is better than discovering it as a create-queue rejection halfway
+# through provisioning.
+if (( ${#DLQ_PHYSICAL} > 80 )); then
+  fail "${EXIT_CONFIG}" 'config:CARDDEMO_SQS_REPORT_QUEUE' \
+    "is ${#QUEUE_LOGICAL} characters, so '${DLQ_PHYSICAL}' is ${#DLQ_PHYSICAL} - over the 80 AWS allows" \
+    'Use a report-queue name of at most 71 characters, so the derived -dlq.fifo companion fits.'
+fi
 
 # The three bucket names must be distinct, or two logical streams would silently
 # share one container and the output bucket's versioning would leak across them.
@@ -1349,6 +1383,12 @@ OBSERVED_SUBSCRIPTIONS=''
 # than the one this script asked for. Finding M-02.
 OBSERVED_QUEUE_VISIBILITY=''
 
+# Set by ensure_redrive_policy to the maximum receive count the edge reported in
+# the report queue's RedrivePolicy. Read by main() on the same terms as every
+# other observed value: the summary states the containment that is in force, not
+# the one this script asked for.
+OBSERVED_QUEUE_REDRIVE=''
+
 # Set by verify_notification_subscription to the protocol of the subscription that
 # actually exists on the notification topic. Finding M-04: the summary must show a
 # notification has somewhere to be delivered, not merely that a topic exists.
@@ -1458,11 +1498,42 @@ verify_no_lifecycle_rules() {
 }
 
 
-# SQS. Exactly one FIFO queue, replacing DEFINE TDQUEUE(JOBS).
+# SQS. One FIFO queue replacing DEFINE TDQUEUE(JOBS), plus its dead-letter target.
 #
-# No dead-letter queue and no redrive policy are created: neither is configured
-# anywhere in the consuming application, and least privilege forbids provisioning
-# capacity nothing consumes.
+# A DEAD-LETTER QUEUE AND A REDRIVE POLICY ARE NOW PROVISIONED. THIS REVERSES
+# WHAT THIS SECTION SAID, so the reasoning is recorded rather than just the
+# conclusion. The earlier position was that neither was configured anywhere in
+# the consuming application and that least privilege forbids provisioning
+# capacity nothing consumes. The first half was true and the second misapplied.
+#
+# What it cost: a submission the producer accepts - and app/cbl/CORPT00C.cbl
+# accepts an inverted date range, because :L381-L410 validates the six custom
+# range components individually and never compares the two assembled dates -
+# could be permanently unrunnable at the consumer. With no redrive policy the
+# message was neither acknowledged nor moved anywhere, and because every
+# submission travels in ONE FIFO message group, an ordered group cannot deliver
+# past it: the poison message was redelivered every 900 seconds for the whole
+# four-day retention, roughly 384 times, starving every valid submission behind
+# it while POST /api/reports kept answering 202. A measured, reproduced outcome,
+# not a hypothesis.
+#
+# Why least privilege does not forbid it. That principle constrains what a
+# provisioned resource may REACH. A dead-letter queue reaches nothing: it is a
+# quarantine the transport writes to, with no subscriber, no publisher in this
+# application and no code path that reads it. It is the opposite case from the
+# unsubscribed SNS topic this file refuses to create, where acceptance is not
+# delivery and no operator can tell: a message in a dead-letter queue is
+# durable, countable and inspectable, which is exactly what makes containment
+# auditable instead of silent.
+#
+# The consumer still discards a message it knows can never run, rather than
+# letting it exhaust the redrive count first. Both controls are wanted and they
+# act at different scopes. com.cardemo.config.BatchConfig knows WHY a specific
+# submission is unrunnable and drops it on the first delivery, which costs the
+# group nothing; the redrive policy knows nothing about any submission and
+# bounds every case the consumer cannot classify - a deterministic job failure,
+# for instance, which the consumer correctly returns to the queue because it
+# might be transient.
 
 # FifoQueue=true is MANDATORY - AWS rejects a `.fifo` name on a standard queue
 # and rejects a FIFO queue whose name lacks the suffix, so the physical name and
@@ -1692,6 +1763,102 @@ ensure_queue() {
     esac
   fi
   verify_queue "${physical}"
+}
+
+# Resolves the dead-letter queue's ARN and prints ONLY that.
+#
+# LOG-FREE ON PURPOSE, exactly like notification_inbox_arn and for the identical
+# reason: log() writes to STDOUT, so a value captured with $(...) from a function
+# that also logs carries the progress lines with it. The RedrivePolicy would then
+# name something that is not a queue, and SQS would accept it - producing a policy
+# that reads as configured and quarantines nothing.
+dead_letter_queue_arn() {
+  local queue="$1"
+  local url=''
+  if ! url="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${queue}" \
+    --query 'QueueUrl' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the dead-letter queue URL did not resolve: ${url//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local arn=''
+  if ! arn="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names QueueArn --query 'Attributes.QueueArn' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the dead-letter queue ARN did not resolve: ${arn//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  # Asserted to BE an ARN before it is used, not merely to be non-empty. The URL
+  # is never printed or logged: it embeds the account identifier.
+  case "${arn}" in
+    arn:aws:sqs:*) ;;
+    *)
+      fail "${EXIT_QUEUE}" "sqs:${queue}" \
+        'the captured dead-letter value is not an sqs ARN, so it must not be used as a redrive target' \
+        'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+      ;;
+  esac
+  printf '%s' "${arn}"
+}
+
+# Applies the RedrivePolicy to the report queue and PROVES it took effect.
+#
+# CONVERGED, NOT MERELY SET, for the same reason ContentBasedDeduplication and
+# VisibilityTimeout are: RedrivePolicy is mutable, every volume provisioned before
+# this revision carries none at all, and telling an operator to delete the queue
+# and wait out the 60-second name-reuse window would make a containment fix an
+# outage. It is set unconditionally rather than only when absent, because setting
+# it is idempotent and the read-back below is what the function actually asserts.
+#
+# The read-back is normalised before it is compared - quotes and spaces removed -
+# because the service is free to render maxReceiveCount as a JSON number or as a
+# quoted string, and an assertion that depended on which would be an assertion
+# about the emulator rather than about the policy.
+ensure_redrive_policy() {
+  local physical="$1" dlq_arn="$2"
+  local url=''
+  if ! url="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${physical}" \
+    --query 'QueueUrl' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "the queue URL did not resolve before applying the redrive policy: ${url//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local policy=''
+  policy="$(printf '{"deadLetterTargetArn":"%s","maxReceiveCount":"%s"}' \
+    "${dlq_arn}" "${QUEUE_MAX_RECEIVE_COUNT}")"
+  # --attributes takes a comma-separated key=value list, which the commas inside
+  # the policy would split, so the JSON form of the parameter is used instead.
+  local attributes=''
+  attributes="$(printf '{"RedrivePolicy":"%s"}' "${policy//\"/\\\"}")"
+  local applied=''
+  if ! applied="$("${AWS_CLI[@]}" sqs set-queue-attributes --queue-url "${url}" \
+    --attributes "${attributes}" 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "the redrive policy could not be applied: ${applied//$'\n'/ }" \
+      'Confirm the dead-letter queue exists and is FIFO, then re-run the hook.'
+  fi
+  local observed=''
+  if ! observed="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names RedrivePolicy --query 'Attributes.RedrivePolicy' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "get-queue-attributes failed for RedrivePolicy: ${observed//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local normalised="${observed//\"/}"
+  normalised="${normalised// /}"
+  if [[ "${normalised}" != *"deadLetterTargetArn:${dlq_arn}"* ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      'the redrive policy read back without naming the dead-letter queue, so nothing would be quarantined' \
+      'Delete the report queue and re-run so it is recreated (mind the 60s name-reuse window).'
+  fi
+  if [[ "${normalised}" != *"maxReceiveCount:${QUEUE_MAX_RECEIVE_COUNT}"* ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "the redrive policy read back without maxReceiveCount ${QUEUE_MAX_RECEIVE_COUNT}" \
+      'Delete the report queue and re-run so it is recreated (mind the 60s name-reuse window).'
+  fi
+  OBSERVED_QUEUE_REDRIVE="${QUEUE_MAX_RECEIVE_COUNT}"
+  log "sqs:${physical}" \
+    "verified RedrivePolicy maxReceiveCount=${QUEUE_MAX_RECEIVE_COUNT} to ${DLQ_PHYSICAL} (ARN withheld)"
 }
 
 # SNS. Exactly the one topic the committed contract declares, and exactly ONE
@@ -2076,7 +2243,16 @@ main() {
   verify_no_lifecycle_rules "${STATEMENTS_BUCKET}"
 
   log 'sqs:mapping' "logical '${QUEUE_LOGICAL}' -> physical '${QUEUE_PHYSICAL}' (FIFO suffix required by AWS)"
+
+  # ORDER MATTERS. The dead-letter queue is provisioned FIRST, because the report
+  # queue's RedrivePolicy names it by ARN and an ARN cannot be resolved for a
+  # queue that does not exist. Each ensure_queue publishes what the edge reported
+  # through OBSERVED_QUEUE_VISIBILITY, so the report queue is provisioned second
+  # and its value is the one the summary carries.
+  log 'sqs:mapping' "dead-letter target '${DLQ_PHYSICAL}' (derived from the report queue name)"
+  ensure_queue "${DLQ_PHYSICAL}"
   ensure_queue "${QUEUE_PHYSICAL}"
+  ensure_redrive_policy "${QUEUE_PHYSICAL}" "$(dead_letter_queue_arn "${DLQ_PHYSICAL}")"
 
   ensure_topic "${NOTIFICATION_TOPIC}"
   ensure_notification_subscription "${NOTIFICATION_TOPIC}"
@@ -2094,6 +2270,8 @@ main() {
     "s3 statements bucket .... ${STATEMENTS_BUCKET} ($(render_versioning "${statements_versioning}" 'None'))"
   log 'summary' \
     "sqs queue ............... ${QUEUE_LOGICAL} -> ${QUEUE_PHYSICAL} (FIFO, ${OBSERVED_QUEUE_VISIBILITY}s visibility)"
+  log 'summary' \
+    "sqs dead-letter queue ... ${DLQ_PHYSICAL} (FIFO, maxReceiveCount ${OBSERVED_QUEUE_REDRIVE}, read-back)"
   log 'summary' "sqs notification inbox .. ${NOTIFICATION_INBOX_QUEUE} (standard queue)"
   log 'summary' "sns topic ............... ${NOTIFICATION_TOPIC} (presence verified)"
   log 'summary' \

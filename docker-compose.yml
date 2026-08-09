@@ -4,7 +4,7 @@
 # * Type        : Local runtime topology (Compose Specification)
 # * Function    : Stands up the complete substrate that replaces the z/OS
 # *               runtime of the frozen COBOL corpus in app/, plus the Java 25
-# *               application itself, as six containers on one isolated
+# *               application itself, as seven containers on one isolated
 # *               network. Derived from app/jcl/OPENFIL.jcl and
 # *               app/jcl/CLOSEFIL.jcl, whose SDSF `CEMT SET FIL(...) OPE`
 # *               and `CLO` decks made the CICS datasets available to the
@@ -16,10 +16,14 @@
 # *               app/csd/CARDDEMO.CSD; PostgreSQL replaces the ten VSAM KSDS
 # *               clusters of app/catlg/LISTCAT.txt together with the USRSEC
 # *               cluster that app/jcl/DUSRSECJ.jcl defines in JCL; and
-# *               Jaeger, Prometheus and Grafana supply the observability
-# *               layer the corpus lacks, whose whole instrumentation is
-# *               DISPLAY plus the 9910-DISPLAY-IO-STATUS renderer of
-# *               app/cbl/CBTRN02C.cbl.
+# *               Jaeger, Prometheus, the Pushgateway and Grafana supply the
+# *               observability layer the corpus lacks, whose whole
+# *               instrumentation is DISPLAY plus the 9910-DISPLAY-IO-STATUS
+# *               renderer of app/cbl/CBTRN02C.cbl. The Pushgateway is where
+# *               the end-of-run totals DISPLAYed at
+# *               app/cbl/CBTRN02C.cbl:L236-L238 are published and retained,
+# *               because the process that computes them exits when the job
+# *               ends and can therefore never be scraped.
 # * Source      : app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl (the operator
 # *               dataset-availability decks), app/jcl/DEFGDGB.jcl,
 # *               app/jcl/DALYREJS.jcl and app/jcl/REPTFILE.jcl (the GDG
@@ -47,7 +51,7 @@
 # ============================================================================
 # WHAT THIS FILE DOES
 # ============================================================================
-# Six services, one bridge network, three named volumes:
+# Seven services, one bridge network, four named volumes:
 #
 #   app          the modular monolith, built from the repository-root
 #                Dockerfile and run as its single non-root Java 25 JAR
@@ -56,8 +60,23 @@
 #   localstack   S3, SQS and SNS only, provisioned by
 #                localstack-init/init-aws.sh once the edge reports ready
 #   jaeger       OTLP collector plus trace UI
-#   prometheus   scrapes app:8080/actuator/prometheus every 15s
+#   pushgateway  holds the end-of-run counter totals published by the batch
+#                submission process, which exits when its job ends and so has
+#                no endpoint of its own to scrape
+#   prometheus   scrapes app:8080/actuator/prometheus and
+#                pushgateway:9091/metrics every 15s
 #   grafana      the checked-in datasource and CardDemo dashboard
+#
+# THE SEVENTH SERVICE IS A DEVIATION FROM THE PLANNED FIVE-SUBSTRATE TOPOLOGY,
+# AND IT IS DELIBERATE. The plan enumerates PostgreSQL, LocalStack, Jaeger,
+# Prometheus and Grafana, and it also requires that the checked-in provisioning
+# produce a POPULATED dashboard with no manual step. Those two requirements were
+# in conflict: three of the four named counters are written only by the batch
+# submission process, which by design ends when its job ends, so with a scrape
+# as the only collection path six of the nine data panels could never hold a
+# value. A real POSTTRAN run printing TRANSACTIONS PROCESSED :000000300 while
+# every corresponding series read 0.0 is the measurement that settled it. The
+# deviation is recorded in DECISION_LOG.md.
 #
 # The topology is the evidence harness for the migration's validation gates:
 # Gate 1 (end-to-end boundary parity against app/data/ASCII/dailytran.txt),
@@ -86,7 +105,7 @@
 # service reports healthy:
 #
 #     docker compose config --quiet            # schema and interpolation check
-#     docker compose pull --ignore-buildable   # the 5 pinned substrate images
+#     docker compose pull --ignore-buildable   # the 6 pinned substrate images
 #     docker compose up --build --wait         # non-zero if any is unhealthy
 #
 # `--ignore-buildable` is required rather than decorative: a plain
@@ -125,12 +144,14 @@
 # the one that trips people up.
 #
 #   1. REQUIRED, no default - `${VAR:?message}`. Interpolation fails and the
-#      command aborts before a container is created. Nine of them:
-#      JWT_SIGNING_KEY, POSTGRES_PASSWORD, CARDDEMO_DB_APP_PASSWORD,
+#      command aborts before a container is created. ELEVEN of them, and the
+#      list is exhaustive - `grep -n ':?' docker-compose.yml` finds every site:
+#      JWT_SIGNING_KEY, POSTGRES_PASSWORD, CARDDEMO_DB_APP_USER,
+#      CARDDEMO_DB_APP_PASSWORD, CARDDEMO_DB_MIGRATION_USER,
 #      CARDDEMO_DB_MIGRATION_PASSWORD, METRICS_SCRAPE_PASSWORD,
 #      GRAFANA_ADMIN_USER, GRAFANA_ADMIN_PASSWORD, AWS_ACCESS_KEY_ID and
-#      AWS_SECRET_ACCESS_KEY. A committed default for any of them would be a
-#      usable credential in version control.
+#      AWS_SECRET_ACCESS_KEY. A committed default for any of the credentials
+#      among them would be a usable credential in version control.
 #
 #      The two CARDDEMO_DB_* passwords joined this group rather than keeping a
 #      default: their defaults were what let the runtime authenticate as the
@@ -139,8 +160,18 @@
 #      and the role-provisioning config created carddemo_app and
 #      carddemo_migrator - so a start that supplied neither password produced
 #      two unused least-privilege roles and a superuser serving every request.
-#      Their two NAMES keep defaults, because a name is not a credential and
-#      one spelling in all three places is exactly the point.
+#
+#      THE TWO ROLE NAMES ARE IN THIS GROUP TOO, and this header previously
+#      said the opposite - that the names kept defaults, because a name is not
+#      a credential. The reasoning was sound and the conclusion was withdrawn
+#      when the fallback above was closed, for a reason the names share with
+#      the passwords: a DEFAULTED name is not a leaked credential, but it is a
+#      SILENT one. Supply the password and misspell the name and `:-` would
+#      hand back the bootstrap superuser again, which is the same defect one
+#      field over. All four are therefore guarded, on both the app and the
+#      postgres service, and the count above is eleven rather than nine
+#      because of it. An operator who follows this list now gets a start that
+#      succeeds; the earlier list aborted on a variable it did not mention.
 #
 #   2. HOST-VIEW PORTS - `${VAR:-default}` on the left of a port mapping only.
 #      SERVER_PORT 8080, POSTGRES_PORT 5432, LOCALSTACK_PORT 4566,
@@ -465,6 +496,24 @@ services:
       # Traces leave over OTLP/HTTP. management.otlp.tracing.endpoint binds
       # this name and expects the full /v1/traces path.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+      # The Pushgateway on the compose network, host and port only - the
+      # Prometheus client supplies the scheme. CARDDEMO_METRICS_PUSHGATEWAY_ENABLED
+      # is DELIBERATELY NOT passed, so this container never pushes: it is scraped
+      # at app:8080/actuator/prometheus, and a process that both pushed and was
+      # scraped would be counted twice by the dashboard's sum() expressions.
+      #
+      # The address is still supplied, and that is not reach granted for nothing.
+      # Nothing opens a connection to it while the push is disabled, and having it
+      # already correct is what lets a CONTAINER-run batch submission enable the
+      # push with the single flag rather than also having to discover the
+      # in-network address:
+      #
+      #   docker compose run --rm --entrypoint java app \
+      #     -jar /opt/carddemo/carddemo.jar \
+      #     --spring.main.web-application-type=none \
+      #     --spring.batch.job.enabled=true --spring.batch.job.name=POSTTRAN \
+      #     --management.prometheus.metrics.export.pushgateway.enabled=true
+      CARDDEMO_PUSHGATEWAY_ADDRESS: pushgateway:9091
       # Metrics scrape credential. /actuator/prometheus is the one management
       # endpoint that is NOT anonymous: SecurityConfig#metricsScrapeFilterChain
       # governs it on its own filter chain and requires HTTP Basic credentials
@@ -908,7 +957,98 @@ services:
     logging: *carddemo-logging
 
   # ==========================================================================
-  # prometheus - scrapes the application's metrics endpoint
+  # pushgateway - retains the end-of-run totals of a process that has exited
+  #
+  # THE PROBLEM THIS SERVICE EXISTS TO SOLVE. Three of the four named counters
+  # that replace app/cbl/CBTRN02C.cbl:L236-L238's
+  #     DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT
+  #     DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT
+  # are written by POSTTRAN and COMBTRAN. Those run in the operator submission
+  # process documented on com.cardemo.batch.jobs.BatchPipelineOrchestrator - a
+  # java -jar launch with spring.main.web-application-type set to none, which is
+  # what makes the process end when the job ends, the way a submitted job freed
+  # its initiator. A scrape cannot reach a process that has already exited, and
+  # a real POSTTRAN run proved the consequence: it printed
+  # TRANSACTIONS PROCESSED :000000300 and TRANSACTIONS REJECTED :000000038 while
+  # every corresponding series still read 0.0.
+  #
+  # WHY A PUSH IS THE FAITHFUL MECHANISM RATHER THAN A CONVENIENCE. The legacy
+  # job published its totals ONCE, at end of run, to a destination that retained
+  # them for reading afterwards. That is exactly what a Pushgateway is: the
+  # application's shutdown-operation is PUSH, so the final values are published
+  # as the batch JVM exits, and they stay readable until the next run replaces
+  # them. An exporter whose samples went stale minutes after the process exited
+  # would turn a real figure into No data, which is a worse answer than the zero
+  # it replaced.
+  #
+  # WHAT IS PUSHED IS RESTRICTED AT SOURCE. com.cardemo.config.ObservabilityConfig
+  # contributes a MeterFilter, active only while the push is enabled, that denies
+  # every instrument outside the carddemo.* namespace. Without it the batch JVM's
+  # own jvm_memory_used_bytes and hikaricp_* series would be pushed too, and
+  # because a Pushgateway RETAINS what it is given, a dead process's heap reading
+  # would inflate the dashboard's sum(jvm_memory_used_bytes{area="heap"}) for
+  # ever. Retention is the property that makes this service correct for counters
+  # and wrong for gauges, so only the counters are sent.
+  # ==========================================================================
+  pushgateway:
+    # v1.11.1, pinned by tag AND digest on the same reasoning as every other
+    # image here: the tag documents which component this is to a reader, the
+    # digest is what actually resolves. This is a distroless image - it ships no
+    # shell, no wget and no curl, which is why the healthcheck below is spelled
+    # the way it is.
+    image: prom/pushgateway:v1.11.1@sha256:03738d278e082ee9821df730c741b3b465c251fc2b68a85883def301a55a6215
+    container_name: carddemo-pushgateway${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    command:
+      # Survive a restart. A counter total published by a batch run that
+      # finished an hour ago must still be readable after
+      # `docker compose restart pushgateway`, or the retention this service was
+      # chosen for would last only as long as its process.
+      - "--persistence.file=/pushgateway/persistence"
+      # Flush interval. Short enough that a container killed seconds after a
+      # push keeps the value, long enough not to write on every scrape.
+      - "--persistence.interval=1m"
+      # --web.enable-admin-api IS DELIBERATELY ABSENT, for the same reason
+      # --web.enable-lifecycle is absent from prometheus below: it publishes
+      # unauthenticated DELETE routes that wipe every group this service holds.
+      # Clearing a stale group is `docker compose restart pushgateway` after
+      # removing the volume, not an open management route.
+    ports:
+      # LOOPBACK-BOUND, like every other mapping in this file. The published
+      # port is what the HOST-run batch submission pushes to; the compose
+      # network is what Prometheus scrapes over. The series it holds are the
+      # application's business counters - transaction volumes and reject counts
+      # by reject code - so it is a disclosure surface, and it is also a WRITE
+      # surface: /metrics/job/... accepts a push with no credential, exactly as
+      # this component is designed to. Neither belongs on a routable address.
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${PUSHGATEWAY_PORT:-9091}:9091"
+    volumes:
+      - pushgateway-data:/pushgateway
+    healthcheck:
+      # The image is distroless: no shell, no wget, no curl, so a CMD-SHELL
+      # probe would fail with "executable file not found" against a perfectly
+      # healthy container. The binary itself is the only executable available,
+      # and it answers --version without starting a server, which proves the
+      # image is intact and runnable. Readiness of the HTTP listener is proven
+      # instead by the Prometheus target coming up, and by the push itself
+      # failing loudly if it cannot connect.
+      test: ["CMD", "/bin/pushgateway", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+    # Least privilege: it needs no capability and no privilege escalation. The
+    # root filesystem is NOT read_only, because --persistence.file writes.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - carddemo
+    logging: *carddemo-logging
+
+  # ==========================================================================
+  # prometheus - scrapes the application's metrics endpoint and the Pushgateway
   #
   # Replaces the end-of-run counter reporting of app/cbl/CBTRN02C.cbl, whose
   # DISPLAY of transactions processed and rejected was the whole of the
@@ -1062,6 +1202,11 @@ volumes:
   postgres-data:
   prometheus-data:
   grafana-data:
+  # The Pushgateway's --persistence.file. A counter total published by a batch
+  # run that has already finished must survive a container restart, or the
+  # retention that service was chosen for would last only as long as its
+  # process. `down -v` discards it, which is also how a stale group is cleared.
+  pushgateway-data:
 
 # ----------------------------------------------------------------------------
 # Compose configs. One entry: the metrics scrape credential Prometheus presents

@@ -2062,6 +2062,95 @@ public class OnlineTransactionE2ETest {
         assertThat(sourceLines("app/cbl/COUSR00C.cbl", 55, 59)).contains("OCCURS 10 TIMES");
     }
 
+    /**
+     * CU00's identifier filter positions the browse, equal or greater, across the whole stack.
+     *
+     * <p><strong>Finding, severity Major - remediated and pinned here.</strong> {@code ?userId=} was
+     * accepted, echoed and then discarded: every request answered page one from the front of the file, and a
+     * value matching no record answered {@code 404}. The cause was a per-request anchor that was derived
+     * from the submitted identifier and then overwritten with "no key, ordinal zero" before the browse ran,
+     * plus a primary-key existence probe standing in for the positioning.
+     *
+     * <p><strong>Why equal-or-greater is the contract.</strong> {@code PROCESS-ENTER-KEY} at
+     * {@code app/cbl/COUSR00C.cbl:218-228} moves {@code USRIDINI} into {@code SEC-USR-ID} precisely so the
+     * browse starts there, and {@code STARTBR-USER-SEC-FILE} at {@code :588-596} codes neither {@code GTEQ}
+     * nor {@code EQUAL} - so the effective option is the default, and for a direct browse of a KSDS that
+     * default is {@code GTEQ}. {@code USRSEC} is a KSDS: {@code app/jcl/DUSRSECJ.jcl:65-66} defines it with
+     * {@code KEYS(8,0)} and {@code INDEXED}.
+     *
+     * <p>Every assertion is relative to what the file actually holds, because two runtime-only principals
+     * with unpredictable identifiers exist for the duration of this test. That is deliberate: the property
+     * being asserted - no row before the key, and the first row at or after it - is the positioning
+     * semantic itself, and it holds whatever the store contains.
+     */
+    @Test
+    @DisplayName("CU00 positions the browse on the identifier filter, equal or greater, per the default GTEQ")
+    void adminListPositionsTheBrowseOnTheIdentifierFilter() {
+        final AuthenticatedSession admin = signOn(this.administrator);
+
+        final List<String> unfiltered = userListKeys(admin, "");
+        assertThat(unfiltered).isNotEmpty();
+
+        // An identifier that names a seeded record: the page opens ON it, and nothing before it survives.
+        final String seededKey = "USER0003";
+        final List<String> fromSeededKey = userListKeys(admin, "?userId=" + seededKey);
+        assertThat(fromSeededKey)
+                .as("the filter is the browse position, so the page starts at the identifier submitted")
+                .startsWith(seededKey)
+                .allSatisfy(key -> assertThat(key).isGreaterThanOrEqualTo(seededKey))
+                .doesNotContain("ADMIN001");
+
+        // The explicit enter-key spelling takes the same arm and must position identically.
+        assertThat(userListKeys(admin, "?action=SUBMIT&userId=" + seededKey))
+                .as("action=SUBMIT is the enter key, which is the arm that reads the filter")
+                .isEqualTo(fromSeededKey);
+
+        // Below every identifier in the file: the browse slides forward to the very first record, which is
+        // the same page an unfiltered request serves.
+        assertThat(userListKeys(admin, "?userId=AAAAAAAA"))
+                .as("a key below the first record positions before the file, exactly as LOW-VALUES does")
+                .isEqualTo(unfiltered);
+
+        // Between two identifiers, naming neither: the browse positions on the higher one. Under the
+        // withdrawn equal-only reading this answered 404, which is the defect this case exists to catch.
+        final String gapKey = "BBBBBBBB";
+        assertThat(userListKeys(admin, "?userId=" + gapKey))
+                .as("a key that names no record still positions, on the next higher one")
+                .isNotEmpty()
+                .allSatisfy(key -> assertThat(key).isGreaterThan(gapKey));
+
+        // Beyond every identifier in the file: accepted, and the first read ends the file. The status is the
+        // assertion that matters - this answered 404 before.
+        final ResponseEntity<String> pastTheEnd =
+                request(HttpMethod.GET, "/api/admin/users?userId=ZZZZZZZZ", null, admin);
+        assertThat(pastTheEnd.getStatusCode())
+                .as("a key past the last record is the position HIGH-VALUES names, not a missing record")
+                .isEqualTo(HttpStatus.OK);
+        assertThat(responseBody(pastTheEnd).path("rows").size()).isZero();
+        assertThat(responseBody(pastTheEnd).path("errorMessage").asText())
+                .isEqualTo("You have reached the bottom of the page...");
+
+        assertThat(sourceLines("app/cbl/COUSR00C.cbl", 218, 228))
+                .contains("MOVE LOW-VALUES TO SEC-USR-ID", "TO SEC-USR-ID", "MOVE 0       TO CDEMO-CU00-PAGE-NUM");
+        assertThat(sourceLines("app/jcl/DUSRSECJ.jcl", 60, 70)).contains("KEYS(8,0)", "INDEXED");
+    }
+
+    /**
+     * Reads the identifiers of a user-list page, in the order the response carries them.
+     *
+     * @param session the authenticated administrator session to request as.
+     * @param query the query string to append to the list path, empty for none.
+     * @return the row identifiers, in response order; never null.
+     */
+    private List<String> userListKeys(final AuthenticatedSession session, final String query) {
+        final ResponseEntity<String> response =
+                request(HttpMethod.GET, "/api/admin/users" + query, null, session);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        final List<String> keys = new ArrayList<>();
+        responseBody(response).path("rows").forEach(row -> keys.add(row.path("userId").asText()));
+        return List.copyOf(keys);
+    }
+
     @Test
     @DisplayName("CU01 adds a user, preserves the duplicate literal and never returns a credential")
     void adminAddCreatesOneUserAndSurfacesTheDuplicateLiteral() {

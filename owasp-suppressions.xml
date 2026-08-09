@@ -197,22 +197,44 @@
   on 6 August 2026; it is the fourth Tier 2 record and the only non-Tier-4 entry
   carrying an until date, for the reason its own note gives.
 
-  TWO OF THE SEVENTEEN MATCHED NOTHING in the 6 August 2026 scan, and saying so
-  is more useful than an unqualified claim that all of them are load bearing. The
-  Unused Suppression Rule Analyzer named the log4j-api Tier 2 entry
-  (CVE-2026-34478, CVE-2026-34479, CVE-2026-34480, CVE-2026-34481) and the
-  jackson-databind Tier 3 entry (CVE-2026-54512, CVE-2026-54513). Both are
-  consistent with the forward pins recorded in pom.xml - log4j2 2.26.1 and
-  jackson-bom 2.22.1 - having moved those artefacts out of the affected ranges, in
-  which case the entries are inert and the rule above says an inert entry belongs
-  in the deletion list. They are RETAINED for now rather than deleted because
-  "matched nothing in one scan" is weaker evidence than "cannot match": the feed
-  demonstrably re-attributes records, as the CVE-2026-66299 reading above shows,
-  and neither entry can absorb anything outside the coordinate and CVE it names.
-  Deleting them is a separate, reversible change that wants its own re-measure,
-  and it is reported as an observation rather than performed as a side effect of
-  adding an unrelated entry. Every other entry was confirmed by the same analyzer
-  to still match something in the report that produced the numbers above.
+  THREE OF THE SEVENTEEN MATCHED NOTHING in the 8 August 2026 scan, and saying so
+  is more useful than an unqualified claim that all of them are load bearing. This
+  reading supersedes a 6 August one that named TWO; the third is not a new entry
+  but an entry that stopped matching, which is exactly the drift this paragraph
+  exists to keep visible. Reproduced by ./mvnw -B -ntp clean verify with NO
+  -Ddependency-check.skip, BUILD SUCCESS in 10:42, the active set again exactly
+  ONE finding - CVE-2026-40977 against spring-boot-3.5.11.jar at CVSS 6.7 MEDIUM,
+  below the failBuildOnCVSS 7 gate. The Unused Suppression Rule Analyzer named,
+  verbatim and in this order:
+
+    1. the log4j-api Tier 2 entry (CVE-2026-34478, CVE-2026-34479, CVE-2026-34480,
+       CVE-2026-34481);
+    2. the io.netty Tier 2 entry (CVE-2026-56816) - THE ONE THAT CHANGED. Its own
+       note already records why it cannot be exposed: the affected class lives in
+       netty-codec-http3, which is absent from this graph, and netty-bom is pinned
+       forward to 4.1.136.Final. A record that is neither attributed to a resolved
+       module nor reachable in it is precisely the shape that stops matching;
+    3. the jackson-databind Tier 3 entry (CVE-2026-54512, CVE-2026-54513).
+
+  All three are consistent with the forward pins recorded in pom.xml - log4j2
+  2.26.1, netty-bom 4.1.136.Final and jackson-bom 2.22.1 - having moved those
+  artefacts out of the affected ranges, in which case the entries are inert and the
+  rule above says an inert entry belongs in the deletion list. They are RETAINED
+  for now rather than deleted because "matched nothing in two scans" is still
+  weaker evidence than "cannot match": the feed demonstrably re-attributes records,
+  as the CVE-2026-66299 reading above shows, and not one of the three can absorb
+  anything outside the coordinate and CVE it names. Deleting them is a separate,
+  reversible change that wants its own re-measure, and it is reported as an
+  observation rather than performed as a side effect of an unrelated edit. Every
+  other entry was confirmed by the same analyzer to still match something in the
+  report that produced the numbers above.
+
+  BuildProvenanceTest.SuppressionPremises holds the numeral and the list to each
+  other, and each named coordinate to an entry this file actually declares, so a
+  reading updated in one place and not the other fails rather than drifts. What it
+  cannot check is whether the reading is CURRENT: the analyzer reports only to the
+  Maven log and no artefact records which rules went unused, so the reproduce
+  command above remains the authority and the date is part of the claim.
 -->
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
 

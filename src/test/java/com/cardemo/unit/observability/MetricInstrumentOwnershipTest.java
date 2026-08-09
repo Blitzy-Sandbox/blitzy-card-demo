@@ -55,8 +55,12 @@ import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.LongTaskTimer;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.config.MeterFilter;
+import io.micrometer.core.instrument.config.MeterFilterReply;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -65,6 +69,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.io.OutputStream;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -85,6 +91,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.test.MetaDataInstanceFactory;
+import org.springframework.context.annotation.Bean;
+import software.amazon.awssdk.services.s3.S3Client;
 
 /**
  * Instrument ownership: that {@code MetricsConfig} is the only place an instrument is created, that every
@@ -347,9 +355,8 @@ class MetricInstrumentOwnershipTest {
         @DisplayName("TransactionWriter reports both processed records and their amounts, per record")
         void theTransactionWriterReportsBothOfItsSeries() throws Exception {
             TransactionWriter writer = new TransactionWriter(
-                    mock(TransactionRepository.class), mock(S3Operations.class), new FileStatusMapper(),
-                    metrics, "carddemo-batch-output", "transact",
-                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+                    mock(TransactionRepository.class), mock(S3Operations.class), mock(S3Client.class),
+                    new FileStatusMapper(), metrics, "carddemo-batch-output", "transact");
             StepExecution execution = MetaDataInstanceFactory.createStepExecution();
             writer.beforeStep(execution);
 
@@ -365,9 +372,8 @@ class MetricInstrumentOwnershipTest {
         @DisplayName("TransactionWriter reports nothing for an empty chunk")
         void theTransactionWriterReportsNothingForAnEmptyChunk() throws Exception {
             TransactionWriter writer = new TransactionWriter(
-                    mock(TransactionRepository.class), mock(S3Operations.class), new FileStatusMapper(),
-                    metrics, "carddemo-batch-output", "transact",
-                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+                    mock(TransactionRepository.class), mock(S3Operations.class), mock(S3Client.class),
+                    new FileStatusMapper(), metrics, "carddemo-batch-output", "transact");
             writer.beforeStep(MetaDataInstanceFactory.createStepExecution());
 
             writer.write(Chunk.of());
@@ -390,8 +396,8 @@ class MetricInstrumentOwnershipTest {
                 throw new IllegalStateException("stubbing cannot fail", impossible);
             }
             when(objectStorage.createResource(anyString(), anyString())).thenReturn(resource);
-            RejectWriter writer = new RejectWriter(objectStorage, metrics, new FileStatusMapper(),
-                    "carddemo-batch-output", "gdg/dalyrejs", null);
+            RejectWriter writer = new RejectWriter(objectStorage, mock(S3Client.class), metrics,
+                    new FileStatusMapper(), "carddemo-batch-output", "gdg/dalyrejs", null);
 
             writer.writeReject(stagedTransaction(), RejectCode.ACCOUNT_RECORD_NOT_FOUND);
 
@@ -631,6 +637,199 @@ class MetricInstrumentOwnershipTest {
                             + "query naming a series that does not exist produces an EMPTY PANEL WITH NO "
                             + "ERROR anywhere - the failure mode this test exists to make loud", name)
                     .contains(name));
+        }
+    }
+
+    /**
+     * The one meter filter this class declares, and the framework double-registration it resolves.
+     *
+     * <p>Spring Batch 5.2.4 registers {@code spring.batch.job.active} twice with different tag keys. The
+     * legacy {@code BatchMetrics} binder in {@code AbstractJob.execute} creates it first, carrying the single
+     * key {@code spring.batch.job.active.name}; the {@code BatchJobObservation} started immediately afterwards
+     * makes Micrometer's {@code DefaultMeterObservationHandler} derive the same name from the observation
+     * {@code spring.batch.job}, carrying {@code spring.batch.job.name} and {@code spring.batch.job.status}.
+     * Prometheus admits one label set per metric name, so the second registration failed and its series was
+     * dropped, logging a warning at <em>every</em> job launch.
+     *
+     * <p>These tests are written to fail if the remediation is ever reverted, and one of them
+     * <strong>reproduces the defect on purpose</strong> against a real Prometheus registry - because a test
+     * that only asserts the fixed state cannot show that the fix was necessary, and a filter predicate can
+     * silently stop matching after a framework upgrade renames a tag key.
+     */
+    @Nested
+    @DisplayName("the batch active-job meter has exactly one label set, so every job meter registers")
+    class BatchActiveJobMeterNameIsUnambiguous {
+
+        /** The filter under test, obtained the same way Spring obtains it: from the static factory. */
+        private final MeterFilter filter = MetricsConfig.springBatchActiveJobMeterNameFilter();
+
+        /**
+         * Builds the identifier the legacy {@code BatchMetrics} binder registers.
+         *
+         * @param registry the registry the identifier is minted against, never {@code null}
+         * @return the legacy active-job long-task timer identifier, never {@code null}
+         */
+        private Meter.Id legacyId(final MeterRegistry registry) {
+            return LongTaskTimer.builder(MetricsConfig.METER_SPRING_BATCH_JOB_ACTIVE)
+                    .description("Active jobs")
+                    .tag(MetricsConfig.TAG_SPRING_BATCH_JOB_ACTIVE_NAME, "POSTTRAN")
+                    .register(registry)
+                    .getId();
+        }
+
+        /**
+         * Builds the identifier {@code DefaultMeterObservationHandler} derives from the batch job observation.
+         *
+         * @param registry the registry the identifier is minted against, never {@code null}
+         * @return the Observation-derived active-job long-task timer identifier, never {@code null}
+         */
+        private Meter.Id observationId(final MeterRegistry registry) {
+            return LongTaskTimer.builder(MetricsConfig.METER_SPRING_BATCH_JOB_ACTIVE)
+                    .tag(MetricsConfig.TAG_SPRING_BATCH_JOB_NAME, "POSTTRAN")
+                    .tag("spring.batch.job.status", "UNKNOWN")
+                    .register(registry)
+                    .getId();
+        }
+
+        @Test
+        @DisplayName("the legacy variant is denied and the Observation-derived variant is left alone")
+        void onlyTheLegacyVariantIsDenied() {
+            final MeterRegistry minting = new SimpleMeterRegistry();
+
+            assertThat(filter.accept(legacyId(minting)))
+                    .as("the legacy binder's variant is the one suppressed, because its only tag key appears "
+                            + "on no other meter and so joins to nothing")
+                    .isEqualTo(MeterFilterReply.DENY);
+            assertThat(filter.accept(observationId(minting)))
+                    .as("the Observation-derived variant survives: its job-name key is the same one "
+                            + "spring_batch_job_seconds carries, so the two batch series share one vocabulary")
+                    .isEqualTo(MeterFilterReply.NEUTRAL);
+        }
+
+        @Test
+        @DisplayName("the predicate is the tag key, not the tag count, so common tags cannot defeat it")
+        void theTagKeyAndNotTheTagCountIsWhatSelects() {
+            final MeterRegistry minting = new SimpleMeterRegistry();
+            final Meter.Id legacyWithCommonTags = legacyId(minting)
+                    .withTags(List.of(Tag.of("application", "carddemo"),
+                            Tag.of("component", "modular-monolith")));
+
+            assertThat(filter.accept(legacyWithCommonTags))
+                    .as("management.metrics.tags contributes application and component to every framework "
+                            + "meter, so a predicate counting tags would stop matching the moment that list "
+                            + "changed")
+                    .isEqualTo(MeterFilterReply.DENY);
+        }
+
+        @Test
+        @DisplayName("nothing else is filtered - not the four instruments, not any other framework meter")
+        void everyOtherMeterIsNeutral() {
+            final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            new MetricsConfig(registry);
+
+            assertThat(registry.getMeters())
+                    .as("the ten carddemo series must be visible to this assertion at all")
+                    .hasSize(10)
+                    .allSatisfy(meter -> assertThat(filter.accept(meter.getId()))
+                            .as("%s must be untouched: this filter exists for one framework meter and may "
+                                    + "never reach an instrument MetricsConfig defines", meter.getId())
+                            .isEqualTo(MeterFilterReply.NEUTRAL));
+
+            final MeterRegistry minting = new SimpleMeterRegistry();
+            final List<Meter.Id> neighbours = List.of(
+                    LongTaskTimer.builder("http.server.requests.active").register(minting).getId(),
+                    Counter.builder("spring.batch.job")
+                            .tag(MetricsConfig.TAG_SPRING_BATCH_JOB_NAME, "POSTTRAN").register(minting).getId(),
+                    Counter.builder("spring.batch.step").register(minting).getId());
+
+            assertThat(neighbours).allSatisfy(id -> assertThat(filter.accept(id))
+                    .as("%s shares a prefix or a tag key with the filtered meter and must still pass. A "
+                            + "name-prefix filter would have taken spring_batch_job_seconds with it, and a "
+                            + "global long-task-timer switch would have taken the HTTP one", id)
+                    .isEqualTo(MeterFilterReply.NEUTRAL));
+        }
+
+        @Test
+        @DisplayName("without the filter a real Prometheus registry loses one variant, which is the defect")
+        void theDefectReproducesWithoutTheFilter() {
+            final PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+
+            legacyId(registry);
+            observationId(registry);
+            final String scrape = registry.scrape();
+
+            assertThat(scrape)
+                    .as("MEASURED, not reasoned about: the legacy variant is created first and wins the name")
+                    .contains("spring_batch_job_active_name=\"POSTTRAN\"");
+            assertThat(scrape)
+                    .as("""
+                        and the Observation-derived variant is DROPPED - this is exactly the runtime state \
+                        that logged a PrometheusMeterRegistry warning at every job launch. If this assertion \
+                        ever fails because both label sets render, the framework has stopped \
+                        double-registering and the filter can be retired.""")
+                    .doesNotContain("spring_batch_job_name=\"POSTTRAN\"");
+        }
+
+        @Test
+        @DisplayName("with the filter installed the surviving variant is the Observation-derived one")
+        void theFilterLeavesExactlyTheObservationVariant() {
+            final PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+            registry.config().meterFilter(filter);
+
+            legacyId(registry);
+            observationId(registry);
+            final String scrape = registry.scrape();
+
+            assertThat(scrape)
+                    .as("the denied registration never reaches the Prometheus collector, so it leaves the "
+                            + "name free rather than occupying it with a no-op")
+                    .doesNotContain("spring_batch_job_active_name");
+            assertThat(scrape)
+                    .as("and the variant that does register carries the job-name and job-status keys, which "
+                            + "is what makes it joinable to spring_batch_job_seconds")
+                    .contains("spring_batch_job_active_seconds")
+                    .contains("spring_batch_job_name=\"POSTTRAN\"")
+                    .contains("spring_batch_job_status=\"UNKNOWN\"");
+        }
+
+        @Test
+        @DisplayName("the factory is a static @Bean method, which is what stops it needing the registry")
+        void theFactoryIsAStaticBeanMethod() throws NoSuchMethodException {
+            final Method factory =
+                    MetricsConfig.class.getDeclaredMethod("springBatchActiveJobMeterNameFilter");
+
+            assertThat(factory.getAnnotation(Bean.class))
+                    .as("Spring must own the filter, or it is never applied to the registry")
+                    .isNotNull();
+            assertThat(Modifier.isStatic(factory.getModifiers()))
+                    .as("""
+                        MUST STAY STATIC. Spring applies MeterFilter beans while post-processing the \
+                        MeterRegistry bean. MetricsConfig's constructor takes the registry, so an instance \
+                        @Bean method here would need the registry in order to build the instance that \
+                        produces the filter the registry is waiting for. A static factory needs no \
+                        instance, which breaks the cycle.""")
+                    .isTrue();
+            assertThat(factory.getReturnType()).isEqualTo(MeterFilter.class);
+            assertThat(factory.getParameterCount())
+                    .as("it reads no configuration and holds no collaborator")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("it is the only bean this class declares, so the four instruments stay non-beans")
+        void itIsTheOnlyBeanDeclared() {
+            final List<String> beanMethods = Stream.of(MetricsConfig.class.getDeclaredMethods())
+                    .filter(method -> method.getAnnotation(Bean.class) != null)
+                    .map(Method::getName)
+                    .sorted()
+                    .toList();
+
+            assertThat(beanMethods)
+                    .as("""
+                        The four instruments are deliberately NOT beans: the increment facade is the only \
+                        path to one, which is what stopped callers resolving their own series. A second bean \
+                        method here would be a second way to obtain something this class owns.""")
+                    .containsExactly("springBatchActiveJobMeterNameFilter");
         }
     }
 

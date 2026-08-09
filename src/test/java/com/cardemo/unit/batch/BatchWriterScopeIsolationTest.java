@@ -60,9 +60,12 @@ import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
+import io.awspring.cloud.s3.S3Resource;
 import io.awspring.cloud.s3.S3Template;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -73,6 +76,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -98,6 +102,14 @@ import org.springframework.beans.factory.support.BeanDefinitionBuilder;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.stereotype.Component;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable;
 
 /**
  * Verifies the step-scope contract of {@link TransactionWriter} and {@link StatementWriter}.
@@ -136,9 +148,20 @@ class BatchWriterScopeIsolationTest {
     /** Every object key the doubles observed, in call order, across all threads. */
     private final List<String> observedKeys = Collections.synchronizedList(new ArrayList<>());
 
+    /**
+     * The bytes the doubles currently hold, keyed by object key.
+     *
+     * <p>Needed because the transaction writer stages each chunk as a transient part and concatenates the
+     * parts into one generation object when the step ends, so the promotion reads back what the chunks wrote.
+     * Synchronized because two of these tests write from two threads at once.
+     */
+    private final Map<String, byte[]> storedObjects =
+            Collections.synchronizedMap(new LinkedHashMap<>());
+
     @BeforeEach
     void setUp() {
         observedKeys.clear();
+        storedObjects.clear();
         context = new AnnotationConfigApplicationContext();
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource(
                 "batchWriterScopeIsolationTest",
@@ -146,6 +169,11 @@ class BatchWriterScopeIsolationTest {
                         "carddemo.aws.s3.statements-bucket", "carddemo-statements")));
         context.registerBean(TransactionRepository.class, BatchWriterScopeIsolationTest::repository);
         context.registerBean(S3Template.class, this::objectStorage);
+        // TransactionWriter also takes the object-store client, which pages the part listing its end-of-step
+        // consolidation walks and batches the delete of the parts afterwards. It reads and writes the same
+        // fake store as the template above, so a promotion driven from these tests observes what the chunks
+        // actually wrote.
+        context.registerBean(S3Client.class, this::objectStoreClient);
         context.registerBean(FileStatusMapper.class, FileStatusMapper::new);
         context.registerBean(MeterRegistry.class, SimpleMeterRegistry::new);
         // The writers take the metrics facade, not the registry: MetricsConfig is the sole registrar of the
@@ -194,10 +222,64 @@ class BatchWriterScopeIsolationTest {
         S3Template template = mock(S3Template.class);
         when(template.upload(anyString(), anyString(), any(InputStream.class), any(ObjectMetadata.class)))
                 .thenAnswer(invocation -> {
-                    observedKeys.add(invocation.getArgument(1));
-                    return null;
+                    final String key = invocation.getArgument(1);
+                    observedKeys.add(key);
+                    try (InputStream body = invocation.getArgument(2, InputStream.class)) {
+                        storedObjects.put(key, body.readAllBytes());
+                    }
+                    return storedResource(key);
                 });
+        when(template.download(anyString(), anyString()))
+                .thenAnswer(invocation -> storedResource(invocation.getArgument(1, String.class)));
         return template;
+    }
+
+    /**
+     * An object-store client double that pages the fake store's keys and honours a batched delete.
+     *
+     * @return the double
+     */
+    private S3Client objectStoreClient() {
+        S3Client client = mock(S3Client.class);
+        when(client.listObjectsV2(any(ListObjectsV2Request.class))).thenAnswer(invocation -> {
+            final String prefix = invocation.getArgument(0, ListObjectsV2Request.class).prefix();
+            final List<S3Object> contents = new ArrayList<>();
+            for (final String key : List.copyOf(storedObjects.keySet())) {
+                if (key.startsWith(prefix)) {
+                    contents.add(S3Object.builder().key(key).build());
+                }
+            }
+            return ListObjectsV2Response.builder().contents(contents).isTruncated(Boolean.FALSE).build();
+        });
+        when(client.listObjectsV2Paginator(any(ListObjectsV2Request.class))).thenAnswer(invocation ->
+                new ListObjectsV2Iterable(client, invocation.getArgument(0, ListObjectsV2Request.class)));
+        when(client.deleteObjects(any(DeleteObjectsRequest.class))).thenAnswer(invocation -> {
+            for (final ObjectIdentifier identifier
+                    : invocation.getArgument(0, DeleteObjectsRequest.class).delete().objects()) {
+                storedObjects.remove(identifier.key());
+            }
+            return DeleteObjectsResponse.builder().build();
+        });
+        return client;
+    }
+
+    /**
+     * A resource view of one object the fake store holds.
+     *
+     * @param key the object key
+     * @return a resource reporting that object's key, length and content
+     */
+    private S3Resource storedResource(final String key) {
+        final S3Resource resource = mock(S3Resource.class);
+        final byte[] bytes = storedObjects.getOrDefault(key, new byte[0]);
+        when(resource.getFilename()).thenReturn(key);
+        when(resource.contentLength()).thenReturn(Long.valueOf(bytes.length));
+        try {
+            when(resource.getInputStream()).thenReturn(new ByteArrayInputStream(bytes));
+        } catch (final IOException impossible) {
+            throw new IllegalStateException("stubbing cannot fail", impossible);
+        }
+        return resource;
     }
 
     /**
@@ -320,11 +402,17 @@ class BatchWriterScopeIsolationTest {
                     mutable.add(field.getName());
                 }
             }
-            assertThat(mutable).containsExactly("stepExecution");
-            assertThat(Modifier.isVolatile(
-                    TransactionWriter.class.getDeclaredField("stepExecution").getModifiers()))
-                    .as("volatile would advertise a sharing that step scope has removed")
-                    .isFalse();
+            assertThat(mutable)
+                    .as("the framework-supplied execution and the promoted-once flag, and nothing else: a "
+                            + "running total, a cached key or a reused buffer must still fail here")
+                    .containsExactly("stepExecution", "generationCommitted");
+            for (final String confined : mutable) {
+                assertThat(Modifier.isVolatile(
+                        TransactionWriter.class.getDeclaredField(confined).getModifiers()))
+                        .as("volatile would advertise a sharing that step scope has removed, on [%s]",
+                                confined)
+                        .isFalse();
+            }
         }
 
         @Test
@@ -466,6 +554,7 @@ class BatchWriterScopeIsolationTest {
                         .as("both executions must be open at the same time")
                         .isTrue();
                 writer.write(Chunk.of(transaction(transactionId)));
+                writer.afterStep(execution);
                 return execution.getExecutionContext()
                         .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
             } finally {
@@ -484,14 +573,17 @@ class BatchWriterScopeIsolationTest {
     private String writeOneTransaction(String transactionId) throws Exception {
         TransactionWriter writer = target(TransactionWriter.class, "transactionWriter");
         // What SimpleStepBuilder does for us in a real step: the writer implements StepExecutionListener, so
-        // the framework auto-registers it and calls beforeStep before the first chunk. This context is built
-        // by hand and has no step builder in it, so the callback is delivered here instead. Delivering it to
-        // the scoped instance rather than to a fresh object is the point - a leak between executions would
-        // show up as the wrong job instance in the key below.
-        writer.beforeStep(StepSynchronizationManager.getContext().getStepExecution());
+        // the framework auto-registers it and calls beforeStep before the first chunk and afterStep when the
+        // step ends. This context is built by hand and has no step builder in it, so both callbacks are
+        // delivered here instead. Delivering them to the scoped instance rather than to a fresh object is the
+        // point - a leak between executions would show up as the wrong job instance in the key below. And
+        // afterStep is where the chunk's transient part becomes the one generation object whose key is
+        // published, so a test that stopped at the write would observe no key at all.
+        StepExecution execution = StepSynchronizationManager.getContext().getStepExecution();
+        writer.beforeStep(execution);
         writer.write(Chunk.of(transaction(transactionId)));
-        return StepSynchronizationManager.getContext().getStepExecution().getExecutionContext()
-                .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+        writer.afterStep(execution);
+        return execution.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
     }
 
     /**

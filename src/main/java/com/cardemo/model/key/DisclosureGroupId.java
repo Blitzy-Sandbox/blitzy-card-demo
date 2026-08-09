@@ -386,6 +386,14 @@ public class DisclosureGroupId implements Serializable {
     /**
      * Validates one fixed-width character component against the width of its COBOL picture.
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param javaName the Java component name, reported in the failure message
      * @param cobolName the COBOL field name, reported in the failure message so a failure is traceable straight
      * back to {@code app/cpy/CVTRA02Y.cpy}
@@ -399,9 +407,10 @@ public class DisclosureGroupId implements Serializable {
         if (value == null) {
             throw new IllegalArgumentException(javaName + " (" + cobolName + ") must not be null");
         }
-        if (value.length() > maxLength) {
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw new IllegalArgumentException(javaName + " (" + cobolName + ") must not exceed " + maxLength
-                    + " characters but was " + value.length() + ": '" + value + "'");
+                    + " characters but was " + characterPositions + ": '" + value + "'");
         }
         return value;
     }
@@ -422,6 +431,14 @@ public class DisclosureGroupId implements Serializable {
      * and an overridable method called from a constructor publishes {@code this} before construction has
      * finished, which {@code -Xlint:all -Werror} reports as {@code this-escape} and fails the build over.</p>
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param javaName  the Java property name, named in the failure message so a caller can find the argument
      * @param cobolName the source field name, named so a reader can find the picture clause
      * @param value     the candidate value exactly as supplied by the caller, which may be {@code null}
@@ -437,9 +454,10 @@ public class DisclosureGroupId implements Serializable {
         if (value == null) {
             throw new IllegalArgumentException(javaName + " (" + cobolName + ") must not be null");
         }
-        if (value.length() != length) {
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions != length) {
             throw new IllegalArgumentException(javaName + " (" + cobolName + ") must be exactly " + length
-                    + " characters but was " + value.length() + ": '" + value + "'");
+                    + " characters but was " + characterPositions + ": '" + value + "'");
         }
         return value;
     }

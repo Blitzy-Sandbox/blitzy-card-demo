@@ -563,6 +563,13 @@ class UserListServiceTest {
      * {@code READPREV} at {@code :675-:681} are reached without disturbing the browse start that precedes
      * them.
      *
+     * <p><strong>Why the failure is discriminated by requested page size.</strong> The browse start itself
+     * now issues an equal-or-greater probe, and that probe asks for exactly one row. A helper that failed
+     * every keyset call unconditionally would therefore fail the {@code STARTBR} instead of the read that
+     * follows it, leaving both {@code WHEN OTHER} arms unreachable again. Every real page read asks for a
+     * full page and never for a single row, so the size is an exact discriminator: one row is the position
+     * probe and is served normally, anything wider is a page read and fails.
+     *
      * @param rows the ordered store to slice for the windows that succeed
      * @param fromPageNumber the first zero based window number that fails
      * @param failure the failure to raise
@@ -573,7 +580,18 @@ class UserListServiceTest {
         // would leave the READNEXT and READPREV failure arms unreachable. Both directions fail here for the
         // same reason the page finder does: the store is broken, not one query shape.
         lenient().when(this.repository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
-                anyString(), any(Pageable.class))).thenThrow(failure);
+                anyString(), any(Pageable.class))).thenAnswer(invocation -> {
+                    String anchor = invocation.getArgument(0, String.class);
+                    Pageable pageable = invocation.getArgument(1, Pageable.class);
+                    if (pageable.getPageSize() > 1) {
+                        throw failure;
+                    }
+                    List<UserSecurity> matched = rows.stream()
+                            .filter(row -> row.getSecUsrId().compareTo(anchor) >= 0)
+                            .toList();
+                    int to = Math.min(pageable.getPageSize(), matched.size());
+                    return new SliceImpl<>(matched.subList(0, to), pageable, to < matched.size());
+                });
         lenient().when(this.repository.findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(
                 anyString(), any(Pageable.class))).thenThrow(failure);
         when(this.repository.findAllByOrderBySecUsrIdAsc(any(Pageable.class))).thenAnswer(invocation -> {
@@ -832,7 +850,6 @@ class UserListServiceTest {
         @DisplayName("advancing a page requires the caller to resubmit the counter, so nothing is remembered")
         void advancingRequiresTheCallerToResubmitTheCounter() {
             stubStore(store(35));
-            when(repository.existsById("USR00010")).thenReturn(true);
 
             UserListRequest onPageOne =
                     request(1, true, "USR00001", "USR00010", null, pageWithSelection(0, " "));
@@ -1112,7 +1129,6 @@ class UserListServiceTest {
         @DisplayName("the boundary keys are recomputed for every page, not inherited from the request")
         void theBoundaryKeysAreRecomputedForEveryPage() {
             stubStore(store(25));
-            when(repository.existsById("USR00010")).thenReturn(true);
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF8,
                     request(1, true, "USR00001", "USR00010", null, pageWithSelection(0, " ")));
@@ -1151,7 +1167,6 @@ class UserListServiceTest {
         @DisplayName("the skip read fires on page-forward, so page two begins after the submitted last key")
         void theSkipReadFiresOnPageForward() {
             stubStore(store(25));
-            when(repository.existsById("USR00010")).thenReturn(true);
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF8,
                     request(1, true, "USR00001", "USR00010", null, pageWithSelection(0, " ")));
@@ -1162,7 +1177,8 @@ class UserListServiceTest {
             assertThat(keysOf(screen)).containsExactly(
                     "USR00011", "USR00012", "USR00013", "USR00014", "USR00015",
                     "USR00016", "USR00017", "USR00018", "USR00019", "USR00020");
-            verify(repository).existsById("USR00010");
+            verify(repository, atLeastOnce()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    eq("USR00010"), any(Pageable.class));
         }
 
         @Test
@@ -1199,7 +1215,6 @@ class UserListServiceTest {
         @DisplayName("the page-back skip read fires too, so forward then back round-trips to the same ten")
         void theBackwardSkipReadFiresAndTheDirectionsRoundTrip() {
             stubStore(store(35));
-            when(repository.existsById(anyString())).thenReturn(true);
 
             UserListScreen forwardToTwo = service.submitScreen(AttentionIdentifier.PF8,
                     request(1, true, "USR00001", "USR00010", null, pageWithSelection(0, " ")));
@@ -1218,7 +1233,6 @@ class UserListServiceTest {
         @DisplayName("the page-back browse walks its windows in descending order, per the READPREV loop")
         void thePageBackBrowseWalksWindowsDescending() {
             stubStore(store(35));
-            when(repository.existsById("USR00021")).thenReturn(true);
 
             service.submitScreen(AttentionIdentifier.PF7,
                     request(3, true, "USR00021", "USR00030", null, pageWithSelection(0, " ")));
@@ -1311,7 +1325,6 @@ class UserListServiceTest {
         @DisplayName("the page counter increments unconditionally on a full page, per :309-310")
         void thePageCounterIncrementsOnAFullPage() {
             stubStore(store(60));
-            when(repository.existsById("USR00040")).thenReturn(true);
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF8,
                     request(4, true, "USR00031", "USR00040", null, pageWithSelection(0, " ")));
@@ -1353,7 +1366,6 @@ class UserListServiceTest {
         @DisplayName("the rendered counter stays eight digits wide even at the PIC 9(08) ceiling")
         void theRenderedCounterStaysEightDigitsAtTheCeiling() {
             stubStore(store(25));
-            when(repository.existsById("USR00010")).thenReturn(true);
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF8,
                     request(99_999_999, true, "USR00001", "USR00010", null, pageWithSelection(0, " ")));
@@ -1657,18 +1669,21 @@ class UserListServiceTest {
         }
     }
 
-    // Phase 6 - the browse start: a commented-out option and a CONTINUE that
-    // continues.
+    // Phase 6 - the browse start: a commented-out option that was the default anyway, and a CONTINUE
+    // that continues.
 
     /**
      * {@code STARTBR-USER-SEC-FILE} at {@code app/cbl/COUSR00C.cbl:586-:614}, with its three verified
      * findings.
      *
      * <ol>
-     *   <li><strong>High if reversed.</strong> {@code GTEQ} is commented out at {@code :592}, so the browse positions
-     *       on an <em>exact</em> key. A supplied identifier that does not exist takes the not found arm instead of
-     *       positioning on the next higher key. It is preserved as written, with an entry in the
-     *       {@code DECISION_LOG.md}; restoring the option would change first page behaviour.</li>
+     *   <li><strong>High if reversed.</strong> {@code GTEQ} is commented out at {@code :592}, and that changes
+     *       nothing, because {@code GTEQ} is the option {@code EXEC CICS STARTBR} applies when none is coded for a
+     *       direct browse of a KSDS - and {@code USRSEC} is a KSDS, {@code KEYS(8,0) INDEXED}. The browse therefore
+     *       positions on the first record whose key is <em>at or after</em> the supplied one, and an identifier that
+     *       names no record positions on the next higher key rather than failing. An earlier reading of this suite
+     *       asserted the opposite, on the ground that the comment disabled the option; that reading is withdrawn
+     *       here and in the register entry that carried it.</li>
      *   <li><strong>Medium.</strong> The {@code CONTINUE} at {@code :601} does <em>not</em> terminate its branch: the
      *       four statements at {@code :602-:606} all execute. A reader who assumes otherwise drops the end of data
      *       flag, the message, the cursor reposition and the send.</li>
@@ -1680,34 +1695,75 @@ class UserListServiceTest {
      * matching {@code KEYS(8,0) RECORDSIZE(80,80) REUSE INDEXED} in {@code app/jcl/DUSRSECJ.jcl}.
      */
     @Nested
-    @DisplayName("Phase 6 - exact-key browse start, the non-terminating CONTINUE, the two arms")
+    @DisplayName("Phase 6 - equal-or-greater browse start, the non-terminating CONTINUE, the two arms")
     class BrowseStart {
 
         @Test
-        @DisplayName("a non-existent starting identifier takes the not-found arm - exact key, not GTEQ")
-        void aNonExistentStartingIdentifierTakesTheNotFoundArm() {
-            when(repository.existsById("ZZZZZZZZ")).thenReturn(false);
+        @DisplayName("an identifier beyond the last record positions past the end, not on a failure")
+        void anIdentifierBeyondTheLastRecordPositionsPastTheEnd() {
+            stubStore(store(25));
 
-            // With GTEQ restored the browse would have positioned on the next higher key and returned rows.
-            // The commented-out option at :592 is exactly why it does not.
-            assertThatExceptionOfType(RecordNotFoundException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            request(0, false, null, null, "ZZZZZZZZ", List.of())))
-                    .withMessage("STARTBR of USRSEC reported COBOL FILE STATUS 23 (IO-STATUS-04 0023)")
-                    .withNoCause();
-            verify(repository, never()).findAllByOrderBySecUsrIdAsc(any(Pageable.class));
+            // Nothing in the file is at or after this key, which is the position HIGH-VALUES names, so the
+            // browse is accepted there and the first READNEXT ends the file at once. That is an edge-of-data
+            // control path carrying a message, never an error: the source's arm sets no WS-ERR-FLG.
+            UserListScreen screen = service.submitScreen(AttentionIdentifier.ENTER,
+                    request(0, false, null, null, "ZZZZZZZZ", List.of()));
+
+            assertThat(keysOf(screen)).isEmpty();
+            assertThat(screen.screen().errorMessage()).isEqualTo(REACHED_BOTTOM_MESSAGE);
+            assertThat(screen.errorFlagOn()).isFalse();
         }
 
         @Test
-        @DisplayName("an existing starting identifier opens page one from the first record")
-        void anExistingStartingIdentifierOpensPageOne() {
+        @DisplayName("an identifier below the first record positions on the first record, not on a failure")
+        void anIdentifierBelowTheFirstRecordPositionsOnTheFirstRecord() {
             stubStore(store(25));
-            when(repository.existsById("USR00003")).thenReturn(true);
+
+            // The whole point of the default GTEQ option: a key naming no record slides forward to the next
+            // higher one. Under the withdrawn equal-only reading this answered not-found.
+            UserListScreen screen = service.submitScreen(AttentionIdentifier.ENTER,
+                    request(0, false, null, null, "AAAAAAAA", List.of()));
+
+            assertThat(keysOf(screen)).hasSize(PAGE_SIZE).startsWith("USR00001");
+            assertThat(screen.errorFlagOn()).isFalse();
+        }
+
+        @Test
+        @DisplayName("an identifier that falls between two records positions on the higher one")
+        void anIdentifierBetweenTwoRecordsPositionsOnTheHigherOne() {
+            // A store with gaps, because contiguous eight character keys leave no room for a key to fall
+            // between two of them: USR00003 and USR00004 differ only in their last character and no character
+            // sorts between '3' and '4'. Odd ordinals only, so USR00002, USR00004 and USR00006 are all keys
+            // that name no record while records still follow them.
+            stubStore(List.of(user(1), user(3), user(5)));
+
+            UserListScreen onAGap = service.submitScreen(AttentionIdentifier.ENTER,
+                    request(0, false, null, null, "USR00002", List.of()));
+
+            // The record the browse slides forward to is the next higher one, not the next lower and not a
+            // failure. This is the single behaviour the withdrawn equal-only reading got wrong.
+            assertThat(keysOf(onAGap)).containsExactly("USR00003", "USR00005");
+
+            UserListScreen onALaterGap = service.submitScreen(AttentionIdentifier.ENTER,
+                    request(0, false, null, null, "USR00004", List.of()));
+
+            assertThat(keysOf(onALaterGap)).containsExactly("USR00005");
+            assertThat(onALaterGap.errorFlagOn()).isFalse();
+        }
+
+        @Test
+        @DisplayName("an existing starting identifier opens page one AT that identifier")
+        void anExistingStartingIdentifierOpensPageOneAtThatIdentifier() {
+            stubStore(store(25));
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.ENTER,
                     request(0, false, null, null, "USR00003", List.of()));
 
-            assertThat(keysOf(screen)).hasSize(PAGE_SIZE).startsWith("USR00001");
+            // :219-:221 moves USRIDINI into SEC-USR-ID precisely so the browse starts there. An earlier
+            // revision of this case asserted the page opened on USR00001 instead, which recorded the defect
+            // rather than the contract: the derived key was being discarded before the browse was anchored.
+            assertThat(keysOf(screen)).hasSize(PAGE_SIZE).startsWith("USR00003");
+            assertThat(keysOf(screen)).doesNotContain("USR00001", "USR00002");
             assertThat(screen.screen().pageNumber()).isEqualTo("00000001");
         }
 
@@ -1720,7 +1776,8 @@ class UserListServiceTest {
                     request(0, false, null, null, "", List.of()));
 
             assertThat(keysOf(screen)).startsWith("USR00001");
-            verify(repository, never()).existsById(anyString());
+            verify(repository, never()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    anyString(), any(Pageable.class));
         }
 
         @Test
@@ -1732,21 +1789,22 @@ class UserListServiceTest {
                     request(0, false, null, null, "        ", List.of()));
 
             assertThat(keysOf(screen)).startsWith("USR00001");
-            verify(repository, never()).existsById(anyString());
+            verify(repository, never()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    anyString(), any(Pageable.class));
         }
 
         @Test
         @DisplayName("the browse key is eight characters wide, matching SEC-USR-ID and KEYS(8,0)")
         void theBrowseKeyIsEightCharactersWide() {
             stubStore(store(25));
-            when(repository.existsById("USR00003")).thenReturn(true);
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.ENTER,
                     request(0, false, null, null, "USR00003", List.of()));
 
             assertThat(KEY_LENGTH).isEqualTo(8);
             assertThat(UserSecurityDto.USER_ID_WIDTH).isEqualTo(KEY_LENGTH);
-            verify(repository).existsById("USR00003");
+            verify(repository, atLeastOnce()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    eq("USR00003"), any(Pageable.class));
             assertThat(keysOf(screen)).allSatisfy(key -> assertThat(key).hasSize(KEY_LENGTH));
         }
 
@@ -1765,12 +1823,12 @@ class UserListServiceTest {
         @DisplayName("a seven character identifier is accepted and probed verbatim, without padding")
         void aSevenCharacterIdentifierIsProbedVerbatim() {
             stubStore(store(25));
-            when(repository.existsById("USR0001")).thenReturn(true);
 
             service.submitScreen(AttentionIdentifier.ENTER,
                     request(0, false, null, null, "USR0001", List.of()));
 
-            verify(repository).existsById("USR0001");
+            verify(repository, atLeastOnce()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    eq("USR0001"), any(Pageable.class));
         }
 
         @Test
@@ -1779,7 +1837,8 @@ class UserListServiceTest {
             stubStore(store(25));
             DataAccessResourceFailureException underlying =
                     new DataAccessResourceFailureException("simulated security file outage");
-            when(repository.existsById("USR00003")).thenThrow(underlying);
+            when(repository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    eq("USR00003"), any(Pageable.class))).thenThrow(underlying);
 
             // FileAccessException is not on this file's import whitelist, so it is caught as the base type
             // and identified by name. The distinction that matters is that it is NOT a RecordNotFoundException:
@@ -1815,7 +1874,6 @@ class UserListServiceTest {
             DataAccessResourceFailureException underlying =
                     new DataAccessResourceFailureException("simulated security file outage");
             stubStoreFailingFromWindow(store(35), 2, underlying);
-            when(repository.existsById("USR00021")).thenReturn(true);
 
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.submitScreen(AttentionIdentifier.PF7,
@@ -1828,13 +1886,16 @@ class UserListServiceTest {
         @Test
         @DisplayName("the response and reason codes reach the exception as the four-char IO-STATUS-04 field")
         void theResponseAndReasonCodesReachTheExceptionContext() {
-            when(repository.existsById("ZZZZZZZZ")).thenReturn(false);
+            // The NOTFND arm is reached by the one condition that still produces it once the browse
+            // positions equal-or-greater: an EMPTY file, where LOW-VALUES itself finds nothing. A key beyond
+            // the last record is not that condition - it is the HIGH-VALUES position, tested above.
+            stubStore(store(0));
 
             // 9910-DISPLAY-IO-STATUS at app/cbl/CBTRN02C.cbl:714-731 renders the status in exactly four
             // characters, and that rendering is what the exception message carries. Nothing is swallowed.
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            request(0, false, null, null, "ZZZZZZZZ", List.of())))
+                            request(0, false, null, null, "", List.of())))
                     .withMessageContaining("(IO-STATUS-04 0023)")
                     .withMessageContaining("STARTBR")
                     .withMessageContaining(USRSEC_FILE);
@@ -1843,11 +1904,11 @@ class UserListServiceTest {
         @Test
         @DisplayName("the not-found arm names the record type and key it could not position on")
         void theNotFoundArmNamesTheRecordTypeAndKey() {
-            when(repository.existsById("ZZZZZZZZ")).thenReturn(false);
+            stubStore(store(0));
 
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            request(0, false, null, null, "ZZZZZZZZ", List.of())))
+                            request(0, false, null, null, "", List.of())))
                     .satisfies(failure -> assertThat(failure.getMessage()).contains("FILE STATUS 23"));
         }
 
@@ -1959,7 +2020,6 @@ class UserListServiceTest {
             // A page-back that walks off the front of the file: page two, twelve records, so the descending
             // fill exhausts the store before WS-IDX reaches zero.
             stubStore(store(12));
-            when(repository.existsById("USR00011")).thenReturn(true);
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF7,
                     request(2, true, "USR00011", "USR00012", null,
@@ -2210,7 +2270,6 @@ class UserListServiceTest {
         @DisplayName("the identifier field is cleared before the send, per :328 MOVE SPACE TO USRIDINO")
         void theIdentifierFieldIsClearedBeforeTheSend() {
             stubStore(store(25));
-            when(repository.existsById("USR00003")).thenReturn(true);
 
             UserListScreen screen = service.submitScreen(AttentionIdentifier.ENTER,
                     request(0, false, null, null, "USR00003", List.of()));
@@ -2294,7 +2353,8 @@ class UserListServiceTest {
             UserListScreen screen = listUsers(null);
 
             assertThat(keysOf(screen)).startsWith("USR00001");
-            verify(repository, never()).existsById(anyString());
+            verify(repository, never()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    anyString(), any(Pageable.class));
         }
 
         @Test
@@ -2315,7 +2375,8 @@ class UserListServiceTest {
             assertThat(screen.errorFlagOn()).isFalse();
             assertThat(screen.sendCount()).isEqualTo(2);
             // The decisive assertion: a blank key is never handed to the store as a key to look up.
-            verify(repository, never()).existsById(anyString());
+            verify(repository, never()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    anyString(), any(Pageable.class));
         }
 
         @Test
@@ -2545,7 +2606,6 @@ class UserListServiceTest {
         void untrustedInputReachesTheStoreOnlyThroughBoundParameters() {
             stubStore(store(25));
             String hostileKey = "'; DROP";
-            when(repository.existsById(hostileKey)).thenReturn(false);
 
             // The key travels as an argument and nothing else. This service's own finder is derived, so it has
             // no query text at all; the interface's one JPQL finder - the pessimistic read the update and delete
@@ -2564,10 +2624,15 @@ class UserListServiceTest {
                                     .isTrue());
                 }
             }
-            assertThatExceptionOfType(RecordNotFoundException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            request(0, false, null, null, hostileKey, List.of())));
-            verify(repository).existsById(hostileKey);
+            // The key positions equal-or-greater like any other, so it returns rows rather than failing -
+            // which is the stronger statement: the hostile text is never interpreted, only compared. It
+            // sorts below every seeded identifier, so the page opens on the first record.
+            UserListScreen screen = service.submitScreen(AttentionIdentifier.ENTER,
+                    request(0, false, null, null, hostileKey, List.of()));
+
+            assertThat(keysOf(screen)).startsWith("USR00001");
+            verify(repository, atLeastOnce()).findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    eq(hostileKey), any(Pageable.class));
         }
 
         @Test

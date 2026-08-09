@@ -58,6 +58,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Valid;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.io.Serializable;
 import java.lang.reflect.Constructor;
@@ -991,6 +992,134 @@ final class AccountUpdateRequestTest {
                             + "names; the inherited Object.toString emits none of them",
                             type.getSimpleName())
                     .isEmpty();
+        }
+    }
+
+    /**
+     * The two address lines refuse text the fixed-width record cannot carry; every other free-text member is
+     * left to the source's own rule.
+     *
+     * <p>Purpose: pin the placement of the representability constraint. The first address line is validated by
+     * {@code app/cbl/COACTUPC.cbl:1584-1590} for <em>presence only</em> and the second is not validated at all,
+     * so they are the only free-text members of this payload that reach {@code CUST-ADDR-LINE-1} and
+     * {@code CUST-ADDR-LINE-2} without a character-class check. Those two columns are rendered into the
+     * fixed-width statement lines of {@code app/jcl/CREASTMT.JCL} - 80 bytes of text and 100 of markup, both
+     * encoded {@code ISO-8859-1} - so a character with no single-byte form is a statement run that fails on
+     * every execution until an operator edits the row by hand.
+     *
+     * <p>Equally important is where the constraint is <b>not</b>. The three names, the state, the city and the
+     * country are alphabetic-only in the source and the numerics are numeric-only, so each already refuses such
+     * a value <em>in the source's own words</em>; a type-level pattern there would pre-empt that message and
+     * change what the screen reports. This group asserts both halves, because the risk is a later edit widening
+     * the constraint across the payload.
+     */
+    @Nested
+    @DisplayName("3a. Byte representability: the two unguarded address lines, and nothing else")
+    final class AddressLineRepresentability {
+
+        @Test
+        @DisplayName("a BMP character outside Latin-1 is refused on both address lines")
+        void bmpCharacterOutsideLatin1IsRefused() {
+            for (final String member : List.of("addressLine1", "addressLine2")) {
+                assertThat(VALIDATOR.validate(
+                                withOnly(AccountUpdateRequest.class, member, "\u6f22\u5b57 STREET")).stream()
+                        .map(violation -> violation.getPropertyPath().toString())
+                        .toList())
+                        .as("%s: U+6F22 has no single-byte ISO-8859-1 form, so the statement emitter would "
+                                + "substitute it and the emitted line would not be the stored value", member)
+                        .containsExactly(member);
+            }
+        }
+
+        @Test
+        @DisplayName("a non-BMP character is refused, because two chars would encode to one byte")
+        void nonBmpCharacterIsRefused() {
+            for (final String member : List.of("addressLine1", "addressLine2")) {
+                assertThat(VALIDATOR.validate(
+                                withOnly(AccountUpdateRequest.class, member, "\ud83d\ude00 STREET")).stream()
+                        .map(violation -> violation.getPropertyPath().toString())
+                        .toList())
+                        .as("%s: a surrogate pair is two characters and one byte, which moves every record "
+                                + "boundary after it", member)
+                        .containsExactly(member);
+            }
+        }
+
+        @Test
+        @DisplayName("control bytes are refused as well, on both lines")
+        void controlBytesAreRefused() {
+            assertThat(VALIDATOR.validate(withOnly(AccountUpdateRequest.class, "addressLine1", "a\nb")))
+                    .as("the statement stream is fixed-width, so a line terminator inside a PIC X field is a "
+                            + "record-boundary injection rather than a formatting quirk")
+                    .isNotEmpty();
+            assertThat(VALIDATOR.validate(withOnly(AccountUpdateRequest.class, "addressLine2", "a\u007fb")))
+                    .as("DELETE sits above printable ASCII and is refused with the C0 set")
+                    .isNotEmpty();
+        }
+
+        @Test
+        @DisplayName("Latin-1 text is accepted, because the record can carry it byte for byte")
+        void latin1TextIsAccepted() {
+            for (final String member : List.of("addressLine1", "addressLine2")) {
+                assertThat(VALIDATOR.validate(
+                                withOnly(AccountUpdateRequest.class, member, "\u00c4\u00d6\u00dc STRASSE 12")))
+                        .as("%s: U+00C4-U+00DC are single bytes in ISO-8859-1, so an accented address "
+                                + "round-trips byte-exactly and must not be refused", member)
+                        .isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("absent and blank remain unaffected, so the three emptiness states survive")
+        void absentAndBlankAreUnaffected() {
+            for (final String member : List.of("addressLine1", "addressLine2")) {
+                assertThat(VALIDATOR.validate(withOnly(AccountUpdateRequest.class, member, null)))
+                        .as("%s absent", member)
+                        .isEmpty();
+                assertThat(VALIDATOR.validate(withOnly(AccountUpdateRequest.class, member, "")))
+                        .as("%s empty", member)
+                        .isEmpty();
+                assertThat(VALIDATOR.validate(withOnly(AccountUpdateRequest.class, member, " ".repeat(50))))
+                        .as("%s blank at full width, which app/cbl/COACTUPC.cbl:1826-1840 treats as a state "
+                                + "of its own rather than as a refusal", member)
+                        .isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("the width ceiling is untouched: an over-wide Latin-1 line still fails @Size alone")
+        void theWidthCeilingIsUntouched() {
+            assertThat(VALIDATOR.validate(
+                            withOnly(AccountUpdateRequest.class, "addressLine1", "\u00c4".repeat(51))).stream()
+                    .map(violation -> violation.getConstraintDescriptor().getAnnotation().annotationType()
+                            .getSimpleName())
+                    .toList())
+                    .as("ACSADL1I PIC X(50) at app/cpy-bms/COACTUP.CPY:228 refuses the fifty-first character; "
+                            + "the value is representable, so @Size is the only constraint that fires")
+                    .containsExactly(Size.class.getSimpleName());
+            assertThat(VALIDATOR.validate(
+                            withOnly(AccountUpdateRequest.class, "addressLine1", "\u00c4".repeat(50))))
+                    .as("and the fiftieth is still accepted, so the ceiling did not move")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("no other free-text member carries it, so no source message is pre-empted")
+        void noOtherFreeTextMemberCarriesTheConstraint() throws NoSuchFieldException {
+            for (final String member : List.of("customerFirstName", "customerMiddleName", "customerLastName",
+                    "addressCity", "addressStateCode", "addressCountryCode", "accountGroupId",
+                    "governmentIssuedId")) {
+                assertThat(AccountUpdateRequest.class.getDeclaredField(member).getAnnotation(Pattern.class))
+                        .as("%s is refused by the source's own alphabetic, numeric or lookup edit, and a "
+                                + "pattern here would replace that message with a generic one", member)
+                        .isNull();
+            }
+            for (final String member : List.of("addressLine1", "addressLine2")) {
+                assertThat(AccountUpdateRequest.class.getDeclaredField(member).getAnnotation(Pattern.class))
+                        .as("%s has no character-class edit in the source, so the representability contract "
+                                + "is stated here", member)
+                        .isNotNull();
+            }
         }
     }
 

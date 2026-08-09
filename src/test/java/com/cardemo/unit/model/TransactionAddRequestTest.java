@@ -839,9 +839,6 @@ final class TransactionAddRequestTest {
                 assertThat(RecordFieldContract.declares(TransactionAddRequest.class, component, Digits.class))
                         .as("%s declares no @Digits, which would reject a currency-decorated amount", component)
                         .isFalse();
-                assertThat(RecordFieldContract.declares(TransactionAddRequest.class, component, Pattern.class))
-                        .as("%s declares no @Pattern", component)
-                        .isFalse();
                 assertThat(RecordFieldContract.declares(TransactionAddRequest.class, component, NotNull.class))
                         .as("%s declares no @NotNull, because the source tolerates a blank field", component)
                         .isFalse();
@@ -852,6 +849,42 @@ final class TransactionAddRequestTest {
                         .as("%s declares no @NotEmpty", component)
                         .isFalse();
             }
+        }
+
+        /**
+         * The representability constraint is on the five free-text components that reach the record, and on no
+         * others - so neither parser is pre-empted.
+         *
+         * <p>Purpose: pin the exact placement of {@code @Pattern}. It has to be on
+         * {@code source}, {@code description}, {@code merchantName}, {@code merchantCity} and
+         * {@code merchantZip}, because those five are the free-text members that reach the 350-byte record and
+         * a value that cannot be encoded in one byte per character is not a value a {@code PIC X(n)} field can
+         * hold. It must equally <b>not</b> be on {@code amount}, whose currency-tolerant parser
+         * ({@code FUNCTION NUMVAL-C}, {@code app/cbl/COTRN02C.cbl:383-384}) a pattern would defeat, nor on the
+         * identifiers, codes or dates, each of which the source refuses in its own words through the strict
+         * parser or the date validation service - and nor on the six header components or the error line,
+         * which reach no record at all.
+         *
+         * <p>Asserted as an exact set rather than as five presence checks, because the risk being guarded is a
+         * later edit widening the constraint to a component whose own refusal would then be pre-empted and
+         * whose message would silently change.
+         */
+        @Test
+        @DisplayName("@Pattern is on exactly the five free-text components that reach the fixed-width record")
+        void theRepresentabilityConstraintIsOnExactlyTheFiveRecordBoundComponents() {
+            final List<String> constrained = new ArrayList<>();
+            for (final String component : componentNames()) {
+                if (RecordFieldContract.declares(TransactionAddRequest.class, component, Pattern.class)) {
+                    constrained.add(component);
+                }
+            }
+
+            assertThat(constrained)
+                    .as("the free-text members of app/cpy/CVTRA05Y.cpy that a client supplies, and nothing "
+                            + "else; amount keeps NUMVAL-C, the identifiers keep the strict parser, the dates "
+                            + "keep the date service and the header reaches no record")
+                    .containsExactlyInAnyOrder(
+                            "source", "description", "merchantName", "merchantCity", "merchantZip");
         }
 
         @Test
@@ -2242,6 +2275,152 @@ final class TransactionAddRequestTest {
                     .as("neutralisation must not alter what an ordinary log record says")
                     .doesNotContain("chars)")
                     .doesNotContain("\\u");
+        }
+    }
+
+    /**
+     * A value that cannot be represented in the fixed-width record is refused here, not by the batch tier.
+     *
+     * <p>Purpose: pin the boundary that closes the reported failure. Before it, a request whose free text
+     * carried a character with no single-byte form was accepted, persisted, and thereafter failed
+     * <b>every</b> run of the report and statement jobs on that one row - one accepted request disabled the
+     * whole batch tier until an operator deleted it by hand. The refusal belongs where the value enters.
+     *
+     * <p>The class enforced is the emitters' own: {@code U+0020}-{@code U+007E} and
+     * {@code U+00A0}-{@code U+00FF}. That is what makes the two directions of the contract hold together -
+     * what the boundary accepts is exactly what the 350-byte record can carry, so nothing accepted here can
+     * fail there, and nothing the legacy screen could send is refused.
+     *
+     * <p>The three rejection cases are the three the report distinguished, because they fail differently
+     * downstream: a BMP character outside Latin-1 encodes to one substituted byte, a non-BMP character is two
+     * Java chars that collapse to one byte and move every following record boundary, and a control byte is
+     * representable but is a record-boundary injection into an unblocked stream. All three are one violation
+     * here.
+     */
+    @Nested
+    @DisplayName("15. Byte representability: what the boundary accepts is what the 350-byte record can carry")
+    class FixedWidthRepresentability {
+
+        /** The five free-text components the constraint is declared on. */
+        private final List<String> recordBoundFreeText =
+                List.of("source", "description", "merchantName", "merchantCity", "merchantZip");
+
+        @Test
+        @DisplayName("Latin-1 text is accepted on every one of the five, because the record can carry it")
+        void latin1TextIsAccepted() {
+            for (final String component : recordBoundFreeText) {
+                assertThat(violationsOf(withOnly(component, "\u00c4\u00d6\u00dc")))
+                        .as("%s: U+00C4-U+00DC are single bytes in ISO-8859-1, so an accented value "
+                                + "round-trips byte-exactly and must not be refused", component)
+                        .isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("ordinary ASCII is unaffected, so the constraint is invisible in normal use")
+        void ordinaryAsciiIsUnaffected() {
+            assertThat(violationsOf(populated()))
+                    .as("a fully populated ordinary payload must still validate clean")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a BMP character outside Latin-1 is refused on every one of the five")
+        void bmpCharacterOutsideLatin1IsRefused() {
+            for (final String component : recordBoundFreeText) {
+                assertThat(violationsOf(withOnly(component, "\u6f22\u5b57")))
+                        .as("%s: U+6F22 has no single-byte form, so ISO-8859-1 would substitute it and the "
+                                + "stored value would not be the value received", component)
+                        .hasSize(1)
+                        .allSatisfy(violation -> assertThat(violation.getPropertyPath().toString())
+                                .isEqualTo(component));
+            }
+        }
+
+        @Test
+        @DisplayName("a non-BMP character is refused, because two Java chars would encode to one byte")
+        void nonBmpCharacterIsRefused() {
+            for (final String component : recordBoundFreeText) {
+                assertThat(violationsOf(withOnly(component, "\ud83d\ude00")))
+                        .as("%s: a surrogate pair is two chars and one substituted byte, which is what "
+                                + "produced 349 bytes from 350 characters and moved every following record "
+                                + "boundary", component)
+                        .hasSize(1);
+            }
+        }
+
+        @Test
+        @DisplayName("the reported payload is refused as one violation, not accepted with 201")
+        void theReportedPayloadIsRefused() {
+            assertThat(violationsOf(withOnly("description", "\u00c4\u00d6\u00dc \u6f22\u5b57 \ud83d\ude00")))
+                    .as("this exact description was accepted before, and the report and statement jobs then "
+                            + "failed on it until the row was deleted")
+                    .hasSize(1)
+                    .allSatisfy(violation -> assertThat(violation.getPropertyPath().toString())
+                            .isEqualTo("description"));
+        }
+
+        @Test
+        @DisplayName("control bytes are refused too, because the emitted stream is unblocked and undelimited")
+        void controlBytesAreRefused() {
+            assertThat(violationsOf(withOnly("description", "line\nbreak")))
+                    .as("app/jcl/POSTTRAN.jcl declares RECFM=FB, so a consumer finds record boundaries by "
+                            + "counting bytes; a line feed inside a PIC X field is a boundary injection")
+                    .hasSize(1);
+            assertThat(violationsOf(withOnly("merchantName", "tab\there")))
+                    .as("the C0 block is refused as a class, not just the line terminators")
+                    .hasSize(1);
+            assertThat(violationsOf(withOnly("merchantCity", "del\u007fhere")))
+                    .as("DELETE sits above the printable ASCII range and is refused with the C0 set")
+                    .hasSize(1);
+            assertThat(violationsOf(withOnly("source", "c1\u0085x")))
+                    .as("the C1 block U+0080-U+009F is representable in one byte but is still a control")
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("the width ceilings are untouched: an over-width Latin-1 value still fails @Size alone")
+        void theWidthCeilingsAreUntouched() {
+            assertThat(violationsOf(withOnly("merchantCity", "\u00c4".repeat(26))))
+                    .as("MCITYI PIC X(25) at app/cpy-bms/COTRN02.CPY:126 refuses the twenty-sixth character; "
+                            + "the value is representable, so exactly one constraint fires and it is @Size")
+                    .hasSize(1)
+                    .allSatisfy(violation -> assertThat(violation.getConstraintDescriptor()
+                            .getAnnotation().annotationType())
+                            .isEqualTo(Size.class));
+            assertThat(violationsOf(withOnly("merchantCity", "\u00c4".repeat(25))))
+                    .as("and the twenty-fifth is still accepted, so the ceiling did not move")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("an absent or blank value is unaffected, so the three-state model survives")
+        void absentAndBlankAreUnaffected() {
+            for (final String component : recordBoundFreeText) {
+                assertThat(violationsOf(withOnly(component, null)))
+                        .as("%s absent: @Pattern treats null as valid, and the source tolerates an absent "
+                                + "field", component)
+                        .isEmpty();
+                assertThat(violationsOf(withOnly(component, "")))
+                        .as("%s empty: the pattern matches the empty string, and blank is a distinct state "
+                                + "the source renders with a marker rather than refusing", component)
+                        .isEmpty();
+                assertThat(violationsOf(withOnly(component, " ")))
+                        .as("%s blank: a space is inside the permitted class", component)
+                        .isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("the constraint is not on amount, the identifiers or the dates")
+        void theConstraintIsNotOnTheParsedComponents() {
+            for (final String component : List.of("amount", "accountId", "cardNumber", "merchantId",
+                    "typeCode", "categoryCode", "originatingDate", "processingDate")) {
+                assertThat(RecordFieldContract.declares(TransactionAddRequest.class, component, Pattern.class))
+                        .as("%s is refused by the source's own parser or date service, and a pattern here "
+                                + "would pre-empt that message", component)
+                        .isFalse();
+            }
         }
     }
 

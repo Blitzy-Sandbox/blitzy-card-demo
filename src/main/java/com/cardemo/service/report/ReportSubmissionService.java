@@ -1028,12 +1028,31 @@ public class ReportSubmissionService {
      * {@code EIBTRNID}, but that field is CICS-supplied and occurs <strong>zero times under {@code app/}</strong>,
      * so nothing in the frozen corpus is being replaced. See {@code CorrelationIdFilter} for the full census.
      *
-     * <p><strong>What this header does not reach.</strong> It travels as a message header only. The listener
-     * that drains this queue, {@code BatchConfig.ReportJobQueueListener}, builds its job parameters from the
-     * report name, the two dates and the SQS deduplication identifier, and neither reads this header nor
-     * restores it into the diagnostic context. So the identifier joins the HTTP request to the <em>publish</em>,
-     * and the deduplication identifier joins the publish to the <em>launch</em>; it does not appear on the batch
-     * run's own log records.
+     * <p><strong>Where this header reaches, corrected.</strong> An earlier revision of this comment said the
+     * listener "neither reads this header nor restores it into the diagnostic context", and described the
+     * correlation as a two-hop join through the SQS deduplication identifier. <strong>That is withdrawn: it
+     * describes behaviour this application does not have.</strong> {@code BatchConfig.ReportJobQueueListener}
+     * reads this header and installs it into the diagnostic context for the duration of the launch —
+     * {@code restoreDiagnosticContext} puts it under {@code CorrelationIdFilter.MDC_KEY_CORRELATION_ID} before
+     * the job is launched and {@code releaseDiagnosticContext} removes exactly what it installed afterwards, by
+     * key rather than by clearing, because the listener container's threads are pooled. So <strong>one
+     * identifier spans the HTTP request, the publish, the listener, the launch and every log record the batch
+     * run emits</strong>, and no join is required.
+     *
+     * <p>Two honest qualifications remain, and the first is easy to state wrongly. The listener accepts the
+     * header only when it is <strong>propagatable</strong> — non-blank, no longer than 128 characters and
+     * entirely visible ASCII — falling back to the SQS deduplication identifier otherwise. That guard is
+     * <strong>defence in depth rather than a path a caller can reach</strong>: a value arriving through this
+     * application's HTTP boundary has already been screened by
+     * {@link CorrelationIdFilter#MAX_CORRELATION_ID_LENGTH}, which is <strong>64</strong> characters and stricter
+     * than the listener's 128, and a value failing that screen is replaced with a generated identifier before it
+     * is ever published. So the fallback serves a message published by some other producer, or one whose header
+     * was stripped in transit — not an over-long value from a caller here.
+     *
+     * <p>Second, the job parameters themselves are still built from the report name, the two dates and the
+     * deduplication identifier: the correlation identifier travels in the diagnostic context, not in the
+     * parameter set, so it does not participate in Spring Batch job-instance identity. That is deliberate — a
+     * correlation identifier in the parameter set would make every resubmission a new job instance.
      */
     private static final String HEADER_CORRELATION_ID = CorrelationIdFilter.CORRELATION_ID_HEADER;
 

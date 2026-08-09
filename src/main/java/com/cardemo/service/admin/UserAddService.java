@@ -1660,6 +1660,14 @@ public class UserAddService {
      * reporting success. {@code null} passes through untouched so that the emptiness checks, which run later
      * and in the source's order, are the arms that report a missing field.
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param value     the presented value; {@code null} is returned unchanged
      * @param maxLength the width of the screen field
      * @param fieldName the field's name, for the failure; the value is never included
@@ -1667,7 +1675,11 @@ public class UserAddService {
      * @throws ValidationException if the value is longer than the screen field
      */
     private static String requireWidth(final String value, final int maxLength, final String fieldName) {
-        if (value != null && value.length() > maxLength) {
+        if (value == null) {
+            return null;
+        }
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw ValidationException.invalidField(fieldName,
                     "Value exceeds the " + maxLength + " character width of this field");
         }

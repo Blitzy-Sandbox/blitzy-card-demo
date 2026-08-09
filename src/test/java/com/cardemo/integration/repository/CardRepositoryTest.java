@@ -69,8 +69,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
@@ -123,8 +123,11 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * <p>Consequently this class asserts multiplicity <em>positively</em>: it inserts a second card for an
  * account that already has one and requires {@link CardRepository#findByAccountIdOrderByCardNumberAsc} to
  * return at least two rows. That assertion is the whole point of the file. The finder is
- * {@code Page<Card> findByAccountIdOrderByCardNumberAsc(Long, Pageable)} and nothing here treats it as
- * though it were single-valued.
+ * {@code Slice<Card> findByAccountIdOrderByCardNumberAsc(Long, Pageable)} and nothing here treats it as
+ * though it were single-valued. It reports a {@code Slice} rather than a {@code Page} because a VSAM browse
+ * publishes no cardinality - the screen's more-records indicator comes from whether the next
+ * {@code READNEXT} succeeded - so multiplicity is asserted from the window content and from
+ * {@code hasNext()}, never from a count query the source never performed.
  *
  * <p><strong>The base key IS unique; the alternate key IS NOT.</strong> The two are asserted in the same
  * file deliberately, because the contrast is the contract. {@code app/catlg/LISTCAT.txt:202} gives the base
@@ -605,26 +608,29 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
             long accountId = seededAccountId();
             long rowsBefore = cardCount();
 
-            Page<Card> before = cardRepository.findByAccountIdOrderByCardNumberAsc(
+            Slice<Card> before = cardRepository.findByAccountIdOrderByCardNumberAsc(
                     accountId, PageRequest.of(0, 7));
-            assertThat(before.getTotalElements())
+            assertThat(before.getContent())
                     .as("account %d holds exactly one seeded card; that is a fixture property of "
-                            + "app/data/ASCII/carddata.txt, not a schema constraint", accountId)
-                    .isEqualTo(1L);
+                            + "app/data/ASCII/carddata.txt, not a schema constraint. The finder returns a "
+                            + "Slice, not a Page: a VSAM browse publishes no cardinality, so the window "
+                            + "content is the whole of what it reports and no count query is issued",
+                            accountId)
+                    .hasSize(1);
 
             persistSyntheticCard(syntheticCardNumber(), accountId);
 
-            Page<Card> after = cardRepository.findByAccountIdOrderByCardNumberAsc(
+            Slice<Card> after = cardRepository.findByAccountIdOrderByCardNumberAsc(
                     accountId, PageRequest.of(0, 7));
 
-            assertThat(after.getTotalElements())
+            assertThat(after.getContent().size())
                     .as("app/catlg/LISTCAT.txt:285 SPANNED NONUNIQKEY makes CARDDATA.VSAM.AIX non-unique, "
                             + "so account %d must be able to hold more than one card. The UNIQUE token on "
                             + ":284 is the dataset-name attribute and does NOT govern key uniqueness. "
                             + "app/jcl/CARDFILE.jcl:86 NONUNIQUEKEY says the same in words, and "
                             + "app/cbl/COCRDLIC.cbl pages 7 rows (:176-178) because one account holds many",
                             accountId)
-                    .isGreaterThanOrEqualTo(2L);
+                    .isGreaterThanOrEqualTo(2);
             assertThat(after.getContent())
                     .as("both rows for account %d must come back on the first page of the legacy window",
                             accountId)
@@ -734,19 +740,21 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
         @Test
         @DisplayName("an account with no cards yields an empty page, not null and not an exception")
         void anAccountWithNoCardsYieldsAnEmptyPage() {
-            Page<Card> page = cardRepository.findByAccountIdOrderByCardNumberAsc(
+            Slice<Card> page = cardRepository.findByAccountIdOrderByCardNumberAsc(
                     unseededAccountId(), PageRequest.of(0, 7));
 
             assertThat(page)
-                    .as("a paged finder returns an empty page rather than null; account %d is outside the "
-                            + "seeded range of 1 to 50 and therefore owns no card",
+                    .as("a windowed finder returns an empty slice rather than null; account %d is outside "
+                            + "the seeded range of 1 to 50 and therefore owns no card",
                             unseededAccountId())
                     .isNotNull();
             assertThat(page.isEmpty())
-                    .as("the browse equivalent of an immediate end-of-file is an empty page, never an "
+                    .as("the browse equivalent of an immediate end-of-file is an empty window, never an "
                             + "exception")
                     .isTrue();
-            assertThat(page.getTotalElements()).isZero();
+            assertThat(page.hasNext())
+                    .as("an empty window has no successor, which is the one bit a Slice reports")
+                    .isFalse();
             assertThat(page.getContent()).isEmpty();
         }
 
@@ -756,9 +764,9 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
             long accountId = seededAccountId();
             persistSyntheticCard(syntheticCardNumber(), accountId);
 
-            Page<Card> first = cardRepository.findByAccountIdOrderByCardNumberAsc(
+            Slice<Card> first = cardRepository.findByAccountIdOrderByCardNumberAsc(
                     accountId, PageRequest.of(0, 7));
-            Page<Card> second = cardRepository.findByAccountIdOrderByCardNumberAsc(
+            Slice<Card> second = cardRepository.findByAccountIdOrderByCardNumberAsc(
                     accountId, PageRequest.of(1, 7));
 
             assertThat(first.getSize())

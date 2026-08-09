@@ -914,6 +914,37 @@ public class AccountViewService {
      */
     @Transactional(readOnly = true)
     public AccountDto viewAccount(final String accountFilter) {
+        return viewAccountWithRecords(accountFilter).screen();
+    }
+
+    /**
+     * The same conversation as {@link #viewAccount(String)}, additionally handing back the two master records
+     * {@code 9000-READ-ACCT} resolved.
+     *
+     * <p>It exists for the one caller that needs both halves of a single traversal: the {@code GET} handler of
+     * {@code com.cardemo.controller.AccountController} answers with this projection and with the sealed
+     * as-displayed snapshot the matching update echoes back, and that snapshot is a projection of these same
+     * records. See {@link AccountViewRecords} for why the records rather than the rendered screen are what
+     * cross that boundary, and for what obtaining them separately used to cost.
+     *
+     * <p>{@link #viewAccount(String)} delegates here and discards the records, so there is exactly one
+     * implementation of the conversation and no possibility of the two entry points drifting apart.
+     *
+     * <p><b>Side effects.</b> None. Three primary-key or alternate-index reads inside one read-only
+     * transaction, and nothing else.
+     *
+     * @param accountFilter the account identifier as typed, subject to the normalisation of {@code :628-633}
+     * @return the projection and the two records behind it; never {@code null}, and neither record is
+     *     {@code null}
+     * @throws ValidationException      when the account filter is blank - {@code FailureKind.BLANK} - or
+     *                                  non-numeric, short or all-zeroes - {@code FailureKind.INVALID}
+     * @throws RecordNotFoundException  when the cross-reference, the account master or the customer master
+     *                                  has no matching record
+     * @throws CardDemoException        for any other file status, the concrete subtype being chosen by
+     *                                  {@code FileStatusMapper}
+     */
+    @Transactional(readOnly = true)
+    public AccountViewRecords viewAccountWithRecords(final String accountFilter) {
         final ViewContext context = new ViewContext(accountFilter, ATTENTION_IDENTIFIER_ENTER,
                 EntryMode.REENTER);
         final AccountViewResult result = mainLine0000(context);
@@ -927,7 +958,7 @@ public class AccountViewService {
                             ? ValidationException.FailureKind.BLANK
                             : ValidationException.FailureKind.INVALID);
         }
-        return result.screen();
+        return new AccountViewRecords(result.screen(), context.account, context.customer);
     }
 
     /**
@@ -2976,6 +3007,36 @@ public class AccountViewService {
                                     boolean inputError,
                                     boolean accountFound,
                                     boolean customerFound) {
+    }
+
+    /**
+     * The projected screen together with the two master records {@code 9000-READ-ACCT} resolved to build it.
+     *
+     * <p>It exists so that one traversal of the cross-reference, account and customer chain can serve a
+     * caller that needs both the screen and the records behind it. {@code com.cardemo.controller.AccountController}
+     * is that caller: its {@code GET} answers with the account projection <em>and</em> with the sealed
+     * as-displayed snapshot that the matching update must echo back, and the snapshot is a projection of these
+     * same two records - see {@code com.cardemo.service.account.AccountUpdateService#sealSnapshotForUpdate}.
+     * Obtaining the snapshot from a second read of the same three rows meant one request opened two read-only
+     * transactions, took two connections from the pool and issued the identical three statements twice.
+     *
+     * <p><strong>The records, not a re-reading of the screen.</strong> The snapshot must be a projection of
+     * what was read, never a reassembly of what was displayed: the live customer date of birth is
+     * dash-separated at offsets 1, 6 and 9 while the snapshot holds it unseparated at 1, 5 and 7, so a rebuild
+     * from displayed text would differ on every request. Handing over the entities keeps the comparison at
+     * {@code app/cbl/COACTUPC.cbl:L4109-L4193} exact.
+     *
+     * <p>Both records are non-{@code null} whenever this record is returned at all, because
+     * {@link #viewAccount(String)} raises a typed failure for a miss on any link of the chain before it can
+     * reach here.
+     *
+     * @param screen   the thirty-seven-component projection of mapset {@code COACTVW}; never {@code null}
+     * @param account  the {@code ACCTDAT} record read at {@code app/cbl/COACTVWC.cbl:776-784}; never
+     *                 {@code null}
+     * @param customer the {@code CUSTDAT} record read at {@code app/cbl/COACTVWC.cbl:826-834}; never
+     *                 {@code null}
+     */
+    public record AccountViewRecords(AccountDto screen, Account account, Customer customer) {
     }
 
     /**

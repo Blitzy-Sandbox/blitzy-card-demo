@@ -927,7 +927,13 @@ public class UserListService {
         work.cursorField = CURSOR_FIELD_USER_ID_INPUT;             // :224 MOVE -1 TO USRIDINL
 
         work.pageNum = 0;                                          // :227 MOVE 0 TO CDEMO-CU00-PAGE-NUM
-        work.anchorOn(null, 0);                                    // page one begins at the first record
+        // The key derived at :219/:221 IS the browse position, and anchoring on it is the whole point of
+        // moving USRIDINI into SEC-USR-ID: STARTBR positions on RIDFLD, so an identifier in the field starts
+        // the page at that identifier and LOW-VALUES starts it at the first record. Discarding the key here
+        // and anchoring unconditionally at ordinal zero made every request return page one, which silently
+        // dropped a filter the source honours. One call covers both branches, because anchorOn ignores the
+        // headroom for a null key - the same shape PROCESS-PF7-KEY and PROCESS-PF8-KEY already use.
+        work.anchorOn(work.startKey, pageSize + BROWSE_HEADROOM_PROBES);
         processPageForward(work);                                  // :228
 
         if (!work.errFlgOn) {
@@ -1423,12 +1429,20 @@ public class UserListService {
      * {@code SEC-USR-ID} is {@code PIC X(08)} in {@code app/cpy/CSUSR01Y.cpy} and because
      * {@code app/jcl/DUSRSECJ.jcl:65} defines the cluster with {@code KEYS(8,0)}.
      *
-     * <p><strong>Retained parity artefact: the commented-out {@code GTEQ}.</strong> {@code :592} carries
-     * {@code GTEQ} as a comment. It is left commented, so no equal-or-greater positioning semantic is
-     * enabled: a supplied key must name a record that exists, and a key that names nothing takes the
-     * {@code NOTFND} arm. The two sentinel keys the callers supply are handled as the callers mean them -
-     * {@code LOW-VALUES} positions before the first record, {@code HIGH-VALUES} positions past the last.
-     * Severity: Low; held as {@code DL-PP-13} in the DECISION_LOG.md.
+     * <p><strong>The commented-out {@code GTEQ} changes nothing, because it is the default.</strong>
+     * {@code :592} carries {@code GTEQ} as a comment, so neither {@code GTEQ} nor {@code EQUAL} is coded -
+     * and for a direct browse of a KSDS the option {@code EXEC CICS STARTBR} applies when none is coded is
+     * {@code GTEQ}. {@code USRSEC} is a KSDS: {@code app/jcl/DUSRSECJ.jcl} defines it with {@code KEYS(8,0)}
+     * and {@code INDEXED}. The effective semantic is therefore equal-or-greater, and the browse positions on
+     * the first record whose key is at or after the supplied one. The two sentinel keys the callers supply
+     * are handled as the callers mean them - {@code LOW-VALUES} positions before the first record,
+     * {@code HIGH-VALUES} positions past the last - and a real key that exceeds every record in the file is
+     * the same condition as {@code HIGH-VALUES} and takes the same position.
+     *
+     * <p>An earlier reading of this method treated the comment as evidence of an equal-only browse and
+     * validated the supplied key with a primary-key existence lookup. That reading is <strong>withdrawn</strong>:
+     * it made a key that names no record a not-found even when records follow it, and it is not the option
+     * the source's command carries.
      *
      * <p><strong>Retained parity artefact.</strong> The {@code NOTFND} arm opens with a bare
      * {@code CONTINUE} at {@code :601} before its real body, which is a no-op the compiler discards. It is
@@ -1444,11 +1458,11 @@ public class UserListService {
      *
      * <p><strong>The key is the position.</strong> The echoed cursor anchors the browse and the two keyset
      * finders read from it, ascending on the forward path and descending on the backward one, which is what
-     * {@code STARTBR} followed by {@code READNEXT} or {@code READPREV} does. The key is still validated for
-     * existence with an indexed primary-key lookup first, because the source's {@code STARTBR} is equal-only
-     * and a key that does not exist is a not-found rather than a silent slide to the next higher key. The
-     * submitted page number no longer contributes to positioning at all - see the class documentation for the
-     * three behaviours that resolved.
+     * {@code STARTBR} followed by {@code READNEXT} or {@code READPREV} does. The key is probed with a
+     * one-row equal-or-greater query first, so that a key naming no record still positions on the next
+     * higher one exactly as the default {@code GTEQ} option does, and only a key beyond the last record
+     * reaches the end of the file. The submitted page number no longer contributes to positioning at all -
+     * see the class documentation for the three behaviours that resolved.
      *
      * @param work the per-invocation work area; {@code work.startKey}, {@code work.startPastEnd} and
      *             {@code work.startOrdinal} describe the requested position
@@ -1617,10 +1631,20 @@ public class UserListService {
      *   <li>{@code LOW-VALUES} - before the first record. The file must hold at least one record, which is
      *       established by reading ordinal zero; an empty file takes the {@code NOTFND} arm. The read also
      *       primes the page window, so a first display costs one query here and none in the page loop.</li>
-     *   <li>A real key - the key must name a record that exists, because {@code GTEQ} is left commented out
-     *       at {@code app/cbl/COUSR00C.cbl:592}. Existence is settled with an indexed primary-key lookup, and
-     *       the ordinal comes from the caller's page arithmetic.</li>
+     *   <li>A real key - the browse positions on the first record whose key is <em>equal to or greater
+     *       than</em> it, which is settled with a one-row keyset probe. A key that exceeds every record in
+     *       the file is the same condition {@code HIGH-VALUES} expresses, so it takes the past-the-end
+     *       position above and the next read ends the file at once.</li>
      * </ul>
+     *
+     * <p><strong>Why equal-or-greater, when {@code GTEQ} is commented out.</strong> {@code GTEQ} is the
+     * <em>default</em> option of {@code EXEC CICS STARTBR} for a direct browse of a KSDS, and {@code USRSEC}
+     * is a KSDS - {@code app/jcl/DUSRSECJ.jcl} defines it with {@code KEYS(8,0)} and {@code INDEXED}. The
+     * commented-out {@code GTEQ} at {@code app/cbl/COUSR00C.cbl:592} therefore changes nothing: neither
+     * {@code GTEQ} nor {@code EQUAL} is coded, so the effective option is the default, and the default is
+     * equal-or-greater. An earlier reading of this method took the comment as evidence that the browse was
+     * equal-only and validated the key with a primary-key existence lookup. That was wrong twice over: it
+     * refused a key that names no record even when records follow it, and it is not what the source does.
      *
      * <p>A negative or unaddressable ordinal is reported as {@code NOTFND} rather than clamped, because a
      * caller that supplies a page number and a row count which cannot describe a real position has supplied
@@ -1656,8 +1680,17 @@ public class UserListService {
         }
 
         try {
-            if (!this.userSecurityRepository.existsById(work.startKey)) {
-                return recordResponse(work, CICS_RESP_NOTFND, IO_STATUS_RECORD_NOT_FOUND);
+            // The equal-or-greater probe the default STARTBR option performs. One row is enough: the browse
+            // needs to know only whether the file holds anything at or after the key, because the page reads
+            // themselves walk forward from the anchor.
+            if (this.userSecurityRepository
+                    .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(work.startKey, PageRequest.ofSize(1))
+                    .getContent().isEmpty()) {
+                // Nothing at or after the key, so the key is beyond the last record - the position
+                // HIGH-VALUES names. The browse is accepted there and the first read ends the file, which is
+                // the outcome the source produces for a key it cannot reach past.
+                work.browseOrdinal = ORDINAL_PAST_END;
+                return recordResponse(work, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
             }
         } catch (final DataAccessException failure) {
             work.ioFailureCause = failure;
@@ -1886,6 +1919,14 @@ public class UserListService {
      * an over-wide value is a malformed request, and quietly cutting it would accept input the source
      * rejects.
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param value     the submitted field, possibly {@code null}; {@code null} and blank are accepted,
      *                  because the source accepts an unset field everywhere it reads one
      * @param maxLength the declared width of the screen field
@@ -1894,9 +1935,13 @@ public class UserListService {
      * @throws ValidationException if {@code value} is longer than {@code maxLength}
      */
     private static String requireWidth(final String value, final int maxLength, final String fieldName) {
-        if (value != null && value.length() > maxLength) {
+        if (value == null) {
+            return null;
+        }
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw new ValidationException(fieldName + " must be at most " + maxLength
-                    + " characters because the screen field is that wide, but was " + value.length()
+                    + " characters because the screen field is that wide, but was " + characterPositions
                     + " characters long", fieldName, ValidationException.FailureKind.INVALID);
         }
         return value;

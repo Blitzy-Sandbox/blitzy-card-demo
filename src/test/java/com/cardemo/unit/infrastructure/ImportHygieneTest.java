@@ -397,7 +397,8 @@ final class ImportHygieneTest {
     }
 
     @Test
-    @DisplayName("every source ends in exactly one LF, with no CRLF, no tab and no trailing whitespace")
+    @DisplayName("every source ends in exactly one LF with no CRLF, tab or trailing whitespace, and the one"
+            + " file .editorconfig pins to CRLF still carries it")
     void everySourceHasTheShapeEditorconfigDeclares() {
         // Finding STYLE-001, severity Low. .editorconfig declares end_of_line = lf,
         // insert_final_newline = true and trim_trailing_whitespace = true for [*], and no [*.java] section
@@ -442,6 +443,56 @@ final class ImportHygieneTest {
                     [*.java] section relaxes them. A violation is fixed in the file, never by widening \
                     this assertion.""")
                 .isEmpty();
+
+        // The same finding, read from the other side. .editorconfig does not only declare LF: it pins
+        // [README.md] to end_of_line = crlf, because that file is CRLF at the traceability anchor and is the
+        // only text file outside app/, samples/ and diagrams/ that is. .gitattributes mirrors the pin with
+        // `README.md -text !eol` and tells a maintainer to change the two together.
+        //
+        // Neither declaration can enforce itself, and the two fail in opposite ways. .editorconfig is honoured
+        // by editors that read it and ignored by every tool that does not. .gitattributes `-text` means Git
+        // performs NO conversion in either direction, so whatever bytes reach the working tree reach the blob
+        // unchanged - the exemption that protects the file from renormalisation is exactly what stops Git from
+        // repairing it. An editor that rewrites the file with LF therefore commits 1,221 line-ending changes
+        // carrying no content change, which is the sweeping diff CONTRIBUTING.md:33 asks contributors not to
+        // create, against the file the plan requires be preserved verbatim.
+        //
+        // That is not hypothetical: it happened while this checkpoint's findings were being committed, and it
+        // was caught by reading the diff rather than by any assertion, which is the gap this closes. The check
+        // lives in this method because this method already exists for that reason - see STYLE-001 above, where
+        // a declaration an editor honours turned out not to be a rule the build enforces.
+        final byte[] readme = bytesOf(ROOT.resolve("README.md"));
+        final long lineFeeds = new String(readme, StandardCharsets.UTF_8).chars().filter(c -> c == '\n').count();
+        final long crlfPairs = countCrlfPairs(readme);
+        assertThat(crlfPairs)
+                .as("""
+                    README.md must terminate every one of its %d lines with CRLF, and %d do. \
+                    .editorconfig pins [README.md] to end_of_line = crlf and .gitattributes pins it to \
+                    `-text !eol`; a shortfall means an editor rewrote the file with LF and Git, told to \
+                    convert nothing, passed those bytes straight through. Restore the endings rather than \
+                    relaxing this: convert every LF back to CRLF, then confirm `git diff -w` and `git diff` \
+                    report the same insertion and deletion counts, which is what proves no whitespace-only \
+                    churn remains.""".formatted(lineFeeds, crlfPairs))
+                .isEqualTo(lineFeeds);
+    }
+
+    /**
+     * Counts CRLF pairs in a byte array, without decoding, because the question is about bytes.
+     *
+     * <p>Scanning bytes rather than a decoded string keeps the count exact for a file that is not valid UTF-8,
+     * and keeps a lone CR from being mistaken for a terminator.
+     *
+     * @param bytes the file content to scan
+     * @return the number of {@code 0x0D 0x0A} pairs
+     */
+    private static long countCrlfPairs(final byte[] bytes) {
+        long pairs = 0;
+        for (int index = 1; index < bytes.length; index++) {
+            if (bytes[index] == '\n' && bytes[index - 1] == '\r') {
+                pairs++;
+            }
+        }
+        return pairs;
     }
 
     /**

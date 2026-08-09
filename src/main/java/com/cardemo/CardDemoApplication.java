@@ -74,14 +74,14 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * The {@code present / target} notation an earlier revision used is dropped <em>here</em> because this
  * paragraph reports what exists rather than progress towards a plan; three leaves do still exceed the target
  * counts of the action plan - {@code security} by {@code SnapshotTokenService}, {@code observability} by its
- * fourth class and {@code dto} by the per-endpoint request and response records that keep an entity off the
+ * fourth and fifth classes and {@code dto} by the per-endpoint request and response records that keep an entity off the
  * wire - and {@code com.cardemo.package-info} keeps the notation and states the reason for each. Neither file
  * claims the plan was met exactly; an earlier revision of this sentence did, which contradicted its own
  * sibling: {@code config} 6, {@code security} 4, {@code model} (entity 11, key 3, enums 4,
  * <strong>dto 29</strong>), {@code repository} 11, {@code service} 21 across nine leaves,
  * {@code controller} <strong>8</strong> exposing <strong>17 operations</strong>, {@code batch}
  * (jobs <strong>6</strong>, processors 5, readers <strong>7</strong>, writers 3), {@code exception} 9 and
- * {@code observability} <strong>4</strong>. Reproduce any of them with
+ * {@code observability} <strong>5</strong>. Reproduce any of them with
  * {@code find src/main/java/com/cardemo/<leaf> -maxdepth 1 -name '*.java' \
  * ! -name 'package-info.java' | wc -l}.
  * {@code com.cardemo.unit.infrastructure.InventoryCountGateTest} fails the build if a figure here

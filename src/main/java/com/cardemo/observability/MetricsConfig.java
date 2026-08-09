@@ -44,7 +44,9 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.config.MeterFilter;
 
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import com.cardemo.model.enums.RejectCode;
@@ -99,7 +101,21 @@ import com.cardemo.model.enums.RejectCode;
  * <p><strong>The rejected line carries two spaces before its colon and the processed line carries one.</strong>
  * That asymmetry is in the source, was confirmed with {@code cat -A}, and is reproduced above because it is
  * evidence a reviewer will diff. Nothing in this class emits those strings; the counters below are the
- * continuously scrapeable replacement for the two totals they carried.
+ * continuously readable replacement for the two totals they carried.
+ *
+ * <p><strong>Readable, and not in every case scrapeable - the distinction matters.</strong>
+ * {@link #METRIC_AUTHENTICATION_ATTEMPTS} is written by the long-lived web application, which
+ * {@code observability/prometheus.yml} scrapes directly. {@link #METRIC_RECORDS_PROCESSED},
+ * {@link #METRIC_RECORDS_REJECTED} and {@link #METRIC_TRANSACTION_AMOUNT_TOTAL} are written by
+ * {@code POSTTRAN} and {@code COMBTRAN}, which run in the operator submission process documented on
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} - a {@code java -jar} launch with
+ * {@code spring.main.web-application-type} set to {@code none}, so it ends when its job ends and never serves
+ * a scrape at all. Those three are <em>pushed</em> to the Pushgateway as that process exits, exactly as the
+ * legacy job published its totals once at end of run to a destination that retained them, and
+ * {@code observability/prometheus.yml} reads them back from there under the job name
+ * {@code carddemo-pushgateway}. Nothing in this class changes with it: the instrument definitions are
+ * identical either way, and which collection path carries them is
+ * {@code src/main/resources/application.yml}'s decision, not this file's.
  *
  * <p>{@code WS-TRANSACTION-COUNT} is incremented once per daily-transaction record read, at
  * {@code app/cbl/CBTRN02C.cbl:L206} ({@code ADD 1 TO WS-TRANSACTION-COUNT}), and is mirrored by
@@ -233,13 +249,71 @@ import com.cardemo.model.enums.RejectCode;
  * three classes in this package are self-registering and a second definition would be a duplicate.
  * {@code observability/prometheus.yml} owns the scrape. The dashboard
  * JSON owns display. Accordingly this file declares no {@code @Enable...} annotation, no component scan, no
- * {@code MeterRegistry} implementation bean, no meter filter or common-tag customiser, no exporter or
- * endpoint configuration and no tracing configuration.
+ * {@code MeterRegistry} implementation bean, no common-tag customiser, no exporter or endpoint configuration
+ * and no tracing configuration.
  *
- * <p><strong>Troubleshooting a duplicate bean definition.</strong> If the context fails to start reporting a
- * duplicate definition for any of the four beans below, the duplicate must be removed from wherever it was introduced
- * - most likely {@code com.cardemo.config.ObservabilityConfig}, which <b>is</b> authored and is the other half of
- * this contract - <em>not</em> from this file: this file is the plan-designated definition site. That class is
+ * <p>It declares <strong>exactly one</strong> meter filter, {@link #springBatchActiveJobMeterNameFilter()},
+ * and that one exists because the invariant it enforces is the invariant this class already publishes: a
+ * single Prometheus metric name may not carry two different label sets. It filters a <em>framework</em>
+ * meter, never one of the four defined here, and it is the only filter this file may ever declare - common
+ * tags stay in {@code management.metrics.tags}, where {@code src/main/resources/application.yml} owns them.
+ * The next section states the conflict it resolves.
+ *
+ * <h2>The one framework meter this class filters, and why</h2>
+ *
+ * <p>Spring Batch 5.2.4 instruments an executing job <strong>twice</strong> under one meter name, and the two
+ * paths disagree about the label set. Both are created in {@code AbstractJob.execute}, in this order:
+ *
+ * <ol>
+ *   <li><strong>The legacy binder.</strong>
+ *       {@code BatchMetrics.createLongTaskTimer(meterRegistry, "job.active", "Active jobs", tag)} with
+ *       {@code BatchMetrics.METRICS_PREFIX} of {@code spring.batch.} yields the long-task timer
+ *       {@value #METER_SPRING_BATCH_JOB_ACTIVE} carrying the single tag key
+ *       {@value #TAG_SPRING_BATCH_JOB_ACTIVE_NAME}.</li>
+ *   <li><strong>The Observation API.</strong> {@code BatchJobObservation.BATCH_JOB_OBSERVATION} is started
+ *       under the observation name {@code spring.batch.job}, whose low-cardinality keys are
+ *       {@value #TAG_SPRING_BATCH_JOB_NAME} and {@code spring.batch.job.status}. Micrometer's
+ *       {@code DefaultMeterObservationHandler} derives a long-task timer named
+ *       <em>observation name</em>{@code .active} from every observation it handles - which is the same
+ *       {@value #METER_SPRING_BATCH_JOB_ACTIVE}, with a different and larger key set.</li>
+ * </ol>
+ *
+ * <p>The legacy timer is created first, so it wins the name in the Prometheus registry and the
+ * Observation-derived one is <strong>dropped</strong>, logging at every single job launch:
+ *
+ * <pre>
+ * WARN i.m.p.PrometheusMeterRegistry - ... meter MeterId{name='spring.batch.job.active',
+ *   tags=[application, component, spring.batch.job.name=INTCALC, spring.batch.job.status=UNKNOWN]}
+ *   registration has failed ... already an existing meter named 'spring_batch_job_active_seconds'
+ *   containing tag keys [application, component, spring_batch_job_active_name]
+ * </pre>
+ *
+ * <p><strong>The legacy variant is the one suppressed, and the choice is not arbitrary.</strong> Job
+ * <em>duration</em> is reported by {@code spring_batch_job_seconds}, whose labels come from the same
+ * observation and are therefore {@value #TAG_SPRING_BATCH_JOB_NAME} and {@code spring.batch.job.status}.
+ * Keeping the Observation-derived active timer makes one label vocabulary serve both batch job series, so a
+ * dashboard or alert can join them on {@code spring_batch_job_name}; keeping the legacy one instead would
+ * leave the two series joinable on nothing, because {@code spring_batch_job_active_name} appears on no other
+ * meter. No panel in {@code observability/grafana/dashboards/carddemo-dashboard.json} queries the active
+ * timer at all - it directs a reader to {@code spring_batch_job_seconds_count} and
+ * {@code spring_batch_step_seconds_count} for per-job volume - so no display depends on either label set and
+ * the choice is free to be made on consistency.
+ *
+ * <p><strong>Two alternatives were rejected, each for a stated reason.</strong> Setting
+ * {@code management.observations.long-task-timer.enabled} to {@code false} would suppress the
+ * Observation-derived timer instead, needing no code at all - but it is global: it would also delete
+ * {@code http_server_requests_active_seconds} and every other observation-derived active timer, which is
+ * telemetry loss well outside this conflict. Setting {@code management.metrics.enable.spring.batch.job.active}
+ * to {@code false} filters on the name alone, so it denies <em>both</em> variants and leaves no active-job
+ * timer whatsoever. Only a filter that discriminates on the label set can suppress one path and keep the
+ * other, which is what the declared filter does.
+ *
+ * <p><strong>Troubleshooting a duplicate bean definition.</strong> The four instruments are deliberately not
+ * beans - see the comment beside the constructor - so the only bean this file declares is the meter filter. If
+ * the context fails to start reporting a duplicate definition for a {@code MeterFilter}, the duplicate must be
+ * removed from wherever it was introduced - most likely {@code com.cardemo.config.ObservabilityConfig}, which
+ * <b>is</b> authored and is the other half of this contract - <em>not</em> from this file: this file is the
+ * plan-designated definition site. That class is
  * authored, so a future tense such as "once that class is authored" would contradict the paragraph above,
  * which already describes what it owns and publishes. Note that a duplicate <em>meter</em> cannot arise however
  * often a name is resolved - {@code MeterRegistry.counter} and {@code Counter.Builder.register} both return the
@@ -302,7 +376,9 @@ import com.cardemo.model.enums.RejectCode;
  *   <li><strong>The instrument count stays at four and both tag dimensions stay enum-closed.</strong> A fifth
  *       instrument, or any high-cardinality tag, breaks the contract this class publishes. Timers, gauges,
  *       distribution summaries and long-task timers described elsewhere in the specification are
- *       complementary and additive, and are out of scope here.</li>
+ *       complementary and additive, and this class defines none of them. The one framework long-task timer it
+ *       names, {@value #METER_SPRING_BATCH_JOB_ACTIVE}, it neither defines nor advances: it only removes the
+ *       duplicate registration of that name, for the reason given above.</li>
  *   <li><strong>Renaming a metric, changing a tag key or declaring a Micrometer base unit silently empties a
  *       dashboard panel and raises no error.</strong> Change the constant and
  *       {@code observability/grafana/dashboards/carddemo-dashboard.json} in the same commit, and never set a
@@ -512,6 +588,58 @@ public class MetricsConfig {
      */
     public static final String SIGN_DEBIT = "debit";
 
+    // Framework meter identity. NOT part of the four-instrument contract above.
+    //
+    // These three name a meter and two tag keys that Spring Batch 5.2.4 registers, not anything this class
+    // defines, advances or owns. They are declared - and public - for one reason: the meter filter below and
+    // the test that pins it must select on the exact strings the framework emits, and a literal retyped in
+    // two places is a filter that silently stops matching after a framework upgrade renames one of them.
+    // Nothing here may be used as a tag key or value on any of the four instruments.
+
+    /**
+     * Micrometer name of the Spring Batch active-job long-task timer, published to Prometheus as
+     * {@code spring_batch_job_active_seconds}.
+     *
+     * <p>Spring Batch 5.2.4 registers this one name from two independent instrumentation paths that disagree
+     * about the label set, which is the conflict {@link #springBatchActiveJobMeterNameFilter()} resolves; the
+     * class documentation states both paths and the evidence for each. The legacy path composes the name as
+     * {@code BatchMetrics.METRICS_PREFIX + "job.active"}; the Observation path arrives at the same string
+     * because {@code DefaultMeterObservationHandler} appends {@code .active} to the observation name
+     * {@code spring.batch.job}.
+     *
+     * <p>This application defines no long-task timer of its own, so this constant exists purely to be
+     * matched against, never to be registered under.
+     */
+    public static final String METER_SPRING_BATCH_JOB_ACTIVE = "spring.batch.job.active";
+
+    /**
+     * The single tag key carried by the <strong>legacy</strong> variant of
+     * {@link #METER_SPRING_BATCH_JOB_ACTIVE}, rendered by Prometheus as {@code spring_batch_job_active_name}.
+     *
+     * <p>Its presence on a meter identifier is what
+     * {@link #springBatchActiveJobMeterNameFilter()} tests, because it is the one thing that distinguishes the
+     * legacy registration from the Observation-derived one. Selecting on this key rather than on the number
+     * of tags keeps the filter correct as common tags are added to or removed from
+     * {@code management.metrics.tags}.
+     *
+     * <p>It appears on no other meter in the application, which is exactly why the variant carrying it is the
+     * variant suppressed: a series labelled only this way cannot be joined to
+     * {@code spring_batch_job_seconds}.
+     */
+    public static final String TAG_SPRING_BATCH_JOB_ACTIVE_NAME = "spring.batch.job.active.name";
+
+    /**
+     * The job-name tag key carried by the <strong>Observation-derived</strong> variant of
+     * {@link #METER_SPRING_BATCH_JOB_ACTIVE} and by {@code spring_batch_job_seconds}, rendered by Prometheus
+     * as {@code spring_batch_job_name}.
+     *
+     * <p>It is the low-cardinality key {@code BatchJobObservation.JobLowCardinalityTags.JOB_NAME} declares,
+     * so keeping the Observation-derived variant is what makes the active-job and job-duration series share
+     * one label vocabulary. The filter below never matches on this key; it is declared so the test can assert
+     * which variant <em>survived</em> rather than only which one was denied.
+     */
+    public static final String TAG_SPRING_BATCH_JOB_NAME = "spring.batch.job.name";
+
     // Descriptions. Micrometer keeps the description of whichever registration happened first; these
     // beans are built while the context starts, before any batch step or request can run, so these
     // are the descriptions that reach the scrape endpoint.
@@ -691,6 +819,53 @@ public class MetricsConfig {
     // not merely by convention. Nothing is lost: Micrometer resolves a meter by name and tag set, so any
     // component that genuinely needs the raw instrument can still obtain the identical object from the
     // registry - but no component does, and none should, because the facade is what carries the validation.
+
+    // The one bean. A framework-meter filter, declared static for a reason stated on the method.
+
+    /**
+     * Denies the legacy registration of {@value #METER_SPRING_BATCH_JOB_ACTIVE}, so that exactly one label set
+     * owns that Prometheus metric name and every Spring Batch job meter registers.
+     *
+     * <p>Spring Batch 5.2.4 registers that one name twice with different tag keys - the legacy
+     * {@code BatchMetrics} binder and the Observation API - and Prometheus admits one label set per metric
+     * name, so before this filter existed the second registration failed and logged a warning at every job
+     * launch while its series was silently dropped. Both paths, the order that decides which one wins, the
+     * warning it produced and the two rejected property-only alternatives are documented on this class.
+     *
+     * <p><strong>The predicate is the presence of {@value #TAG_SPRING_BATCH_JOB_ACTIVE_NAME}, not a tag
+     * count.</strong> That key appears on the legacy variant and on nothing else, so the test is exact, and it
+     * stays exact regardless of how many common tags {@code management.metrics.tags} contributes. Denial here
+     * means {@code MeterRegistry} returns a no-op instrument without ever reaching
+     * {@code PrometheusMeterRegistry}, so the name is left free for the Observation-derived timer that follows
+     * it - and that timer carries {@value #TAG_SPRING_BATCH_JOB_NAME}, the same key
+     * {@code spring_batch_job_seconds} carries, which is the whole point of keeping that variant rather than
+     * this one.
+     *
+     * <p><strong>This method is {@code static}, and it must stay static.</strong> Spring applies
+     * {@code MeterFilter} beans while it post-processes the {@code MeterRegistry} bean, so a filter that
+     * cannot be created without the registry cannot be applied in time. This class's constructor takes a
+     * {@link MeterRegistry}, so an <em>instance</em> {@code @Bean} method here would require the registry in
+     * order to build the configuration instance that produces the filter that the registry is waiting for -
+     * a cycle. A static factory method needs no instance of its enclosing class, which breaks it. The method
+     * also touches no field and reads no configuration, so being static costs nothing.
+     *
+     * <p>Scope: this filter matches one framework meter name and one tag key. It never sees, renames, denies
+     * or re-tags any of the four instruments this class defines, nor any other meter - every non-matching
+     * identifier is returned {@code NEUTRAL}, which leaves the decision to whatever filters
+     * {@code management.metrics.tags} and the actuator auto-configuration install.
+     *
+     * <p>Side effects: none when called; the returned filter mutates nothing and allocates no meter. Failure
+     * modes: none - it examines an identifier and returns a verdict, and a {@code null} tag lookup is the
+     * ordinary "key absent" answer rather than an error.
+     *
+     * @return the meter filter Spring installs on the registry before any meter is registered; never
+     *         {@code null}
+     */
+    @Bean
+    public static MeterFilter springBatchActiveJobMeterNameFilter() {
+        return MeterFilter.deny(id -> METER_SPRING_BATCH_JOB_ACTIVE.equals(id.getName())
+                && id.getTag(TAG_SPRING_BATCH_JOB_ACTIVE_NAME) != null);
+    }
 
     // Increment facade. Validated, bounded, and the only place money crosses into a primitive.
 

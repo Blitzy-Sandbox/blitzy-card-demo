@@ -34,6 +34,9 @@
  */
 package com.cardemo.observability;
 
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -42,8 +45,13 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+
+import javax.sql.DataSource;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -511,6 +519,23 @@ public class HealthIndicators {
     public static final String S3_HEALTH_COMPONENT_NAME = "s3";
 
     /**
+     * Bean name of the relational-store indicator, and therefore the source of the {@code db} health
+     * component key. Actuator strips the {@code HealthIndicator} suffix to derive the key, so this
+     * spelling is what keeps {@code management.endpoint.health.group.readiness.include}'s {@code db}
+     * entry resolving after {@code management.health.db.enabled: false} switched the framework's own
+     * unbounded contributor off.
+     */
+    public static final String DB_HEALTH_INDICATOR_BEAN_NAME = "dbHealthIndicator";
+
+    /**
+     * Health component key of the relational-store indicator, as it appears in a health response and
+     * in {@code management.endpoint.health.group.readiness.include}. Deliberately the same key the
+     * framework contributor used, so the readiness group, the container health check and every
+     * published gate reading keep the spelling they already had.
+     */
+    public static final String DB_HEALTH_COMPONENT_NAME = "db";
+
+    /**
      * Bean name of the SQS indicator, and therefore the source of the {@code sqs} health component
      * key. Actuator strips the {@code HealthIndicator} suffix to derive the key.
      */
@@ -746,6 +771,55 @@ public class HealthIndicators {
     private static final long SQS_PROBE_BUDGET_MILLIS = 1_500L;
 
     /**
+     * Total budget for one invocation of the relational-store contributor, in milliseconds, covering
+     * pool acquisition <em>and</em> the validation query together.
+     *
+     * <p><strong>Finding, severity Minor - remediated by this constant existing at all.</strong> The
+     * framework's {@code DataSourceHealthIndicator} has no deadline of its own: it asks the pool for a
+     * connection and therefore inherits {@code spring.datasource.hikari.connection-timeout}, which is
+     * 30 000 ms. With the database stopped, {@code /actuator/health/readiness} measured 30.05 s and
+     * the application logged {@code Health contributor ... DataSourceHealthIndicator (db) took
+     * 30009ms} - twenty times the budget this class already applied to its own two contributors, and
+     * six times the {@code --timeout=5s} the container health check declares. Under any orchestrator
+     * that treats a readiness timeout as a failure, a brief database blip therefore became a restart
+     * loop. Lowering the pool's {@code connection-timeout} was rejected as the remedy: that value
+     * governs the data path for every request, its untuned state is a recorded decision, and pool
+     * tuning is explicitly out of scope for this migration.
+     *
+     * <p>1 500 ms rather than the 2 000 ms the budget note above allots to "the database probe and
+     * transport", so that all three contributors share one deadline: three contributors at 1.5 s cap
+     * the aggregate worst case at 4.5 s and leave 500 ms of the container's 5 s for Actuator's
+     * aggregation and the round trip.
+     */
+    private static final long DB_PROBE_BUDGET_MILLIS = 1_500L;
+
+    /**
+     * The validation query, and the reason it is a literal rather than a configured value.
+     *
+     * <p>{@code SELECT 1} is answerable by any PostgreSQL connection with no privilege on any table,
+     * so a probe cannot fail because a grant changed, cannot read a row and cannot be affected by
+     * row-level security. The application binds a least-privilege role, and a probe that needed a
+     * table grant would report the substrate down when only an authorisation had moved.
+     */
+    private static final String DB_VALIDATION_QUERY = "SELECT 1";
+
+    /**
+     * Name of the single daemon thread the relational-store probe runs on.
+     *
+     * <p>Named rather than default because it appears in a thread dump, and an operator reading one
+     * during a database stall needs to see which subsystem is blocked.
+     */
+    private static final String DB_PROBE_THREAD_NAME = "carddemo-db-health-probe";
+
+    /**
+     * Seconds to wait for the probe thread to finish during shutdown before abandoning it.
+     *
+     * <p>Short on purpose: the thread is a daemon, so it can never hold the JVM open, and shutdown
+     * must not be delayed by a probe that is already stalled on a substrate that has gone away.
+     */
+    private static final long DB_PROBE_SHUTDOWN_GRACE_SECONDS = 2L;
+
+    /**
      * Upper bound on a single network attempt, in milliseconds, applied as the SDK's
      * {@code apiCallAttemptTimeout} alongside a whole-call {@code apiCallTimeout} taken from the
      * remaining budget.
@@ -853,6 +927,13 @@ public class HealthIndicators {
     private final SqsAsyncClient sqsAsyncClient;
 
     /**
+     * The injected application {@link DataSource}. Never constructed here, and deliberately the same
+     * pool the request path uses: a probe against a second pool would report on connectivity the
+     * application does not actually rely on.
+     */
+    private final DataSource dataSource;
+
+    /**
      * Creates the indicator factory from injected collaborators and bound configuration.
      *
      * <p>Constructor injection only: this class declares no field or setter injection, no service
@@ -871,6 +952,9 @@ public class HealthIndicators {
      * @param s3Client               the auto-configured synchronous S3 client; must not be
      *                               {@code null}
      * @param sqsAsyncClient         the auto-configured asynchronous SQS client; must not be
+     *                               {@code null}
+     * @param dataSource             the auto-configured application datasource, whose pool the
+     *                               relational-store probe borrows a connection from; must not be
      *                               {@code null}
      * @param batchInputBucket       value of {@code carddemo.aws.s3.batch-input-bucket}; empty when
      *                               the key is absent from the environment
@@ -891,6 +975,7 @@ public class HealthIndicators {
     public HealthIndicators(
             S3Client s3Client,
             SqsAsyncClient sqsAsyncClient,
+            DataSource dataSource,
             @Value("${" + PROPERTY_BATCH_INPUT_BUCKET + ":}") String batchInputBucket,
             @Value("${" + PROPERTY_BATCH_OUTPUT_BUCKET + ":}") String batchOutputBucket,
             @Value("${" + PROPERTY_STATEMENTS_BUCKET + ":}") String statementsBucket,
@@ -899,6 +984,7 @@ public class HealthIndicators {
 
         this.s3Client = Objects.requireNonNull(s3Client, "s3Client must not be null");
         this.sqsAsyncClient = Objects.requireNonNull(sqsAsyncClient, "sqsAsyncClient must not be null");
+        this.dataSource = Objects.requireNonNull(dataSource, "dataSource must not be null");
 
         Map<String, String> buckets = new LinkedHashMap<>();
         buckets.put(PROPERTY_BATCH_INPUT_BUCKET, normalise(batchInputBucket));
@@ -986,6 +1072,71 @@ public class HealthIndicators {
     @Bean(S3_HEALTH_INDICATOR_BEAN_NAME)
     public HealthIndicator s3HealthIndicator() {
         return new S3BucketHealthIndicator(this.s3Client, this.s3Buckets);
+    }
+
+    /**
+     * Registers the relational-store readiness contributor under the health component key
+     * {@link #DB_HEALTH_COMPONENT_NAME}, <strong>replacing</strong> the framework's own.
+     *
+     * <p><strong>Purpose.</strong> Confirms that the relational substrate which replaces the ten VSAM
+     * clusters is reachable, and confirms it <em>inside a deadline</em>. The first half is what the
+     * framework contributor already did; the second half is why this one exists.
+     *
+     * <p><strong>Why it replaces rather than joins.</strong> Boot's {@code DataSourceHealthIndicator}
+     * asks the pool for a connection with no deadline of its own, so it inherits
+     * {@code spring.datasource.hikari.connection-timeout} - 30 000 ms - and a measured readiness probe
+     * with the database stopped took 30.05 s while this class's own two contributors answered inside
+     * 1 500 ms each. {@code management.health.db.enabled: false} in {@code application.yml} switches
+     * the framework contributor off and this bean takes the same {@code db} key, so the readiness
+     * group, the container health check and every published gate reading keep the spelling they had
+     * and gain the deadline they did not.
+     *
+     * <p><strong>Operation.</strong> One {@code SELECT 1} on a borrowed connection, executed on a
+     * single dedicated daemon thread and awaited for at most {@link #DB_PROBE_BUDGET_MILLIS}. The
+     * query needs no privilege on any table, so a moved grant cannot make the substrate look down; the
+     * statement additionally carries a JDBC query timeout derived from the budget that remains after
+     * acquisition, so a connection that is handed over but then stalls is bounded too.
+     *
+     * <p><strong>Why a thread is required here and nowhere else in this class.</strong> The two AWS
+     * probes bound themselves with a request-level SDK override, which needs no thread. JDBC offers no
+     * equivalent: {@code DataSource.getConnection()} exposes no per-call deadline, and the wait that
+     * has to be bounded is pool <em>acquisition</em>, which happens before any statement exists to set
+     * a timeout on. Awaiting the call on another thread is therefore the only mechanism that bounds the
+     * <em>answer</em>. Exactly one thread is used, it is a daemon so it can never hold the JVM open,
+     * and it is shut down when the context closes. A queued probe whose budget has already elapsed
+     * returns without touching the pool, so a stalled substrate cannot make probes pile up on it.
+     *
+     * <p><strong>Tradeoff, stated because Rule 1 Clause A requires tradeoffs to be justified.</strong>
+     * An abandoned probe leaves its acquisition attempt running until the pool's own timeout expires:
+     * the deadline bounds the <em>response</em>, not the orphaned attempt, because no JDBC API can
+     * cancel an acquisition. That is strictly better than the previous behaviour, in which the
+     * response was not bounded either. The alternative - a second, short-timeout pool dedicated to the
+     * probe - was rejected: it would open connections the application does not otherwise use and would
+     * report on a pool the request path never touches.
+     *
+     * <p><strong>Side effects.</strong> One borrowed and immediately returned connection, one
+     * read-only statement, and on failure a single {@code WARN} carrying a symbolic reason and a
+     * curated exception descriptor. Nothing is written, and no {@code SET}, no temporary table and no
+     * transaction is left behind - the connection is closed by try-with-resources on every path.
+     *
+     * <p><strong>Failure modes.</strong> An exceeded budget yields {@link #REASON_TIMEOUT}; a refused
+     * or unreachable server yields {@link #REASON_UNREACHABLE}; a query that answers with anything
+     * other than 1 yields {@link #REASON_ATTRIBUTE_MISMATCH}; an interrupted wait yields
+     * {@link #REASON_INTERRUPTED}; anything else yields {@link #REASON_ERROR}. Every one is returned
+     * as {@code DOWN} - the indicator never throws, and it never publishes a JDBC URL, a role name, a
+     * host, a port or an exception message.
+     *
+     * <p><strong>Troubleshooting.</strong> Readiness {@code DOWN} with
+     * {@code component=db reason=unreachable} under the {@code local} profile almost always means the
+     * database container is not up: run {@code docker compose up -d postgres}, wait for it to report
+     * healthy, then re-check {@code /actuator/health/readiness}. {@link #REASON_TIMEOUT} with the
+     * container up instead means acquisition is slow rather than impossible - inspect the pool.
+     *
+     * @return the relational-store health contributor; never {@code null}
+     */
+    @Bean(name = DB_HEALTH_INDICATOR_BEAN_NAME, destroyMethod = "close")
+    public HealthIndicator dbHealthIndicator() {
+        return new BoundedDataSourceHealthIndicator(this.dataSource);
     }
 
     /**
@@ -1513,6 +1664,170 @@ public class HealthIndicators {
                     .withDetail(DETAIL_BUCKETS_PROBED, bucketsProbed)
                     .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
                     .build();
+        }
+    }
+
+    /**
+     * Relational-store readiness probe, produced by {@link HealthIndicators#dbHealthIndicator()}.
+     *
+     * <p>Nested and {@code private static final} for the same reasons as
+     * {@link S3BucketHealthIndicator}: one top-level type per file, no captured enclosing instance and
+     * no subclass. Unlike the other two it owns one resource - a single-thread executor - so it is
+     * {@link AutoCloseable} and the bean declares that method as its destroy method.
+     */
+    private static final class BoundedDataSourceHealthIndicator implements HealthIndicator,
+            AutoCloseable {
+
+        /**
+         * Logger for this probe, named for this class so an operator can raise its level without
+         * raising the other two contributors' - each indicator owns its own, as the sibling classes do.
+         */
+        private static final Logger LOG =
+                LoggerFactory.getLogger(BoundedDataSourceHealthIndicator.class);
+
+        /** The pool a probe borrows one connection from. Injected, never built here. */
+        private final DataSource dataSource;
+
+        /**
+         * The one thread every probe runs on, so that the waiting caller can abandon it on a deadline.
+         *
+         * <p>Single-threaded and daemon: single-threaded because at most one readiness probe should
+         * ever be touching the pool, and daemon so a probe stalled on a substrate that has gone away
+         * can never hold the JVM open.
+         */
+        private final ExecutorService probeExecutor;
+
+        /**
+         * Creates the probe.
+         *
+         * @param dataSource the pool to borrow from; never null
+         */
+        private BoundedDataSourceHealthIndicator(DataSource dataSource) {
+            this.dataSource = dataSource;
+            ThreadFactory daemonFactory = runnable -> {
+                Thread thread = new Thread(runnable, DB_PROBE_THREAD_NAME);
+                thread.setDaemon(true);
+                return thread;
+            };
+            this.probeExecutor = Executors.newSingleThreadExecutor(daemonFactory);
+        }
+
+        /**
+         * Probes the relational store inside {@link #DB_PROBE_BUDGET_MILLIS} and reports the outcome.
+         *
+         * <p>Side effects: borrows and returns one pooled connection and executes one read-only
+         * statement; on failure writes one {@code WARN}. Never throws, and never publishes a JDBC URL,
+         * a host, a port, a role name or an exception message.
+         *
+         * @return {@code UP} with the elapsed time, or {@code DOWN} with a symbolic reason; never null
+         */
+        @Override
+        public Health health() {
+            long startedAtNanos = System.nanoTime();
+            CompletableFuture<Integer> pending = null;
+            try {
+                pending = CompletableFuture.supplyAsync(
+                        () -> probe(startedAtNanos), this.probeExecutor);
+                Integer answer = pending.get(DB_PROBE_BUDGET_MILLIS, TimeUnit.MILLISECONDS);
+                if (answer == null) {
+                    // The queued task found its budget already spent and declined to touch the pool.
+                    return down(REASON_TIMEOUT, startedAtNanos, null);
+                }
+                if (answer != 1) {
+                    return down(REASON_ATTRIBUTE_MISMATCH, startedAtNanos, null);
+                }
+                return Health.up()
+                        .withDetail(DETAIL_COMPONENT, DB_HEALTH_COMPONENT_NAME)
+                        .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
+                        .build();
+            } catch (TimeoutException expired) {
+                return down(REASON_TIMEOUT, startedAtNanos, expired);
+            } catch (InterruptedException interrupted) {
+                // Restore the flag rather than swallowing it: the wait was abandoned by something that
+                // is entitled to stop this thread, and a health probe must not hide that.
+                Thread.currentThread().interrupt();
+                return down(REASON_INTERRUPTED, startedAtNanos, interrupted);
+            } catch (ExecutionException failed) {
+                Throwable cause = failed.getCause();
+                String reason = cause instanceof SQLException ? REASON_UNREACHABLE : REASON_ERROR;
+                return down(reason, startedAtNanos, failed);
+            } finally {
+                // Abandoning the wait must also abandon the work, for the same reason the AWS probes
+                // cancel theirs: an orphaned probe per poll turns a slow substrate into a leak. The
+                // acquisition itself cannot be cancelled - JDBC offers no mechanism - but the
+                // interrupt reaches the statement once a connection is in hand.
+                cancelQuietly(pending);
+            }
+        }
+
+        /**
+         * Runs the validation query on the probe thread, bounded by whatever budget remains.
+         *
+         * @param startedAtNanos the monotonic reading taken when the probe began
+         * @return the single integer the query answered, or {@code null} when the budget was already
+         *         spent before the pool was touched
+         */
+        private Integer probe(long startedAtNanos) {
+            long remainingMillis = remainingBudgetMillis(startedAtNanos, DB_PROBE_BUDGET_MILLIS);
+            if (!hasCallBudget(remainingMillis)) {
+                return null;
+            }
+            try (Connection connection = this.dataSource.getConnection();
+                    Statement statement = connection.createStatement()) {
+                // Ceiling division, so a sub-second remainder becomes 1 rather than 0: JDBC reads 0 as
+                // "no limit", which would reintroduce exactly the unbounded wait this class removes.
+                long afterAcquisitionMillis =
+                        remainingBudgetMillis(startedAtNanos, DB_PROBE_BUDGET_MILLIS);
+                statement.setQueryTimeout((int) Math.max(1L, (afterAcquisitionMillis + 999L) / 1000L));
+                try (var answer = statement.executeQuery(DB_VALIDATION_QUERY)) {
+                    return answer.next() ? answer.getInt(1) : 0;
+                }
+            } catch (SQLException unavailable) {
+                // Wrapped so that health() classifies it from the cause; the message never escapes
+                // this frame, because CompletionException.toString would carry it into a log.
+                throw new java.util.concurrent.CompletionException(unavailable);
+            }
+        }
+
+        /**
+         * Builds the curated {@code DOWN} result and writes the one log record that accompanies it.
+         *
+         * @param reason         the symbolic reason from the closed vocabulary
+         * @param startedAtNanos the probe start reading
+         * @param failure        the cause to classify, or {@code null} when the budget was exhausted
+         *                       before the pool was touched
+         * @return the curated {@code DOWN} result
+         */
+        private static Health down(String reason, long startedAtNanos, Throwable failure) {
+            LOG.warn("Database readiness probe failed: component={} reason={} exception={}",
+                    DB_HEALTH_COMPONENT_NAME, reason, describeFailure(failure));
+            return Health.down()
+                    .withDetail(DETAIL_COMPONENT, DB_HEALTH_COMPONENT_NAME)
+                    .withDetail(DETAIL_REASON, reason)
+                    .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
+                    .build();
+        }
+
+        /**
+         * Shuts the probe thread down when the application context closes.
+         *
+         * <p>Declared as the bean's destroy method. A stalled probe is not waited on beyond
+         * {@link #DB_PROBE_SHUTDOWN_GRACE_SECONDS}, because the thread is a daemon and shutdown must
+         * not be held up by a substrate that has already gone away.
+         */
+        @Override
+        public void close() {
+            this.probeExecutor.shutdownNow();
+            try {
+                if (!this.probeExecutor.awaitTermination(
+                        DB_PROBE_SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS)) {
+                    LOG.debug("Database readiness probe thread did not finish within {}s of shutdown;"
+                            + " it is a daemon, so it cannot hold the JVM open",
+                            DB_PROBE_SHUTDOWN_GRACE_SECONDS);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

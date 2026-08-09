@@ -78,6 +78,8 @@ import org.springframework.http.converter.json.MappingJackson2HttpMessageConvert
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.web.firewall.RequestRejectedException;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
@@ -958,6 +960,66 @@ class RequestBoundaryHardeningTest {
             assertThat(resolve(new RuntimeException("anything at all"))).isNull();
         }
 
+        /**
+         * Renders a failure through the real terminal resolver and hands back the response it wrote.
+         *
+         * @param failure the exception to resolve; never null
+         * @return the response the resolver wrote onto, or null when it declined the exception
+         */
+        private MockHttpServletResponse resolveResidual(final Exception failure) {
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/auth/signon");
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+            final ModelAndView answered = new WebConfig.UnhandledFailureExceptionResolver()
+                    .resolveException(request, response, null, failure);
+            return answered == null ? null : response;
+        }
+
+        @Test
+        @DisplayName("an unhandled failure is answered with the 500 envelope, not Spring's default body")
+        void anUnhandledFailureIsAnsweredWithTheEnvelope() throws Exception {
+            final MockHttpServletResponse response =
+                    resolveResidual(new IllegalStateException("the store went away mid-request"));
+
+            assertThat(response)
+                    .as("""
+                            This is the residual class every other resolver declines. Before it was claimed \
+                            the container answered it through Spring Boot's /error page with \
+                            {timestamp,status,error,path} - no errorCode, no correlationId and \
+                            Content-Type application/json - which is the one failure class an operator most \
+                            needs to be able to join to a log record.""")
+                    .isNotNull();
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR.value());
+            assertThat(response.getContentType())
+                    .as("the announced media type for an error body, matching every other boundary")
+                    .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            assertThat(response.getContentAsString()).contains("CARDDEMO-INTERNAL-FAILURE");
+            assertIsEnvelope(response.getContentAsString());
+            assertThat(response.getContentAsString())
+                    .as("""
+                            Spring's default attributes must not survive anywhere in the body: an operator \
+                            branching on errorCode has to find one shape, and `error` and `path` are \
+                            precisely the two members the default body carried instead.""")
+                    .doesNotContain("\"error\"")
+                    .doesNotContain("\"path\"")
+                    .doesNotContain("\"timestamp\"");
+        }
+
+        @Test
+        @DisplayName("a security denial is declined, so ExceptionTranslationFilter still publishes 401/403")
+        void aSecurityDenialIsDeclined() {
+            assertThat(resolveResidual(new AccessDeniedException("Access Denied")))
+                    .as("""
+                            ExceptionTranslationFilter sits OUTSIDE the dispatcher, so an authorization \
+                            denial has to keep propagating for SecurityConfig's access-denied handler to \
+                            answer 403. Claiming it here would answer a denial with 500 and dismantle the \
+                            authorization boundary silently - which is why the exclusion is asserted rather \
+                            than trusted.""")
+                    .isNull();
+            assertThat(resolveResidual(new BadCredentialsException("bad credentials")))
+                    .as("and an authentication failure has to reach the entry point that answers 401")
+                    .isNull();
+        }
+
         @Test
         @DisplayName("the resolver is inserted after the controller handlers and before the default one")
         void theResolverIsInsertedInThePositionThatPreservesControllerHandlers() {
@@ -970,7 +1032,7 @@ class RequestBoundaryHardeningTest {
 
             new WebConfig().extendHandlerExceptionResolvers(resolvers);
 
-            assertThat(resolvers).hasSize(4);
+            assertThat(resolvers).hasSize(5);
             assertThat(resolvers.get(0))
                     .as("""
                             Position zero is ExceptionHandlerExceptionResolver, which is what consults the \
@@ -983,21 +1045,33 @@ class RequestBoundaryHardeningTest {
                             + "first with a body outside the envelope")
                     .isInstanceOf(WebConfig.FrameworkBoundaryExceptionResolver.class);
             assertThat(resolvers.get(3)).isInstanceOf(DefaultHandlerExceptionResolver.class);
+            assertThat(resolvers.get(4))
+                    .as("""
+                            The unhandled-failure resolver is LAST, and the position is the fix rather than \
+                            a detail: it must claim only what every other resolver declined. Moving it \
+                            ahead of the default resolver would answer a framework-mapped condition with \
+                            500, and moving it ahead of position two would answer a controller's own \
+                            refusal with 500.""")
+                    .isInstanceOf(WebConfig.UnhandledFailureExceptionResolver.class);
         }
 
         @Test
-        @DisplayName("with no default resolver present the framework resolver is appended, not dropped")
+        @DisplayName("with no default resolver present both resolvers are appended, not dropped")
         void withNoDefaultResolverPresentTheResolverIsAppended() {
             final List<HandlerExceptionResolver> resolvers = new ArrayList<>();
             resolvers.add((rq, rs, h, e) -> null);
 
             new WebConfig().extendHandlerExceptionResolvers(resolvers);
 
-            assertThat(resolvers).hasSize(2);
+            assertThat(resolvers).hasSize(3);
             assertThat(resolvers.get(1))
                     .as("nothing downstream can pre-empt it in that shape, so appending is correct; the "
                             + "alternative of not registering at all would reopen the gap silently")
                     .isInstanceOf(WebConfig.FrameworkBoundaryExceptionResolver.class);
+            assertThat(resolvers.get(2))
+                    .as("and the unhandled-failure resolver stays last even in the degenerate shape, so the "
+                            + "residual 500 keeps its envelope whatever the framework's default list does")
+                    .isInstanceOf(WebConfig.UnhandledFailureExceptionResolver.class);
         }
 
         @Test
@@ -1262,6 +1336,27 @@ class RequestBoundaryHardeningTest {
                             + "and the error code is a constant of the configuration")
                     .contains("HttpRequestMethodNotSupportedException")
                     .contains("CARDDEMO-METHOD-NOT-ALLOWED");
+        }
+
+        @Test
+        @DisplayName("the terminal resolver logs the correlated failure without the request line")
+        void theTerminalResolverLogsNoRequestLine() {
+            final MockHttpServletRequest request = new MockHttpServletRequest(
+                    PASSWORD_SHAPED, "/api/accounts/" + PAN_SHAPED + "/" + SURNAME_SHAPED);
+            request.setQueryString("ssn=" + GOVERNMENT_ID_SHAPED);
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            final List<String> logged = capture(() -> new WebConfig.UnhandledFailureExceptionResolver()
+                    .resolveException(request, response, null,
+                            new IllegalStateException("a failure carrying " + PAN_SHAPED)));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR.value());
+            assertNothingPlantedWasLogged(logged, "the unhandled-failure resolver");
+            assertThat(String.join(" ", logged))
+                    .as("the condition is named by the exception's own type and the code is a constant, so "
+                            + "the record is actionable without echoing anything the caller chose")
+                    .contains("IllegalStateException")
+                    .contains("CARDDEMO-INTERNAL-FAILURE");
         }
 
         @Test

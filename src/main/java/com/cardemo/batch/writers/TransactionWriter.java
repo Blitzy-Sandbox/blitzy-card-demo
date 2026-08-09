@@ -30,16 +30,33 @@
 package com.cardemo.batch.writers;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.NoSuchElementException;
+
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.Delete;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Error;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
@@ -139,11 +156,6 @@ import io.awspring.cloud.s3.S3Operations;
  * <li>{@code carddemo.aws.s3.transaction-object-prefix} - the base-name segment every key starts with.
  * Defaults
  * to {@code transact}, the logical file name of {@code app/jcl/TRANFILE.jcl}.</li>
- * <li>{@value #KEY_MAX_INDEXED_OBJECT_KEYS} - how many object keys the indexed manifest enumerates. Defaults
- * to {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS}, declared in {@code src/main/resources/application.yml} at the
- * same value so the key is discoverable to whoever operates the job. It is a bound on a diagnostic record and
- * not a bound on the run: the exact object count, the generation prefix and the latest key are published
- * whatever it is set to. See {@link #OBJECT_KEYS_INDEXED_ENTRY}.</li>
  * </ul>
  *
  * <p>No endpoint, region or credential is read here, and no process environment variable is consulted
@@ -157,33 +169,53 @@ import io.awspring.cloud.s3.S3Operations;
  *
  * <p>A relative generation reference of {@code (+1)} becomes a new object under a monotonically increasing
  * prefix over a versioned bucket, and {@code (0)} becomes the lexicographically greatest existing prefix.
- * Keys are therefore built as
- * {@code <prefix>/<job-instance-id>/transact-<ordinal>.dat} with both numbers zero-padded to nineteen digits,
- * the width of {@code Long.MAX_VALUE}, so that lexicographic order and numeric order coincide and
- * {@code (0)} resolves correctly.
+ * Both numbers in a key are zero-padded to nineteen digits, the width of {@code Long.MAX_VALUE}, so that
+ * lexicographic order and numeric order coincide and {@code (0)} resolves correctly.
  *
- * <p>The ordinal is {@code StepExecution.getWriteCount()} read at entry to
- * {@link #write(Chunk)} - the zero-based index of the first record of the chunk. It is deterministic and
- * monotonically increasing, and using it means this class keeps no counter of its own.
+ * <p><strong>The generation is ONE object, and a chunk writes a transient part of it.</strong>
+ * {@code app/jcl/POSTTRAN.jcl} names a single dataset for each of its outputs, and a later relative reference
+ * to {@code (0)} resolves that one dataset whole. A writer that left one object per chunk under the generation
+ * prefix would therefore be read by a consumer resolving "the current generation" as the greatest key under
+ * that prefix, which is the <em>last chunk</em> - a fraction of the run silently reported as all of it. And
+ * because the posting step commits once per record by parity contract, one object per chunk is one object per
+ * record: a 300-record run left 300 objects of 350 bytes and no generation object at all.
  *
- * <p>Because a later step in the same job must re-read what an earlier step wrote as {@code (+1)} rather
- * than re-resolving "latest", every created key is published twice, at two scopes and for two readers. The
- * <em>latest</em> key goes into the step execution context under {@link #OBJECT_KEY_CONTEXT_ENTRY}, for a
- * listener running inside this step. The <em>ordered list</em> goes into the <b>job</b> execution
- * context under {@link #OBJECT_KEYS_COUNT_ENTRY} and the indexed entries it describes, written by this class
- * rather than by an external promotion listener - so the generation record needs no wiring to exist.
+ * <p>So each chunk uploads its own complete part object under
+ * {@code <prefix>/<job-instance-id>/parts/transact-part-<job-execution-id>-<ordinal>.dat}, and
+ * {@link #afterStep(StepExecution)} concatenates the parts into the single generation object
+ * {@code <prefix>/<job-instance-id>/transact-<job-execution-id>.dat} and then removes them. The ordinal is
+ * {@code StepExecution.getWriteCount()} read at entry to {@link #write(Chunk)} - the zero-based index of the
+ * first record of the chunk - so it is deterministic and monotonically increasing and this class keeps no
+ * counter of its own. {@code RejectWriter} stages and promotes its generation the same way, for the same
+ * reason, so the two outputs of this job have one shape rather than two.
  *
- * <p>That list is <b>bounded</b>, and the bound is {@value #KEY_MAX_INDEXED_OBJECT_KEYS}. The posting step
- * commits once per record as a parity contract, so the job execution context is re-serialised once per record,
- * and an unbounded per-object list therefore costs work proportional to the square of the record count - the
- * scale limit recorded on {@link #OBJECT_KEYS_INDEXED_ENTRY}. Nothing is lost to the bound: the exact count
- * stays exact, {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names a prefix unique to this job instance so that
- * listing it enumerates every object deterministically, and {@link #OBJECT_KEYS_TRUNCATED_ENTRY} says plainly
- * when the enumeration stopped short.
+ * <p><strong>The generation is catalogued only when the step has not ended badly.</strong> The part prefix is
+ * keyed on the job <em>instance</em> and each part key carries the job <em>execution</em>, so the parts of a
+ * failed attempt and of the restart that follows it sit side by side under one prefix, sorted into the order
+ * the records were produced in. A step whose status has passed {@code STARTED} - stopping, stopped, failed or
+ * abandoned - therefore leaves its parts and publishes nothing, and the restart concatenates the whole
+ * instance - every attempt's records, once, in order - into one generation object. Cataloguing a partial
+ * generation per attempt instead would leave the {@code (0)} reference resolving to whichever attempt ran
+ * last; leaving nothing catalogued is also what {@code app/jcl/POSTTRAN.jcl}'s own
+ * {@code DISP=(NEW,CATLG,DELETE)} does when a step abends.
+ *
+ * <p><strong>Parts, not one long-lived upload.</strong> A single stream held open across the step would leave
+ * a failed attempt with nothing durable at all, while the outbox entry of
+ * {@link #PENDING_OBJECT_KEY_ENTRY} is committed with the rows at every chunk boundary; each chunk's bytes are
+ * a complete object instead, so a restart can adopt them. Part keys are deterministic in the ordinal, so a
+ * retried chunk overwrites its own part rather than adding a duplicate.
+ *
+ * <p>The one generation key is published for a later step to consume: into the step execution context under
+ * {@link #OBJECT_KEY_CONTEXT_ENTRY}, and into the <b>job</b> execution context under
+ * {@link #OBJECT_KEYS_COUNT_ENTRY}, {@link #objectKeysIndexEntry(int)} and
+ * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} - written by this class rather than by an external promotion
+ * listener, so the generation record needs no wiring to exist. It is published only once the object exists, so
+ * no consumer can be told to read a generation the store has not accepted.
  *
  * <h2>Side effects</h2>
  *
- * <p>One insert per item and one object per non-empty chunk, plus one increment of the records-processed
+ * <p>One insert per item and one part object per non-empty chunk, plus one generation object and the removal of
+ * that run's parts at the end of the step, one increment of the records-processed
  * counter per item and one log record per failure. Nothing else is mutated. There is no static mutable state,
  * and exactly one instance field is not {@code final}: {@link #stepExecution}, which the framework supplies
  * after construction through {@link StepExecutionListener#beforeStep(StepExecution)}. Its safety comes from
@@ -211,16 +243,17 @@ import io.awspring.cloud.s3.S3Operations;
  * so no job-instance identifier exists to key the object on. Register it on a step, which makes the framework
  * call {@code beforeStep}, or, in a unit test that uses the class directly, call {@code beforeStep} with a
  * {@code StepExecution} built over a job execution and a job instance before writing.</li>
- * <li><strong>One {@code WARN} that the indexed manifest reached its bound</strong> - <b>not a failure and not
- * a defect.</b> The run posted more objects than {@value #KEY_MAX_INDEXED_OBJECT_KEYS} enumerates, so the keys
- * past that point are counted but not listed individually. Read the exact count from
- * {@link #OBJECT_KEYS_COUNT_ENTRY} and, if every key is needed, list the single prefix in
- * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} - it names this job instance only. Raise the property
- * deliberately if the enumeration itself is required, having accepted that the job execution context is
- * re-serialised once per record.</li>
- * <li><strong>Startup fails naming {@value #KEY_MAX_INDEXED_OBJECT_KEYS}</strong> - the property is zero or
- * negative. Neither names a usable bound, so the context refuses to start rather than producing an audit
- * record no consumer can read.</li>
+ * <li><strong>A {@code WARN} that a promoted part could not be deleted</strong> - <b>not a failure.</b> The
+ * generation object is committed and holds every record; the leftover part sits under the
+ * {@code parts/} segment, sorts before the generation object and so cannot be mistaken for it, and an operator
+ * may remove it at any time. A re-driven attempt of the same instance overwrites the same deterministic
+ * keys.</li>
+ * <li><strong>The step ends with parts but no generation object</strong> - either the step itself did not
+ * complete, in which case a {@code WARN} names the status and the parts are retained on purpose for the
+ * restart to concatenate, or the concatenation failed, in which case it is reported as a failed {@code CLOSE}
+ * through the same guard every other write failure takes and the step fails. Either way the parts are left
+ * in place deliberately: until the generation object is accepted they are the only copy of the run's mirror,
+ * and a restart of the same job instance picks them up.</li>
  * </ul>
  *
  * <h2>The preserved identifier race is deliberate</h2>
@@ -403,11 +436,11 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     public static final int RECORD_LENGTH = 350;
 
     /**
-     * Step execution context entry under which the most recently created object key is published.
+     * Step execution context entry under which the key of this generation's one object is published.
      *
-     * <p>Retained as a convenience for the step that is currently running - a step listener that wants to
-     * report what it just wrote reads this and needs nothing else. It is <b>not</b> the generation record:
-     * {@link #OBJECT_KEYS_COUNT_ENTRY} and {@link #objectKeysIndexEntry(int)} are.
+     * <p>Written once, by {@link #afterStep(StepExecution)}, when the generation object exists. It is
+     * deliberately not written per chunk: a chunk uploads a transient <em>part</em>, and a key naming a part
+     * would tell a downstream step to read a fraction of the run.
      */
     public static final String OBJECT_KEY_CONTEXT_ENTRY = "carddemo.transaction.object.key";
 
@@ -415,30 +448,15 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * Job execution context entry holding how many objects this job instance's transaction generation
      * contains, as a {@code Long}.
      *
-     * <p>This count is always exact and is never capped. Together with {@link #objectKeysIndexEntry(int)} it
-     * is the ordered record of the generation - the thing a downstream step needs in order to consume
-     * {@code (0)} without guessing.
+     * <p><b>It is one.</b> The generation is a single object - see {@link #afterStep(StepExecution)} for why -
+     * so this entry holds {@code 1} on every run that posted anything and is absent on a run that posted
+     * nothing. The count is retained rather than dropped so that a consumer written against the ordered
+     * protocol keeps working unchanged; it simply always reads a list of one.
      *
-     * <p><b>Read protocol.</b> Read {@link #OBJECT_KEYS_INDEXED_ENTRY} for how many indexed entries exist,
-     * then read that many; entry {@code n} is the key of the {@code n}th object created, in creation order.
-     * {@code indexed} equals this count on every run that stays within
-     * {@code carddemo.batch.transaction-writer.max-indexed-object-keys}, which is why a consumer written
-     * against the earlier "read the count, then read that many indexed entries" rule still works for such a
-     * run - but that rule is withdrawn, because it reads an absent entry once the cap is passed. When the two
-     * differ, {@link #OBJECT_KEYS_TRUNCATED_ENTRY} is present and
-     * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names the one prefix that holds every object of this
-     * generation.
-     *
-      * <p><b>Every chunk key is published, and into the <em>job</em> execution context.</b> Publishing only
-      * the latest chunk key, and only into the <em>step</em> execution context on the assurance that promotion
-      * to the job execution context "is configured by {@code BatchConfig}", leaves nothing downstream able to
-      * reconstruct a generation: a run of a hundred chunks would leave one key behind and the other
-      * ninety-nine unrecoverable. Worse, a consumer that fell back to resolving "the lexicographically
-      * greatest prefix" would race any concurrent producer. Two things go wrong that way - the
-      * <em>completeness</em> of what is published and the <em>scope</em> it is published into - and a
-      * promotion listener would only address the second.
-     * every key is appended here, in creation order, in the job execution context, by this class, with no
-     * external wiring required for the record to be complete.
+     * <p><b>Read protocol.</b> Read this count, then read {@link #objectKeysIndexEntry(int)} for each index
+     * below it. {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names the prefix that object sits under, unique
+     * to this job instance, so a consumer that prefers to list rather than to read a key may do so
+     * deterministically and without racing a concurrent producer.
      *
      * <p><b>Why indexed entries rather than one delimited string.</b> A joined value needs a separator, and a
      * separator is a value that must not occur inside a key. Object keys are built from a configured prefix,
@@ -490,103 +508,29 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * Prefix of the indexed job-execution entries described on {@link #OBJECT_KEYS_COUNT_ENTRY}. The entry for
      * index {@code n} is this prefix followed by {@code n}, rendered by {@link #objectKeysIndexEntry(int)}.
      *
-     * <p>{@link #OBJECT_KEYS_COUNT_ENTRY}, {@link #OBJECT_KEYS_INDEXED_ENTRY},
-     * {@link #OBJECT_KEYS_TRUNCATED_ENTRY} and {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} share this prefix
+     * <p>{@link #OBJECT_KEYS_COUNT_ENTRY} and {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} share this prefix
      * and are not indexed entries. A consumer addresses an indexed entry through
      * {@link #objectKeysIndexEntry(int)} and therefore never has to tell them apart; one that scans the
-     * context by prefix instead must skip the four non-numeric suffixes.
+     * context by prefix instead must skip the two non-numeric suffixes.
      */
     public static final String OBJECT_KEYS_INDEX_ENTRY_PREFIX = "carddemo.transaction.object.keys.";
 
     /**
-     * Job execution context entry holding how many indexed entries were actually published, as a {@code Long}.
+     * Job execution context entry naming the key prefix this generation's object sits under, ending in the key
+     * separator.
      *
-     * <p>Equal to {@link #OBJECT_KEYS_COUNT_ENTRY} on any run that stays within
-     * {@code carddemo.batch.transaction-writer.max-indexed-object-keys}, and equal to that cap on any run that
-     * passes it. It is the bound a consumer iterates to.
-     *
-      * <p><b>The manifest is bounded, and an unbounded one is quadratic here.</b> Appending one indexed entry
-      * per created object with <b>no bound of any kind</b> is quadratic in this job: because the commit
-      * interval of the posting step is pinned at one record as a parity contract - see
-      * {@code DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL}, grounded on the three separate commits of
-      * {@code app/cbl/CBTRN02C.cbl:L440-L442} - Spring Batch re-serialises the whole job execution context once
-      * per <em>record</em>, so the work of writing the manifest grows with the square of the record count. A
-      * measured 300-record run of {@code app/data/ASCII/dailytran.txt} leaves 262 indexed entries and a
-      * serialised job context of 36,664 bytes, about 140 bytes per record; a hundred thousand records would
-      * reach roughly fourteen megabytes re-serialised a hundred thousand times.
-     * No cap, no marker and no disclosed ceiling existed. <i>Remediation, applied:</i> the indexed enumeration
-     * is bounded, the bound is a documented property, passing it is reported once at {@code WARN} and marked in
-     * the context by {@link #OBJECT_KEYS_TRUNCATED_ENTRY}, and the three facts that make the generation
-     * recoverable in full - the exact count, the generation prefix and the latest key - are published
-     * unconditionally.
-     *
-     * <p><b>Why this cap truncates rather than refuses, and why it is the only cap left.</b> This manifest is
-     * a diagnostic and hand-off record, and nothing is dropped when it is capped: the count stays exact,
-     * {@link #OBJECT_KEY_CONTEXT_ENTRY} still names the latest object, and
-     * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names a prefix unique to this job instance, so listing that
-     * one prefix enumerates every object deterministically and without racing any concurrent producer.
-     * Refusing an otherwise successful posting run because it posted more records than its audit list can
-     * enumerate would be a behaviour the source does not have - {@code app/cbl/CBTRN02C.cbl} writes to a
-     * sequential dataset and imposes no such limit. That reasoning is exactly why the statement path now has
-     * no record ceiling at all: finding BAT-002 removed the run and card-group refusals that once stood in
-     * {@code StatementProcessor}, on the same ground that the corpus imposes no such limit either.
-     */
-    public static final String OBJECT_KEYS_INDEXED_ENTRY = "carddemo.transaction.object.keys.indexed";
-
-    /**
-     * Job execution context entry present only when the indexed enumeration was capped, holding
-     * {@value #OBJECT_KEYS_TRUNCATED_MARKER}.
-     *
-     * <p>Written as a string rather than as a {@code Boolean} for the reason given on
-     * {@link #OBJECT_KEYS_COUNT_ENTRY}: plain strings serialise through every {@code ExecutionContext}
-     * serialiser without a trusted-class allow-list. Its <em>absence</em> is the complete-manifest case, so a
-     * consumer never has to interpret a value to know it has every key.
-     */
-    public static final String OBJECT_KEYS_TRUNCATED_ENTRY = "carddemo.transaction.object.keys.truncated";
-
-    /** The only value {@link #OBJECT_KEYS_TRUNCATED_ENTRY} ever holds. */
-    public static final String OBJECT_KEYS_TRUNCATED_MARKER = "true";
-
-    /**
-     * Job execution context entry naming the key prefix that holds every object of this generation, ending in
-     * the key separator.
-     *
-     * <p>Derived from a created key rather than recomposed, so it cannot drift from {@link #KEY_TEMPLATE}: it
-     * is the key up to and including its last separator, which is
+     * <p>Derived from the created key rather than recomposed, so it cannot drift from
+     * {@link #GENERATION_KEY_TEMPLATE}: it is the key up to and including its last separator, which is
      * {@code <configured-prefix>/<job-instance-id>/}. Because the job instance identifier is in it, the prefix
-     * is unique to this job instance and listing it is deterministic - which is what makes the bounded
-     * enumeration of {@link #OBJECT_KEYS_INDEXED_ENTRY} lossless rather than lossy, and what keeps it distinct
-     * from the "re-resolve the lexicographically greatest prefix" resolution that would race a concurrent
-     * producer.
+     * is unique to this job instance and listing it is deterministic - which is what keeps it distinct from the
+     * "re-resolve the lexicographically greatest prefix" resolution that would race a concurrent producer.
+     *
+     * <p>At rest that prefix holds exactly one key, the generation object: the transient parts a run stages
+     * beneath it are removed once the generation is committed, and while they exist they sort <em>before</em>
+     * it, so even a leaked part cannot displace the generation as the greatest key.
      */
     public static final String OBJECT_KEYS_GENERATION_PREFIX_ENTRY =
             "carddemo.transaction.object.keys.generation-prefix";
-
-    /**
-     * The property bounding how many object keys the indexed manifest enumerates.
-     *
-     * <p>Public so that the value is named once and asserted against
-     * {@code src/main/resources/application.yml} rather than repeated as a literal.
-     */
-    public static final String KEY_MAX_INDEXED_OBJECT_KEYS =
-            "carddemo.batch.transaction-writer.max-indexed-object-keys";
-
-    /**
-     * Default bound on the indexed manifest, {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS} keys.
-     *
-     * <p>Chosen against measurement rather than taste. One indexed entry costs about 140 serialised bytes, and
-     * the 300-record parity run of {@code app/data/ASCII/dailytran.txt} publishes 262 of them, so this default
-     * enumerates that run and every fixture-scale run in full while bounding the serialised job execution
-     * context at roughly 140 kB. The bound matters because the posting step commits once per record by parity
-     * contract, so the context is re-serialised once per record: the cost of the manifest is quadratic in the
-     * record count, and a bound on its size is the only place that quadratic can be capped.
-     *
-     * <p>A deployment that needs the full enumeration of a larger run raises
-     * {@value #KEY_MAX_INDEXED_OBJECT_KEYS} deliberately, having accepted that cost; one that does not need it
-     * reads the exact count, the generation prefix and the latest key, all of which stay complete. See
-     * {@link #OBJECT_KEYS_INDEXED_ENTRY} for the finding this resolves.
-     */
-    public static final int DEFAULT_MAX_INDEXED_OBJECT_KEYS = 1_000;
 
     /** {@code TRAN-ID PIC X(16)}, bytes 1-16 of {@code app/cpy/CVTRA05Y.cpy:L5}. */
     private static final int TRAN_ID_WIDTH = 16;
@@ -741,6 +685,24 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     /** The attempted operation, as reported to {@code FileStatusMapper} and carried on the exception. */
     private static final String OPERATION_WRITE = "WRITE";
 
+    /** The source locator of the write paragraph, carried on an escalated write failure. */
+    private static final String PARAGRAPH_WRITE =
+            "app/cbl/CBTRN02C.cbl:L562-L579 2900-WRITE-TRANSACTION-FILE";
+
+    /** The source locator of the close paragraph, carried on an escalated close failure. */
+    private static final String PARAGRAPH_CLOSE = "app/cbl/CBTRN02C.cbl:L600-L616 9100-TRANFILE-CLOSE";
+
+    /**
+     * The other attempted operation: the {@code CLOSE} that {@link #afterStep(StepExecution)} performs when it
+     * concatenates the run's parts into its one generation object.
+     *
+     * <p>Reported distinctly from {@link #OPERATION_WRITE} because the source distinguishes them - the write
+     * guard at {@code app/cbl/CBTRN02C.cbl:L562}-{@code :L579} and the close guard of
+     * {@code 9100-TRANFILE-CLOSE} at {@code :L600}-{@code :L616} are separate paragraphs with separate
+     * diagnostics - and a failure attributed to the wrong one sends an operator to the wrong place.
+     */
+    private static final String OPERATION_CLOSE = "CLOSE";
+
     /** The program whose paragraph this class reproduces, carried as the abend culprit. */
     private static final String ABEND_CULPRIT = "CBTRN02C";
 
@@ -749,6 +711,14 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * {@code app/cbl/CBTRN02C.cbl:L574}, reproduced verbatim because the boundary comparison reads it.
      */
     private static final String WRITE_FAILURE_TEXT = "ERROR WRITING TO TRANSACTION FILE";
+
+    /**
+     * The diagnostic of {@code DISPLAY 'ERROR CLOSING TRANSACTION FILE'} at
+     * {@code app/cbl/CBTRN02C.cbl:L611}, inside {@code 9100-TRANFILE-CLOSE}, reproduced verbatim for the same
+     * reason: the boundary comparison reads it, and the close failure has its own text in the source rather
+     * than borrowing the write's.
+     */
+    private static final String CLOSE_FAILURE_TEXT = "ERROR CLOSING TRANSACTION FILE";
 
     /**
      * The diagnostic of {@code DISPLAY 'ABENDING PROGRAM'} at {@code app/cbl/CBTRN02C.cbl:L708}, reproduced
@@ -775,7 +745,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     private static final String OBJECT_STORE_IO_STATUS = FileStatus.IO_ERROR_FIRST_BYTE + "0";
 
     /**
-     * The one key separator, which {@link #KEY_TEMPLATE} writes and {@link #requireObjectPrefix(String)}
+     * The one key separator, which {@link #GENERATION_KEY_TEMPLATE} writes and {@link #requireObjectPrefix(String)}
      * therefore strips from the configured prefix so that no key carries an empty segment.
      */
     private static final String KEY_SEPARATOR = "/";
@@ -794,18 +764,63 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      */
     private static final String OBJECT_CONTENT_TYPE = "application/octet-stream";
 
-    /** Digits in {@code Long.MAX_VALUE}, and therefore the padding width used by {@link #KEY_TEMPLATE}. */
+    /** Digits in {@code Long.MAX_VALUE}, and therefore the padding width used by {@link #GENERATION_KEY_TEMPLATE}. */
     private static final int KEY_NUMBER_WIDTH = 19;
 
     /**
-     * The object key template: prefix, job instance, base name, ordinal, suffix.
+     * The generation object key template: prefix, job instance, base name, job execution, suffix.
      *
      * <p>Both numbers are zero-padded to {@link #KEY_NUMBER_WIDTH} digits so that lexicographic order and
      * numeric order coincide, which is what makes the {@code (0)} generation reference - the
      * lexicographically greatest existing prefix - resolve to the newest object.
+     *
+     * <p>The trailing number is the job <em>execution</em> identifier while the leading one is the job
+     * <em>instance</em>. That pairing is what a restart needs: every attempt of one instance writes under the
+     * same generation prefix, and the object each attempt commits is named by its own execution, so a
+     * re-driven run replaces nothing an earlier attempt proved and the greatest key is the latest attempt.
+     * {@code RejectWriter} names its generation object exactly this way, for exactly this reason.
      */
-    private static final String KEY_TEMPLATE =
+    private static final String GENERATION_KEY_TEMPLATE =
             "%s/%0" + KEY_NUMBER_WIDTH + "d/%s-%0" + KEY_NUMBER_WIDTH + "d%s";
+
+    /**
+     * The key segment every transient part sits under, {@value}.
+     *
+     * <p>It sorts <em>before</em> {@link #OBJECT_BASE_NAME} - {@code 'p'} precedes {@code 't'} - so while
+     * parts exist the generation object is still the lexicographically greatest key under the generation
+     * prefix. That is a property of the two names rather than an accident, and it is what makes a leaked part
+     * a tidiness problem rather than a wrong {@code (0)} resolution.
+     */
+    private static final String PART_SEGMENT = "parts";
+
+    /** The base name of every transient part, {@value}. */
+    private static final String PART_BASE_NAME = "transact-part";
+
+    /**
+     * The part key template: generation prefix, part segment, base name, job execution, ordinal, suffix.
+     *
+     * <p>Both numbers are zero-padded to {@link #KEY_NUMBER_WIDTH} digits, so lexicographic key order is the
+     * order the parts were written in - which is the order they must be concatenated in for the generation to
+     * hold the run in production order.
+     *
+     * <p><b>The job execution identifier is in the key, and it has to be.</b> The ordinal is the step's write
+     * count, and a restarted step is a <em>new</em> step execution whose write count begins again at zero while
+     * its reader resumes where the failed attempt stopped. Keyed on the ordinal alone, the restart's first
+     * chunk would overwrite the first attempt's first part - replacing the earliest records of the run with
+     * later ones - and the concatenation would then be both short and out of order. Prefixing the execution
+     * identifier separates the attempts, and because it is zero-padded too, sorting by key sorts by attempt and
+     * then by ordinal, which is exactly the order the records were produced in across the whole instance.
+     */
+    private static final String PART_KEY_TEMPLATE =
+            "%s" + PART_SEGMENT + "/%s-%0" + KEY_NUMBER_WIDTH + "d-%0" + KEY_NUMBER_WIDTH + "d%s";
+
+    /**
+     * How many keys one batched delete request may carry.
+     *
+     * <p>The object store's own limit for a multiple-object delete. Honoured explicitly by batching, so a run
+     * that staged more parts than one request can name still has every one of them removed.
+     */
+    private static final int DELETE_BATCH_LIMIT = 1000;
 
     /** Placeholder used in a diagnostic when no identifier could be read, so no message is ever ragged. */
     private static final String ABSENT_KEY = "(absent)";
@@ -895,13 +910,21 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     private final String objectPrefix;
 
     /**
-     * Bound on the indexed manifest, from {@value #KEY_MAX_INDEXED_OBJECT_KEYS}, defaulting to
-     * {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS}.
+     * The object-store client, held for exactly two purposes: paging a listing, and batching a delete.
      *
-     * <p>See {@link #OBJECT_KEYS_INDEXED_ENTRY} for what the bound protects and
-     * {@link #DEFAULT_MAX_INDEXED_OBJECT_KEYS} for how the default was chosen.
+     * <p>{@code S3Operations.listObjects} issues one {@code ListObjectsV2} request and returns that single
+     * page of at most a thousand keys, so a run that staged more parts than that would have concatenated a
+     * prefix of them into the generation object and reported it as the whole run. The paginator walks every
+     * page, which is what makes the concatenation complete at any record volume. The batched delete honours the
+     * store's thousand-key limit explicitly instead of issuing one request per part.
+     *
+     * <p>It is injected, never constructed; no endpoint and no credential is read here. Every upload and
+     * download still goes through {@code S3Operations}. {@code RejectWriter},
+     * {@code com.cardemo.batch.readers.TransactionBackupReader} and
+     * {@code com.cardemo.batch.readers.CombinedTransactionReader} hold it for the same reason, so this is the
+     * codebase's one established remedy for the defect rather than a second approach to it.
      */
-    private final int maxIndexedObjectKeys;
+    private final S3Client objectStoreClient;
 
     /**
      * The step execution of the step running this writer, injected by the step scope.
@@ -925,6 +948,20 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     private StepExecution stepExecution;
 
     /**
+     * Whether {@link #afterStep(StepExecution)} has already promoted this step's parts into their generation
+     * object.
+     *
+     * <p>What makes the promotion idempotent, so that a framework or a caller invoking the listener twice
+     * cannot concatenate the same parts into a second object - or, worse, concatenate a set the first call has
+     * already deleted and publish a key naming zero records.
+     *
+     * <p>Non-{@code volatile} for the same reason {@link #stepExecution} is: this bean is {@code @StepScope}d,
+     * so the instance is confined to one step execution and there is no cross-thread publication to guard.
+     * {@code RejectWriter} holds the same flag for the same purpose.
+     */
+    private boolean generationCommitted;
+
+    /**
      * Creates the writer with its collaborators and its two configuration values.
      *
      * <p>Constructor injection only, so every collaborator is final and the bean cannot exist half-configured.
@@ -944,6 +981,10 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      *        under {@code @ConditionalOnMissingBean(S3Operations.class)}: taking the interface is satisfied by
      *        the auto-configured {@code S3Template} and stays satisfied if {@code AwsConfig} supplies its own
      *        of either type, whereas taking the class would not. Never {@code null}
+     * @param objectStoreClient the object-store client, held for exactly two purposes - paging a listing so
+     *        that a run staging more than a thousand parts still concatenates every one of them, and batching
+     *        the delete of those parts within the store's own thousand-key request limit. Injected, never
+     *        constructed; no endpoint and no credential is read here. Never {@code null}
      * @param fileStatusMapper the sole owner of the status-to-exception decision. Never {@code null}
      * @param metrics the canonical owner of the four sanctioned instruments. Never {@code null}
      * @param outputBucket the destination bucket, required and never defaulted
@@ -960,29 +1001,23 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      *        namespace would misrepresent the source. <i>Remediation, applied:</i> the default is removed, the
      *        key resolves from {@code application.yml} alone, and that file now carries the explanation of why
      *        this one prefix is declared separately from the catalogue
-     * @param maxIndexedObjectKeys the bound on the indexed manifest, from
-     *        {@value #KEY_MAX_INDEXED_OBJECT_KEYS} and defaulting to
-     *        {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS}. Must be positive: zero would publish no key at all and
-     *        a negative value names no bound, so both fail at startup rather than producing a manifest nothing
-     *        can read. See {@link #OBJECT_KEYS_INDEXED_ENTRY}
-     * @throws IllegalArgumentException if any collaborator is {@code null}, either string configuration value
-     *         is blank, or the indexed-manifest bound is not positive
+     * @throws IllegalArgumentException if any collaborator is {@code null} or either string configuration
+     *         value is blank
      */
     public TransactionWriter(TransactionRepository transactionRepository,
             S3Operations objectStorage,
+            S3Client objectStoreClient,
             FileStatusMapper fileStatusMapper,
             MetricsConfig metrics,
             @Value("${carddemo.aws.s3.batch-output-bucket}") String outputBucket,
-            @Value("${carddemo.aws.s3.transaction-object-prefix}") String objectPrefix,
-            @Value("${" + KEY_MAX_INDEXED_OBJECT_KEYS + ":" + DEFAULT_MAX_INDEXED_OBJECT_KEYS + "}")
-                    int maxIndexedObjectKeys) {
+            @Value("${carddemo.aws.s3.transaction-object-prefix}") String objectPrefix) {
         this.transactionRepository = requireCollaborator(transactionRepository, "transactionRepository");
         this.objectStorage = requireCollaborator(objectStorage, "objectStorage");
+        this.objectStoreClient = requireCollaborator(objectStoreClient, "objectStoreClient");
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
         this.metrics = requireCollaborator(metrics, "metrics");
         this.outputBucket = requireConfigured(outputBucket, "carddemo.aws.s3.batch-output-bucket");
         this.objectPrefix = requireObjectPrefix(objectPrefix);
-        this.maxIndexedObjectKeys = requireIndexedKeyCap(maxIndexedObjectKeys);
     }
 
     /**
@@ -1069,7 +1104,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
         // The outbox entry goes in BEFORE the rows, and both are committed together: the framework persists
         // this context inside the chunk transaction. See PENDING_OBJECT_KEY_ENTRY - this is what makes a
         // failed upload recoverable instead of a permanent split (finding M-07).
-        recordPendingEmission(execution, objectKeyFor(execution, ordinal), items);
+        recordPendingEmission(execution, partKeyFor(execution, ordinal), items);
         persistChunk(items);
         promoteAfterCommit(execution, ordinal, payload, items);
     }
@@ -1144,8 +1179,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     private void publishDurableOutput(StepExecution execution, long ordinal, byte[] payload,
                                       List<? extends Transaction> items, int reported) {
 
-        String objectKey = writeTransactionFile(payload, execution, ordinal);
-        publishObjectKey(execution, objectKey);
+        writeTransactionFile(payload, execution, ordinal);
         clearPendingEmission(execution);
         metrics.countRecordsProcessed(reported);
         countTransactionAmounts(items);
@@ -1254,9 +1288,9 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
         } catch (RuntimeException cause) {
             LOG.error(WRITE_FAILURE_TEXT);
             displayIoStatus(OBJECT_STORE_IO_STATUS);
-            throw abendProgram(OBJECT_STORE_IO_STATUS, objectKey, cause);
+            throw abendProgram(WRITE_FAILURE_TEXT, OPERATION_WRITE, PARAGRAPH_WRITE,
+                    OBJECT_STORE_IO_STATUS, objectKey, cause);
         }
-        publishObjectKey(execution, objectKey);
         clearPendingEmission(execution);
         LOG.info("{} settled an outstanding emission from a previous attempt: {} record(s) re-derived from the"
                         + " committed rows and written to {}, so the relation and the mirror agree again",
@@ -1499,7 +1533,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      */
     private String writeTransactionFile(byte[] payload, StepExecution execution, long ordinal) {
         int applResult = FileStatusMapper.APPL_RESULT_INITIAL;
-        String objectKey = objectKeyFor(execution, ordinal);
+        String objectKey = partKeyFor(execution, ordinal);
 
         String ioStatus;
         RuntimeException failure = null;
@@ -1519,7 +1553,8 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
         if (applResult != FileStatusMapper.APPL_AOK) {
             LOG.error(WRITE_FAILURE_TEXT);
             displayIoStatus(ioStatus);
-            throw abendProgram(ioStatus, objectKey, failure);
+            throw abendProgram(WRITE_FAILURE_TEXT, OPERATION_WRITE, PARAGRAPH_WRITE, ioStatus,
+                    objectKey, failure);
         }
         return objectKey;
     }
@@ -1571,41 +1606,55 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * key, no field value and no record image: the object key is composed only of a configured prefix, a job
      * instance identifier and an ordinal, so it cannot disclose customer data.
      *
+     * <p>The failing operation is a parameter rather than a constant because two paragraphs reach here. The
+     * write guard of {@code 2900-WRITE-TRANSACTION-FILE} at {@code app/cbl/CBTRN02C.cbl:L562}-{@code :L579}
+     * and the close guard of {@code 9100-TRANFILE-CLOSE} at {@code :L600}-{@code :L616} are separate
+     * paragraphs with separate {@code DISPLAY} texts, and reporting one under the other's name would send an
+     * operator to the wrong paragraph and would make the boundary comparison read a diagnostic the source
+     * never emits at that point.
+     *
+     * @param failureText the source's verbatim {@code DISPLAY} for the failing paragraph, either
+     *        {@link #WRITE_FAILURE_TEXT} or {@link #CLOSE_FAILURE_TEXT}
+     * @param operation the failing operation, either {@link #OPERATION_WRITE} or {@link #OPERATION_CLOSE}
+     * @param paragraph the source locator of the paragraph that failed, carried on the escalation message
      * @param ioStatus the status that failed the guard
-     * @param objectKey the key the write was aimed at
+     * @param objectKey the key the operation was aimed at
      * @param cause the underlying failure, or {@code null} if the status was reported without one
      * @return the exception for the caller to throw, in the unreachable case that the mapper returns
      */
-    private RuntimeException abendProgram(String ioStatus, String objectKey, Throwable cause) {
+    private RuntimeException abendProgram(String failureText, String operation, String paragraph,
+            String ioStatus, String objectKey, Throwable cause) {
+
         LOG.error(ABEND_DISPLAY_TEXT);
 
         // The reason carried by the EXCEPTION keeps the bucket and the object key, because an operator holding
         // the exception is already inside the failure and needs to know which object to look at. The reason
         // LOGGED carries neither: see the class documentation's logging contract.
         String reason = String.format(Locale.ROOT, "%s (bucket %s, object %s, operation %s)",
-                WRITE_FAILURE_TEXT, outputBucket, objectKey, OPERATION_WRITE);
+                failureText, outputBucket, objectKey, operation);
         LOG.error("{}; logicalFile={} operation={} status={}",
-                WRITE_FAILURE_TEXT, LOGICAL_FILE, OPERATION_WRITE, ioStatus);
-        fileStatusMapper.requireSuccess(ioStatus, LOGICAL_FILE, OPERATION_WRITE, cause);
+                failureText, LOGICAL_FILE, operation, ioStatus);
+        fileStatusMapper.requireSuccess(ioStatus, LOGICAL_FILE, operation, cause);
 
         String message = String.format(Locale.ROOT,
-                "%s. app/cbl/CBTRN02C.cbl:L562-L579 2900-WRITE-TRANSACTION-FILE could not complete and the "
-                        + "status mapper returned instead of raising, so the failure is escalated here.",
-                reason);
-        LOG.error("status mapper returned on a failed {} write; logicalFile={} operation={} status={}",
-                LOGICAL_FILE, LOGICAL_FILE, OPERATION_WRITE, ioStatus);
+                "%s. %s could not complete and the status mapper returned instead of raising, so the failure "
+                        + "is escalated here.",
+                reason, paragraph);
+        LOG.error("status mapper returned on a failed {} {}; logicalFile={} operation={} status={}",
+                LOGICAL_FILE, operation, LOGICAL_FILE, operation, ioStatus);
         return new FatalProcessingException(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE),
                 ABEND_CULPRIT, reason, message, cause);
     }
 
     /**
-     * Builds the object key for one chunk, translating the generation-data-group reference.
+     * Builds the key of one chunk's transient part.
      *
-     * <p>{@code (+1)} becomes a new object under a monotonically increasing prefix over a versioned bucket,
-     * and {@code (0)} becomes the lexicographically greatest existing prefix. Both numbers are zero-padded to
-     * {@value #KEY_NUMBER_WIDTH} digits - the width of {@code Long.MAX_VALUE} - so that lexicographic and
-     * numeric order coincide and {@code (0)} therefore resolves to the newest object rather than to whichever
-     * key happens to sort last.
+     * <p>Every part sits under the {@code parts} segment of the generation prefix, named by the job execution
+     * and then by its ordinal, each zero-padded to {@value #KEY_NUMBER_WIDTH} digits - the width of
+     * {@code Long.MAX_VALUE} - so that lexicographic and numeric order coincide and the parts concatenate in
+     * the order they were written. {@link #PART_KEY_TEMPLATE} records why the execution identifier is part of
+     * the key rather than the ordinal alone: a restart's write count begins again at zero while its reader
+     * resumes, so an ordinal-only key would overwrite the earliest records of the run with later ones.
      *
      * <p>Which generation base a posted-transaction object belongs to, among {@code SYSTRAN},
      * {@code TRANSACT.BKUP}, {@code TRANSACT.DALY} and {@code TRANSACT.COMBINED}, is not stated anywhere in
@@ -1614,11 +1663,28 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      *
      * @param execution the captured step execution
      * @param ordinal the zero-based index of the chunk's first record within the step
-     * @return the object key, never {@code null} and containing no customer data
+     * @return the part key, never {@code null} and containing no customer data
      * @throws FatalProcessingException if the step execution carries no job instance, which means the writer
      *         was invoked outside a launched job and no stable prefix can be derived
      */
-    private String objectKeyFor(StepExecution execution, long ordinal) {
+    private String partKeyFor(StepExecution execution, long ordinal) {
+        return String.format(Locale.ROOT, PART_KEY_TEMPLATE, generationPrefixFor(execution),
+                PART_BASE_NAME, Long.valueOf(jobExecutionIdOf(execution)), Long.valueOf(ordinal),
+                OBJECT_SUFFIX);
+    }
+
+    /**
+     * The key prefix every object of this generation sits under, {@code <prefix>/<job-instance-id>/}.
+     *
+     * <p>Keyed on the job <em>instance</em>, so every attempt of one instance shares it - which is what lets a
+     * restart adopt the parts an earlier attempt left behind.
+     *
+     * @param execution the captured step execution
+     * @return the generation prefix, ending in the key separator
+     * @throws FatalProcessingException if the step execution carries no job instance, which means the writer
+     *         was invoked outside a launched job and no stable prefix can be derived
+     */
+    private String generationPrefixFor(StepExecution execution) {
         var jobExecution = execution.getJobExecution();
         if (jobExecution == null || jobExecution.getJobInstance() == null) {
             String reason = "the step execution carries no job instance";
@@ -1628,83 +1694,413 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
                             + "launcher, or supply a step execution built with a job execution and instance.");
         }
         long jobInstanceId = jobExecution.getJobInstance().getInstanceId();
-        return String.format(Locale.ROOT, KEY_TEMPLATE, objectPrefix, Long.valueOf(jobInstanceId),
-                OBJECT_BASE_NAME, Long.valueOf(ordinal), OBJECT_SUFFIX);
+        return String.format(Locale.ROOT, "%s/%0" + KEY_NUMBER_WIDTH + "d/", objectPrefix,
+                Long.valueOf(jobInstanceId));
     }
 
     /**
-     * Publishes the concrete created key: the latest into the step execution context, and the complete ordered
-     * generation into the job execution context.
+     * The key of this generation's one object.
      *
-     * <p>Within one job a later step must re-read exactly what an earlier step wrote as {@code (+1)}, so every
+     * <p>Named by the job <em>execution</em> under a prefix named by the job <em>instance</em>, so a re-driven
+     * attempt commits its own object beside - and lexicographically after - the one an earlier attempt
+     * committed, rather than replacing bytes another attempt may already have been read.
+     *
+     * @param execution the captured step execution
+     * @return the generation object key, never {@code null} and containing no customer data
+     * @throws FatalProcessingException if the step execution carries no job instance
+     */
+    private String generationObjectKeyFor(StepExecution execution) {
+        var jobExecution = execution.getJobExecution();
+        if (jobExecution == null || jobExecution.getJobInstance() == null) {
+            String reason = "the step execution carries no job instance";
+            throw new FatalProcessingException(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE),
+                    ABEND_CULPRIT, reason,
+                    reason + ", so no stable object prefix can be derived. Launch the step through a job "
+                            + "launcher, or supply a step execution built with a job execution and instance.");
+        }
+        long jobInstanceId = jobExecution.getJobInstance().getInstanceId();
+        return String.format(Locale.ROOT, GENERATION_KEY_TEMPLATE, objectPrefix, Long.valueOf(jobInstanceId),
+                OBJECT_BASE_NAME, Long.valueOf(jobExecutionIdOf(execution)), OBJECT_SUFFIX);
+    }
+
+    /**
+     * The identifier of the job execution this step belongs to, or zero when it has none.
+     *
+     * <p>A step execution built by a test may carry a job execution with no assigned identifier, and one built
+     * with no job execution at all is already refused by {@link #generationPrefixFor(StepExecution)} before
+     * this is reached. Zero is used in the remaining case, which keeps the class constructible and testable
+     * outside a launcher while a launched job always supplies a real value; the identifier only distinguishes
+     * attempts within one generation, never the generation itself.
+     *
+     * @param execution the captured step execution
+     * @return the job execution identifier, or {@code 0} when the execution carries none
+     */
+    private static long jobExecutionIdOf(StepExecution execution) {
+        var jobExecution = execution.getJobExecution();
+        if (jobExecution == null || jobExecution.getId() == null) {
+            return 0L;
+        }
+        return jobExecution.getId().longValue();
+    }
+
+    /**
+     * Publishes the concrete key of this generation's one object, into the step context and into the
+     * job-scoped ordered enumeration.
+     *
+     * <p>Within one job a later step must re-read exactly what an earlier step wrote as {@code (+1)}, so the
      * key is recorded rather than left to be re-resolved as "latest" - a resolution that would race any
-     * concurrent producer. The job-scoped list is appended to here, by this class, so the record is complete
+     * concurrent producer. The job-scoped list is written here, by this class, so the record is complete
      * without any external promotion listener; see {@link #OBJECT_KEYS_COUNT_ENTRY} for the finding this
      * resolves and for the read protocol a consumer follows.
      *
-     * <p><strong>The indexed enumeration is bounded and the count is not.</strong> Up to
-     * {@value #KEY_MAX_INDEXED_OBJECT_KEYS} keys are indexed; past that the count, the generation prefix and
-     * the latest key still move, one {@code WARN} is emitted, and {@link #OBJECT_KEYS_TRUNCATED_ENTRY} marks
-     * the context so no reader has to infer the bound from a missing entry. See
-     * {@link #OBJECT_KEYS_INDEXED_ENTRY} for the finding this resolves and why this cap truncates where the
-     * statement cap refuses.
+     * <p><strong>Exactly one key is published, and it is published once.</strong> The enumeration is
+     * therefore inherently bounded by the shape of the output rather than by a configured cap: a chunk
+     * uploads a transient part and {@link #afterStep(StepExecution)} concatenates every part into the one
+     * generation object, so there is one key to enumerate no matter how many records or chunks the run held.
+     * That is what removed the bounded, truncating manifest this method used to maintain - a manifest that
+     * existed only because the writer emitted one object per chunk, which at the posting job's commit
+     * interval of one meant one object per record.
      *
-     * <p>Side effects: writes one step-context entry, overwriting any previous value so that it always names the
-     * most recently created object; writes the exact count and the generation prefix into the job context on
-     * every call; adds one indexed entry and updates the indexed count while below the bound; and on the first
-     * call at or above it, writes the truncation marker and logs once. Performs no I/O.
+     * <p>Side effects: writes one step-context entry; writes the single indexed entry, the count of one and
+     * the generation prefix into the job context. Performs no I/O.
      *
      * @param execution the captured step execution
-     * @param objectKey the key just created
+     * @param objectKey the key of the generation object that now exists
      */
-    private void publishObjectKey(StepExecution execution, String objectKey) {
+    private void publishGeneration(StepExecution execution, String objectKey) {
         execution.getExecutionContext().putString(OBJECT_KEY_CONTEXT_ENTRY, objectKey);
 
         JobExecution jobExecution = execution.getJobExecution();
         if (jobExecution == null) {
             // Only reachable when a unit test builds a StepExecution without one. The step-scoped entry above
-            // is still written, so the writer stays testable, and objectKeyFor() has already refused to
-            // compose a key at all if the job instance was missing - so nothing silently lands in the wrong
+            // is still written, so the writer stays testable, and generationObjectKeyFor() has already refused
+            // to compose a key at all if the job instance was missing - so nothing silently lands in the wrong
             // generation namespace.
             return;
         }
 
         ExecutionContext jobContext = jobExecution.getExecutionContext();
-        long published = jobContext.getLong(OBJECT_KEYS_COUNT_ENTRY, 0L);
-
-        // The count is exact and unbounded, and it is a long rather than an int precisely because it is not
-        // capped. The generation prefix is republished rather than written once: it is the same value on every
-        // call, and writing it here means it exists from the first object rather than depending on a listener.
-        jobContext.putLong(OBJECT_KEYS_COUNT_ENTRY, published + 1L);
+        jobContext.putString(objectKeysIndexEntry(0), objectKey);
+        jobContext.putLong(OBJECT_KEYS_COUNT_ENTRY, 1L);
         jobContext.putString(OBJECT_KEYS_GENERATION_PREFIX_ENTRY, generationPrefixOf(objectKey));
+    }
 
-        if (published < maxIndexedObjectKeys) {
-            // Narrowing is safe only on this branch: the index is below the bound, which is an int. Converting
-            // the unbounded count instead would throw once a run passed Integer.MAX_VALUE objects.
-            jobContext.putString(objectKeysIndexEntry(Math.toIntExact(published)), objectKey);
-            jobContext.putLong(OBJECT_KEYS_INDEXED_ENTRY, published + 1L);
-            return;
+    /**
+     * Completes the run's {@code (+1)} generation as one object, and publishes the key it created.
+     *
+     * <p><strong>This is the point at which the generation comes into existence.</strong> Every chunk of the
+     * step uploaded a durable part; concatenating those parts is what creates the generation, so this is the
+     * {@code CLOSE} of the transaction file - {@code app/cbl/CBTRN02C.cbl:L600}-{@code :L616},
+     * {@code 9100-TRANFILE-CLOSE} - and a failure here is a failed {@code CLOSE}, reported through the very
+     * guard the source applies to one, carrying that paragraph's own {@code DISPLAY} text and the
+     * {@code CLOSE} operation rather than the write's.
+     *
+     * <p><b>Why the consolidation is required rather than a preference.</b> {@code app/jcl/POSTTRAN.jcl:L26-27}
+     * writes posted transactions to a single dataset, and the corpus's own generation-data-group idiom is one
+     * generation per run: a {@code (+1)} reference names <em>one</em> dataset, and a {@code (0)} read of it
+     * expects to find the whole run there. Emitting one object per chunk contradicted both. It also broke the
+     * {@code (0)} resolution outright at the posting job's commit interval of one
+     * ({@code DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL}), because the lexicographically greatest key
+     * under the generation prefix was then the <em>last record</em> of the run and a consumer resolving
+     * "latest" read a single 350-byte record as the entire day's postings.
+     *
+     * <p>A step that posted nothing closes nothing and publishes nothing, which is the {@code OPEN OUTPUT}
+     * followed by {@code CLOSE} of an empty dataset: the corpus writes no record and this writer creates no
+     * object. Idempotent - a second call after a successful promotion does nothing.
+     *
+     * <p>The parts are deleted only after the generation object has been accepted, so there is no window in
+     * which the run's records exist in neither place. A failure to delete is reported and does not fail the
+     * step: the rows and the generation object are both durable by then, and turning a finished posting run
+     * into a failure over a leftover staging object would be the worse outcome.
+     *
+     * <p><b>The step's own exit status is not altered.</b> {@code null} is returned so that whatever the step
+     * already concluded - including the {@code RC=4} that {@code app/cbl/CBTRN02C.cbl:L202}-{@code :L234} sets
+     * when and only when the reject count exceeds zero - is left exactly as it stands. A failure to promote
+     * arrives as a thrown exception instead, which fails the step as a failed {@code CLOSE} must.
+     *
+     * <p>Side effects: completes one object in the configured bucket; removes the transient parts; publishes
+     * one step-context entry and the one-entry ordered key list plus the generation prefix into the job
+     * context.
+     *
+     * @param execution the step execution supplied by the framework, or {@code null} if a caller supplies none
+     * @return {@code null} always, leaving the step's exit status untouched
+     * @throws FatalProcessingException by way of {@code FileStatusMapper} when the concatenation fails; the
+     *         concrete subtype for the synthesised {@code '9x'} status is
+     *         {@code com.cardemo.exception.FileAccessException}, which carries logical name {@code TRANSACT},
+     *         operation {@link #OPERATION_CLOSE} - not the write's, because this is the {@code CLOSE} guard -
+     *         and the preserved cause
+     */
+    @Override
+    public ExitStatus afterStep(StepExecution execution) {
+        if (execution == null || this.generationCommitted) {
+            // A null execution is accepted here and reported at write time by requireStepContext, which is
+            // this class's existing contract. A repeat call after a successful promotion is a no-op, so the
+            // method is idempotent in both directions.
+            return null;
         }
 
-        if (!jobContext.containsKey(OBJECT_KEYS_TRUNCATED_ENTRY)) {
-            // Once per job execution, not once per object: the condition holds for every remaining record of a
-            // run that has passed the bound, and one WARN per record would bury the run it is warning about.
-            jobContext.putString(OBJECT_KEYS_TRUNCATED_ENTRY, OBJECT_KEYS_TRUNCATED_MARKER);
-            LOG.warn("The indexed transaction object-key manifest has reached its bound of {} keys, so keys "
-                            + "beyond that are counted but not enumerated. {} stays exact, {} names the one "
-                            + "prefix that holds every object of this generation, and {} marks the context. "
-                            + "Raise {} deliberately if the full enumeration is needed, accepting that the "
-                            + "job execution context is re-serialised once per record",
-                    Integer.valueOf(maxIndexedObjectKeys), OBJECT_KEYS_COUNT_ENTRY,
-                    OBJECT_KEYS_GENERATION_PREFIX_ENTRY, OBJECT_KEYS_TRUNCATED_ENTRY,
-                    KEY_MAX_INDEXED_OBJECT_KEYS);
+        if (execution.getStatus().isGreaterThan(BatchStatus.STARTED)) {
+            // A step that is stopping, stopped, failed or abandoned has not produced a generation, and must
+            // not appear to have. AbstractStep sets the status before it calls this listener - verified
+            // against the 5.2.4 bytecode, not assumed - so the status read here is the step's own outcome.
+            // The threshold is STARTED rather than an equality test on COMPLETED so that the healthy states
+            // - COMPLETED at the end of a launched step, STARTING or STARTED when a caller drives the writer
+            // directly - all promote, while every terminal state past running retains instead.
+            //
+            // The parts are deliberately left in place: they are keyed on the job instance, so the restart of
+            // this instance lists them alongside its own and concatenates the whole run into ONE generation
+            // object. Promoting here instead would catalogue a partial generation and leave the restart to
+            // catalogue a second, at which point the (0) reference - the lexicographically greatest key -
+            // would resolve to whichever attempt happened to run last and hold only that attempt's records.
+            // This is also the source's own outcome: app/jcl/POSTTRAN.jcl declares its generation output
+            // DISP=(NEW,CATLG,DELETE), so an abending step leaves nothing catalogued.
+            LOG.warn("{} ended {} after {} record(s); the chunk parts staged under its generation prefix are"
+                            + " retained so that a restart of this job instance concatenates the whole run"
+                            + " into one generation object rather than cataloguing a partial one",
+                    LOGICAL_FILE, execution.getStatus(), Long.valueOf(execution.getWriteCount()));
+            return null;
+        }
+
+        final String generationObjectKey = generationObjectKeyFor(execution);
+        final List<String> parts = listParts(execution);
+        if (parts.isEmpty()) {
+            LOG.debug("No transactions were posted, so no {} generation was created", LOGICAL_FILE);
+            return null;
+        }
+
+        // app/cbl/CBTRN02C.cbl:L601 - MOVE 8 TO APPL-RESULT, then CLOSE and the two-way guard at :L608-:L615.
+        // Promotion is this writer's CLOSE: it is the call that brings the (+1) generation into existence as
+        // one object, so a failure here is a failed CLOSE and takes the source's CLOSE path exactly.
+        final Throwable failureCause = promoteParts(parts, generationObjectKey);
+        final String ioStatus = failureCause == null ? SUCCESS_STATUS : OBJECT_STORE_IO_STATUS;
+        if (fileStatusMapper.applResultForGuard(ioStatus) != FileStatusMapper.APPL_AOK) {
+            LOG.error(CLOSE_FAILURE_TEXT);
+            displayIoStatus(ioStatus);
+            throw abendProgram(CLOSE_FAILURE_TEXT, OPERATION_CLOSE, PARAGRAPH_CLOSE, ioStatus,
+                    generationObjectKey, failureCause);
+        }
+
+        this.generationCommitted = true;
+        publishGeneration(execution, generationObjectKey);
+        discardParts(parts);
+        return null;
+    }
+
+    /**
+     * Concatenates this generation's durable parts into its one object.
+     *
+     * <p>Streamed rather than buffered: the parts are opened lazily in key order and read through, so peak
+     * memory is one part's transfer buffer and not the run's transaction volume. The combined length is known
+     * before the upload begins, which is what lets the object declare a content length and lets a short or
+     * long concatenation be refused by the store rather than stored.
+     *
+     * <p>The combined length is also asserted to be a whole number of {@value #RECORD_LENGTH}-byte records
+     * before a byte is uploaded. {@code app/jcl/POSTTRAN.jcl} declares {@code RECFM=FB}, so a consumer finds
+     * record boundaries by counting and by nothing else; a concatenation whose length is not a multiple of the
+     * record length would shift every subsequent record and is refused rather than published.
+     *
+     * <p>Reports rather than raises, so the caller's guard stays the single place a status becomes an outcome.
+     *
+     * @param parts the part keys, ascending by ordinal
+     * @param generationObjectKey the key the concatenation is uploaded to
+     * @return {@code null} when the generation object was accepted, otherwise the throwable that prevented it
+     */
+    private Throwable promoteParts(final List<String> parts, final String generationObjectKey) {
+        try {
+            long totalBytes = 0L;
+            for (final String part : parts) {
+                totalBytes += partLength(part);
+            }
+            if (totalBytes % RECORD_LENGTH != 0L) {
+                throw new IllegalStateException(LOGICAL_FILE + " staged " + parts.size() + " part(s) totalling "
+                        + totalBytes + " bytes, which is not a whole number of " + RECORD_LENGTH
+                        + "-byte records, so the unblocked generation cannot be assembled from them");
+            }
+
+            final ObjectMetadata metadata = ObjectMetadata.builder()
+                    .contentType(OBJECT_CONTENT_TYPE)
+                    .contentLength(Long.valueOf(totalBytes))
+                    .build();
+            try (InputStream concatenated = new SequenceInputStream(new PartStreams(parts))) {
+                objectStorage.upload(outputBucket, generationObjectKey, concatenated, metadata);
+            }
+            LOG.info("{} promoted {} durable part(s) into the single generation object {} holding {} record(s)",
+                    LOGICAL_FILE, Integer.valueOf(parts.size()), generationObjectKey,
+                    Long.valueOf(totalBytes / RECORD_LENGTH));
+            return null;
+        } catch (final IOException | RuntimeException promotionFailure) {
+            return promotionFailure;
+        }
+    }
+
+    /**
+     * Lists this generation's durable parts, ascending by key and therefore by ordinal.
+     *
+     * <p>The ordinal is zero-padded to {@value #KEY_NUMBER_WIDTH} digits, so lexicographic key order is the
+     * order the parts were written in - which is the order they must be concatenated in for the generation to
+     * hold the run in production order.
+     *
+     * <p><strong>EVERY page, not the first.</strong> This is the whole of the truncation described on
+     * {@link #objectStoreClient}: a single {@code ListObjectsV2} carries at most a thousand keys, and a
+     * posting run at commit interval one stages one part per record, so a single-page listing would have
+     * concatenated the first thousand records and published them as the whole day. The paginator issues one
+     * request per page and streams the results, so peak memory is one page while the returned list is
+     * complete.
+     *
+     * <p>The keys are sorted explicitly rather than relying on the store's own ordering. The listing does
+     * arrive in UTF-8 binary key order, so the sort is a no-op in practice; it is kept because the
+     * concatenation order <em>is</em> the record order of the posted transaction file, and a guarantee that
+     * load-bearing belongs in this method rather than in an assumption about the store.
+     *
+     * <p>A directory marker - a key ending in the separator, which some tools create - is skipped: it holds no
+     * record and concatenating its zero bytes would still add it to the part census.
+     *
+     * @param execution the captured step execution, supplying the generation prefix
+     * @return the part keys, never {@code null} and possibly empty
+     * @throws FatalProcessingException if the listing itself fails, because a listing that cannot be performed
+     *         must not be read as "this run posted nothing"
+     */
+    private List<String> listParts(final StepExecution execution) {
+        final String partPrefix = generationPrefixFor(execution) + PART_SEGMENT + KEY_SEPARATOR;
+        final List<String> keys = new ArrayList<>();
+        try {
+            for (final S3Object listed : objectStoreClient.listObjectsV2Paginator(ListObjectsV2Request.builder()
+                            .bucket(outputBucket)
+                            .prefix(partPrefix)
+                            .build())
+                    .contents()) {
+                final String key = listed.key();
+                if (key == null || key.isBlank() || key.endsWith(KEY_SEPARATOR)) {
+                    continue;
+                }
+                keys.add(key);
+            }
+        } catch (final RuntimeException listingFailure) {
+            LOG.error("{} could not list the durable parts of its generation, so the run cannot be proved"
+                    + " complete; logicalFile={} operation={}", LOGICAL_FILE, LOGICAL_FILE, OPERATION_CLOSE);
+            displayIoStatus(OBJECT_STORE_IO_STATUS);
+            throw abendProgram(CLOSE_FAILURE_TEXT, OPERATION_CLOSE, PARAGRAPH_CLOSE,
+                    OBJECT_STORE_IO_STATUS, partPrefix, listingFailure);
+        }
+        Collections.sort(keys);
+        return keys;
+    }
+
+    /**
+     * The byte length of one durable part.
+     *
+     * @param key the part key
+     * @return its length in bytes
+     */
+    private long partLength(final String key) {
+        // S3Resource narrows Resource#contentLength() to declare no IOException, so only the store's unchecked
+        // failures can arrive here; catching IOException would be an unreachable catch. They are left to
+        // propagate into promoteParts, which is the single place a promotion failure becomes a status.
+        return objectStorage.download(outputBucket, key).contentLength();
+    }
+
+    /**
+     * Removes the durable parts, once and only once the generation object is committed.
+     *
+     * <p>The order is deliberate. Until the generation object has been accepted the parts are the only mirror
+     * of the run's rows, so deleting them earlier would leave a window in which a failure loses the mirror
+     * entirely. After it there are two copies and the parts are redundant.
+     *
+     * <p>A failure to delete is reported and does not fail the step, for the reason given on
+     * {@link #afterStep(StepExecution)}; a subsequent attempt of the same job instance would in any case
+     * overwrite the same deterministic part keys.
+     *
+     * <p>The keys are removed in batches rather than one request each. A posting run at commit interval one
+     * stages one part per record, so a per-key loop meant one sequential round trip per posted transaction at
+     * the end of an otherwise finished run - the "obvious inefficiency" the engineering standard asks to be
+     * avoided when the remedy is a standard one. The batch request reports failures per key, so nothing about
+     * the diagnostic is coarsened by grouping them.
+     *
+     * @param parts the promoted part keys
+     */
+    private void discardParts(final List<String> parts) {
+        for (int from = 0; from < parts.size(); from += DELETE_BATCH_LIMIT) {
+            discardPartBatch(parts.subList(from, Math.min(from + DELETE_BATCH_LIMIT, parts.size())));
+        }
+    }
+
+    /**
+     * Removes one batch of promoted parts, reporting rather than raising.
+     *
+     * @param batch the part keys to remove, at most {@link #DELETE_BATCH_LIMIT} of them
+     */
+    private void discardPartBatch(final List<String> batch) {
+        try {
+            final DeleteObjectsResponse outcome = objectStoreClient.deleteObjects(DeleteObjectsRequest.builder()
+                    .bucket(outputBucket)
+                    .delete(Delete.builder()
+                            .objects(batch.stream()
+                                    .map(key -> ObjectIdentifier.builder().key(key).build())
+                                    .toList())
+                            .build())
+                    .build());
+            for (final S3Error refused : outcome.errors()) {
+                LOG.warn("{} could not delete the promoted part {} ({}); the generation object is committed and"
+                                + " holds every record, so an operator can remove the leftover part safely",
+                        LOGICAL_FILE, refused.key(), refused.code());
+            }
+        } catch (final RuntimeException deleteFailure) {
+            // The throwable is carried so the root cause is preserved rather than swallowed. It is the store's
+            // own failure and names no record, no field and no customer datum, so logging it discloses nothing
+            // the class documentation's logging contract withholds.
+            LOG.warn("{} could not delete {} promoted part(s); the generation object is committed and holds"
+                    + " every record, so an operator can remove the leftover parts safely",
+                    LOGICAL_FILE, Integer.valueOf(batch.size()), deleteFailure);
+        }
+    }
+
+    /**
+     * Opens each durable part in turn, so the promotion never holds more than one of them.
+     *
+     * <p>{@link SequenceInputStream} pulls lazily, which is what keeps the concatenation streaming.
+     */
+    private final class PartStreams implements Enumeration<InputStream> {
+
+        /** The part keys, in the order they must be concatenated. */
+        private final List<String> keys;
+
+        /** The next key to open. */
+        private int index;
+
+        /**
+         * Creates the enumeration.
+         *
+         * @param keys the part keys in ascending ordinal order
+         */
+        private PartStreams(final List<String> keys) {
+            this.keys = keys;
+        }
+
+        @Override
+        public boolean hasMoreElements() {
+            return index < keys.size();
+        }
+
+        @Override
+        public InputStream nextElement() {
+            if (!hasMoreElements()) {
+                throw new NoSuchElementException("every " + LOGICAL_FILE + " part has been read");
+            }
+            final String key = keys.get(index);
+            index++;
+            try {
+                return objectStorage.download(outputBucket, key).getInputStream();
+            } catch (final IOException | RuntimeException unreadable) {
+                throw new IllegalStateException(
+                        "the " + LOGICAL_FILE + " part " + key + " could not be opened", unreadable);
+            }
         }
     }
 
     /**
      * Derives the generation prefix from a created key.
      *
-     * <p>The key up to and including its last separator, which {@link #KEY_TEMPLATE} makes
+     * <p>The key up to and including its last separator, which {@link #GENERATION_KEY_TEMPLATE} makes
      * {@code <configured-prefix>/<job-instance-id>/}. Taken from the key rather than recomposed from the
      * prefix and the instance identifier so that the two can never disagree: there is one place a key is
      * built, and this reads its output.
@@ -2209,7 +2605,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     /**
      * Validates the configured key prefix against the one shared grammar.
      *
-     * <p>{@link #KEY_TEMPLATE} writes the separator itself, so a prefix that arrives already ending in one
+     * <p>{@link #GENERATION_KEY_TEMPLATE} writes the separator itself, so a prefix that arrives already ending in one
      * would compose a key carrying an empty segment - {@code base//0000...} rather than {@code base/0000...}.
      * That is not a cosmetic difference. Object storage has no directories, so the key is the whole name: the
      * consuming reader validates that the generation key it is handed names exactly one object inside the
@@ -2238,23 +2634,4 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
                 configured, "carddemo.aws.s3.transaction-object-prefix");
     }
 
-    /**
-     * Validates the indexed-manifest bound.
-     *
-     * <p>Zero and negative values are refused at startup rather than tolerated, because both produce a
-     * manifest that no consumer can read against the protocol on {@link #OBJECT_KEYS_COUNT_ENTRY}: zero
-     * publishes no indexed entry while the count keeps rising, and a negative bound names no bound at all.
-     * Failing here is the difference between a misconfiguration and a silently useless audit record.
-     *
-     * @param configured the value bound from {@value #KEY_MAX_INDEXED_OBJECT_KEYS}
-     * @return the same value when it is positive
-     * @throws IllegalArgumentException when it is not
-     */
-    private static int requireIndexedKeyCap(int configured) {
-        if (configured <= 0) {
-            throw new IllegalArgumentException(KEY_MAX_INDEXED_OBJECT_KEYS + " must be positive but was "
-                    + configured);
-        }
-        return configured;
-    }
 }

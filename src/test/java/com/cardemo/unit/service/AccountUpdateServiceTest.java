@@ -82,6 +82,7 @@ import com.cardemo.service.account.AccountUpdateService.ChangeAction;
 import com.cardemo.service.account.AccountUpdateService.EntryMode;
 import com.cardemo.service.account.AccountUpdateService.FieldAttribute;
 import com.cardemo.service.account.AccountUpdateService.ResponseKind;
+import com.cardemo.service.account.AccountViewService;
 import com.cardemo.service.shared.DateValidationService;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.service.shared.ValidationLookupService;
@@ -106,6 +107,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -2788,16 +2791,13 @@ final class AccountUpdateServiceTest {
     @Test
     @DisplayName("sealSnapshotForUpdate reads the chain and produces a value the write then accepts")
     void sealSnapshotForUpdateProducesAValueTheWriteAccepts() {
-        // The read chain of 9000-READ-ACCT: CXACAIX, then the account master, then the customer master.
-        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_KEY))
-                .thenReturn(Optional.of(new CardCrossReference("4111111111111111", CUSTOMER_KEY,
-                        ACCOUNT_KEY)));
-        when(this.accountRepository.findById(ACCOUNT_KEY)).thenReturn(Optional.of(this.account));
-        when(this.customerRepository.findById(CUSTOMER_KEY)).thenReturn(Optional.of(this.customer));
+        // No read chain is stubbed for the seal itself: it projects ACUP-OLD-DETAILS from the records the
+        // view traversal already read and issues no statement of its own. The write that follows does read,
+        // so its locking reads are stubbed as usual.
         givenAccountLocked();
         givenCustomerLocked();
 
-        final String sealed = this.service.sealSnapshotForUpdate(SCREEN_ACCOUNT_ID, SUBJECT);
+        final String sealed = this.service.sealSnapshotForUpdate(viewRecords(), SUBJECT);
 
         assertThat(sealed).isNotBlank();
         // The value is opaque: none of the nine protected components appears in it, which is the whole
@@ -2825,14 +2825,8 @@ final class AccountUpdateServiceTest {
     @Test
     @DisplayName("sealSnapshotForUpdate seals the unseparated date of birth the comparison expects")
     void sealSnapshotForUpdateProjectsTheUnseparatedDateOfBirth() {
-        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_KEY))
-                .thenReturn(Optional.of(new CardCrossReference("4111111111111111", CUSTOMER_KEY,
-                        ACCOUNT_KEY)));
-        when(this.accountRepository.findById(ACCOUNT_KEY)).thenReturn(Optional.of(this.account));
-        when(this.customerRepository.findById(CUSTOMER_KEY)).thenReturn(Optional.of(this.customer));
-
         final AccountUpdateRequest.OldDetails projected = this.snapshotTokenService.open(
-                this.service.sealSnapshotForUpdate(SCREEN_ACCOUNT_ID, SUBJECT), SNAPSHOT_KIND,
+                this.service.sealSnapshotForUpdate(viewRecords(), SUBJECT), SNAPSHOT_KIND,
                 SCREEN_ACCOUNT_ID, SUBJECT, AccountUpdateRequest.OldDetails.class);
 
         // :4174-4179 reads the live record at offsets 1, 6 and 9 - dash separated - and the snapshot at
@@ -2848,10 +2842,27 @@ final class AccountUpdateServiceTest {
     @DisplayName("a read reaching the bean without a principal is a wiring defect, not a request outcome")
     void aReadWithoutAPrincipalIsRefused() {
         for (final String absent : new String[] {null, "", "   "}) {
-            assertThatThrownBy(() -> this.service.sealSnapshotForUpdate(SCREEN_ACCOUNT_ID, absent))
+            assertThatThrownBy(() -> this.service.sealSnapshotForUpdate(viewRecords(), absent))
                     .isInstanceOf(IllegalArgumentException.class);
         }
+        // And absent records are a wiring defect too: the method projects from what it is given and has no
+        // read of its own to fall back on.
+        assertThatThrownBy(() -> this.service.sealSnapshotForUpdate(null, SUBJECT))
+                .isInstanceOf(IllegalArgumentException.class);
         verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    /**
+     * Builds what one traversal of {@code 9000-READ-ACCT} hands the seal: the projected screen plus the
+     * account and customer records it read.
+     *
+     * <p>The projection member is not read by the seal - {@code 9500-STORE-FETCHED-DATA} works from the
+     * records - so a minimal screen is supplied for it.
+     *
+     * @return the records the seal projects from
+     */
+    private AccountViewService.AccountViewRecords viewRecords() {
+        return new AccountViewService.AccountViewRecords(null, this.account, this.customer);
     }
 
     @Test
@@ -4702,6 +4713,98 @@ final class AccountUpdateServiceTest {
         assertThat(cursorField(result)).isEqualTo(FIELD_ACCOUNT_STATUS);
         assertThat(hasAspect(result, FIELD_ACCOUNT_STATUS, FieldAttribute.ASPECT_COLOUR)).isTrue();
         assertThat(hasAspect(result, FIELD_ACCOUNT_STATUS, FieldAttribute.ASPECT_MARKER)).isFalse();
+    }
+
+    @Test
+    @DisplayName(":1220 a LOWER-CASE account status is rejected, because the 88-level compares characters")
+    void aLowerCaseAccountStatusIsRejected() {
+        // FINDING, severity MAJOR. This edit used to upper-case the value before testing it, so 'y' and 'n'
+        // passed. 88 FLG-YES-NO-ISVALID VALUES 'Y', 'N' at app/cbl/COACTUPC.cbl:78 is a condition name on the
+        // received character, and a condition name compares bytes - there is no fold to reproduce.
+        //
+        // The fold did not merely widen the edit, it produced the WRONG FAILURE: the lower-case value reached
+        // the write, where the ck_customer_pri_card_holder_ind / account-status CHECK constraint refused it,
+        // and the operator was answered 409 CARDDEMO-CONSTRAINT-REFUSED naming no field. This case asserts the
+        // 400-shaped outcome instead: the edit's own literal, on the edit's own cursor field.
+        //
+        // 'n' rather than 'y', and the reason is the very asymmetry this fix preserves. 1205-COMPARE-OLD-NEW
+        // at app/cbl/COACTUPC.cbl:1684-1770 folds with FUNCTION UPPER-CASE and runs FIRST, so submitting 'y'
+        // against a stored 'Y' is genuinely no change at all and the turn stops there without reaching any
+        // edit - which is faithful, and is asserted in its own case below. 'n' against a stored 'Y' IS a
+        // change under the fold, so the edits run and the character-exact one refuses the byte.
+        this.screen.accountStatus = "n";
+        givenEveryFieldEditPasses();
+
+        final AccountUpdateResult result = editTurn();
+
+        assertThat(errorText(result)).isEqualTo(labelled(LABEL_ACCOUNT_STATUS, MUST_BE_Y_OR_N));
+        assertThat(cursorField(result)).isEqualTo(FIELD_ACCOUNT_STATUS);
+        assertThat(hasAspect(result, FIELD_ACCOUNT_STATUS, FieldAttribute.ASPECT_COLOUR)).isTrue();
+        assertThat(hasAspect(result, FIELD_ACCOUNT_STATUS, FieldAttribute.ASPECT_MARKER))
+                .as("an invalid value is not an absent one, so the supplied-marker aspect stays off")
+                .isFalse();
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @Test
+    @DisplayName(":1220 a LOWER-CASE primary card holder indicator is rejected on its own field")
+    void aLowerCasePrimaryCardHolderIndicatorIsRejected() {
+        // The same edit is performed for the second Y/N field at :1580, so the fix has to hold on both. The
+        // field this one names is ACSPFLG, which is what made the previous 409 impossible to act on: the
+        // constraint that caught it is on the CUSTOMER row, so the response named neither field.
+        this.screen.primaryCardHolderIndicator = "n";
+        givenEveryFieldEditPasses();
+
+        final AccountUpdateResult result = editTurn();
+
+        assertThat(errorText(result)).isEqualTo(labelled(LABEL_PRIMARY_CARD_HOLDER, MUST_BE_Y_OR_N));
+        assertThat(cursorField(result)).isEqualTo(FIELD_PRIMARY_CARD_HOLDER);
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"Y,Y", "Y,N", "N,Y", "N,N"})
+    @DisplayName(":1220 upper-case Y and N are still the two values the edit accepts, on both fields")
+    void upperCaseYesAndNoAreStillAccepted(final String status, final String holder) {
+        // The other half of the contract, so the fix cannot be read as "the edit got stricter": exactly the
+        // two characters the 88-level names must still pass, on both fields, in every combination.
+        //
+        // What is asserted is that the Y-or-N diagnostic is absent, not that no diagnostic at all is raised.
+        // The distinction is deliberate: Y,Y equals the stored pair, so that combination reaches
+        // 1205-COMPARE-OLD-NEW's no-change outcome rather than a write, and demanding an empty diagnostic
+        // would make this case assert something about change detection instead of about the edit.
+        this.screen.accountStatus = status;
+        this.screen.primaryCardHolderIndicator = holder;
+        if (!("Y".equals(status) && "Y".equals(holder))) {
+            // Y,Y is the stored pair, so that row stops at 1205 and reaches no field edit; stubbing the edit
+            // collaborators for it would be an unnecessary stubbing under STRICT_STUBS.
+            givenEveryFieldEditPasses();
+        }
+
+        final AccountUpdateResult accepted = editTurn();
+
+        assertThat(errorText(accepted) == null ? "" : errorText(accepted))
+                .as("accountStatus=%s primaryCardHolderIndicator=%s: neither field may attract the "
+                        + "Y-or-N diagnostic", status, holder)
+                .doesNotContain(MUST_BE_Y_OR_N.trim());
+    }
+
+    @Test
+    @DisplayName(":1205 a lower-case value that differs from the stored one ONLY in case is still no change")
+    void aLowerCaseValueDifferingOnlyInCaseIsStillNoChange() {
+        // The preserved half of the asymmetry, asserted so the fix above cannot be widened into the
+        // comparison by a later reader. 1205-COMPARE-OLD-NEW folds with FUNCTION UPPER-CASE at
+        // app/cbl/COACTUPC.cbl:1684-1770, so 'y' against a stored 'Y' is the same VALUE - and the turn stops
+        // with the no-change diagnostic, never reaching the character-exact edit at all.
+        this.screen.accountStatus = "y";
+
+        final AccountUpdateResult result = editTurn();
+
+        // givenEveryFieldEditPasses() is deliberately NOT called: 1205 stops the turn before any field edit
+        // runs, so stubbing the edit collaborators here would be an unnecessary stubbing - and that this
+        // stubbing is unnecessary is itself part of what the case demonstrates.
+        assertThat(errorText(result)).isEqualTo(NO_CHANGE_DETECTED);
+        verifyNoInteractions(this.accountRepository, this.customerRepository);
     }
 
     @Test

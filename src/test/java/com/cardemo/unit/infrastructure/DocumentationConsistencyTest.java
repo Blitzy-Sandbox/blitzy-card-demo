@@ -229,7 +229,33 @@ final class DocumentationConsistencyTest {
             // if either were deleted tomorrow, every forward reference would silently become correct again
             // and nothing would notice.
             new String[] {"docs/onboarding-guide.md", "onboarding-guide.md"},
-            new String[] {"docs/executive-presentation.html", "executive-presentation.html"});
+            new String[] {"docs/executive-presentation.html", "executive-presentation.html"},
+            // Added 9 August 2026, after a harness literal spent two commits denying that any Gate 1
+            // oracle of either kind had been committed, while five captured images and their
+            // provenance record sat on disk. That literal is now asserted at its own site, which is
+            // where the check belongs; this entry is the standing net for the NEXT sentence about the
+            // same artefact. The spelling is the directory rather than a file name because that is
+            // how nineteen files in this tree refer to it, and because a denial would be aimed at the
+            // oracle rather than at one image of it.
+            //
+            // Two things are recorded rather than glossed. First, the denial is DESCRIBED here and
+            // never quoted, because this rule reads its own source and a quotation would be reported
+            // as the very defect it illustrates - the same discipline SourceCitationResolutionTest
+            // applies to line locators. Writing it out once, while drafting this comment, made this
+            // rule fail on this file, which is the most direct demonstration available that the rule
+            // works. Second, this entry could not have caught its own motivating defect: the
+            // offending sentence spelled the resource ROOT, not this subdirectory, and listing that
+            // root as an artefact spelling is untenable because it occurs legitimately in hundreds of
+            // true sentences. A guard that looks protective without being so is worse than none.
+            //
+            // What it DOES catch, measured by planting sentences and reading the result: a denial in
+            // which this spelling is the grammatical subject of the same reconstructed sentence, which
+            // fails with the file, the line and the sentence quoted. Two phrasings deliberately do NOT
+            // bind, and both are the rule working rather than missing - one where a container
+            // preposition makes the directory the LOCATION of the missing thing rather than the thing,
+            // and one where a colon separates the spelling from the denial, because a colon ends a
+            // sentence here and the two then sit in different claims.
+            new String[] {"src/test/resources/parity/gate1/PROVENANCE.properties", "parity/gate1"});
 
     /**
      * Assertions of absence. Each is anchored so it can only match a claim <em>about</em> something, never a
@@ -248,7 +274,18 @@ final class DocumentationConsistencyTest {
             Pattern.compile("(?:is|are) not (?:yet )?(?:present|created|authored)", Pattern.CASE_INSENSITIVE),
             Pattern.compile("(?:was|were) not available", Pattern.CASE_INSENSITIVE),
             Pattern.compile("(?:is|are) (?:<[a-z]+>)?unavailable", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("still not available", Pattern.CASE_INSENSITIVE));
+            Pattern.compile("still not available", Pattern.CASE_INSENSITIVE),
+            // Added 9 August 2026, for a construction that carried its negation in the SUBJECT -
+            // a determiner of totality followed directly by the verb - rather than before the verb
+            // as "does not exist" does. The exists-family pattern above requires the latter, so a
+            // harness literal denying that either kind of Gate 1 oracle had been committed matched
+            // nothing at all and published for two commits. The alternation here is
+            // kept narrow - the two determiners, an optional "of them/these", and the verb - because
+            // "none exists" is a true and frequent sentence in this tree about lookup keys and data
+            // rows, and F18 only offends when an absence phrase meets a PRESENT_ARTEFACTS spelling
+            // in the same sentence. Widening it to any nearby "exists" would report correct prose.
+            Pattern.compile("(?:neither|none) (?:of (?:them|these) )?exists?\\b",
+                    Pattern.CASE_INSENSITIVE));
 
     /**
      * Markers that identify a line as a <em>withdrawal</em> of a former absence claim rather than a fresh
@@ -2016,6 +2053,575 @@ final class DocumentationConsistencyTest {
                             + "hand, which is how this row went stale in the first place")
                     .contains("re-measured on every build by")
                     .contains("DocumentationConsistencyTest.JavaCensusIsMeasured");
+        }
+    }
+
+    /**
+     * The onboarding guide's published census of its own rendered structure, checked against its source.
+     *
+     * <p>{@code docs/onboarding-guide.md} §14.3 publishes seven counts describing what the page renders
+     * to: content tables, fenced code blocks, heading anchors, in-page links, and the three reconciling
+     * figures a reader gets from the obvious browser selectors. Every one of them moves whenever the page
+     * is edited &mdash; adding a table moves one, adding a cross-reference moves another &mdash; and they
+     * had all gone stale together: the row read 32 tables, 11 fenced blocks, 81 heading anchors and 260
+     * in-page links against a file that by then held 35, 13, 91 and 175.</p>
+     *
+     * <p>The drift is not hypothetical or slow. While the corrected row was being written, adding the two
+     * cross-references in the note beneath it moved the link count from 174 to 175 <em>between measuring
+     * the figure and publishing it</em>. A count that can go stale inside a single edit cannot be
+     * maintained by care, so these tests derive all seven from the Markdown and fail if the page
+     * disagrees.</p>
+     *
+     * <p><strong>What these tests deliberately do not do.</strong> They do not resolve the anchors. Anchor
+     * resolution is already enforced, more strictly and against the real renderer, by {@code mkdocs build
+     * --strict} with {@code validation.links.anchors: warn} &mdash; re-implementing a slug function here
+     * would mean maintaining a second, approximate copy of Python-Markdown's slugifier and would fail on
+     * punctuation the real one handles. Duplicating an existing stronger check with a weaker one adds
+     * brittleness, not coverage. What is checked here is only what the renderer cannot check: whether the
+     * <em>published numbers</em> match the file.</p>
+     */
+    @Nested
+    @DisplayName("the onboarding guide's published structural census is measured against its own source")
+    final class OnboardingPageStructureIsMeasured {
+
+        /** The page whose self-census is checked. */
+        private static final String GUIDE = "docs/onboarding-guide.md";
+
+        /**
+         * Structural counts derived from the guide's Markdown, ignoring anything inside a fenced block.
+         *
+         * <p>Fenced content is skipped throughout because this page's own code samples contain lines that
+         * would otherwise be counted as headings or table separators &mdash; a shell comment beginning
+         * {@code #} is the common case. Counting them would make the published figure disagree with what
+         * the renderer produces, which is the opposite of the point.</p>
+         *
+         * @return the derived census
+         */
+        private static Census census() {
+            int fences = 0;
+            int tables = 0;
+            int headings = 0;
+            int levelOne = 0;
+            int anchorRefs = 0;
+            int pipeRows = 0;
+            boolean inFence = false;
+
+            final Pattern separator = Pattern.compile("^\\|[\\s\\-:|]+\\|$");
+            final Pattern heading = Pattern.compile("^(#{1,6})\\s+\\S");
+            final Pattern inPageLink = Pattern.compile("\\]\\(#[^)]+\\)");
+
+            for (final String line : lines(GUIDE)) {
+                final String trimmed = line.strip();
+                if (trimmed.startsWith("```")) {
+                    if (!inFence) {
+                        fences++;
+                    }
+                    inFence = !inFence;
+                    continue;
+                }
+                if (inFence) {
+                    continue;
+                }
+                if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+                    pipeRows++;
+                }
+                if (separator.matcher(trimmed).matches() && trimmed.indexOf('-') >= 0) {
+                    tables++;
+                }
+                final Matcher headingMatch = heading.matcher(line);
+                if (headingMatch.find()) {
+                    headings++;
+                    if (headingMatch.group(1).length() == 1) {
+                        levelOne++;
+                    }
+                }
+                final Matcher links = inPageLink.matcher(line);
+                while (links.find()) {
+                    anchorRefs++;
+                }
+            }
+            return new Census(tables, fences, headings, levelOne, anchorRefs, pipeRows);
+        }
+
+        /**
+         * The four primary counts, each stated in the exact emphasised form §14.3 publishes it in.
+         */
+        @Test
+        @DisplayName("the four primary counts match the file: tables, fenced blocks, headings, links")
+        void thePrimaryCountsMatch() {
+            final Census actual = census();
+            final String guide = String.join(" ", lines(GUIDE));
+
+            assertThat(guide)
+                    .as("§14.3 publishes the content-table count; %s holds %d Markdown tables",
+                            GUIDE, Integer.valueOf(actual.tables()))
+                    .contains("**" + actual.tables() + " content tables**");
+            assertThat(guide)
+                    .as("§14.3 publishes the fenced-block count; the file holds %d fenced blocks",
+                            Integer.valueOf(actual.fences()))
+                    .contains("**" + actual.fences() + " fenced code blocks**");
+            assertThat(guide)
+                    .as("§14.3 publishes the heading-anchor count; the file holds %d headings outside "
+                            + "fenced blocks", Integer.valueOf(actual.headings()))
+                    .contains("**" + actual.headings() + " heading anchors**");
+            assertThat(guide)
+                    .as("§14.3 publishes the rendered in-page link count, which is %d authored anchor "
+                            + "references plus one permalink per heading",
+                            Integer.valueOf(actual.anchorRefs()))
+                    .contains("all " + actual.renderedLinks() + " in-page links resolving");
+        }
+
+        /**
+         * The three reconciling figures, so a reader running the browser selectors is not misled.
+         */
+        @Test
+        @DisplayName("the three reconciling figures match: table elements, pre elements, the link identity")
+        void theReconcilingFiguresMatch() {
+            final Census actual = census();
+            final String guide = String.join(" ", lines(GUIDE));
+
+            assertThat(guide)
+                    .as("querySelectorAll('table') returns content tables plus one wrapper per fenced "
+                            + "block, %d + %d", Integer.valueOf(actual.tables()),
+                            Integer.valueOf(actual.fences()))
+                    .contains("returns **" + actual.tableElements() + "**, which is the "
+                            + actual.tables() + " content tables **plus " + actual.fences()
+                            + " syntax-highlight wrapper tables**");
+            assertThat(guide)
+                    .as("each wrapper holds two <pre> elements, a line-number gutter beside the code, so "
+                            + "the count is %d x 2", Integer.valueOf(actual.fences()))
+                    .contains("returns **" + actual.preElements() + "** rather than " + actual.fences());
+            assertThat(guide)
+                    .as("the link identity must be published with both addends, so a reader can re-derive "
+                            + "it rather than trust it")
+                    .contains("**" + actual.anchorRefs() + " anchor references written in the Markdown "
+                            + "plus one permalink per heading, " + actual.anchorRefs() + " + "
+                            + actual.headings() + " = " + actual.renderedLinks() + "**");
+            assertThat(guide)
+                    .as("the body-row count drifts on every added table row and is derivable from the "
+                            + "source as pipe-delimited rows minus a header and a separator per table, "
+                            + "%d - 2 x %d", Integer.valueOf(actual.pipeRows()),
+                            Integer.valueOf(actual.tables()))
+                    .contains("**" + actual.bodyRows() + " table body rows with 0 column-count "
+                            + "mismatches**");
+        }
+
+        /**
+         * The one structural figure that is an invariant rather than a drifting count.
+         */
+        @Test
+        @DisplayName("the page has exactly one level-one heading, as it publishes")
+        void exactlyOneLevelOneHeading() {
+            assertThat(census().levelOne())
+                    .as("more than one level-one heading empties the in-page contents column outright, "
+                            + "which is Defect R1 in technical-specifications.md; unlike the counts above "
+                            + "this is an invariant and any value but 1 is a defect")
+                    .isEqualTo(1);
+            assertThat(String.join(" ", lines(GUIDE)))
+                    .as("the page must publish the invariant, not merely satisfy it")
+                    .contains("exactly **1** level-one heading");
+        }
+
+        /**
+         * The stale FAILING outcome must not come back, and the page must say the figures are measured.
+         */
+        @Test
+        @DisplayName("no failing docs-build outcome is published as the current state")
+        void theBuildOutcomeIsNotPublishedAsFailing() {
+            final String guide = String.join(" ", lines(GUIDE));
+
+            assertThat(guide)
+                    .as("§14.3 published a failing strict-build outcome as the CURRENT state for a commit "
+                            + "after the build had started passing; the warning history is deliberately "
+                            + "retained in prose as a 20 -> 9 -> 0 progression, which is why this bans "
+                            + "only the outcome phrasing and not the number 9 the history needs")
+                    .doesNotContain("aborted with 9 warnings");
+            assertThat(guide)
+                    .as("the exit status must be published together with the warning-line count, because "
+                            + "the theme prints an unconditional notice containing the word Warning and a "
+                            + "grep for it is not zero even on a clean build")
+                    .contains("**0 &mdash; clean, with 0 `WARNING` lines**");
+            assertThat(guide)
+                    .as("a measured figure that reads as authored invites the next reader to edit it by "
+                            + "hand, which is how all four of these counts went stale together")
+                    .contains("DocumentationConsistencyTest.OnboardingPageStructureIsMeasured");
+        }
+
+        /**
+         * The derived structural census of the onboarding guide.
+         *
+         * @param tables     Markdown tables, counted by their separator row
+         * @param fences     fenced code blocks
+         * @param headings   ATX headings outside fenced blocks
+         * @param levelOne   how many of those headings are level one
+         * @param anchorRefs in-page anchor references authored in the Markdown
+         * @param pipeRows   pipe-delimited table rows, header and separator rows included
+         */
+        private record Census(int tables, int fences, int headings, int levelOne, int anchorRefs,
+                int pipeRows) {
+
+            /**
+             * The table body-row count a colspan-aware audit of the rendered page returns.
+             *
+             * <p>Every table contributes exactly two non-body pipe rows, its header and its separator, so
+             * subtracting two per table from the total leaves the body rows.</p>
+             *
+             * @return pipe rows less a header and a separator for each table
+             */
+            int bodyRows() {
+                return pipeRows - 2 * tables;
+            }
+
+            /**
+             * The in-page link total a reader counts in the rendered article.
+             *
+             * <p>The renderer emits every authored reference plus one permalink anchor per heading, so the
+             * rendered figure is legitimately larger than the source figure and neither is wrong.</p>
+             *
+             * @return authored anchor references plus one permalink per heading
+             */
+            int renderedLinks() {
+                return anchorRefs + headings;
+            }
+
+            /**
+             * What {@code document.querySelectorAll('table')} returns on the rendered page.
+             *
+             * <p>The theme renders each fenced block as a two-cell table, so the selector counts one
+             * wrapper per fenced block on top of the content tables.</p>
+             *
+             * @return content tables plus one syntax-highlight wrapper per fenced block
+             */
+            int tableElements() {
+                return tables + fences;
+            }
+
+            /**
+             * What a {@code pre} element count returns on the rendered page.
+             *
+             * <p>Each syntax-highlight wrapper holds two: the line-number gutter and the code itself.</p>
+             *
+             * @return two elements per fenced block
+             */
+            int preElements() {
+                return fences * 2;
+            }
+        }
+    }
+
+    /**
+     * No published document may leak a literal {@code **} into its rendered text.
+     *
+     * <p>Markdown cannot express bold inside bold. Writing {@code **outer with **inner** in it**} does
+     * not produce nested emphasis &mdash; the delimiters pair left to right, so the first two become one
+     * bold span and the remaining two are emitted as **literal asterisks a reader sees on the page**.
+     * Three such spans had shipped: two in {@code technical-specifications.md} and one in
+     * {@code validation-gates.md}, the last of which also had a stray blank line splitting a sentence in
+     * two and orphaning its closing delimiter.</p>
+     *
+     * <p><strong>Nothing catches this except reading the rendered page.</strong> The Markdown is valid,
+     * so {@code mkdocs build --strict} exits 0 and reports nothing; every delimiter count is even, so a
+     * parity check sees nothing either. What gives it away is that the pairing is wrong: an opening
+     * {@code **} may not be followed by whitespace and a closing one may not be preceded by whitespace,
+     * so once a nested span shifts the pairing by one, some delimiter ends up on the wrong side of a
+     * space. That is what this test looks for.</p>
+     *
+     * <p><strong>Why {@code README.md} is out of scope.</strong> It is not inside {@code docs_dir}, so
+     * MkDocs never renders it and a defect there has no published consequence. More importantly its
+     * legacy sections are preserved verbatim from the frozen anchor commit, and that text contains seven
+     * pre-existing occurrences of {@code **} followed by a space &mdash; including
+     * {@code ** Use the supplied sample data**}. Those are legacy content to preserve, not defects to
+     * repair, so scanning the file would demand an edit the scope forbids.</p>
+     */
+    @Nested
+    @DisplayName("no published document leaks un-rendered Markdown into its rendered text")
+    final class NoUnrenderedMarkdownConstructs {
+
+        /** A code span collapses to this single non-space marker, so it cannot fake a whitespace failure. */
+        private static final String CODE_SPAN_PLACEHOLDER = "\u0001";
+
+        /** An escaped asterisk collapses to this, so {@code \*\*} is never read as a delimiter. */
+        private static final String ESCAPED_ASTERISK = "\u0002";
+
+        @Test
+        @DisplayName("every document under docs/ pairs its emphasis delimiters correctly")
+        void everyDocumentPairsItsEmphasis() {
+            final List<String> defects = new ArrayList<>();
+            for (final String document : publishedDocuments()) {
+                for (final Context context : inlineContexts(document)) {
+                    defects.addAll(context.emphasisDefects(document));
+                }
+            }
+            assertThat(defects)
+                    .as("a literal ** on a rendered page is invisible to the build: the Markdown is "
+                            + "valid, --strict exits 0, and the delimiter count is even. Each entry "
+                            + "below names the document, the line the inline context starts on, and "
+                            + "which side of the pairing broke. The usual cause is bold written inside "
+                            + "bold, which Markdown cannot express")
+                    .isEmpty();
+        }
+
+        /**
+         * Every pipe table must declare its separator row, immediately beneath its header.
+         *
+         * <p>A pipe table with no {@code |---|---|} row is not a table. Markdown emits the header and the
+         * body rows as ordinary paragraphs, so a reader is shown a wall of pipe characters &mdash; and a
+         * blank line between the header and the separator breaks it the same way. One had shipped in the
+         * Gate 2 section of {@code validation-gates.md}: a three-column header, a blank line, then three
+         * body rows, with a later paragraph referring the reader to "the figures in the table above".</p>
+         *
+         * <p>Like the emphasis defect, this is invisible to the build. The Markdown is valid, so
+         * {@code --strict} exits 0, and the source looks like a table to a human skimming a diff. The
+         * only cheap signal is structural: the line after a table's header row must be a separator.</p>
+         */
+        @Test
+        @DisplayName("every pipe table declares a separator row directly beneath its header")
+        void everyTableDeclaresItsSeparatorRow() {
+            final Pattern row = Pattern.compile("^\\|.*\\|$");
+            final Pattern separator = Pattern.compile("^\\|[\\s\\-:|]+\\|$");
+            final List<String> defects = new ArrayList<>();
+
+            for (final String document : publishedDocuments()) {
+                final List<String> lines = lines(document);
+                boolean inFence = false;
+                for (int index = 0; index < lines.size(); index++) {
+                    final String current = lines.get(index).strip();
+                    if (current.startsWith("```")) {
+                        inFence = !inFence;
+                        continue;
+                    }
+                    if (inFence || !row.matcher(current).matches()
+                            || separator.matcher(current).matches()) {
+                        continue;
+                    }
+                    final String previous = index == 0 ? "" : lines.get(index - 1).strip();
+                    if (row.matcher(previous).matches()) {
+                        continue;
+                    }
+                    int next = index + 1;
+                    while (next < lines.size() && lines.get(next).isBlank()) {
+                        next++;
+                    }
+                    final String following = next < lines.size() ? lines.get(next).strip() : "";
+                    // The format string is one literal on purpose. Concatenating literals and then
+                    // calling .formatted() binds the call to the LAST fragment only, so the leading
+                    // fragment ships its own placeholders verbatim - a first draft of this guard failed
+                    // correctly while printing "%s L%d:" to the reader, which is a message that tells
+                    // nobody which document to open.
+                    if (!separator.matcher(following).matches()) {
+                        defects.add(("%s L%d: a table header with no separator row beneath it - the next"
+                                + " non-blank line is \"%s\"").formatted(document,
+                                        Integer.valueOf(index + 1), abbreviate(following)));
+                    } else if (next != index + 1) {
+                        defects.add(("%s L%d: %d blank line(s) between the header and its separator,"
+                                + " which splits the table into paragraphs").formatted(document,
+                                        Integer.valueOf(index + 1), Integer.valueOf(next - index - 1)));
+                    }
+                }
+            }
+            assertThat(defects)
+                    .as("a pipe table without its separator row renders as paragraphs of literal pipe "
+                            + "characters, and --strict reports nothing because the Markdown is valid. "
+                            + "The shipped instance was worse than cosmetic: prose a few paragraphs "
+                            + "later pointed the reader at 'the table above'")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the detector fires on nested emphasis and stays silent on valid emphasis")
+        void theDetectorDiscriminates() {
+            assertThat(new Context(1, "**outer text with **inner** nested inside.**")
+                            .emphasisDefects("probe"))
+                    .as("bold inside bold is the defect this class exists to catch; if the probe passes, "
+                            + "the scan above proves nothing")
+                    .isNotEmpty();
+            assertThat(new Context(1, "**bold one** then **bold two**, `**not bold in code**`, ***both***")
+                            .emphasisDefects("probe"))
+                    .as("valid emphasis, a ** sequence inside a code span, and the combined bold-italic "
+                            + "form must all pass, or the scan above would be unmaintainable")
+                    .isEmpty();
+            assertThat(new Context(1, "an orphan closing delimiter.** with nothing open")
+                            .emphasisDefects("probe"))
+                    .as("an odd delimiter count is the other shape of this defect, and it is what a "
+                            + "stray blank line splitting a sentence leaves behind")
+                    .isNotEmpty();
+        }
+
+        /**
+         * Every Markdown document under {@code docs/}, in stable order.
+         *
+         * <p>The two frozen documents are included deliberately rather than excluded. Both are clean, and
+         * because they are frozen they cannot become unclean, so including them costs nothing and widens
+         * the scan to the whole published site.</p>
+         *
+         * @return repository-relative paths of the documents to scan
+         */
+        private static List<String> publishedDocuments() {
+            try (Stream<Path> entries = Files.list(ROOT.resolve("docs"))) {
+                return entries
+                        .filter(path -> path.getFileName().toString().endsWith(".md"))
+                        .map(path -> "docs/" + path.getFileName())
+                        .sorted()
+                        .toList();
+            } catch (final IOException problem) {
+                throw new UncheckedIOException("cannot enumerate docs/ to scan for emphasis defects",
+                        problem);
+            }
+        }
+
+        /**
+         * Split a document into the units Markdown resolves emphasis within.
+         *
+         * <p>A table row is its own unit, because a pipe ends the cell and emphasis cannot cross it. Any
+         * other run of non-blank lines is one paragraph and is joined, because bold legitimately spans
+         * line breaks inside a paragraph &mdash; treating each line separately is what makes a naive
+         * per-line check useless here. Fenced blocks and HTML comments are skipped: the first is verbatim
+         * content and the second is the Apache banner, whose rule of asterisks is not emphasis.</p>
+         *
+         * @param relativePath the document to split
+         * @return one context per table row and per paragraph
+         */
+        private static List<Context> inlineContexts(final String relativePath) {
+            final List<Context> contexts = new ArrayList<>();
+            final List<String> paragraph = new ArrayList<>();
+            boolean inFence = false;
+            boolean inComment = false;
+            int paragraphStart = 0;
+            int lineNumber = 0;
+
+            for (final String line : lines(relativePath)) {
+                lineNumber++;
+                final String trimmed = line.strip();
+                if (trimmed.startsWith("```")) {
+                    inFence = !inFence;
+                    flushParagraph(contexts, paragraph, paragraphStart);
+                    continue;
+                }
+                if (inFence) {
+                    continue;
+                }
+                if (trimmed.contains("<!--")) {
+                    inComment = true;
+                }
+                if (inComment) {
+                    if (trimmed.contains("-->")) {
+                        inComment = false;
+                    }
+                    continue;
+                }
+                if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+                    flushParagraph(contexts, paragraph, paragraphStart);
+                    contexts.add(new Context(lineNumber, line));
+                    continue;
+                }
+                if (trimmed.isEmpty()) {
+                    flushParagraph(contexts, paragraph, paragraphStart);
+                    continue;
+                }
+                if (paragraph.isEmpty()) {
+                    paragraphStart = lineNumber;
+                }
+                paragraph.add(line);
+            }
+            flushParagraph(contexts, paragraph, paragraphStart);
+            return contexts;
+        }
+
+        /**
+         * Emit the accumulated paragraph as one context and reset the accumulator.
+         *
+         * @param contexts      the collector to add to
+         * @param paragraph     the accumulated lines, cleared on return
+         * @param paragraphStart the line the paragraph began on
+         */
+        private static void flushParagraph(final List<Context> contexts, final List<String> paragraph,
+                final int paragraphStart) {
+            if (!paragraph.isEmpty()) {
+                contexts.add(new Context(paragraphStart, String.join(" ", paragraph)));
+                paragraph.clear();
+            }
+        }
+
+        /**
+         * One unit of Markdown within which emphasis delimiters must pair.
+         *
+         * @param startLine the line the unit begins on, for the failure message
+         * @param text      the unit's raw Markdown
+         */
+        private record Context(int startLine, String text) {
+
+            /**
+             * Report every emphasis-pairing defect in this unit.
+             *
+             * <p>Delimiters are paired left to right, exactly as Markdown pairs them. A pair is sound
+             * only when the opener is not followed by whitespace and the closer is not preceded by
+             * whitespace; an odd count means one delimiter has no partner at all.</p>
+             *
+             * @param document the document being scanned, named in each message
+             * @return a description per defect, empty when the unit is sound
+             */
+            List<String> emphasisDefects(final String document) {
+                final String scannable = text
+                        .replaceAll("`[^`]*`", CODE_SPAN_PLACEHOLDER)
+                        .replace("\\*", ESCAPED_ASTERISK);
+
+                final List<Integer> positions = new ArrayList<>();
+                final Matcher delimiters = Pattern.compile("\\*\\*").matcher(scannable);
+                while (delimiters.find()) {
+                    positions.add(Integer.valueOf(delimiters.start()));
+                }
+
+                final List<String> defects = new ArrayList<>();
+                if (positions.size() % 2 == 1) {
+                    defects.add("%s L%d: %d delimiters, an odd count, so one has no partner - near %s"
+                            .formatted(document, Integer.valueOf(startLine),
+                                    Integer.valueOf(positions.size()),
+                                    excerptAround(scannable, positions.getLast().intValue())));
+                    return defects;
+                }
+                for (int pair = 0; pair < positions.size(); pair += 2) {
+                    final int opener = positions.get(pair).intValue();
+                    final int closer = positions.get(pair + 1).intValue();
+                    if (isSpaceAt(scannable, opener + 2)) {
+                        defects.add("%s L%d: an opening ** is followed by whitespace - near %s"
+                                .formatted(document, Integer.valueOf(startLine),
+                                        excerptAround(scannable, opener)));
+                    } else if (isSpaceAt(scannable, closer - 1)) {
+                        defects.add("%s L%d: a closing ** is preceded by whitespace - near %s"
+                                .formatted(document, Integer.valueOf(startLine),
+                                        excerptAround(scannable, closer)));
+                    }
+                }
+                return defects;
+            }
+
+            /**
+             * Whether the character at an index is whitespace, treating out-of-range as whitespace.
+             *
+             * <p>Out-of-range counts as whitespace because a delimiter at the very edge of the unit has
+             * nothing bound to it, which is the same failure as having a space there.</p>
+             *
+             * @param subject the text to inspect
+             * @param index   the position to test
+             * @return true when the position is whitespace or outside the text
+             */
+            private static boolean isSpaceAt(final String subject, final int index) {
+                return index < 0 || index >= subject.length()
+                        || Character.isWhitespace(subject.charAt(index));
+            }
+
+            /**
+             * A short window of text around a position, for a message a reader can act on.
+             *
+             * @param subject the text to excerpt
+             * @param around  the position to centre on
+             * @return a bounded, single-line excerpt
+             */
+            private static String excerptAround(final String subject, final int around) {
+                final int from = Math.max(0, around - 60);
+                final int to = Math.min(subject.length(), around + 60);
+                return '"' + subject.substring(from, to).replace('\u0001', '#').replace('\n', ' ') + '"';
+            }
         }
     }
 }

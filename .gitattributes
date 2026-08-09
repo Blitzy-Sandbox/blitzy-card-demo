@@ -55,6 +55,25 @@
 *.html          text eol=lf
 *.md            text eol=lf
 
+# ---- Published-site assets and build-time hooks, added when the MkDocs
+# ---- publication defects were closed: docs/stylesheets/carddemo.css is
+# ---- registered through `extra_css` in mkdocs.yml, and mkdocs_hooks.py is
+# ---- registered through `hooks:` and imported by MkDocs at build time.
+# ----
+# ---- These two patterns exist for the reason the fixture block below states
+# ---- at length: with no rule at all, `git check-attr text eol` answers
+# ---- `unspecified` for both, and a clone made with core.autocrlf=true would
+# ---- then add a CR to every line. Neither file would break outright - Python
+# ---- accepts CRLF and so does CSS - but the repository's convention is that
+# ---- every text file it introduces states its ending explicitly rather than
+# ---- inheriting whatever the cloning platform happens to do. Both files are
+# ---- LF as authored, so these rules are a no-op today and a guarantee later.
+# ----
+# ---- These were the first `.py` and `.css` files in the repository, which is
+# ---- why the block above did not already cover them.
+*.css           text eol=lf
+*.py            text eol=lf
+
 # ==================================================================
 # PRE-EXISTING DOCUMENTATION - NARROWS THE `*.md` RULE ABOVE
 #

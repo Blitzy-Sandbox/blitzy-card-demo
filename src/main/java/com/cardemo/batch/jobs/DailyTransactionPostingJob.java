@@ -77,6 +77,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.interceptor.DefaultTransactionAttribute;
 import org.springframework.transaction.interceptor.TransactionAttribute;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.cardemo.batch.processors.TransactionPostingProcessor;
@@ -91,6 +93,7 @@ import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.RejectCode;
+import com.cardemo.observability.BatchJobSpanNamingConvention;
 import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
@@ -576,10 +579,18 @@ public class DailyTransactionPostingJob {
      * hazard without widening the blast radius past the record that caused it.
      *
      * <p>The cost is one commit per record rather than one per hundred. That is the price of the atomicity
-     * contract and it is paid deliberately; the read path stays bounded and batched independently through
-     * {@link #chunkSize}, and the object-storage output stays aggregated because
-     * {@link TransactionWriter} buffers committed records and emits one object per block rather than one per
-     * transaction.
+     * contract and it is paid deliberately, and the read path stays bounded and batched independently through
+     * {@link #chunkSize}.
+     *
+     * <p><strong>The object-storage output is aggregated by the writer, not by the commit interval.</strong>
+     * A commit interval of one makes each chunk one record, so {@link TransactionWriter} uploads one part per
+     * record - and it then concatenates every part of the run into <em>one</em> generation object when the step
+     * completes, which is what {@code app/jcl/POSTTRAN.jcl}'s single-dataset output and a later {@code (0)}
+     * reference to it require. This documentation previously claimed the writer buffered committed records and
+     * emitted one object per block, which it did not: it emitted one object per chunk, and therefore one
+     * 350-byte object per posted transaction, leaving the {@code (0)} resolution to read the last record of the
+     * run as the whole of it. The aggregation is now real and it lives in the writer, where the
+     * post-commit ordering already is; see {@code TransactionWriter.afterStep}.
      */
     private static final int POSTING_COMMIT_INTERVAL = 1;
 
@@ -1427,6 +1438,12 @@ public class DailyTransactionPostingJob {
             @Qualifier(FLOW_BEAN_NAME) final Flow dailyTransactionPostingFlow) {
 
         return new JobBuilder(jobName, jobRepository)
+                // Finding B-12: without this the framework hands the ALL-CAPS job name to
+                // Micrometer Tracing, whose SpanNameUtil.toLowerHyphen hyphenates every
+                // upper-case character, so the run reached the trace store under a name no
+                // operator could search for. Registered per builder because Spring Batch
+                // resolves no convention bean from the context.
+                .observationConvention(BatchJobSpanNamingConvention.INSTANCE)
                 .validator(new PostTranParametersValidator())
                 .listener(new PostTranJobListener())
                 .start(dailyTransactionPostingFlow)
@@ -2686,6 +2703,71 @@ public class DailyTransactionPostingJob {
     }
 
     /**
+     * Arranges for a chunk's counter increments to be undone if that chunk's transaction does not commit.
+     *
+     * <p><b>Finding B-08, severity Minor.</b> The two counters are incremented in the step execution context
+     * before the delegate writers run, which is what makes them survive a restart - the context is persisted
+     * with the chunk, inside the chunk's own transaction. But an execution context is a plain object, not a
+     * transactional resource: a chunk that rolled back left its increments behind, the reader re-read those
+     * same records after the restart, and they were counted a second time. A run over the 300-record fixture
+     * that failed once mid-chunk reported {@code TRANSACTIONS PROCESSED :000000301} for 300 distinct inputs.
+     * The reject counter has the same flaw and is <em>not</em> merely cosmetic: it decides return code 4
+     * ({@code app/cbl/CBTRN02C.cbl:L229-L231}), so an inflated reject count could turn a clean run into one
+     * that reports rejects.
+     *
+     * <p><b>Why the increment is not simply deferred to commit.</b> Moving it to {@code afterCommit} would
+     * mutate the context after the framework has already persisted it for that chunk, so the checkpoint on
+     * disk would lag one chunk behind and a process killed between chunks would <em>under</em>-report. The
+     * increment therefore stays where it is and is compensated instead, which keeps both directions correct.
+     *
+     * <p><b>Why the values are restored rather than subtracted.</b> An absolute restore is idempotent, and it
+     * needs to be: {@code TaskletStep.ChunkTransactionCallback.afterCompletion} itself reverts the whole step
+     * execution - context included - to its pre-chunk copy when a commit fails after the repository update,
+     * so on that path the counters may already be back to these values when this runs. Subtracting would
+     * double-compensate and under-report. The condition is the same one the framework uses,
+     * {@code status != STATUS_COMMITTED} rather than only {@code STATUS_ROLLED_BACK}, so an unknown outcome is
+     * treated exactly as the framework treats it rather than differently.
+     *
+     * <p>The step is not fault tolerant - {@code dailyTransactionPostingStep} calls {@code chunk(...)} with no
+     * {@code faultTolerant()} - so there is exactly one write, and so exactly one registration, per chunk
+     * transaction. When no transaction is active at all, which is how the unit tier drives the writer
+     * directly, there is nothing to compensate and nothing is registered.
+     *
+     * <p>The Micrometer meters are deliberately left alone. A counter is monotonic by construction and
+     * observability-only, and no return code or reported total is derived from one; the authoritative
+     * end-of-run figures are these two context entries, and they are what
+     * {@link PostTranStepListener#afterStep(StepExecution)} renders.
+     *
+     * @param stepExecution the step whose context holds the counters
+     * @param processedBeforeChunk the processed count as it stood before this chunk's increment
+     * @param rejectedBeforeChunk the reject count as it stood before this chunk's increment
+     */
+    private static void restoreCountersIfChunkDoesNotCommit(final StepExecution stepExecution,
+            final long processedBeforeChunk, final long rejectedBeforeChunk) {
+
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(final int status) {
+                if (status == TransactionSynchronization.STATUS_COMMITTED) {
+                    return;
+                }
+                final ExecutionContext context = stepExecution.getExecutionContext();
+                context.putLong(PROCESSED_COUNT_CONTEXT_ENTRY, processedBeforeChunk);
+                context.putLong(REJECT_COUNT_CONTEXT_ENTRY, rejectedBeforeChunk);
+                LOG.warn("A posting chunk did not commit (transaction completion status {}), so the"
+                        + " end-of-run counters were restored to processed {} and rejected {}. The records in"
+                        + " that chunk are re-read after a restart and counted then, so app/cbl/CBTRN02C.cbl"
+                        + ":L206 and :L214 count each input record exactly once across the whole run",
+                        Integer.valueOf(status), Long.valueOf(processedBeforeChunk),
+                        Long.valueOf(rejectedBeforeChunk));
+            }
+        });
+    }
+
+    /**
      * Resolves the step execution bound to the calling thread.
      *
      * <p>{@link StepSynchronizationManager} is used rather than a captured field because it is thread-bound,
@@ -3024,10 +3106,17 @@ public class DailyTransactionPostingJob {
                 }
             }
 
+            // Captured before the increments so that a chunk which does not commit can be put back exactly
+            // as it was. Finding B-08: an execution context is not a transactional resource, so without this
+            // a rolled-back chunk's increments survived and its records were counted again after the restart.
+            final long processedBeforeChunk = readCounter(stepExecution, PROCESSED_COUNT_CONTEXT_ENTRY);
+            final long rejectedBeforeChunk = readCounter(stepExecution, REJECT_COUNT_CONTEXT_ENTRY);
+
             // :L206 ADD 1 TO WS-TRANSACTION-COUNT, applied for every record the loop saw, posted or not.
             addToCounter(stepExecution, PROCESSED_COUNT_CONTEXT_ENTRY, chunk.size());
             // :L214 ADD 1 TO WS-REJECT-COUNT, applied only on the ELSE arm.
             addToCounter(stepExecution, REJECT_COUNT_CONTEXT_ENTRY, rejected.size());
+            restoreCountersIfChunkDoesNotCommit(stepExecution, processedBeforeChunk, rejectedBeforeChunk);
             countRejectedRecordsAsProcessed(rejected.size());
 
             if (!posted.isEmpty()) {

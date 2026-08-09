@@ -836,19 +836,30 @@ public final class CardDto {
     /**
      * Verifies that a character value fits the fixed width its BMS field declares, and returns it unchanged.
      *
+     * <p>The width is counted in Unicode code points, because a {@code PIC X(n)} clause declares n
+     * character positions and the {@code character(n)} columns this payload is projected from pad to n
+     * characters. A Java {@code String} counts UTF-16 code units, which differ for any supplementary-plane
+     * character, so counting code units would reject a stored, padded value on the way out that the write
+     * path had accepted on the way in. A code point count never exceeds a code unit count, so this is the
+     * same bound rather than a looser one.
+     *
      * @param value the candidate value; {@code null} is accepted and returned unchanged
-     * @param maxWidth the width the BMS field declares, in characters
+     * @param maxWidth the width the BMS field declares, in character positions
      * @param fieldName the name of the field being checked, used to identify it in a diagnostic message without
      * reproducing its value
      * @return {@code value}, unchanged and unnormalised
-     * @throws IllegalArgumentException if {@code value} is longer than {@code maxWidth}.
+     * @throws IllegalArgumentException if {@code value} holds more code points than {@code maxWidth}.
      */
     private static String requireWidth(final String value, final int maxWidth, final String fieldName) {
-        if (value != null && value.length() > maxWidth) {
+        if (value == null) {
+            return null;
+        }
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxWidth) {
             throw new IllegalArgumentException(String.format(Locale.ROOT,
                     "Field %s holds %d characters but the BMS map declares it as PIC X(%d); the value is "
                             + "withheld from this message because the card maps carry protected data",
-                    fieldName, value.length(), maxWidth));
+                    fieldName, Integer.valueOf(characterPositions), Integer.valueOf(maxWidth)));
         }
         return value;
     }

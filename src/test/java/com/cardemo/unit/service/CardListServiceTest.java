@@ -72,8 +72,11 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.TreeSet;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -84,10 +87,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.QueryTimeoutException;
-import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.SliceImpl;
-import org.springframework.data.domain.Pageable;
 
 /**
  * Unit tests for {@code com.cardemo.service.card.CardListService}, the Java target of
@@ -539,38 +541,100 @@ final class CardListServiceTest {
     }
 
     /**
-     * Stubs the one repository method the service calls, answering with the aligned window the
-     * supplied {@code Pageable} asks for.
+     * Stubs the keyset browse the service drives, answering every finder from one in-memory card file so
+     * that the double behaves exactly as an indexed store would.
      *
-     * <p>Only the tests that actually browse may call this: under strict stubs an unused stub fails
-     * the build, which is precisely how a test that expects the browse to be suppressed proves
-     * it.</p>
+     * <p>Seven methods are stubbed because the browse legitimately reaches seven: the plain alternate-index
+     * finder, which opens an account-scoped browse positioned at low values; the ascending and descending
+     * keyset windows, each in an unfiltered and an account-scoped form, which continue any browse from a
+     * key; {@code findById} for the card filter, whose value names a primary key outright; and the
+     * descending-first finder the end-of-file arm settles its record buffer from. Every one is answered by
+     * filtering and ordering the same list, so a test states the file once and the service's own choice of
+     * finder is what the assertions observe.</p>
      *
-     * <p>The row count is stubbed leniently alongside the window. {@code startBrowse} takes the total as
-     * the upper bound of its binary search, and it needs one only when a start key is supplied - the
-     * unfiltered entry positions at offset zero and never asks. A strict stub would therefore fail every
-     * unfiltered test for being unused, while omitting it would make every filtered test see an empty
-     * table. Lenient is the accurate statement: available to the paths that position by key.
+     * <p>All seven are lenient, and that is the accurate statement rather than a convenience: a single
+     * request reaches only the finders its filter state and its direction call for - an unfiltered forward
+     * page never touches the account-scoped or descending forms - so strict stubs would fail nearly every
+     * test for an unused stub while the service was behaving correctly. Tests that must prove a browse was
+     * <em>suppressed</em> assert that with {@code verifyNoInteractions} instead.</p>
      *
      * @param file the card file in ascending card-number order
      */
     private void givenCardFile(final List<Card> file) {
-        when(cardRepository.findAllByOrderByCardNumberAsc(any(Pageable.class)))
-                .thenAnswer(invocation -> window(file, invocation.getArgument(0, Pageable.class)));
-        lenient().when(cardRepository.count()).thenReturn((long) file.size());
+        lenient().when(cardRepository.findByAccountIdOrderByCardNumberAsc(
+                        any(Long.class), any(Pageable.class)))
+                .thenAnswer(invocation -> new SliceImpl<>(ascendingWindow(file,
+                        invocation.getArgument(0, Long.class),
+                        "",
+                        invocation.getArgument(1, Pageable.class))));
+        lenient().when(cardRepository.findByCardNumberGreaterThanEqualOrderByCardNumberAsc(
+                        any(String.class), any(Pageable.class)))
+                .thenAnswer(invocation -> ascendingWindow(file, null,
+                        invocation.getArgument(0, String.class),
+                        invocation.getArgument(1, Pageable.class)));
+        lenient().when(cardRepository.findByCardNumberLessThanEqualOrderByCardNumberDesc(
+                        any(String.class), any(Pageable.class)))
+                .thenAnswer(invocation -> descendingWindow(file, null,
+                        invocation.getArgument(0, String.class),
+                        invocation.getArgument(1, Pageable.class)));
+        lenient().when(cardRepository.findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc(
+                        any(Long.class), any(String.class), any(Pageable.class)))
+                .thenAnswer(invocation -> ascendingWindow(file,
+                        invocation.getArgument(0, Long.class),
+                        invocation.getArgument(1, String.class),
+                        invocation.getArgument(2, Pageable.class)));
+        lenient().when(cardRepository.findByAccountIdAndCardNumberLessThanEqualOrderByCardNumberDesc(
+                        any(Long.class), any(String.class), any(Pageable.class)))
+                .thenAnswer(invocation -> descendingWindow(file,
+                        invocation.getArgument(0, Long.class),
+                        invocation.getArgument(1, String.class),
+                        invocation.getArgument(2, Pageable.class)));
+        lenient().when(cardRepository.findById(any(String.class)))
+                .thenAnswer(invocation -> file.stream()
+                        .filter(card -> card.getCardNumber()
+                                .equals(invocation.getArgument(0, String.class)))
+                        .findFirst());
+        lenient().when(cardRepository.findFirstByOrderByCardNumberDesc())
+                .thenAnswer(invocation -> file.isEmpty()
+                        ? Optional.empty()
+                        : Optional.of(file.get(file.size() - 1)));
     }
 
     /**
-     * Slices one aligned window out of a card file.
+     * Answers one ascending keyset window: the cards at or after a bound, optionally scoped to an account.
      *
      * @param file the whole file in ascending card-number order
-     * @param pageable the window the service asked for
-     * @return the requested window, carrying the file's total element count
+     * @param accountId the account to scope to, or {@code null} for the unfiltered form
+     * @param bound the inclusive lower bound on the card number
+     * @param pageable the window the service asked for; only its size is honoured
+     * @return the requested window
      */
-    private static Slice<Card> window(final List<Card> file, final Pageable pageable) {
-        final int offset = (int) Math.min(pageable.getOffset(), file.size());
-        final int end = Math.min(offset + pageable.getPageSize(), file.size());
-        return new SliceImpl<>(new ArrayList<>(file.subList(offset, end)), pageable, end < file.size());
+    private static List<Card> ascendingWindow(final List<Card> file, final Long accountId,
+            final String bound, final Pageable pageable) {
+        return file.stream()
+                .filter(card -> accountId == null || accountId.equals(card.getAccountId()))
+                .filter(card -> card.getCardNumber().compareTo(bound) >= 0)
+                .limit(pageable.getPageSize())
+                .toList();
+    }
+
+    /**
+     * Answers one descending keyset window: the cards at or before a bound, optionally scoped to an account.
+     *
+     * @param file the whole file in ascending card-number order
+     * @param accountId the account to scope to, or {@code null} for the unfiltered form
+     * @param bound the inclusive upper bound on the card number
+     * @param pageable the window the service asked for; only its size is honoured
+     * @return the requested window, in descending key order
+     */
+    private static List<Card> descendingWindow(final List<Card> file, final Long accountId,
+            final String bound, final Pageable pageable) {
+        final List<Card> matching = new ArrayList<>(file.stream()
+                .filter(card -> accountId == null || accountId.equals(card.getAccountId()))
+                .filter(card -> card.getCardNumber().compareTo(bound) <= 0)
+                .toList());
+        Collections.reverse(matching);
+        return matching.stream().limit(pageable.getPageSize()).toList();
     }
 
     /**
@@ -734,14 +798,43 @@ final class CardListServiceTest {
     }
 
     /**
-     * Collects every {@code Pageable} the service handed the repository during one turn.
+     * Collects every {@code Pageable} the service handed any window finder during one turn.
      *
-     * @return the captured windows, in invocation order
+     * <p>All five window-bearing finders are captured, not just one, because which of them a turn reaches
+     * is decided by the filter state and the direction - and the properties the callers assert about a
+     * window, its size and its absence of an offset or a sort, must hold on every one of them. A turn that
+     * needs no window at all, the card filter being a keyed read, contributes nothing, so each caller
+     * asserts non-emptiness itself when the turn is supposed to have browsed.</p>
+     *
+     * @return the captured windows, grouped by finder and in invocation order within each
      */
     private List<Pageable> capturedWindows() {
-        final ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
-        verify(cardRepository, atLeastOnce()).findAllByOrderByCardNumberAsc(captor.capture());
-        return captor.getAllValues();
+        final List<Pageable> windows = new ArrayList<>();
+        final ArgumentCaptor<Pageable> alternateIndex = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository, atLeast(0))
+                .findByAccountIdOrderByCardNumberAsc(any(Long.class), alternateIndex.capture());
+        windows.addAll(alternateIndex.getAllValues());
+        final ArgumentCaptor<Pageable> ascending = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository, atLeast(0))
+                .findByCardNumberGreaterThanEqualOrderByCardNumberAsc(any(String.class),
+                        ascending.capture());
+        windows.addAll(ascending.getAllValues());
+        final ArgumentCaptor<Pageable> descending = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository, atLeast(0))
+                .findByCardNumberLessThanEqualOrderByCardNumberDesc(any(String.class),
+                        descending.capture());
+        windows.addAll(descending.getAllValues());
+        final ArgumentCaptor<Pageable> scopedAscending = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository, atLeast(0))
+                .findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc(any(Long.class),
+                        any(String.class), scopedAscending.capture());
+        windows.addAll(scopedAscending.getAllValues());
+        final ArgumentCaptor<Pageable> scopedDescending = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository, atLeast(0))
+                .findByAccountIdAndCardNumberLessThanEqualOrderByCardNumberDesc(any(Long.class),
+                        any(String.class), scopedDescending.capture());
+        windows.addAll(scopedDescending.getAllValues());
+        return windows;
     }
 
     /**
@@ -1210,28 +1303,40 @@ final class CardListServiceTest {
     }
 
     @Test
-    @DisplayName("Every paged query the repository exposes carries a deterministic ordering")
+    @DisplayName("Every multi-row query the repository exposes carries a deterministic ordering")
     void everyPagedRepositoryQueryCarriesADeterministicOrdering() {
-        // Rule 1 Clause A: an unordered paged query makes page contents non-reproducible, because
+        // Rule 1 Clause A: an unordered windowed query makes page contents non-reproducible, because
         // the store may return rows in any order and a row could then appear on two pages or on
-        // none. Both paged finders encode ORDER BY in the derived-query method name, which is the
-        // only place the ordering can live for a derived query.
+        // none. It matters more now than it did while the browse was offset addressed, because a keyset
+        // bound is a comparison against the ordering key: an ordering the finder did not fix would make
+        // the bound select a different set of rows on each call. Every multi-row finder encodes ORDER BY
+        // in its derived-query method name, which is the only place the ordering can live for a derived
+        // query, and the census is asserted non-empty so the loop cannot pass by finding nothing.
+        int inspected = 0;
         for (final Method declared : CardRepository.class.getDeclaredMethods()) {
-            if (!Page.class.isAssignableFrom(declared.getReturnType())) {
+            final Class<?> returnType = declared.getReturnType();
+            if (!Collection.class.isAssignableFrom(returnType)
+                    && !Slice.class.isAssignableFrom(returnType)) {
                 continue;
             }
+            inspected++;
             assertThat(declared.getName())
-                    .withFailMessage("paged finder without an ordering: %s", declared.getName())
+                    .withFailMessage("multi-row finder without an ordering: %s", declared.getName())
                     .contains("OrderBy");
         }
+        assertThat(inspected)
+                .as("the browse reaches six multi-row finders, so an empty census means the reflection "
+                        + "predicate stopped matching rather than that the rule holds")
+                .isGreaterThanOrEqualTo(6);
     }
 
     @Test
-    @DisplayName("The browse reads aligned windows of pageSize + 1, the lookahead's extra record")
-    void theBrowseReadsAlignedWindowsOfPageSizePlusOne() {
-        // The forward browse needs one record beyond the page to answer "is there a next page", so
-        // the window is eight wide. Windows are block aligned, which is what lets the binary-search
-        // STARTBR reposition without re-reading.
+    @DisplayName("The browse reads windows of pageSize + 2 from page zero, never from an offset")
+    void theBrowseReadsWindowsOfPageSizePlusTwoFromPageZero() {
+        // The forward browse needs one record beyond the page to answer "is there a next page" - :1191
+        // and :1197 - and one more because the keyset bound is inclusive, so a resumed window repeats the
+        // key it was positioned at and that boundary row is discarded. Every window is requested at page
+        // zero: the predicate positions the read, so an offset would be both redundant and quadratic.
         givenCardFile(cardFile(20, ACCOUNT_A));
 
         service().listCards(firstEntry());
@@ -1239,27 +1344,35 @@ final class CardListServiceTest {
         final List<Pageable> windows = capturedWindows();
         assertThat(windows).isNotEmpty();
         for (final Pageable window : windows) {
-            assertThat(window.getPageSize()).isEqualTo(SCREEN_LINES + 1);
-            assertThat(window.getOffset() % (SCREEN_LINES + 1)).isZero();
+            assertThat(window.getPageSize()).isEqualTo(SCREEN_LINES + 2);
+            assertThat(window.getPageNumber()).isZero();
+            assertThat(window.getOffset()).isZero();
         }
     }
 
     @Test
     @DisplayName("Nothing but a Pageable ever reaches the repository - binding, not concatenation")
     void nothingButAPageableEverReachesTheRepository() {
-        // Rule 1 Clause D: no string-concatenated SQL. The only finder this service calls takes a
-        // Pageable and nothing else, so an untrusted filter value is structurally incapable of
-        // reaching the query - the filter is applied in memory by 9500-FILTER-RECORDS instead.
-        givenCardFile(cardFile(20, ACCOUNT_A));
+        // Rule 1 Clause D: no string-concatenated SQL. Every finder this service calls is derived from
+        // its method name and takes bound parameters only, so an untrusted filter value reaches the query
+        // as a parameter or not at all. The Pageable never carries a Sort either: ordering belongs in the
+        // finder name, where a caller cannot vary it.
+        //
+        // The account filter is the case worth exercising, because it is the one value that now travels
+        // into a predicate rather than being applied to rows already produced. It arrives as a bound Long
+        // and the window beside it carries nothing but a size.
+        givenCardFile(mixedCardFile(20));
 
-        service().listCards(filterEntry(ACCOUNT_A_FILTER, cardNumber(3)));
+        service().listCards(filterEntry(ACCOUNT_A_FILTER, null));
 
-        for (final Pageable window : capturedWindows()) {
+        final List<Pageable> windows = capturedWindows();
+        assertThat(windows).as("an account-filtered page browses, so windows must have been asked for")
+                .isNotEmpty();
+        for (final Pageable window : windows) {
             assertThat(window.getSort().isSorted())
                     .withFailMessage("ordering belongs in the finder name, not the Pageable")
                     .isFalse();
         }
-        verify(cardRepository, never()).findByAccountIdOrderByCardNumberAsc(any(), any(Pageable.class));
     }
 
     // PHASE 4 - 9500-FILTER-RECORDS IS AN AND OF TWO INDEPENDENT GUARDS
@@ -1645,17 +1758,27 @@ final class CardListServiceTest {
     }
 
     @Test
-    @DisplayName("The account-based CARDAIX finder is NEVER used - COCRDLIC opens CARDDAT only")
-    void theAccountBasedFinderIsNeverUsedBecauseTheProgramOpensTheBaseClusterOnly() {
-        // Evidence: LIT-CARD-FILE-ACCT-PATH PIC X(8) VALUE 'CARDAIX ' at app/cbl/COCRDLIC.cbl:215-217
-        // is referenced exactly once repository-wide - at its own declaration. Every browse verb names
-        // LIT-CARD-FILE ('CARDDAT '): STARTBR :1129 and :1273, READNEXT :1146 and :1197, READPREV
-        // :1294 and :1322, ENDBR :1258 and :1376.
+    @DisplayName("The account gate reaches the store as a predicate, while the lookahead stays on the base")
+    void theAccountGateTravelsToTheStoreWhileTheLookaheadStaysOnTheBaseSequence() {
+        // Both halves of this are load-bearing, and getting either one wrong is a real defect rather than
+        // a style question.
         //
-        // Pushing the account predicate into the query would be faster AND WRONG: the lookahead at
-        // :1197-1205 deliberately does not filter, so an indexed query would change which pages report
-        // more data. Parity governs. The declaration is retained with its trailing-space padding
-        // because the traceability matrix cites it.
+        // The source names the base cluster on every browse verb - LIT-CARD-FILE ('CARDDAT ') at
+        // STARTBR :1129 and :1273, READNEXT :1146 and :1197, READPREV :1294 and :1322, ENDBR :1258 and
+        // :1376 - and LIT-CARD-FILE-ACCT-PATH ('CARDAIX ') at app/cbl/COCRDLIC.cbl:215-217 is referenced
+        // exactly once repository-wide, at its own declaration. The account filter is applied instead by
+        // IF CARD-ACCT-ID = CC-ACCT-ID inside 9500-FILTER-RECORDS at :1386.
+        //
+        // What follows from that is NOT that the predicate must stay in Java. The rows that occupy the
+        // seven screen lines are exactly the rows that survive the test, so producing them from the index
+        // CARDDATA.VSAM.AIX is translated into - card (card_acct_id), keyed at AXRKP 16 - is the same set
+        // of rows in the same order, obtained without walking the file. Applying it in Java instead was
+        // the Critical finding: it made one filtered screen cost ceil(rows / windowSize) statements.
+        //
+        // What DOES follow is that the two reads the source performs against the base cluster regardless
+        // of the filter must stay there. The page-full lookahead at :1197-1205 is the one asserted here:
+        // its outcome sets CA-NEXT-PAGE-EXISTS and its key becomes the page-down start key, so filtering
+        // it would change which pages report more data and where the next page begins.
         assertThat(CARD_ACCOUNT_PATH_NAME).hasSize(8).isEqualTo("CARDAIX ");
         assertThat(CARD_FILE_NAME).isEqualTo("CARDDAT");
 
@@ -1664,8 +1787,12 @@ final class CardListServiceTest {
         final CardListResult result = service().listCards(filterEntry(ACCOUNT_A_FILTER, null));
 
         assertThat(result.page.getRows()).hasSize(SCREEN_LINES);
-        verify(cardRepository, never()).findByAccountIdOrderByCardNumberAsc(any(), any(Pageable.class));
-        verify(cardRepository, atLeastOnce()).findAllByOrderByCardNumberAsc(any(Pageable.class));
+        verify(cardRepository, atLeastOnce())
+                .findByAccountIdOrderByCardNumberAsc(any(Long.class), any(Pageable.class));
+        verify(cardRepository, atLeastOnce())
+                .findByCardNumberGreaterThanEqualOrderByCardNumberAsc(any(String.class),
+                        any(Pageable.class));
+        verify(cardRepository, never()).findAllByOrderByCardNumberAsc(any(Pageable.class));
     }
 
     // PHASE 7 - PARAGRAPH CORRESPONDENCE
@@ -2229,7 +2356,8 @@ final class CardListServiceTest {
         // exception with the identical message and the original cause attached, so nothing is
         // swallowed and no context is lost.
         final QueryTimeoutException cause = new QueryTimeoutException("simulated store failure");
-        when(cardRepository.findAllByOrderByCardNumberAsc(any(Pageable.class))).thenThrow(cause);
+        when(cardRepository.findByCardNumberGreaterThanEqualOrderByCardNumberAsc(any(String.class),
+                any(Pageable.class))).thenThrow(cause);
 
         final Throwable thrown = catchThrowable(() -> service().listCards(firstEntry()));
 
@@ -2324,41 +2452,41 @@ final class CardListServiceTest {
     }
 
     /**
-     * Pins the round-trip cost of the key-positioning binary search: exactly one count per request.
+     * Pins the round-trip cost of positioning by key: one window read, and no count at all.
      *
-     * <p>{@code startBrowse} locates a supplied start key by binary search, so it fetches roughly
-     * log2(n) windows per request. While the window fetch returned a {@code Page}, every one of those
-     * probes carried a {@code count(*)} that the search discarded, even though the total it needed was
-     * needed exactly once as the upper bound. The window is now a {@code Slice} and the total comes from
-     * one explicit {@code count()}, memoised in the per-request working storage.
+     * <p>{@code startBrowse} used to locate a supplied start key by binary search over offset-addressed
+     * windows, bounding the search with one {@code count()} - roughly log2(n) window reads for a single
+     * screen. {@code STARTBR ... GTEQ} is an index descent to a key, so positioning is now one inclusive
+     * keyset bound on the first read: the page needs {@code pageSize + 2} rows for its seven lines, its
+     * lookahead and the boundary row an inclusive bound repeats, and it gets them in one statement.
      */
     @Test
-    @DisplayName("A key-positioned browse counts the table once, however many window probes it makes")
-    void aKeyPositionedBrowseCountsTheTableOnce() {
+    @DisplayName("A key-positioned browse reads one window and counts the table not at all")
+    void aKeyPositionedBrowseReadsOneWindow() {
         givenCardFile(cardFile(64, ACCOUNT_A));
 
-        // Paging down from a saved key is the entry that positions the browse by key, which is the only
-        // path that runs the binary search. The CARDSIDI filter is not a start key: 9500-FILTER-RECORDS
-        // applies it as an exclusion while the browse walks, so a filtered first entry still starts at
-        // offset zero and asks for no total.
+        // Paging down from a saved key is the entry that positions the browse by key. The CARDSIDI filter
+        // is not a start key: 9500-FILTER-RECORDS applies it as an exclusion while the browse walks.
         final CardListResult result = service().listCards(
                 pagingEntry(AID_PF08, FIRST_PAGE, true, cardNumber(1), cardNumber(40)));
 
         assertThat(result).as("the browse must have run for the counts below to mean anything").isNotNull();
+        verify(cardRepository, never()).count();
+        verify(cardRepository, never()).findAllByOrderByCardNumberAsc(any(Pageable.class));
         verify(cardRepository, times(1))
-                .count();
-        verify(cardRepository, atLeast(2))
-                .findAllByOrderByCardNumberAsc(any(Pageable.class));
+                .findByCardNumberGreaterThanEqualOrderByCardNumberAsc(any(String.class),
+                        any(Pageable.class));
     }
 
     /**
-     * The unfiltered entry positions at offset zero, so it needs no upper bound and asks for no total.
+     * The whole browse is keyset addressed, so no offset-paged finder and no count is reached at all.
      *
-     * <p>This is why the count stub in {@link #givenCardFile(List)} is lenient: a strict stub would fail
-     * every unfiltered test for being unused, which is exactly the state this test asserts.
+     * <p>An SQL {@code OFFSET} is not a seek - the engine produces and discards every preceding row - and
+     * a VSAM browse publishes no cardinality, so neither construct has a place on this path. Asserting
+     * their absence is what keeps a future change from quietly reintroducing the cost.
      */
     @Test
-    @DisplayName("An unfiltered browse never counts the table at all - it positions at offset zero")
+    @DisplayName("An unfiltered browse counts nothing and addresses no offset")
     void anUnfilteredBrowseNeverCountsTheTable() {
         givenCardFile(cardFile(20, ACCOUNT_A));
 
@@ -2366,6 +2494,56 @@ final class CardListServiceTest {
 
         assertThat(result.page.getRows()).hasSize(SCREEN_LINES);
         verify(cardRepository, never()).count();
+        verify(cardRepository, never()).findAllByOrderByCardNumberAsc(any(Pageable.class));
+    }
+
+    /**
+     * A valid account filter must be answered by the index, not by walking the file.
+     *
+     * <p>This is the assertion behind the Critical finding the browse rewrite closes. While the filter was
+     * applied in Java to rows an offset-addressed browse had already produced, one filtered screen issued
+     * {@code ceil(rows / windowSize)} statements and its cost grew with the whole file. The account
+     * predicate now travels to the store, where {@code card (card_acct_id)} - the index
+     * {@code CARDDATA.VSAM.AIX} is translated into - answers it.
+     */
+    @Test
+    @DisplayName("An account-filtered page is answered by the account-scoped finder, in one window")
+    void anAccountFilteredPageIsAnsweredByTheAccountScopedFinder() {
+        givenCardFile(mixedCardFile(200));
+
+        final CardListResult result = service().listCards(filterEntry(ACCOUNT_A_FILTER, null));
+
+        assertThat(result.page.getRows()).hasSize(SCREEN_LINES);
+        // One account-scoped window for the seven lines, plus the one unfiltered lookahead of :1197-1205.
+        verify(cardRepository, times(1))
+                .findByAccountIdOrderByCardNumberAsc(any(Long.class), any(Pageable.class));
+        verify(cardRepository, times(1))
+                .findByCardNumberGreaterThanEqualOrderByCardNumberAsc(any(String.class),
+                        any(Pageable.class));
+        verify(cardRepository, never()).count();
+        verify(cardRepository, never()).findAllByOrderByCardNumberAsc(any(Pageable.class));
+    }
+
+    /**
+     * A valid card filter names a primary key, so it is a keyed read and not a browse at all.
+     *
+     * <p>{@code IF CARD-NUM = CC-CARD-NUM-N} at {@code app/cbl/COCRDLIC.cbl:1397} is an equality test on
+     * the base key, so at most one record can survive it. Walking the file to find that one record is
+     * what the rewrite removes.
+     */
+    @Test
+    @DisplayName("A card-filtered page is answered by a keyed read, not by a browse")
+    void aCardFilteredPageIsAnsweredByAKeyedRead() {
+        givenCardFile(cardFile(200, ACCOUNT_A));
+
+        final CardListResult result = service().listCards(filterEntry(null, cardNumber(150)));
+
+        assertThat(projectedCardNumbers(result)).containsExactly(cardNumber(150));
+        verify(cardRepository, times(1)).findById(cardNumber(150));
+        verify(cardRepository, never()).count();
+        verify(cardRepository, never()).findAllByOrderByCardNumberAsc(any(Pageable.class));
+        verify(cardRepository, never()).findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc(
+                any(Long.class), any(String.class), any(Pageable.class));
     }
 
     /**
@@ -2380,9 +2558,9 @@ final class CardListServiceTest {
     @Test
     @DisplayName("An unreadable table surfaces as a latched file error, rethrown after ENDBR")
     void anUnreadableTableSurfacesAsALatchedFileError() {
-        when(cardRepository.findAllByOrderByCardNumberAsc(any(Pageable.class)))
-                .thenAnswer(invocation -> window(List.of(), invocation.getArgument(0, Pageable.class)));
-        when(cardRepository.count()).thenThrow(new QueryTimeoutException("CARDDAT unavailable"));
+        when(cardRepository.findByCardNumberGreaterThanEqualOrderByCardNumberAsc(any(String.class),
+                        any(Pageable.class)))
+                .thenThrow(new QueryTimeoutException("CARDDAT unavailable"));
 
         assertThatExceptionOfType(FileAccessException.class)
                 .as("the condition must surface as the service's own file-error outcome at the normal "

@@ -271,7 +271,7 @@
 #     RESOLVED - the stated remediation has been carried out. The library still
 #     ships no health indicator; instead
 #     src/main/java/com/cardemo/observability/HealthIndicators.java now declares
-#     the two beans s3HealthIndicator and sqsHealthIndicator, whose component
+#     the beans s3HealthIndicator and sqsHealthIndicator, whose component
 #     keys are `s3` and `sqs`, and those keys were appended to
 #     management.endpoint.health.group.readiness.include in the same change.
 #     Readiness therefore covers database + object storage + queue as the
@@ -286,12 +286,19 @@
 #     would have retained is discarded. Recorded under
 #     carddemo.aws.s3.gdg-retention-generations below.
 #   - LOW - the base profile expects a runtime-supplied active profile, and
-#     the committed docker-compose.yml provisions only the five substrate
-#     services, with no application service that would set
-#     SPRING_PROFILES_ACTIVE. Nothing in this file depends on that service
-#     existing; the neutrality requirement is unaffected. Remediation: set
-#     SPRING_PROFILES_ACTIVE on the command line, in .env, or on the
-#     application service when one is added to compose.
+#     the committed docker-compose.yml provisions only the substrate services,
+#     with no application service that would set SPRING_PROFILES_ACTIVE.
+#     Nothing in this file depends on that service existing; the neutrality
+#     requirement is unaffected. Remediation: set SPRING_PROFILES_ACTIVE on the
+#     command line, in .env, or on the application service when one is added to
+#     compose.
+#     WITHDRAWN - the premise no longer holds. docker-compose.yml now declares
+#     an `app` service beside the six substrate services (PostgreSQL, the
+#     object-store emulator, the trace store, the Pushgateway, Prometheus and
+#     Grafana) and pins SPRING_PROFILES_ACTIVE=local on it, which is exactly the
+#     remediation this entry asked for. Recorded rather than deleted, in the same
+#     form the sibling entry in application-local.yml uses, so the finding's
+#     history stays readable.
 #   - THE COMPOSED CONTRACT AND THE NAMES THIS FILE READS ARE ONE SPELLING,
 #     and they must stay one spelling. Shipping SPRING_DATASOURCE_URL or
 #     MANAGEMENT_OTLP_TRACING_ENDPOINT in .env.example in place of
@@ -652,7 +659,43 @@ spring:
       pool-name: carddemo-pool
       maximum-pool-size: 10
       minimum-idle: 2
-      connection-timeout: 30000
+      # ----------------------------------------------------------------------
+      # A BOUNDED WAIT FOR A CONNECTION. This is not pool tuning either, and it
+      # is set to the figure this project had already published for it.
+      # ----------------------------------------------------------------------
+      # HealthIndicators names the probe budget it works to: the Dockerfile's
+      # single HEALTHCHECK instruction declares --timeout=5s on the readiness
+      # endpoint, that one HTTP round trip has to cover the `db` contributor,
+      # the two AWS contributors and Actuator's aggregation, and the split it
+      # documents allots 1.5 s to each AWS contributor and "2 s for the
+      # database probe and transport". Both AWS budgets are enforced in code.
+      # The database half was not enforced anywhere, and this value is why:
+      # Spring Boot's auto-configured `db` contributor asks the pool for a
+      # connection, so with a 30 000 ms ceiling a database outage made
+      # /actuator/health/readiness answer in ~30 s. Measured before this
+      # change: a correct 503 {"status":"DOWN"}, at 30.05 s.
+      #
+      # Every consumer of that answer has a shorter deadline than the answer
+      # took. The container HEALTHCHECK gives it 5 s, the compose override
+      # gives it 5 s, and the workflow's own probe uses curl --max-time 10.
+      # Nothing was MASKED - a probe that times out is unhealthy to Docker
+      # exactly as a 503 is - but the operator saw a probe timeout where a
+      # clean DOWN naming `db` was available, and each probe left a request
+      # thread blocked for 30 s while the next probe arrived after 15.
+      #
+      # 1500 ms sits inside the published 2 s and leaves the rest for
+      # transport, so the whole readiness answer stays inside the 5 s budget on
+      # its worst path: 1.5 + 1.5 + 1.5 = 4.5 s. It is a CEILING ON WAITING,
+      # not a throughput setting - it changes nothing while a connection is
+      # available, and pool SIZING is untouched and still deliberately untuned.
+      # The precedent is the lock_timeout below, which is bounded for the same
+      # kind of reason: an unbounded wait has no defined outcome, and a defined
+      # outcome is what both the legacy behaviour and an operator need.
+      #
+      # Kubernetes is out of scope (compose is the deployment boundary), so
+      # this is not sized for a probe budget this project does not ship. It is
+      # sized for the budget this project DOES ship and had not been meeting.
+      connection-timeout: 1500
       # ----------------------------------------------------------------------
       # A BOUNDED WAIT FOR A ROW LOCK. This is not pool tuning.
       # ----------------------------------------------------------------------
@@ -844,11 +887,12 @@ spring:
       #      FRAMEWORK's own JobLauncherApplicationRunner, which this flag
       #      keeps switched off and which an operator switches on for one
       #      process:
-      #        java -jar carddemo-1.0.0.jar \
+      #        java --sun-misc-unsafe-memory-access=allow \
+      #          -jar carddemo-1.0.0.jar \
       #          --spring.main.web-application-type=none \
       #          --spring.batch.job.enabled=true \
       #          --spring.batch.job.name=CARDDEMO-PIPELINE \
-      #          parm-date=2022071800 start-date=2022-01-01 end-date=2022-07-06
+      #          parmDate=2022071800 startDate=2022-01-01 endDate=2022-07-06
       #      The value is the JOB NAME, not a bean name: the runner compares it
       #      with Job.getName(), and every job here is named after the JCL
       #      member it replaces - CARDDEMO-PIPELINE, or POSTTRAN, INTCALC,
@@ -857,6 +901,18 @@ spring:
       #      the name runs every job, so it is effectively required. The three
       #      dates travel as name=value job parameters, which is the form the
       #      JCL parameter cards arrive in.
+      #      THE PARAMETER NAMES ARE camelCase AND THE ARGUMENTS ARE BARE. They
+      #      are parmDate, startDate and endDate, spelled exactly as the
+      #      constants in com.cardemo.batch.jobs.BatchPipelineOrchestrator
+      #      declare them, and they carry NO leading "--": relaxed binding
+      #      applies to Spring configuration keys, not to job parameters, so a
+      #      hyphenated spelling names a parameter that does not exist and a
+      #      --prefixed one is bound as a property instead. Either way the job
+      #      reports the parameter absent and the launch fails - which is the
+      #      good outcome, since the validator names the missing parameter and
+      #      the COBOL locator it comes from. This comment published the
+      #      hyphenated spelling for a commit; the guide's build-and-run
+      #      section carries the same command with each failure mode measured.
       #      NO IN-PROCESS RUNNER BEAN EXISTS, AND NONE MAY BE ADDED - not even
       #      one gated on a property. A bean that launches a job from inside
       #      SpringApplication.run is a boot-time launch however narrowly it is
@@ -1164,10 +1220,16 @@ management:
         # the Dockerfile HEALTHCHECK issues GET /actuator/health/readiness and greps for
         # UP, so this group must exist and resolve.
         # Object-storage and queue contributors now exist and are named below.
-        # com.cardemo.observability.HealthIndicators declares exactly two beans,
-        # s3HealthIndicator and sqsHealthIndicator; Actuator strips the
-        # HealthIndicator suffix, so the component keys are `s3` and `sqs`. They
-        # were appended here in the same change that introduced those beans,
+        # com.cardemo.observability.HealthIndicators declares all THREE
+        # contributors this group names - dbHealthIndicator, s3HealthIndicator and
+        # sqsHealthIndicator; Actuator strips the HealthIndicator suffix, so the
+        # component keys are `db`, `s3` and `sqs`. `db` is this application's own
+        # bounded probe rather than the framework's, which management.health.db
+        # switches off below and which explains why: the framework contributor
+        # inherited the pool's 30 s connection-timeout and measured 30009 ms with
+        # the database stopped, while these probes answer inside 1500 ms. The
+        # object-storage and queue keys were appended here in the same change
+        # that introduced their beans,
         # which is what management.endpoint.health.validate-group-membership
         # (true, just above) requires: naming a contributor that does not exist
         # fails startup. Renaming either bean without renaming the key here
@@ -1203,6 +1265,39 @@ management:
     # blanket enable.
     defaults:
       enabled: true
+    db:
+      # ======================================================================
+      # SWITCHED OFF SO THAT A BOUNDED CONTRIBUTOR CAN TAKE THE SAME KEY.
+      # ======================================================================
+      # This does NOT remove the database from readiness. The readiness group
+      # below still names `db`, and it still resolves - to
+      # com.cardemo.observability.HealthIndicators#dbHealthIndicator, whose
+      # bean name yields the same `db` component key once Actuator strips the
+      # HealthIndicator suffix. Turning this off without that bean would fail
+      # startup, because management.endpoint.health.validate-group-membership
+      # is true; the two therefore move together, exactly as the s3 and sqs
+      # keys do.
+      #
+      # WHY, measured rather than asserted. Boot's DataSourceHealthIndicator
+      # has no deadline of its own: it asks the pool for a connection and so
+      # inherits spring.datasource.hikari.connection-timeout, 30000 ms above.
+      # With the database stopped, /actuator/health/readiness answered 503
+      # after 30.05 s and the application logged
+      #   Health contributor ...DataSourceHealthIndicator (db) took 30009ms
+      # while this application's own s3 and sqs probes answered inside their
+      # 1500 ms budgets. That is 6x the --timeout=5s the Dockerfile
+      # HEALTHCHECK declares, so under any orchestrator that treats a
+      # readiness timeout as a failure a brief database blip became a restart
+      # loop - liveness correctly stayed UP throughout, which is what made the
+      # gap survivable but not acceptable.
+      #
+      # WHY NOT lower connection-timeout instead. That value governs the data
+      # path for every request, not just the probe; its untuned state is a
+      # recorded decision (see the hikari block above), and pool tuning is
+      # explicitly out of scope for this migration. Bounding the PROBE is the
+      # narrow change; bounding the POOL would be a behaviour change to every
+      # caller.
+      enabled: false
     diskspace:
       # Deliberately NOT part of readiness: disk pressure is an operational
       # alert, not a reason to take the instance out of rotation.
@@ -1216,6 +1311,110 @@ management:
         # settings, ports and admin credentials likewise belong to
         # docker-compose.yml and observability/grafana/**, never to this file.
         enabled: true
+        pushgateway:
+          # ==================================================================
+          # THE COLLECTION PATH FOR THE BATCH-FED COUNTERS. OFF BY DEFAULT.
+          # ==================================================================
+          # The four named counters that replace the end-of-run DISPLAY totals
+          # at app/cbl/CBTRN02C.cbl:L236-L238 are not all written by the same
+          # process. carddemo.auth.attempts is written by the long-lived web
+          # application, which Prometheus scrapes directly. The other three -
+          # carddemo.batch.records.processed, .rejected and
+          # carddemo.transaction.amount.total - are written by POSTTRAN and
+          # COMBTRAN, and those run in the operator submission process
+          # documented on com.cardemo.batch.jobs.BatchPipelineOrchestrator: a
+          # java -jar launch with spring.main.web-application-type set to none,
+          # which is what makes the process end when the job ends, the way a
+          # submitted job freed its initiator.
+          #
+          # THE MEASURED GAP THIS CLOSES. That process has no
+          # /actuator/prometheus for observability/prometheus.yml to scrape. A
+          # real POSTTRAN run printed
+          #   TRANSACTIONS PROCESSED :000000300
+          #   TRANSACTIONS REJECTED  :000000038
+          # and the scraped series stayed at 0.0 immediately afterwards, so
+          # eight of the ten carddemo series could never hold a value and six of
+          # the nine dashboard data panels could never populate. The
+          # instrumentation was correct; only the collection path was missing.
+          #
+          # WHY A PUSH IS THE FAITHFUL MECHANISM. The legacy job published its
+          # totals ONCE, at end of run, to a destination that retained them for
+          # reading. shutdown-operation PUT does exactly that: the final values
+          # are published as the batch JVM exits, and the Pushgateway retains
+          # them for scraping afterwards. An exporter whose samples go stale
+          # five minutes after the process exits would turn a real figure into
+          # No data, which is a worse answer than the zero it replaced.
+          #
+          # WHY IT DEFAULTS TO FALSE. The long-lived web application is already
+          # scraped. If it also pushed, every series it owns would be counted
+          # twice by the dashboard's sum() expressions -
+          # carddemo_auth_attempts_total most visibly. So the push is enabled
+          # per LAUNCH, by the one process that has no scrape endpoint:
+          #
+          #   java -jar target/carddemo-1.0.0.jar \
+          #        --spring.main.web-application-type=none \
+          #        --spring.batch.job.enabled=true \
+          #        --spring.batch.job.name=POSTTRAN \
+          #        --management.prometheus.metrics.export.pushgateway.enabled=true
+          #
+          # A profile would have been the alternative, and it was rejected: the
+          # plan fixes the profile set at four files and a fifth would break
+          # that inventory for a single boolean.
+          enabled: ${CARDDEMO_METRICS_PUSHGATEWAY_ENABLED:false}
+          # Host and port only - no scheme, which the client supplies. The
+          # default is the loopback address a host-run batch launch reaches
+          # through the port docker-compose.yml publishes; a container-run
+          # launch overrides it with the compose service name, which is what
+          # docker-compose.yml passes the application.
+          address: ${CARDDEMO_PUSHGATEWAY_ADDRESS:localhost:9091}
+          # The grouping key Prometheus reads back as the `job` label. Named for
+          # the ROLE rather than for one member, because every batch member
+          # pushes through it and the JCL member name is already carried by the
+          # spring.batch.job.name tag on the framework's own series.
+          job: carddemo-batch
+          # ==================================================================
+          # PUT. The enum admits exactly NONE, POST, PUT and DELETE.
+          # ==================================================================
+          # Read from the shipped enum rather than assumed:
+          # PrometheusPushGatewayManager.ShutdownOperation declares NONE, POST,
+          # PUT and DELETE and nothing else, and the manager's own bytecode maps
+          # POST to PushGateway.pushAdd(), PUT to PushGateway.push() and DELETE
+          # to PushGateway.delete(). A value outside that set is not a silent
+          # no-op: binding fails and the whole context fails to start, which is
+          # how the first spelling of this key was caught.
+          #
+          # NOT `none`, the framework default. The manager schedules its
+          # periodic push through TaskScheduler.scheduleAtFixedRate, so a job
+          # that finishes inside one push-rate window contributes nothing but
+          # its startup snapshot of zeros. The end-of-run totals reach the
+          # gateway ONLY through the shutdown operation, so leaving it at the
+          # default would reproduce the very gap this block closes.
+          #
+          # NOT `delete`, which removes the group as the process exits and would
+          # discard the very values the panels exist to show. Retention is the
+          # point: the legacy job published its totals once, at end of run, to a
+          # destination that kept them for reading.
+          #
+          # NOT `post`, which is pushAdd and MERGES into whatever the group
+          # already holds, replacing only same-named metrics.
+          # carddemo.batch.records.rejected is tagged by reject code and its
+          # child series therefore exist only for codes a given run actually
+          # produced - see com.cardemo.observability.MetricsConfig. Under POST, a
+          # code rejected by a previous run and not by this one would survive in
+          # the group and be reported as current, which misstates the run. PUT
+          # replaces the group wholesale, so what the gateway holds is exactly
+          # one run's published set. The consequence is stated plainly rather
+          # than hidden: the group is single-tenant, so two batch processes
+          # pushing concurrently are last-writer-wins. That is accepted, because
+          # the alternative - a per-run grouping key - leaves one permanently
+          # retained group per run in a store that never expires them, which is
+          # the documented Pushgateway anti-pattern and a far worse failure.
+          shutdown-operation: put
+          # Long enough that a job of any length is covered by the shutdown push
+          # alone rather than by a stream of intermediate pushes, short enough
+          # that a long-running job still publishes progress. A batch job here
+          # runs in seconds, so in practice the shutdown push is the only one.
+          push-rate: 1m
   tracing:
     enabled: true
     sampling:
@@ -1259,6 +1458,52 @@ management:
       # Matches the service label attached by observability/prometheus.yml.
       application: carddemo
       component: modular-monolith
+  observations:
+    long-task-timer:
+      # ======================================================================
+      # DISABLED TO RESOLVE A DUPLICATE-INSTRUMENT COLLISION, NOT TO SAVE WORK
+      # ======================================================================
+      # Every batch submission logged this, once per launch:
+      #
+      #   WARN PrometheusMeterRegistry: The meter (MeterId{name='spring.batch.job.active',
+      #   tags=[application, component, spring.batch.job.name=POSTTRAN,
+      #   spring.batch.job.status=UNKNOWN]}) registration has failed: Prometheus requires
+      #   that all meters with the same name have the same set of tag keys. There is
+      #   already an existing meter named 'spring_batch_job_active_seconds' containing
+      #   tag keys [application, component, spring_batch_job_active_name].
+      #
+      # TWO INSTRUMENTS, ONE NAME, DIFFERENT TAG KEYS - and neither is this
+      # application's. Spring Batch's own AbstractJob.execute creates a
+      # LongTaskTimer called spring.batch.job.active directly, tagged
+      # spring.batch.job.active.name. Independently, because Boot's
+      # BatchObservationAutoConfiguration wires an ObservationRegistry into the
+      # same job beans, the DefaultMeterObservationHandler derives a SECOND
+      # LongTaskTimer of the same name from the spring.batch.job observation,
+      # tagged from that observation's low-cardinality key values -
+      # spring.batch.job.name and spring.batch.job.status. The Prometheus
+      # registry requires one tag-key set per name, so it accepts whichever
+      # registers first and refuses the other. The refusal is what the warning
+      # reports; nothing recovers it, and it recurs on every launch.
+      #
+      # WHY THIS SWITCH IS THE RIGHT ONE OF THE TWO AVAILABLE. It suppresses
+      # only the observation-DERIVED timer, so the instrument that already wins
+      # the race - Spring Batch's own - keeps registering, and the batch tier
+      # loses nothing it previously had. The alternative, a MeterFilter denying
+      # spring.batch.job.active, would deny BOTH and remove the measurement
+      # altogether to silence a message about it.
+      #
+      # WHAT IS GIVEN UP, STATED PLAINLY. This property is global, so it also
+      # withdraws http.server.requests.active - the in-flight-request gauge
+      # Micrometer would otherwise derive from the HTTP server observation.
+      # Nothing in this repository consumes it: it appears in no panel of
+      # observability/grafana/dashboards/carddemo-dashboard.json, in no
+      # expression, in no alert (there are none) and in no test. Request
+      # DURATION is unaffected - http_server_requests_seconds is a Timer, not a
+      # LongTaskTimer, and is still published. Should an in-flight gauge ever be
+      # wanted, the correct move is to re-enable this and rename one of the two
+      # colliding batch instruments through a MeterFilter, not to accept a
+      # warning on every batch run.
+      enabled: false
 
 # ============================================================================
 # carddemo - the application's own namespace
@@ -1975,38 +2220,32 @@ carddemo:
     # that crosses the legacy per-card capacity of 10 logs one WARN naming
     # app/cbl/CBSTM03A.CBL:L228 - the divergence from historical capacity stays
     # visible without being enforced.
-    # BOUND on the indexed object-key manifest TransactionWriter publishes into
-    # the job execution context. A SCALE BOUND on a diagnostic record, not a
-    # bound on the run: the exact object count, the generation prefix and the
-    # latest key are published whatever this is set to, so nothing is lost when
-    # it is reached - only the per-key enumeration stops, one WARN is emitted and
-    # carddemo.transaction.object.keys.truncated marks the context.
+    # THE BOUNDED OBJECT-KEY MANIFEST IS GONE, AND SO IS THE KEY THAT SIZED IT.
     #
-    # Why a bound is needed at all: the posting step commits once per RECORD by
-    # parity contract - DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL,
-    # grounded on the three separate commits of app/cbl/CBTRN02C.cbl:L440-L442 -
-    # and Spring Batch re-serialises the whole job execution context at every
-    # commit. One indexed entry costs about 140 serialised bytes, so an unbounded
-    # list costs work proportional to the SQUARE of the record count: a measured
-    # 300-record run of app/data/ASCII/dailytran.txt published 262 entries and a
-    # 36,664-byte context, and a hundred thousand records would have reached
-    # about fourteen megabytes re-serialised a hundred thousand times.
+    # carddemo.batch.transaction-writer.max-indexed-object-keys used to bound how
+    # many object keys TransactionWriter enumerated into the job execution
+    # context. It existed only because the writer emitted ONE OBJECT PER CHUNK,
+    # and the posting step commits once per RECORD by parity contract
+    # (DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL, grounded on the three
+    # separate commits of app/cbl/CBTRN02C.cbl:L440-L442) - so a 300-record run
+    # of app/data/ASCII/dailytran.txt published 262 keys and a 36,664-byte
+    # context, and a hundred thousand records would have re-serialised about
+    # fourteen megabytes a hundred thousand times.
     #
-    # The value below enumerates that parity run in full - 262 of 1000 - while
-    # bounding the context at roughly 140 kB. A deployment that needs the full
-    # enumeration of a larger run RAISES this deliberately, having accepted that
-    # cost; one that does not lists the generation prefix instead, which is
-    # unique to the job instance and therefore deterministic.
+    # That per-chunk emission was itself the defect. app/jcl/POSTTRAN.jcl names a
+    # SINGLE dataset per output and a later (0) reference resolves that one
+    # dataset whole, so a consumer resolving "the current generation" as the
+    # greatest key under the prefix read the LAST CHUNK - one 350-byte record -
+    # as the entire day's postings. TransactionWriter now stages each chunk as a
+    # transient part and concatenates every part into ONE generation object when
+    # the step completes, exactly as RejectWriter already did.
     #
-    # Declared here, and not only as a constant in code, for the same reason as
-    # the four reader page sizes above: a key that is read at runtime but
-    # appears in no profile is invisible to whoever operates the job. The value
-    # is exactly TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS, so declaring
-    # it changes no behaviour. Note that this is a bound on a DIAGNOSTIC record
-    # and not a refusal: reaching it stops the per-key enumeration and nothing
-    # else, which is what distinguishes it from the removed record ceilings.
-    transaction-writer:
-      max-indexed-object-keys: 1000
+    # With one object per generation the manifest holds one key, the enumeration
+    # is bounded by the shape of the output rather than by configuration, and the
+    # context cost is constant. The key is REMOVED rather than left declared and
+    # inert: a key that is read by nothing is precisely the drift this file warns
+    # against, and leaving it would invite an operator to tune a bound that no
+    # longer exists.
     # ONE SPELLING PER JOB NAME, AND NO KEY WITHOUT A CONSUMER.
     #
     # Every one of the six job names below is bound by exactly one @Value, all of

@@ -36,13 +36,18 @@
  */
 package com.cardemo.config;
 
+import com.zaxxer.hikari.HikariDataSource;
 import java.util.Locale;
+import java.util.function.UnaryOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.boot.autoconfigure.jdbc.JdbcConnectionDetails;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 
 /**
  * Persistence-layer configuration: the startup guard that proves the mechanisms enforcing field-contract
@@ -133,6 +138,18 @@ import org.springframework.context.annotation.Configuration;
  *   <dt>{@code spring.flyway.out-of-order} - required {@code false}</dt>
  *   <dd>Ordered application is load-bearing: the third migration seeds rows that rely on the indexes the
  *       second creates.</dd>
+ *   <dt>{@code spring.datasource.username} / {@code .password} and {@code spring.flyway.user} /
+ *       {@code .password} - required to be resolvable and non-blank <em>where they are in force</em></dt>
+ *   <dd>Asserted by {@link #verifyRuntimeCredentials(String, String, java.util.function.UnaryOperator)}
+ *       rather than
+ *       by the contract guard above, because the failure they produce is diagnostic rather than structural:
+ *       the values are bound bare from {@code CARDDEMO_DB_APP_*} and {@code CARDDEMO_DB_MIGRATION_*} with no
+ *       fallback, and the lenient {@code @ConfigurationProperties} binder passes an unset variable through as
+ *       the literal text {@code ${CARDDEMO_DB_APP_USER}}, which PostgreSQL then reports as a failed
+ *       authentication for a role of that name. Two exemptions are part of the contract: the two datasource
+ *       keys are not in force when a {@link JdbcConnectionDetails} bean supersedes them, which is how the
+ *       Testcontainers profile runs, and an ABSENT Flyway credential is valid because the base profile leaves
+ *       it unbound deliberately.</dd>
  *   <dt>{@code spring.flyway.locations} and {@code spring.batch.jdbc.initialize-schema}</dt>
  *   <dd><strong>Documented, deliberately not asserted.</strong> The first is list-typed, so its YAML shape
  *       may legitimately be a scalar or a sequence and a scalar-only assertion would reject a valid
@@ -169,6 +186,14 @@ import org.springframework.context.annotation.Configuration;
  *   <dd>That property was overridden to a value the contract forbids. The message states the key, the value
  *       found and the value required. Restore the required value rather than relaxing the guard; if the value
  *       came from an environment override or a command-line argument, that override is the defect.</dd>
+ *   <dt>Startup fails with "Database credential not usable" naming a variable</dt>
+ *   <dd>That environment variable is unset, or exported empty. Set it and restart. The message names the
+ *       property, the variable and the remedy and never echoes a value. Before this guard existed the same
+ *       condition surfaced as {@code FATAL: password authentication failed for user
+ *       "${CARDDEMO_DB_APP_USER}"} wrapped in a message about the Spring Batch metadata table being
+ *       unreadable by the runtime role - two true sentences, neither naming the cause. Under
+ *       {@code docker compose} the condition cannot arise: the compose file guards all four with
+ *       Compose's {@code :?} so the container is never created.</dd>
  *   <dt>Startup fails saying a property is not configured</dt>
  *   <dd>The base configuration file was not on the classpath, or the key was removed from it - most often a
  *       narrowly sliced test that loaded a property source without the base profile.</dd>
@@ -241,6 +266,40 @@ public class JpaConfig {
 
     /** Property key: whether a migration may be applied after a higher-numbered one. */
     private static final String KEY_FLYWAY_OUT_OF_ORDER = "spring.flyway.out-of-order";
+
+    /** Property key: the runtime principal's user name, bound from the environment in every profile. */
+    private static final String KEY_DATASOURCE_USERNAME = "spring.datasource.username";
+
+    /** Property key: the runtime principal's password. */
+    private static final String KEY_DATASOURCE_PASSWORD = "spring.datasource.password";
+
+    /** Property key: the migration principal's user name, bound per profile rather than in the base. */
+    private static final String KEY_FLYWAY_USER = "spring.flyway.user";
+
+    /** Property key: the migration principal's password. */
+    private static final String KEY_FLYWAY_PASSWORD = "spring.flyway.password";
+
+    /** Environment variable the runtime principal's user name is bound from. */
+    private static final String VARIABLE_APP_USER = "CARDDEMO_DB_APP_USER";
+
+    /** Environment variable the runtime principal's password is bound from. */
+    private static final String VARIABLE_APP_PASSWORD = "CARDDEMO_DB_APP_PASSWORD";
+
+    /** Environment variable the migration principal's user name is bound from. */
+    private static final String VARIABLE_MIGRATION_USER = "CARDDEMO_DB_MIGRATION_USER";
+
+    /** Environment variable the migration principal's password is bound from. */
+    private static final String VARIABLE_MIGRATION_PASSWORD = "CARDDEMO_DB_MIGRATION_PASSWORD";
+
+    /**
+     * The opening delimiter of an unresolved property placeholder.
+     *
+     * <p>Its presence in a bound value is the whole signature of the defect this guard exists for: Boot's
+     * {@code @ConfigurationProperties} binder resolves placeholders <em>leniently</em>, so an unset variable
+     * does not fail the binding - it leaves the literal text {@code ${CARDDEMO_DB_APP_USER}} in the value and
+     * that text is then sent to PostgreSQL as a role name.
+     */
+    private static final String UNRESOLVED_PLACEHOLDER_PREFIX = "${";
 
     /**
      * The only schema management mode this application tolerates. The migrations own the schema and the
@@ -365,7 +424,7 @@ public class JpaConfig {
     }
 
     /**
-     * Asserts the nine persistence-contract invariants, and is the one piece of executable behaviour this
+     * Asserts the nine persistence-contract invariants, one of the two pieces of executable behaviour this
      * class contributes.
      *
      * <p>Inputs are the nine values bound by the constructor; there are no parameters and no other state is
@@ -448,6 +507,177 @@ public class JpaConfig {
     @Bean
     public InitializingBean persistenceContractGuard() {
         return this::verifyPersistenceContract;
+    }
+
+    /**
+     * Registers the runtime-credential guard so that an unusable database credential is reported as itself.
+     *
+     * <p><strong>The defect this closes.</strong> {@code application.yml} binds
+     * {@code spring.datasource.username} and {@code .password} bare, with no fallback, so that an
+     * unconfigured deployment cannot silently reconnect as the cluster superuser - that part works and is
+     * deliberate. What did not work was the diagnosis. Boot's {@code @ConfigurationProperties} binder
+     * resolves placeholders leniently, so with {@code CARDDEMO_DB_APP_USER} unset the literal text
+     * {@code ${CARDDEMO_DB_APP_USER}} was passed through as a role name and the operator saw
+     * {@code FATAL: password authentication failed for user "${CARDDEMO_DB_APP_USER}"} wrapped in a message
+     * about the Spring Batch metadata table being missing or unreadable by the runtime role. Both sentences
+     * are true and neither names the cause, and the headline one sends the reader to look at privileges.
+     *
+     * <p>A blank value is worse than the literal and was measured to be so. With
+     * {@code CARDDEMO_DB_APP_USER} exported empty the driver substitutes the operating-system user name,
+     * which in the delivered image is {@code carddemo} - the same name as the cluster BOOTSTRAP role. The
+     * attempt was refused only because the password did not match, so an empty variable is one credential
+     * away from the superuser connection the bare binding exists to prevent. That is why blank is rejected
+     * here rather than left to the database.
+     *
+     * <p><strong>Why this is a {@link BeanPostProcessor} on the data source and not an ordinary bean.</strong>
+     * An {@link InitializingBean} guard was written first and measured: it never ran. Component-scanned
+     * configuration classes are registered in class-name order, so {@code BatchConfig}'s metadata
+     * precondition is created before anything {@code JpaConfig} contributes, and the operator still saw the
+     * batch-metadata message. Post-processing the {@code DataSource} instead is ordering-correct by
+     * construction rather than by luck: Flyway, the persistence provider and the batch metadata check all
+     * need that bean, so this runs before the first of them can open a connection, whichever it is.
+     *
+     * <p><strong>And it checks the credential that will actually be used, not the property.</strong> That
+     * distinction is what removes the need for any exemption. {@code application-test.yml} runs against
+     * Testcontainers through {@code @ServiceConnection}, which contributes a {@link JdbcConnectionDetails}
+     * bean that supersedes {@code spring.datasource.url}, {@code .username} and {@code .password} outright -
+     * so the base placeholders beneath them are irrelevant rather than wrong, and a guard reading the
+     * properties would have failed every integration test. The pool's own configured user name is the value
+     * the database will see in every profile, so reading it is both simpler and truthful. The two Flyway
+     * keys are read from the environment instead, because Boot derives their data source internally rather
+     * than publishing it as a bean, and an ABSENT Flyway credential is valid - the base profile leaves
+     * {@code spring.flyway.user} unbound deliberately, since Boot derives a second {@code DataSource} the
+     * moment it is non-null.
+     *
+     * <p>Declared {@code static} so that registering it cannot force this configuration class to be
+     * instantiated before the post-processor is needed, which is the framework's documented requirement for
+     * a {@code BeanPostProcessor} declared in a configuration class.
+     *
+     * @param environment the resolved environment, read for the two Flyway credential keys and nothing else
+     * @return the guard, which validates the credentials as the pool is created
+     */
+    @Bean
+    public static BeanPostProcessor runtimeCredentialGuard(final Environment environment) {
+        return new BeanPostProcessor() {
+            @Override
+            public Object postProcessAfterInitialization(final Object bean, final String beanName) {
+                if (bean instanceof HikariDataSource pool) {
+                    verifyRuntimeCredentials(pool.getUsername(), pool.getPassword(), environment::getProperty);
+                }
+                return bean;
+            }
+        };
+    }
+
+    /**
+     * Asserts that every database credential this deployment will actually use is resolvable and non-blank.
+     *
+     * <p>Takes the two effective values and a lookup function rather than a {@link Environment} and a pool,
+     * so that it is unit-testable with plain arguments exactly as {@link #verifyPersistenceContract()} is.
+     * A lookup that throws {@link IllegalArgumentException} models the strict resolver's behaviour for an
+     * unset variable; one returning text containing {@value #UNRESOLVED_PLACEHOLDER_PREFIX} models the
+     * lenient binder's.
+     *
+     * <p>The conditions are distinguished because their remedies differ: a value may be absent, which for
+     * the Flyway pair is legitimate; unresolvable, which means the variable is unset; still carrying a
+     * placeholder, which means something resolved it leniently; or present and blank, which means the
+     * variable is exported empty. <strong>No value is ever echoed</strong> - two of the four are passwords -
+     * and the exception carries the property key, the variable name and the remedy only.
+     *
+     * @param effectiveUsername the user name the connection pool is configured with, which is what the
+     *                          database will see; may be {@code null} when nothing bound it
+     * @param effectivePassword the password the pool is configured with; may be {@code null}
+     * @param boundValues       resolves a property key to its bound value, returning {@code null} when the
+     *                          key is not declared and throwing {@link IllegalArgumentException} when a
+     *                          placeholder in it cannot be resolved
+     * @throws IllegalStateException on the first credential that is unusable
+     */
+    public static void verifyRuntimeCredentials(final String effectiveUsername,
+            final String effectivePassword, final UnaryOperator<String> boundValues) {
+        requireCredential(key -> effectiveUsername, KEY_DATASOURCE_USERNAME, VARIABLE_APP_USER, true);
+        requireCredential(key -> effectivePassword, KEY_DATASOURCE_PASSWORD, VARIABLE_APP_PASSWORD, true);
+
+        // Absent is valid for these two and only these two: the base profile leaves spring.flyway.user
+        // unbound on purpose, because Boot derives a second DataSource as soon as it is non-null.
+        requireCredential(boundValues, KEY_FLYWAY_USER, VARIABLE_MIGRATION_USER, false);
+        requireCredential(boundValues, KEY_FLYWAY_PASSWORD, VARIABLE_MIGRATION_PASSWORD, false);
+
+        LOG.info("Runtime credentials verified: the pool's configured principal and, where bound, the "
+                + "migration principal both resolve to non-blank values; neither is echoed");
+    }
+
+    /**
+     * Validates one credential property, naming the environment variable it is bound from.
+     *
+     * @param boundValues resolves the property key to its bound value
+     * @param key         the property key, quoted verbatim in the message
+     * @param variable    the environment variable the shipped profiles bind that key from
+     * @param required    whether an absent value is itself a defect
+     * @throws IllegalStateException if the value cannot be resolved, still carries a placeholder, is blank,
+     *                               or is absent while required
+     */
+    private static void requireCredential(final UnaryOperator<String> boundValues, final String key,
+            final String variable, final boolean required) {
+        final String value;
+        try {
+            value = boundValues.apply(key);
+        } catch (final IllegalArgumentException unresolved) {
+            throw credentialRejected(key, variable,
+                    "could not be resolved, because the environment variable it is bound from is not set",
+                    unresolved);
+        }
+
+        if (value == null) {
+            if (required) {
+                // Both an unset and an exported-empty variable arrive here as null, because the pool
+                // records no value for either, so the message names both rather than guessing which.
+                throw credentialRejected(key, variable,
+                        "resolved to no value at all, which is what both an unset variable and one exported "
+                                + "empty produce",
+                        null);
+            }
+            LOG.debug("Runtime credentials: {} is unbound, which this profile does so deliberately", key);
+            return;
+        }
+        if (value.contains(UNRESOLVED_PLACEHOLDER_PREFIX)) {
+            throw credentialRejected(key, variable,
+                    "is bound to an unresolved property placeholder rather than to a credential, which is "
+                            + "what a leniently-resolved binding leaves behind when the variable is unset",
+                    null);
+        }
+        if (value.isBlank()) {
+            throw credentialRejected(key, variable,
+                    "is bound to a value that is empty or whitespace only, which PostgreSQL will refuse at "
+                            + "authentication",
+                    null);
+        }
+    }
+
+    /**
+     * Builds the one credential failure message, so every rejection path words the remedy identically.
+     *
+     * <p>Names the property key, the environment variable and the remedy, and stops there: no part of any
+     * value appears, because two of the four are passwords and a length or a prefix is itself a lead. The
+     * exception is unchecked and deliberately not one of the project's own types, for the same reason
+     * {@link #verifyPersistenceContract()} gives: this is a configuration defect detected before any data
+     * path exists.
+     *
+     * @param key      the property key
+     * @param variable the environment variable that key is bound from
+     * @param defect   the condition observed, phrased to complete "the property ... {defect}"
+     * @param cause    the underlying resolution failure, or {@code null} when there was none to preserve
+     * @return the exception to throw
+     */
+    private static IllegalStateException credentialRejected(final String key, final String variable,
+            final String defect, final Throwable cause) {
+        final String message = "Database credential not usable: property '" + key + "' " + defect
+                + ". Set environment variable " + variable + " to the value this deployment's role uses "
+                + "and restart. There is deliberately no default and no fallback: falling back to "
+                + "POSTGRES_USER would reconnect the application as the cluster superuser, which is "
+                + "indistinguishable from succeeding. The value itself is never logged.";
+        return cause == null
+                ? new IllegalStateException(message)
+                : new IllegalStateException(message, cause);
     }
 
     /**

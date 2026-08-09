@@ -10,9 +10,15 @@
 #               samples/proc/{BUILDBAT,BUILDBMS,BUILDONL}.prc and
 #               samples/m2/** (z/OS build tooling and binary emulator
 #               runtime archives, superseded by pom.xml)
-#               @ 7756d89 - the only content tree excluded below.
-#               app/data/EBCDIC/** was excluded too until the in-image
-#               unit tier proved it must not be; see the withdrawal note
+#               @ 7756d89, plus app/data/EBCDIC/** (twelve .PS datasets
+#               kept as codepage reference, never parsed by any stage).
+#               Those two trees are the whole of what is excluded here.
+#               A previous revision of this header said the EBCDIC
+#               exclusion had been withdrawn. It had not: the exclusion
+#               stands, and the in-image unit tier is reconciled with it
+#               by a directory-keyed rule in the two suites that resolve
+#               app/... paths - see the note above that rule below, and
+#               src/test/java/com/cardemo/unit/infrastructure/PrunableCorpusSubtree.java
 # ******************************************************************
 # Copyright Amazon.com, Inc. or its affiliates.
 # All Rights Reserved.
@@ -247,8 +253,39 @@ samples
 # developer build - every one of those citations is still resolved
 # strictly and a mistyped dataset name still fails. Only a context that
 # carries none of these files passes them over.
-# See SourceCitationResolutionTest.PRUNABLE_TREE and
-# theEbcdicExemptionIsNarrowAndSelfLimiting.
+#
+# THAT RULE APPLIES TO EVERY SUITE THAT RESOLVES AN app/... PATH, AND FOR A
+# WHILE IT ONLY APPLIED TO ONE. SourceCitationResolutionTest carried it and
+# passed inside the pruned context; InventoryCountGateTest resolves the same
+# kind of path - every app/... path DECISION_LOG.md cites - carried nothing,
+# and failed there, which failed the image build and the two workflow jobs
+# that build the image. Copying the rule into the second suite would have
+# fixed the build and left the same trap open for a third. The rule is
+# therefore held in ONE place that both read:
+#   src/test/java/com/cardemo/unit/infrastructure/PrunableCorpusSubtree.java
+# with its narrowness asserted in whichever context it runs, by
+# SourceCitationResolutionTest.theEbcdicExemptionIsNarrowAndSelfLimiting and
+# InventoryCountGateTest.PrunableSubtreeExemption. Neither is skipped in
+# either context: where the subtree exists they assert the rule is INERT.
+#
+# TWO GATES READ THIS PRUNED TREE, NOT ONE. The citation gate above was the
+# first to meet the collision; InventoryCountGateTest met the same one
+# later, from a different direction, and it is worth recording because the
+# first fix looked complete and was not. Row V-1 of DECISION_LOG.md section
+# 12.1 counts the distinct `app/...` paths the register itself cites and
+# claims none is missing; the exclusions row of that same section names
+# `app/data/EBCDIC/**` as out of scope, which makes the pruned subtree one
+# of the sixty-one paths V-1 must resolve. In a pruned context that single
+# path failed - `Expecting empty but was: ["app/data/EBCDIC/"]`, one failure
+# out of fifty-five - and `docker compose up -d --wait` exited 1 on it.
+#
+# The register is carried into the context, so the COUNT is unaffected and
+# only RESOLUTION varies. That gate therefore carries the same
+# directory-keyed exemption, in the same shape and with the same
+# self-limiting companion assertion, because giving two gates two different
+# rules for one pruned subtree is how a divergence starts.
+# See InventoryCountGateTest.PRUNABLE_TREE and
+# thePrunableSubtreeExemptionIsNarrowAndSelfLimiting.
 #
 # Nothing from app/ crosses into the runtime stage, so the shipped image is
 # byte-identical either way; what changes is what the daemon receives. The

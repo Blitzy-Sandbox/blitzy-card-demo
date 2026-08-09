@@ -1100,6 +1100,48 @@
       <artifactId>micrometer-registry-prometheus</artifactId>
     </dependency>
     <!--
+      The Prometheus Pushgateway client, and it exists for exactly one reason:
+      the four named counters replacing app/cbl/CBTRN02C.cbl:L236-L238's end of
+      run DISPLAY totals are written by POSTTRAN and COMBTRAN, and those jobs run
+      in the operator submission process - java -jar with the
+      spring.main.web-application-type=none option, which is what makes the
+      process end when the job ends, exactly as a submitted job freed its
+      initiator.
+      That process has no /actuator/prometheus for observability/prometheus.yml
+      to scrape, so the counters existed, were correct, and could never be
+      collected: a measured POSTTRAN run reported 300 processed and 38 rejected
+      while the scraped series stayed at 0 and six of the nine dashboard data
+      panels could not populate at all.
+
+      A push is the mechanism the source itself used. The legacy job published
+      its totals ONCE, at end of run, to a destination that retained them for
+      reading; the Pushgateway retains a pushed value for scraping after the
+      pushing process has exited, which is the same contract. The alternatives
+      were weighed and rejected: an OTLP metrics exporter or a directly scraped
+      batch container both lose the value five minutes after the process exits,
+      when the series goes stale, so the panels would flip from a real figure to
+      No data; and re-adding the counters to jobs that legitimately do not own
+      them was rejected outright (see FINDING H-01 in TransactionReportJob and
+      CombineTransactionsJob).
+
+      NO VERSION HERE, deliberately. io.prometheus:prometheus-metrics-bom is
+      imported by spring-boot-dependencies 3.5.11 through its
+      prometheus-client.version property, so this coordinate resolves to the
+      same generation as micrometer-registry-prometheus above and cannot drift
+      away from it. Section 0.6.1.2 of the plan governs: BOM managed
+      coordinates are declared without a version.
+
+      The push path is OFF unless a launch asks for it -
+      management.prometheus.metrics.export.pushgateway.enabled defaults to false
+      in src/main/resources/application.yml - so the long lived web application,
+      which Prometheus already scrapes, can never publish a second copy of a
+      series it is scraped for.
+    -->
+    <dependency>
+      <groupId>io.prometheus</groupId>
+      <artifactId>prometheus-metrics-exporter-pushgateway</artifactId>
+    </dependency>
+    <!--
       aopalliance 1.0 arrives on the compile graph through
       micrometer-tracing-bridge-otel -> micrometer-tracing, which is its only
       path: micrometer-tracing appears exactly once in the resolved tree.
@@ -2111,5 +2153,120 @@
 
     </plugins>
   </build>
+
+  <!--
+    THE ONE PROFILE IN THIS BUILD, AND WHY IT IS A PROFILE.
+
+    WHAT IT GUARDS, stated as measured rather than as feared. Running
+    `clean verify -DskipITs=true` reported BUILD SUCCESS. Failsafe was silenced,
+    so target/jacoco-it.exec was never written. jacoco:merge is a fileSet include
+    of two file names and an absent member is not an error, so it merged one file
+    and succeeded. jacoco:report and jacoco:check then read that merged file and
+    printed "All coverage checks have been met" against a LINE ratio of 0.842625
+    measured over the unit tier ALONE, where the full-tier figure at the same
+    commit is 0.918142. And no validation-gate evidence was produced at all,
+    because the harness that writes target/gate-verification lives in the very
+    tier that was skipped. So a half-run build published a passing coverage gate
+    and no gate evidence, and nothing in the reactor said a word about either.
+    The execution below makes that invocation fail at post-integration-test,
+    which is the one phase after both tiers have written their data and before
+    verify, where the merge, the report and the floor all sit.
+
+    WHY NOT A <skip> ELEMENT ON THE EXECUTION. That is the obvious shape and it
+    is forbidden here, for a good reason that predates this check:
+    BuildProvenanceTest.theScanGateIsNotWeakened rejects a <skip> element on any
+    plugin in this POM, because the vulnerability scan must be reachable only
+    through a command-line user property that leaves a trace in the invocation,
+    and a POM-side skip leaves none. That guard is deliberately not narrowed to
+    make room for this check. A profile deactivated by a user property has the
+    identical property the guard is protecting - the off switch can only be
+    thrown on the command line, where it is visible - while leaving the guard
+    literally true.
+
+    WHY -Djacoco.skip IS THE OFF SWITCH AND -DskipITs IS NOT. The two flags
+    differ in kind, not degree. -Djacoco.skip=true switches off the agents, the
+    merge, the report and the floor together, so a run using it publishes no
+    coverage figure and there is nothing for it to be wrong about; many test
+    classes recommend exactly that flag for a narrow local run, and those runs
+    must keep working. -DskipITs silences one tier while leaving the merge, the
+    report and the floor switched on, so the build still publishes a coverage
+    figure - one measured over half the evidence. That is the defect, so
+    -DskipITs deliberately does NOT deactivate this profile.
+
+    ACTIVATION SEMANTICS, since a negated property is easy to misread. Profile
+    activation sees user and system properties only, never this POM's own
+    <properties>, so <value>!true</value> reads as "jacoco.skip is anything other
+    than the string true, including undefined". With no flags the property is
+    undefined and the profile is ACTIVE. With -Djacoco.skip=true it is INACTIVE.
+    Confirm on any invocation with `./mvnw help:active-profiles`.
+
+    SAFE FOR CI AND FOR THE IMAGE, checked rather than assumed.
+    .github/workflows/build.yml runs a plain `clean verify` and passes no
+    -DskipTests, -DskipITs, -Dmaven.test.skip or -Djacoco.skip, so both files are
+    present when this runs there. The Dockerfile builder stage runs
+    `clean package`, which stops three phases short of post-integration-test, so
+    this execution never fires while building the image.
+  -->
+  <profiles>
+    <profile>
+      <id>coverage-data-completeness</id>
+      <activation>
+        <property>
+          <name>jacoco.skip</name>
+          <value>!true</value>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <version>${maven-enforcer-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>enforce-coverage-data-completeness</id>
+                <phase>post-integration-test</phase>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <configuration>
+                  <fail>true</fail>
+                  <rules>
+                    <!--
+                      requireFilesExist catches the skipped tier. requireFilesSize
+                      catches the other shape, which looks nothing like it: a fork
+                      that dies before the agent flushes leaves a zero-byte file,
+                      which exists, merges to nothing, and yields a report missing
+                      a whole tier with no error anywhere. maxsize is stated
+                      explicitly because the rule's own default is 10000 bytes and
+                      every real execution data file exceeds it - the unit tier's
+                      is over half a megabyte - so the default would fail every
+                      green build.
+                    -->
+                    <requireFilesExist>
+                      <files>
+                        <file>${project.build.directory}/jacoco.exec</file>
+                        <file>${project.build.directory}/jacoco-it.exec</file>
+                      </files>
+                      <message>Coverage execution data is incomplete, so this build must not reach jacoco:merge. target/jacoco.exec is written by the unit tier at the test phase and target/jacoco-it.exec by the integration and end-to-end tiers at the integration-test phase; the file listed above is missing. Merging one of the two produces a report, and a 0.80 floor check, measured over half the evidence and reporting success - and the validation-gate evidence under target/gate-verification is then absent entirely, because the harness that writes it lives in the end-to-end tier. If a tier was skipped deliberately, add -Djacoco.skip=true: that switches off this check together with the agents, the merge, the report and the floor, so no coverage claim is made from partial data. If no tier was skipped, a forked JVM died before writing its data - read the Surefire or Failsafe output above.</message>
+                    </requireFilesExist>
+                    <requireFilesSize>
+                      <minsize>1</minsize>
+                      <maxsize>1099511627776</maxsize>
+                      <files>
+                        <file>${project.build.directory}/jacoco.exec</file>
+                        <file>${project.build.directory}/jacoco-it.exec</file>
+                      </files>
+                      <message>Every coverage execution data file must be present AND non-empty, and this rule reports both shapes because it cannot tell them apart. An absent file means a tier did not run, and the rule above names it. A file that is present but zero bytes is the more dangerous shape: it merges to nothing while looking like data, so the coverage report silently omits a whole tier and the floor check passes on what is left. That is what a forked JVM leaves when it dies before the agent flushes, and the Surefire or Failsafe output above will name the fork. Do not delete the file to get past this - rerun the tier.</message>
+                    </requireFilesSize>
+                  </rules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
 </project>

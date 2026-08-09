@@ -37,7 +37,6 @@ import com.cardemo.model.entity.Card;
 import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -313,16 +312,20 @@ import org.springframework.stereotype.Repository;
  *   </ul>
  *
  * <p><b>Deliberate omissions, so that each reads as a decision rather than an oversight.</b> No
- * unpaged {@code List} overload of the account finder: the paged form already covers the shape of
+ * unpaged {@code List} overload of the account finder: the windowed form already covers the shape of
  * {@code app/cbl/COCRDSLC.cbl:L779-L809} when given a first-page {@code Pageable}, so a second
- * overload would be dead code under Rule 1 clause B on top of a method that already has no caller. No finder on the
+ * overload would be dead code under Rule 1 clause B. No exclusive-bound sibling of any of the four
+ * keyset finders: their bounds are inclusive precisely because {@code STARTBR ... GTEQ} means "at or
+ * after", and a browse resuming from a key it has already consumed discards the one leading row that
+ * repeats it - one rule for the first read and every continuation, rather than eight finders where four
+ * suffice. No finder on the
  * verification value, the embossed name, the expiry date or
  * the active status, since no legacy access path keys on any of them. No {@code delete} usage: the
  * CSD grants {@code DELETE(YES)} on {@code CARDDAT} at {@code app/csd/CARDDEMO.CSD:L31} but no
  * program in the corpus issues a card delete, so the inherited method exists and stays unused by
- * design. No native query and no string concatenation anywhere: the two paged finders are derived from
- * their method names, and the one declared {@code @Query} - the read-for-update finder, which needs
- * {@code @Query} because a derived name cannot express a lock mode - binds its single argument through
+ * design. No native query and no string concatenation anywhere: every browse finder is derived from
+ * its method name, and the two declared {@code @Query} methods - the read-for-update finders, which need
+ * {@code @Query} because a derived name cannot express a lock mode - bind every argument through
  * {@code @Param}, so there is no query text into which a value could be interpolated. No
  * {@code @Modifying} bulk statement, which would bypass the {@code @Version} guard. No default or static
  * method, and no state of any kind.</p>
@@ -342,10 +345,28 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * matching non-unique B-tree index is created by {@code V2__create_indexes.sql} on
      * {@code card (card_acct_id)}.
      *
-     * <h4>Why this method exists with no caller, and why it must not be deleted</h4>
+     * <h4>What drives it, and why the corpus makes that call site the only faithful one</h4>
      *
-     * <p><strong>It has no production caller, and cannot faithfully acquire one.</strong> That is a property
-     * of the frozen corpus, not of this interface, and the evidence is exact. {@code CARDAIX} is declared as
+     * <p><strong>Its caller is the account-filtered card list, opening its browse.</strong>
+     * {@code com.cardemo.service.card.CardListService} issues this read when the browse starts at the
+     * beginning of an account's card sequence - the fresh-entry case, where {@code INITIALIZE} at
+     * {@code app/cbl/COCRDLIC.cbl:L300-L302} leaves the record identification field as spaces - and resumes
+     * with {@link #findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc(Long, String, Pageable)}
+     * once it has a key to continue from. Both read through {@code card (card_acct_id)}, so the index this
+     * schema creates for {@code CARDDATA.VSAM.AIX} answers the account filter that
+     * {@code 9500-FILTER-RECORDS} declares at {@code :L1385-L1394} instead of the filter being applied to rows
+     * the base-key browse had already produced.
+     *
+     * <p><strong>It returns a {@code Slice} and not a {@code Page}, for the reason set out on
+     * {@link #findAllByOrderByCardNumberAsc(Pageable)}.</strong> A {@code Page} makes Spring Data issue a
+     * {@code select count(*)} alongside every window query, and a VSAM browse publishes no cardinality at all:
+     * the screen's more-records indicator comes from whether the next {@code READNEXT} succeeded, which is
+     * exactly the one-bit answer a {@code Slice} carries. A count of the account's cards is a number the
+     * source never has and this browse never reads.
+     *
+     * <h4>Why the base cluster, not this path, is what the corpus reads through</h4>
+     *
+     * <p>{@code CARDAIX} is declared as
      * a {@code PIC X(8)} literal in five online programs - {@code app/cbl/COCRDLIC.cbl:L217},
      * {@code app/cbl/COCRDUPC.cbl:L254}, {@code app/cbl/COACTVWC.cbl:L191},
      * {@code app/cbl/COACTUPC.cbl:L580} and {@code app/cbl/COCRDSLC.cbl:L190} - and is read by a
@@ -359,31 +380,35 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * {@code com.cardemo.service.card.CardDetailService} is a documented empty method rather than a
      * transcription.
      *
-     * <p><strong>The card list does not use it either, and must not be changed to.</strong>
+     * <p><strong>What the card list does with it, and what it deliberately does not do.</strong>
      * {@code app/cbl/COCRDLIC.cbl} filters by account with {@code IF CARD-ACCT-ID = CC-ACCT-ID} at
      * {@code :L1386} inside {@code 9500-FILTER-RECORDS}, applied to records arriving from a
      * {@code STARTBR}/{@code READNEXT}/{@code READPREV} browse of the <em>base</em> cluster at
-     * {@code :L1129-L1258}. The browse is key-addressed and supports three filter shapes - account, card and
-     * unfiltered - so replacing one of the three with an indexed finder would fork the paging mechanism and
-     * change how positions are resolved. {@code com.cardemo.service.card.CardListService} therefore uses
-     * {@link #findAllByOrderByCardNumberAsc(Pageable)} for all three.
+     * {@code :L1129-L1258}. The rows that occupy screen lines are exactly the rows that survive that test, and
+     * those come from here. Two reads that the source performs against the base cluster stay against the base
+     * cluster, because moving them would change what the screen reports rather than only how it is obtained:
+     * the page-full lookahead at {@code :L1197-L1205}, which does not apply the filter and whose key becomes
+     * the page-down start key, and the end-of-file arm at {@code :L1236-L1237}, which saves the key of the
+     * last base record the browse read. Those are served by
+     * {@link #findByCardNumberGreaterThanEqualOrderByCardNumberAsc(String, Pageable)} and
+     * {@link #findFirstByOrderByCardNumberDesc()}.
      *
-     * <p><strong>It is required regardless.</strong> Transformation Rule 5 of the migration plan maps every
-     * alternate index and path onto a derived finder plus a B-tree index, and the plan's own corrections
-     * record a <em>missing</em> derived finder as a defect - the alternate-index count is three, not two, and
-     * {@code CARDDATA.VSAM.AIX} is one of the three. Deleting this method would satisfy a dead-code reading
-     * while reintroducing that defect and leaving the {@code card (card_acct_id)} index with nothing in the
-     * Java model that corresponds to it. The three finders and the three indexes are asserted together by
+     * <p><strong>Transformation Rule 5 is satisfied here and asserted.</strong> The rule maps every alternate
+     * index and path onto a derived finder plus a B-tree index, and the plan's own corrections record a
+     * <em>missing</em> derived finder as a defect - the alternate-index count is three, not two, and
+     * {@code CARDDATA.VSAM.AIX} is one of the three. This method and the two account-scoped keyset finders all
+     * key on {@code card.card_acct_id}, so the {@code card (card_acct_id)} index has both a Java counterpart
+     * and live traffic. The finders and the indexes are asserted together by
      * {@code com.cardemo.unit.repository.AlternateIndexFinderMandateTest}, so neither half can be removed
      * silently.
      *
      * @param accountId the owning account identifier, from {@code CARD-ACCT-ID PIC 9(11)} at
      * {@code app/cpy/CVACT02Y.cpy:L6}.
-     * @param pageable the page index and page size to apply.
-     * @return a page of the account's cards in ascending card-number order, empty if the account owns none or
-     * the page index lies past the end.
+     * @param pageable the window size; page number zero, because this finder opens a browse rather than
+     * addressing an arbitrary offset.
+     * @return a slice of the account's cards in ascending card-number order, empty if the account owns none.
      */
-    Page<Card> findByAccountIdOrderByCardNumberAsc(Long accountId, Pageable pageable);
+    Slice<Card> findByAccountIdOrderByCardNumberAsc(Long accountId, Pageable pageable);
 
     /**
      * Returns one page of all cards, ordered by card number ascending.
@@ -397,23 +422,173 @@ public interface CardRepository extends JpaRepository<Card, String> {
      *
      * <p><strong>Finding, Medium severity - this returned {@code Page} and now returns {@code Slice}.</strong>
      * A {@code Page} makes Spring Data issue a {@code select count(*)} alongside <em>every</em> window query.
-     * Its one caller, {@code com.cardemo.service.card.CardListService}, positions its browse by binary search
-     * over the key sequence, so a single request fetched on the order of log2(n) windows and paid for a count
-     * query on each of them - while needing the total exactly once, as the search's upper bound. That caller
-     * now takes the total from one explicit {@link org.springframework.data.repository.CrudRepository#count()}
-     * per request and reads only the window content from here, which is the shape the review prescribes:
-     * slice the windows, count once where a count is genuinely required.
-     *
-     * <p>Narrowing is also the faithful direction. {@code app/cbl/COCRDLIC.cbl} pages by {@code STARTBR} plus
+     * Narrowing is also the faithful direction: {@code app/cbl/COCRDLIC.cbl} pages by {@code STARTBR} plus
      * {@code READNEXT} at {@code :L1128-L1154}, and a VSAM browse publishes no cardinality: the screen's
      * more-records indicator comes from whether the next {@code READNEXT} succeeded. A {@code Slice} carries
      * the window and that same one-bit answer, and nothing else.
+     *
+     * <p><strong>Finding, Critical severity - the card list no longer positions its browse through this
+     * method, and the remaining caller is a probe rather than a browse.</strong>
+     * {@code com.cardemo.service.card.CardListService} used to locate a start key by binary search over
+     * offset windows here, bounding the search with one {@code count()}: on the order of log2(n) window reads
+     * per screen, and - because an offset carries no predicate - a filtered screen then walked the whole key
+     * sequence a window at a time and discarded every row the filter excluded, at
+     * {@code ceil(rows / windowSize)} statements per request. An {@code OFFSET} is not a seek and cannot be
+     * one; {@code STARTBR ... GTEQ} is an index descent to a key. That browse therefore moved onto
+     * {@link #findByCardNumberGreaterThanEqualOrderByCardNumberAsc(String, Pageable)} and its account-scoped
+     * and descending siblings, which express the same reads as keyset predicates.
+     *
+     * <p>What still reads through here is
+     * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}'s pre-flight availability probe for
+     * {@code CARDFILE}: one bounded window whose only question is whether the dataset can be opened and read
+     * at all, which is the {@code OPEN INPUT} plus first {@code READ} of {@code app/cbl/CBTRN01C.cbl}. A probe
+     * has no key to position at, so an offset-addressed first window is exactly the right shape for it and no
+     * keyset seed would say anything more.
      *
      * @param pageable the page index and page size to apply.
      * @return a slice of cards in ascending card-number order, empty if the table holds no rows or the page
      * index lies past the end.
      */
     Slice<Card> findAllByOrderByCardNumberAsc(Pageable pageable);
+
+    /**
+     * Opens the base-key browse at a key: the first window of cards whose number is greater than or equal to
+     * {@code cardNumber}, ascending.
+     *
+     * <p>This is {@code EXEC CICS STARTBR DATASET(LIT-CARD-FILE) RIDFLD(WS-CARD-RID-CARDNUM) KEYLENGTH(16)
+     * GTEQ} at {@code app/cbl/COCRDLIC.cbl:L1128-L1135} followed by {@code READNEXT} at {@code :L1146}, and it
+     * is the finder {@code com.cardemo.service.card.CardListService} now positions its unfiltered browse with.
+     *
+     * <p><strong>Why the online browse moved off {@link #findAllByOrderByCardNumberAsc(Pageable)}, and why
+     * that is the faithful direction.</strong> A {@code Pageable} positions a window with SQL {@code OFFSET},
+     * and an {@code OFFSET} is not a seek: the engine produces and discards every preceding row. Because a
+     * key-addressed browse cannot be expressed through an offset, the card list used to locate its start key
+     * by binary search over offset windows and to bound that search with a {@code count()} - on the order of
+     * log2(n) window reads plus a whole-table count for a single screen. {@code STARTBR ... GTEQ} is one index
+     * descent to a key, and a keyset predicate is the same one descent, so this method models what the source
+     * does rather than something more expensive that merely produces the same rows.
+     *
+     * <p><strong>The bound is inclusive, deliberately.</strong> {@code GTEQ} means "at or after", so the first
+     * read of a browse must be able to return the record that carries the start key itself - the page-down
+     * start key is the first row of the next page, and an exclusive bound would skip it. A browse that has
+     * already consumed a key asks again from that same key and discards the one leading row that repeats it,
+     * which keeps one rule for the first read and every continuation instead of two finders that differ only
+     * in a boundary.
+     *
+     * <p>{@code cardNumber} is matched against {@code CARD-NUM PIC X(16)} at
+     * {@code app/cpy/CVACT02Y.cpy:L5}, mapped to {@code card.card_num CHAR(16) NOT NULL}, so the primary-key
+     * index serves the predicate and the ordering together and no sort node is produced. The empty string
+     * precedes every stored key - no stored key can be empty, the column being {@code NOT NULL} and sixteen
+     * characters wide - so it is the seed for the fresh-entry case, where {@code INITIALIZE} at
+     * {@code app/cbl/COCRDLIC.cbl:L300-L302} leaves the record identification field as spaces.
+     *
+     * <p>The {@code Pageable} supplies the window size only. Its page number must be zero, because the
+     * predicate - not an offset - is what positions the window, and the ordering is fixed by the method name
+     * so a caller-supplied {@code Sort} cannot vary it.
+     *
+     * @param cardNumber the inclusive lower bound, or the empty string to open at the start of the key
+     *     sequence.
+     * @param pageable the window size; page number zero.
+     * @return the window in ascending key order, never {@code null} and empty once the key sequence is
+     *     exhausted, which is the browse's end-of-file condition.
+     */
+    List<Card> findByCardNumberGreaterThanEqualOrderByCardNumberAsc(String cardNumber, Pageable pageable);
+
+    /**
+     * Opens the backward browse at a key: the first window of cards whose number is less than or equal to
+     * {@code cardNumber}, descending.
+     *
+     * <p>This is {@code EXEC CICS READPREV} at {@code app/cbl/COCRDLIC.cbl:L1294-L1302} - the priming read of
+     * {@code 9100-READ-BACKWARDS} - and its loop read at {@code :L1322-L1330}. A {@code READPREV} issued
+     * straight after {@code STARTBR ... GTEQ} returns the record the browse is positioned at and then steps
+     * back, which is why the bound is inclusive here for exactly the reason it is inclusive on
+     * {@link #findByCardNumberGreaterThanEqualOrderByCardNumberAsc(String, Pageable)}: a browse that has
+     * already consumed a key asks again from it and discards the one leading row that repeats it.
+     *
+     * <p>Descending order is the whole point of the method, so it is fixed in the name rather than left to a
+     * caller's {@code Sort}. The primary-key index is read backwards, which costs the same as reading it
+     * forwards and again produces no sort node.
+     *
+     * @param cardNumber the inclusive upper bound.
+     * @param pageable the window size; page number zero.
+     * @return the window in descending key order, never {@code null} and empty once the front of the key
+     *     sequence is passed - which {@code 9100-READ-BACKWARDS} treats as a file error rather than as end of
+     *     file, because it has no {@code DFHRESP(ENDFILE)} arm at all.
+     */
+    List<Card> findByCardNumberLessThanEqualOrderByCardNumberDesc(String cardNumber, Pageable pageable);
+
+    /**
+     * The account-scoped form of {@link #findByCardNumberGreaterThanEqualOrderByCardNumberAsc(String,
+     * Pageable)}: one window of a single account's cards at or after a key, ascending.
+     *
+     * <p>This is the index-backed rendering of the account filter that {@code 9500-FILTER-RECORDS} applies at
+     * {@code app/cbl/COCRDLIC.cbl:L1385-L1394} - {@code IF CARD-ACCT-ID = CC-ACCT-ID} - hoisted from the
+     * application into the predicate that {@code CARDDATA.VSAM.AIX} exists to answer. The alternate key sits
+     * at byte 16 of the base record, {@code app/catlg/LISTCAT.txt:L281-L284} recording
+     * {@code KEYLEN 11, RKP 5, AXRKP 16}, and the matching non-unique B-tree index is created by
+     * {@code V2__create_indexes.sql} on {@code card (card_acct_id)}.
+     *
+     * <p><strong>Why hoisting it is a correctness matter and not a preference.</strong> Filtering in the
+     * application meant a filtered screen read the base key sequence a window at a time and discarded every
+     * row that did not match, so the cost of one screen grew with the whole table rather than with the
+     * account's own card count - measurably {@code ceil(rows / windowSize)} statements per request. The rows
+     * the screen shows are identical either way; what changes is that the index this schema already carries
+     * now answers the question it was created for.
+     *
+     * <p><strong>What deliberately does not move into the predicate.</strong> The page-full lookahead at
+     * {@code app/cbl/COCRDLIC.cbl:L1197-L1205} reads the next record of the <em>base</em> cluster without
+     * applying any filter, and the end-of-file arm at {@code :L1236-L1237} saves the key of the last base
+     * record the browse read. Both therefore stay on the unfiltered finders above; only the rows that occupy
+     * screen lines come from here.
+     *
+     * @param accountId the owning account identifier, {@code CARD-ACCT-ID PIC 9(11)} at
+     *     {@code app/cpy/CVACT02Y.cpy:L6}, bound as a query parameter.
+     * @param cardNumber the inclusive lower bound on the card number.
+     * @param pageable the window size; page number zero.
+     * @return the window in ascending key order, never {@code null} and empty once the account owns no further
+     *     card at or after that key.
+     */
+    List<Card> findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc(Long accountId,
+            String cardNumber, Pageable pageable);
+
+    /**
+     * The account-scoped form of {@link #findByCardNumberLessThanEqualOrderByCardNumberDesc(String,
+     * Pageable)}: one window of a single account's cards at or before a key, descending.
+     *
+     * <p>Serves the backward browse of {@code 9100-READ-BACKWARDS} at
+     * {@code app/cbl/COCRDLIC.cbl:L1320-L1371} while an account filter is in force, for the reasons given on
+     * {@link #findByAccountIdAndCardNumberGreaterThanEqualOrderByCardNumberAsc(Long, String, Pageable)}. The
+     * priming read at {@code :L1294-L1302} is <em>not</em> served from here: the source does not apply the
+     * filter to it, so it stays on the unfiltered descending finder.
+     *
+     * @param accountId the owning account identifier, bound as a query parameter.
+     * @param cardNumber the inclusive upper bound on the card number.
+     * @param pageable the window size; page number zero.
+     * @return the window in descending key order, never {@code null} and empty once the account owns no
+     *     further card at or before that key.
+     */
+    List<Card> findByAccountIdAndCardNumberLessThanEqualOrderByCardNumberDesc(Long accountId,
+            String cardNumber, Pageable pageable);
+
+    /**
+     * The last card in the key sequence.
+     *
+     * <p>Reproduces what the forward browse's end-of-file arm reads out of the record buffer at
+     * {@code app/cbl/COCRDLIC.cbl:L1236-L1237}. The buffer holds the record read immediately before end of
+     * file, and because {@code 9000-READ-FORWARD} browses the <em>base</em> cluster from the start key to the
+     * end of the file whether or not a filter excluded rows on the way, that record is the highest-keyed row
+     * in the file. A filtered browse that stops as soon as the account's own cards run out has not read it,
+     * so it obtains it here in one descending index read rather than by walking the remaining base records to
+     * find something it then discards.
+     *
+     * <p>An empty result means the file holds no row at all, which leaves the source's record buffer
+     * untouched - the state {@code 9000-READ-FORWARD} is in when its very first {@code READNEXT} reports end
+     * of file - and the browse's saved keys stay unset. That is preserved rather than filled in with invented
+     * byte content.
+     *
+     * @return the highest-keyed card, or empty when the table holds no rows.
+     */
+    Optional<Card> findFirstByOrderByCardNumberDesc();
 
     /**
      * Reads one card row under a pessimistic write lock, so that a caller can compare its business field values

@@ -1662,6 +1662,14 @@ public class UserDeleteService {
      *
      * <p>The rejection carries the {@code INVALID} state and names the field, never the value.
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param value     the submitted value, permitted to be {@code null}
      * @param maxLength the declared width of the field
      * @param fieldName the field's name, for the rejection
@@ -1669,7 +1677,11 @@ public class UserDeleteService {
      * @throws ValidationException when the value is wider than the field
      */
     private static String requireWidth(final String value, final int maxLength, final String fieldName) {
-        if (value != null && value.length() > maxLength) {
+        if (value == null) {
+            return null;
+        }
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw ValidationException.invalidField(fieldName,
                     fieldName + " must be at most " + maxLength + " characters");
         }

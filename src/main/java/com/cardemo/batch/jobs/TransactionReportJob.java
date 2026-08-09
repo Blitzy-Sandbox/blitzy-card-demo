@@ -36,6 +36,7 @@ import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.key.TransactionCategoryBalanceId;
+import com.cardemo.observability.BatchJobSpanNamingConvention;
 import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
@@ -69,6 +70,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
@@ -888,6 +890,12 @@ public class TransactionReportJob {
             @Qualifier(FLOW_BEAN_NAME) final Flow transactionReportFlow) {
 
         return new JobBuilder(jobName, jobRepository)
+                // Finding B-12: without this the framework hands the ALL-CAPS job name to
+                // Micrometer Tracing, whose SpanNameUtil.toLowerHyphen hyphenates every
+                // upper-case character, so the run reached the trace store under a name no
+                // operator could search for. Registered per builder because Spring Batch
+                // resolves no convention bean from the context.
+                .observationConvention(BatchJobSpanNamingConvention.INSTANCE)
                 .validator(new TransactionReportParametersValidator())
                 .listener(new TransactionReportJobListener())
                 .start(transactionReportFlow)
@@ -2530,20 +2538,40 @@ public class TransactionReportJob {
     }
 
     /**
-     * Validates the full untrusted date-parameter pair.
+     * Validates the full untrusted date-parameter pair, each date on its own and never against the other.
+     *
+     * <p><strong>The two dates are validated individually and no start-versus-end comparison is made,
+     * because the source makes none.</strong> {@code app/cbl/CORPT00C.cbl} is the only producer of this
+     * period and its entire validation of a custom range is per field and per date: the month and day bounds
+     * at {@code :L330}, {@code :L339}, {@code :L356} and {@code :L365}, and one
+     * {@code CALL 'CSUTLDTC'} per assembled date at {@code :L388}-{@code :L393}. There is no
+     * {@code IF WS-START-DATE > WS-END-DATE} anywhere in the member, and an inverted window is not a rejected
+     * request on the mainframe - it is a request that selects nothing, because
+     * {@code app/proc/TRANREPT.prc} {@code STEP05R} expresses the window as
+     * {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)} and no record
+     * can satisfy both halves when the bounds cross. The legacy outcome is therefore a report with headings,
+     * zero detail lines and a zero grand total, and {@link TransactionReportProcessor} reproduces exactly
+     * that by re-applying the same inclusive comparison per record.
+     *
+     * <p><strong>Finding B-15, severity Major.</strong> A {@code startDate.compareTo(endDate) > 0} test used
+     * to stand here, and it was wrong twice over. It broke AAP §0.8.3 "Preserve absent guards" - the added
+     * guard is a behaviour the system of record does not have - and, because
+     * {@code com.cardemo.service.report.ReportSubmissionService} faithfully has no such guard either, the
+     * online tier accepted a submission (HTTP 202) that this validator then refused. The queue that carries
+     * submissions is FIFO with a single message group, so every such request became a poison message that
+     * blocked all later report generation until an operator purged the queue. Two tiers disagreeing about
+     * what is valid is the defect; agreeing with the source is the fix.
+     *
+     * <p>What is still validated is everything the source validates: each date must be present, must have the
+     * exact ten-character {@code yyyy-MM-dd} shape the parameter cards at
+     * {@code app/proc/TRANREPT.prc:L41}-{@code :L42} carry, and must be a real calendar date according to the
+     * same date service that replaces {@code CSUTLDTC}. See {@link #requireDateParameter}.
      *
      * @param parameters job parameters containing {@code startDate} and {@code endDate}
      */
     private void validateDateRange(final JobParameters parameters) {
-        final String startDate =
-                requireDateParameter(parameters, TransactionReportProcessor.START_DATE_JOB_PARAMETER);
-        final String endDate =
-                requireDateParameter(parameters, TransactionReportProcessor.END_DATE_JOB_PARAMETER);
-        if (startDate.compareTo(endDate) > 0) {
-            throw ValidationException.invalidField(
-                    TransactionReportProcessor.START_DATE_JOB_PARAMETER,
-                    "startDate must not be after endDate");
-        }
+        requireDateParameter(parameters, TransactionReportProcessor.START_DATE_JOB_PARAMETER);
+        requireDateParameter(parameters, TransactionReportProcessor.END_DATE_JOB_PARAMETER);
     }
 
     /**
@@ -2832,10 +2860,52 @@ public class TransactionReportJob {
         private TransactionReportParametersValidator() {
         }
 
-        /** {@inheritDoc} */
+        /**
+         * Validates the submitted period and reports a refusal as the type this interface declares.
+         *
+         * <p><strong>Finding, severity Major - remediated here. One inverted range stalled the whole report
+         * bridge for four days.</strong> This method used to call {@link #validateDateRange(JobParameters)}
+         * and let its {@link ValidationException} propagate. That exception is a
+         * {@link RuntimeException}, so it escaped {@code JobLauncher.run} unchanged instead of arriving as
+         * the {@link JobParametersInvalidException} that {@link JobParametersValidator#validate} declares -
+         * and the only consumer of this job, {@code com.cardemo.config.BatchConfig.ReportJobQueueListener},
+         * decides whether to acknowledge a queue message from exactly that distinction. Its terminal arm for
+         * refused parameters was therefore never reached: the runtime exception passed straight through the
+         * listener, the SQS container logged it and acknowledged nothing, and because every submission uses
+         * one FIFO message group, the unrunnable message blocked delivery of every submission behind it -
+         * about 384 redeliveries over the queue's four-day retention, while {@code POST /api/reports} kept
+         * answering {@code 202}.
+         *
+         * <p><strong>Honouring the declared contract is the fix, not a new refusal.</strong> The same
+         * periods are refused, for the same reasons, with the same messages; only the exception type changes,
+         * so nothing that was accepted before is rejected now and nothing rejected before is accepted. The
+         * producer is deliberately left alone: {@code app/cbl/CORPT00C.cbl} performs no start-versus-end
+         * ordering validation at all - {@code :L381-L410} validates each of the six custom-range components
+         * through the date utility and never compares the two assembled dates - so accepting an inverted
+         * range at submission is parity, and adding a producer-side refusal would be a behaviour change. The
+         * containment belongs on the consumer, which is where a JCL step with a non-zero return code would
+         * have reported it.
+         *
+         * <p>The field name is carried into the message because
+         * {@link JobParametersInvalidException} declares only a message constructor, and the original is
+         * attached as the cause so the refusal keeps its own stack trace. Neither is logged by the queue
+         * consumer: it records the exception type only, and the field name here is a parameter name rather
+         * than a submitted value.
+         *
+         * @param parameters the job parameters to validate
+         * @throws JobParametersInvalidException if either date is absent, malformed or not a calendar date;
+         *     the two bounds are deliberately not compared, because no COBOL source compares them
+         */
         @Override
-        public void validate(final JobParameters parameters) {
-            validateDateRange(parameters);
+        public void validate(final JobParameters parameters) throws JobParametersInvalidException {
+            try {
+                validateDateRange(parameters);
+            } catch (final ValidationException refused) {
+                final JobParametersInvalidException declared = new JobParametersInvalidException(
+                        refused.getFieldName() + ": " + refused.getMessage());
+                declared.initCause(refused);
+                throw declared;
+            }
         }
     }
 

@@ -54,44 +54,111 @@
   *                     whole file: exactly two occurrences, both the
   *                     Apache licence address in licence text (this
   *                     comment and the visible footer). Zero script
-  *                     elements, zero link elements, zero iframes,
+  *                     elements, zero iframes, zero img elements,
   *                     zero import rules, zero font-face rules, and
   *                     no src or href attribute referencing any
-  *                     remote resource. The inline SVG carries no
+  *                     remote resource. There is exactly ONE link
+  *                     element - a rel=icon whose href is an inline
+  *                     base64 PNG data URI, which is data rather
+  *                     than a fetch, so it costs the file nothing in
+  *                     self-containment. The inline SVG carries no
   *                     xmlns attribute, which an HTML5 document does
   *                     not need, so the file holds no URL at all
   *                     outside licence text. Confirmed at runtime by
-  *                     loading this file from disk in headless
-  *                     Chrome: the ONLY network request was the
+  *                     serving the built site to headless Chrome
+  *                     151: the ONLY network request was the
   *                     document itself, zero subresources were
-  *                     fetched, zero requests to any remote host
-  *                     were attempted, and the render with
-  *                     networking disabled was pixel identical to
-  *                     the render with networking available. Console
-  *                     output was empty: zero errors, zero warnings.
-  *   Print output    : Verified by a real print render. The page
-  *                     paginates cleanly across 23 pages at the
-  *                     16 mm page margin this stylesheet sets, the
-  *                     skip link and the table of contents are
-  *                     correctly hidden, and the architecture figure
-  *                     is not split across a page boundary. Two of
-  *                     the eight tables are taller than one printed
-  *                     page and therefore do break, which no
-  *                     break-inside rule can prevent; they break
-  *                     cleanly, repeating the header row and
-  *                     bisecting no row.
+  *                     fetched, zero requests to any host other than
+  *                     the loopback were attempted, and this held on
+  *                     a cache-bypassing cold reload as well as a
+  *                     warm one. Console output was EMPTY: zero
+  *                     messages of any kind - not merely zero
+  *                     errors. Reaching zero took the icon above.
+  *                     Until it was declared, a browser requested
+  *                     /favicon.ico for this document whether or not
+  *                     one existed, the server answered 404, and
+  *                     that logged the single console error this file
+  *                     ever produced - browser-originated, not
+  *                     page-originated, and invisible to any check
+  *                     that reads only the markup.
+  *   Print output    : Verified by a real print render to A4 with
+  *                     background graphics on and no margin
+  *                     override, so the 16 mm margin this stylesheet
+  *                     sets is the one applied - measured at 15.88
+  *                     to 16.02 mm on all four edges of every sheet.
+  *                     The page paginates across 21 pages. The skip
+  *                     link, the table of contents and the screen-only
+  *                     scroll hint are correctly hidden, the port
+  *                     border and sticky offsets are correctly reset,
+  *                     and the architecture figure is not split
+  *                     across a page boundary. Five of the eight
+  *                     tables cross a page boundary on US Letter at
+  *                     the 16 mm margin, and every one of those five
+  *                     repeats its header row on its continuation
+  *                     page; no row is bisected. The other three fit
+  *                     on a single sheet, so they never break and
+  *                     have no continuation page to repeat onto -
+  *                     an earlier reading of this banner said all
+  *                     eight break, which overstated what the print
+  *                     artefact shows. How many break is a function
+  *                     of sheet size and margin, so it is not an
+  *                     invariant; that a broken table repeats its
+  *                     header is. Blank paper, re-measured 9 August
+  *                     2026 by rasterising all 21 sheets and taking
+  *                     each one's vertical ink extent, is 7.6 per
+  *                     cent of the printable band - 1,114 of
+  *                     14,727 points - of which a single sheet, the
+  *                     one carrying the widest table, accounts for
+  *                     241. The per-sheet distribution is sensitive
+  *                     to any edit of this file, so the figure to
+  *                     rely on is the aggregate and not a count of
+  *                     well-filled sheets. That
+  *                     supersedes an earlier reading of about 11 per
+  *                     cent taken on text extents alone. It was 23
+  *                     pages and about 18 per cent before `table`
+  *                     was removed from the break-inside list:
+  *                     asking an engine not to break a table taller
+  *                     than a sheet cannot be honoured, so the rule
+  *                     bought nothing but the blank remainder of the
+  *                     preceding page.
   *   Accessibility   : Verified in the same run. Exactly one h1 and
   *                     no skipped heading level across 39 headings;
-  *                     all 8 tables carry a caption; the single
-  *                     inline SVG exposes role="img" with a
-  *                     1,630-character accessible name from its
-  *                     title and desc; no duplicate id; the skip
-  *                     link is off screen until focused and then
-  *                     visible with a 3 px focus outline that is
-  *                     identical on ordinary links; all 22 in-page
-  *                     fragment links resolve and land on their
-  *                     heading. An automated audit reported no
-  *                     failing accessibility check.
+  *                     all 8 tables carry a caption, and each caption
+  *                     is pinned to its scroll port so it stays fully
+  *                     legible at a 375 px viewport even while the
+  *                     table beneath it is scrolled sideways -
+  *                     measured at 333 px, exactly the port width, on
+  *                     all eight, with no horizontal page scroll; no
+  *                     duplicate id; the skip link is off screen until
+  *                     focused and then visible with a 3 px focus
+  *                     outline that is identical on ordinary links,
+  *                     and activating it moves FOCUS to main, not
+  *                     merely the scroll position, so the next Tab
+  *                     continues from the first link inside main;
+  *                     all 22 in-page fragment links resolve and land
+  *                     on their heading; and all 32 cross-document
+  *                     links answer 200 from the published site. An
+  *                     automated audit reported no failing
+  *                     accessibility check.
+  *                     The single inline SVG exposes role="img" with
+  *                     an 83-character accessible NAME from its title
+  *                     and a separate 1,402-character accessible
+  *                     DESCRIPTION from its desc, each announced
+  *                     once. Both figures are the browser's own, read
+  *                     from the accessibility tree. Earlier
+  *                     generations of this banner published a
+  *                     "1,630-character accessible name", which was
+  *                     wrong twice over: 1,630 is the raw byte length
+  *                     of the two elements including the indentation
+  *                     they are authored with, and an accessible name
+  *                     is whitespace-collapsed, so the figure the
+  *                     browser actually computed was 1,486. It was
+  *                     also the wrong quantity to publish, because
+  *                     naming the figure with title AND desc together
+  *                     left the same 1,402 characters to be announced
+  *                     a second time as the description - the whole
+  *                     panel-by-panel walkthrough, twice, before the
+  *                     reader could reach the caption.
   *   Known finding   : LOW, standards hygiene, no observable effect.
   *                     This banner precedes the head, so the
   *                     charset declaration below sits beyond the
@@ -107,7 +174,58 @@
   *                     ever relaxed: move the charset meta above it.
   *                     Recorded rather than silently accepted, and
   *                     the file must stay free of raw non-ASCII
-  *                     bytes while it stands.
+  *                     bytes while it stands. The one arrow glyph in
+  *                     the stylesheet is written as the CSS escape
+  *                     \2192 for exactly this reason.
+  *   Known finding   : LOW, presentation, mitigated and disclosed.
+  *                     The architecture figure scales to the width
+  *                     available, so its in-figure labels render well
+  *                     below comfortable reading size on a narrow
+  *                     screen and on paper - about 4 to 6 px at a
+  *                     375 px viewport, and 6 to 9 pt in print.
+  *                     Raising the label size is not the remedy: the
+  *                     geometry is authored against a 1000-unit
+  *                     viewBox and larger text would overrun the
+  *                     boxes, and forcing the figure to scroll
+  *                     sideways instead would trade a cosmetic limit
+  *                     for a real one. Nothing is lost, because no
+  *                     content exists only inside the figure: the
+  *                     two paragraphs beneath it carry the same
+  *                     description in prose, the legend is ordinary
+  *                     HTML text that scales with the body copy, and
+  *                     the figure carries the whole walkthrough as
+  *                     its accessible description. The figure caption
+  *                     now says so, so a reader meets the limitation
+  *                     stated rather than discovers it.
+  *   Maintenance     : This file's 32 cross-document links are
+  *                     HAND-MAINTAINED and must be HAND-VERIFIED.
+  *                     MkDocs copies it to the site root byte for
+  *                     byte and parses no part of it, so its links
+  *                     are outside the reach of the validation block
+  *                     in mkdocs.yml: a wrong href here 404s on the
+  *                     published site while `mkdocs build --strict`
+  *                     still exits 0 with no warning. That is not
+  *                     hypothetical - it is how all 45 of the
+  *                     non-fragment links in an earlier generation
+  *                     came to point at source file names and 404
+  *                     once published. Two conventions follow, both
+  *                     deliberate. Cross-document hrefs use the
+  *                     PUBLISHED directory form (validation-gates/)
+  *                     while the link TEXT keeps the source file name
+  *                     (validation-gates.md), so a reader on the site
+  *                     clicks and arrives and a reader holding the
+  *                     raw file still sees which file to open; the
+  *                     accepted cost is that those links do not
+  *                     resolve outside the published site.
+  *                     Repository-root artefacts - DECISION_LOG.md,
+  *                     TRACEABILITY_MATRIX.md, README.md, LICENSE and
+  *                     NOTICE - are NAMED in code spans and never
+  *                     linked, because they sit outside docs_dir and
+  *                     so have no published URL at all; this is the
+  *                     same rule every sibling document follows.
+  *                     Verify by serving the built site and
+  *                     requesting each target, never by trusting the
+  *                     build to have looked.
   *   Markup validity : Verified. No HTML validator binary is
   *                     installed on the authoring host, so this was
   *                     checked with a spec-compliant HTML5 parser
@@ -166,6 +284,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- A browser requests /favicon.ico for every document whether or not one is
+     declared, and logs a console error when the server answers 404. That was the
+     only console output this file ever produced, and it came from the browser
+     rather than from the page. Declaring the icon inline as a 130-byte base64 PNG
+     data URI silences it without spending the self-containment property: a data
+     URI is not a network fetch, and the string below contains no URL at all - not
+     even an SVG namespace - so the file still holds exactly two http occurrences,
+     both the Apache licence address in licence text. The 32x32 mark is drawn from
+     this document's own --target, --page and --band tokens. -->
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAASUlEQVR42mNgGAWjYDABfv/s//TAA2o5TkeMOuA/ncGoA0YdMJoNRx2A1wFfvv8iCQ8/B4ymAVoE+dBywMhMAwPeKB0Fo2CgAAAZFMs8CQuFwQAAAABJRU5ErkJggg==">
 <title>CardDemo modernisation: executive summary (COBOL to Java 25 and Spring Boot 3.5.11)</title>
 <meta name="description" content="Stakeholder summary of the AWS CardDemo migration from IBM Enterprise COBOL under CICS, VSAM, JCL and BMS to Java 25 with Spring Boot 3.5.11: verified legacy scale, objectives, before and after architecture, fidelity constraints, evidence framework and current risks. Every figure is cited to a repository path.">
 <style>
@@ -207,6 +335,15 @@ body{
 a{color:#0b4f8a;text-decoration:underline;text-underline-offset:2px}
 a:hover{color:#062f52}
 a:focus-visible,.skip-link:focus-visible{outline:3px solid #0b4f8a;outline-offset:2px}
+/* main is focusable only programmatically (tabindex="-1"), so this rule fires
+   exactly once: immediately after the skip link is activated. A ring around
+   the whole content region is the correct confirmation that focus has moved
+   there, and it is drawn in the same 3 px weight and colour as every other
+   focus ring in this file so the treatment is consistent. Rendered on the
+   inside, because a container this tall would otherwise draw the ring off
+   screen. Not suppressed: a skip link that moves focus invisibly is the
+   defect this replaces, not the fix. */
+main:focus-visible{outline:3px solid #0b4f8a;outline-offset:-3px}
 h1,h2,h3{line-height:1.25;font-weight:700;color:var(--ink)}
 h1{font-size:2.05rem;margin:0 0 0.4rem}
 h2{font-size:1.5rem;margin:2.6rem 0 0.6rem;padding-top:0.9rem;border-top:2px solid var(--rule)}
@@ -216,7 +353,6 @@ li{margin:0 0 0.35rem}
 code{font-family:var(--mono);font-size:0.87em;background:var(--band);
   border:1px solid var(--rule-soft);border-radius:3px;padding:0.05em 0.3em;
   word-break:break-word}
-abbr{text-decoration:none;border-bottom:1px dotted var(--ink-soft);cursor:help}
 .masthead{background:var(--band);border-bottom:2px solid var(--rule);padding:2.1rem 0 1.5rem}
 .eyebrow{margin:0 0 0.5rem;font-size:0.8rem;letter-spacing:0.09em;
   text-transform:uppercase;font-weight:700;color:var(--ink-soft)}
@@ -239,8 +375,24 @@ th,td{border:1px solid var(--rule);padding:0.42rem 0.6rem;text-align:left;
 thead th{background:var(--band)}
 tbody th{background:#fbfcfd;font-weight:600}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.tablewrap{overflow-x:auto;margin:0 0 1.1rem}
+/* The horizontal scroll port for wide tables. container-type makes the port
+   itself a query container, so 100cqw below resolves to the PORT's content
+   width rather than to the scrollable table width - which is the whole point:
+   it is the only way to size a descendant against what the reader can see. */
+.tablewrap{overflow-x:auto;margin:0 0 1.1rem;container-type:inline-size}
 .tablewrap table{margin:0}
+/* A <caption> is laid out inside the table wrapper box, so when the table is
+   wider than the port the caption inherits the TABLE's width and its text
+   wraps off screen: at a 375 px viewport the eight captions could only be read
+   by scrolling sideways, which is not reading. Pin each caption to the port
+   and size it to the port, so it is fully legible at any width and stays
+   legible while the table beneath it is scrolled. The calc() is the fallback
+   for engines without container query units - .wrap contributes 1.25rem of
+   padding on each side - and the cqw declaration that follows overrides it
+   wherever cqw is supported, which is exact because it excludes the scrollbar. */
+.tablewrap caption{position:sticky;left:0;box-sizing:border-box;
+  width:calc(100vw - 2.5rem);
+  width:100cqw}
 figure{margin:1.4rem 0;padding:0}
 figure svg{display:block;width:100%;height:auto;border:1px solid var(--rule);
   border-radius:6px;background:var(--page)}
@@ -287,6 +439,51 @@ footer .lic{font-size:0.83rem}
   .toc ol{columns:auto}
   .meta{grid-template-columns:1fr;gap:0.05rem 0}
   .meta dd{margin:0 0 0.5rem}
+  /* Scroll affordance. At this breakpoint most of the eight tables are wider
+     than the port - five of the eight at a 375 px viewport, and more as the
+     width falls further - and nothing on screen said so: the reader saw a
+     column severed at the edge with no indication that more existed. A
+     bordered port marks where the scrollable region begins and ends, and a
+     pinned one-line hint states the behaviour in text, so it reaches a screen
+     reader as well as the eye. No script is involved - this file has none and
+     will not acquire one. The hint is pinned the same way the caption is, so
+     it stays put while the table scrolls beneath it. */
+  .tablewrap{border:1px solid var(--rule-soft);border-radius:4px;
+    padding:0.15rem 0 0.1rem}
+  .tablewrap::after{content:"Table scrolls sideways \2192";display:block;
+    position:sticky;left:0;box-sizing:border-box;
+    width:calc(100vw - 2.9rem);
+    width:100cqw;
+    padding:0.3rem 0.45rem 0.15rem;font-size:0.78rem;color:var(--ink-soft)}
+}
+/* Show the hint ONLY on a table that can actually scroll. CSS cannot test for
+   overflow directly, but a scroll-progress timeline is inactive when its
+   scroll container has nothing to scroll, and an animation attached to an
+   inactive timeline has no effect - so the opacity:0 below stands, and the
+   hint is hidden, on exactly the tables that fit. Where the container does
+   overflow the timeline is active, the animation applies, and the hint shows.
+   The keyframes hold one constant value: this is presence detection, not
+   motion, so it respects reduced-motion by having no motion to reduce.
+   Guarded by @supports because the unguarded fallback must be the honest one:
+   an engine without scroll timelines keeps the hint visible on all eight
+   rather than losing it on all eight.
+   Verified at a 375 px viewport: five of the eight tables overflow, and the
+   hint resolves to opacity 1 on exactly those five and 0 on exactly the three
+   that fit - including the one that overflows by only 9 px, so there is no
+   dead band leaving a scrollable table unlabelled. Two costs, both accepted
+   deliberately. First, opacity suppresses paint but not layout, so a fitting
+   wrapper still reserves the ~31 px the hint box would have occupied; that is
+   the price of a mechanism that fails safe in both directions, and animating
+   `display` instead would reclaim the space at the risk of hiding the hint
+   outright on an engine that supports scroll timelines but not discrete
+   display animation. Second, this block sits outside the width media query,
+   so opacity:0 applies at every width - harmless, because above 44rem the
+   `content` declaration does not apply and no box is generated at all, but it
+   is the thing to re-check if that breakpoint ever moves. */
+@supports (animation-timeline: scroll()){
+  @keyframes tw-scrollable{from{opacity:1}to{opacity:1}}
+  .tablewrap::after{opacity:0;animation:tw-scrollable 1s linear both;
+    animation-timeline:scroll(nearest inline)}
 }
 @media print{
   :root{--band:#fff;--page:#fff}
@@ -297,13 +494,57 @@ footer .lic{font-size:0.83rem}
   a{color:#000;text-decoration:underline}
   h2{break-after:avoid;page-break-after:avoid;border-top-color:#000}
   h3{break-after:avoid;page-break-after:avoid}
-  table,figure,.callout,.meta,thead,tr,li{break-inside:avoid;page-break-inside:avoid}
-  .tablewrap{overflow-x:visible}
+  /* break-inside applies to the things that FIT on a page: a figure, a
+     callout, a definition grid, a header group, a single row, a single list
+     item. It deliberately no longer applies to `table`. Asking an engine not
+     to break a table that is taller than a sheet cannot be honoured - it
+     pushes the whole table to a fresh page, discovers it still does not fit,
+     and breaks it anyway - so the only thing the rule bought was the blank
+     remainder of the preceding page, once for every table that did not fit in
+     the space left to it. An earlier version of this comment said "eight times
+     over", which assumed all eight tables were affected; only the tables too
+     tall for their remaining space ever were, and on Letter at this margin
+     five of the eight are tall enough to cross a boundary at all. The measured
+     saving is what the claim rests on rather than the count: 23 pages and
+     about 18 per cent blank before, 21 pages and 7.6 per cent after.
+     Removing `table` from
+     this list is what reclaims that paper; rows and header groups are still
+     protected, so tables continue to break cleanly rather than bisecting a
+     row or losing their column headings. */
+  figure,.callout,.meta,thead,tr,li{break-inside:avoid;page-break-inside:avoid}
+  /* Stated rather than inherited. Repeating the header row on every page of a
+     broken table is the UA default for table-header-group, but a default is
+     not a contract, and the printed evidence depends on it: with `table` no
+     longer pinned by break-inside, a table taller than the remaining space
+     breaks rather than being pushed whole onto the next sheet, and any table
+     that breaks relies on this rule for its column headings. Measured in the
+     print artefact on US Letter at the 16 mm margin - five of the eight
+     tables cross a boundary, and each of those five repeats its header on its
+     continuation page, 5.7 pt below the top margin. The remaining three fit
+     on one sheet and never break. This comment previously claimed all eight
+     break; that was an overstatement, and it matters here because it would
+     lead a reader to expect eight header repetitions in the artefact and to
+     suspect this rule when only five appear. How many tables break depends on
+     sheet size and margin and is not an invariant; that a broken table
+     repeats its header is the invariant, and it is what this rule buys. There is
+     deliberately no companion tfoot rule: this document contains no tfoot,
+     and the header of this stylesheet undertakes that every rule in it is
+     used by the markup in this file. */
+  thead{display:table-header-group}
+  .tablewrap{overflow-x:visible;border:0;padding:0;container-type:normal}
+  .tablewrap::after{content:none}
+  .tablewrap caption{position:static;width:auto}
   th,td{border-color:#000}
   thead th,tbody th{background:#fff}
   figure svg{border-color:#000}
   .key{border-color:#000}
-  .na,.callout-alert{color:#000}
+  /* .na-note belongs in this de-colour pass for the same reason .na does: it
+     is set to var(--alert), and an alert red that survives into a greyscale
+     print run reproduces as a mid grey that reads as de-emphasis - the exact
+     opposite of its meaning. It was omitted here, so the one place the
+     document says a gate result is NOT recorded printed as the faintest
+     sentence on its page. */
+  .na,.na-note,.callout-alert{color:#000}
   footer{background:#fff;border-top-color:#000;padding-top:0.8rem}
   @page{margin:16mm}
 }
@@ -337,11 +578,11 @@ footer .lic{font-size:0.83rem}
       <dd><strong class="na-note">No validation gate result is recorded in this
       document.</strong>
       The authoritative ledger is
-      <a href="validation-gates.md">validation-gates.md</a>.</dd>
+      <a href="validation-gates/">validation-gates.md</a>.</dd>
       <dt>Licence</dt>
       <dd>Apache License 2.0. Copyright Amazon.com, Inc. or its affiliates. All Rights
-      Reserved. See the repository <a href="../LICENSE">LICENSE</a> and
-      <a href="../NOTICE">NOTICE</a>.</dd>
+      Reserved. See the repository <code>LICENSE</code> and
+      <code>NOTICE</code>.</dd>
     </dl>
   </div>
 </header>
@@ -366,7 +607,12 @@ footer .lic{font-size:0.83rem}
   </nav>
 </div>
 
-<main id="main" class="wrap">
+<!-- tabindex="-1" makes <main> programmatically focusable without adding it to
+     the tab order. Without it the skip link moves the browser's scroll position
+     but not the focus ring, so the very next Tab returns to the second link in
+     the header instead of continuing from the main content, and the skip link
+     silently fails to do the one thing it exists for. -->
+<main id="main" class="wrap" tabindex="-1">
 
   <section aria-labelledby="context">
     <h2 id="context">1. Business context and the objective</h2>
@@ -571,7 +817,7 @@ footer .lic{font-size:0.83rem}
     <p>Nine objectives, each with the concrete artefact that realises it. None is aspirational
     and none is a statement of intent: each names something that either exists in the
     repository or is specified in the plan at
-    <a href="technical-specifications.md">technical-specifications.md</a>.</p>
+    <a href="technical-specifications/">technical-specifications.md</a>.</p>
 
     <div class="tablewrap">
       <table>
@@ -659,7 +905,16 @@ footer .lic{font-size:0.83rem}
       <!-- Inline SVG in an HTML5 document needs no xmlns attribute: the HTML parser
            places it in the SVG namespace. It is omitted so that this file contains no
            URL of any kind outside licence text. -->
-      <svg viewBox="0 0 1000 660" role="img" aria-labelledby="arch-title arch-desc">
+      <!-- The accessible NAME comes from <title> and the accessible DESCRIPTION
+     from <desc>. Naming the figure with both, as aria-labelledby="arch-title
+     arch-desc" did, concatenated them into one 1,486-character name and then
+     left the same 1,402 characters to be announced a second time as the
+     description - so a screen reader read the entire panel-by-panel walkthrough
+     twice before the reader could reach the figure caption. Splitting the two
+     references gives an 83-character name and a 1,402-character description,
+     each announced once, in the order an assistive technology expects. -->
+<svg viewBox="0 0 1000 660" role="img" aria-labelledby="arch-title"
+           aria-describedby="arch-desc">
         <title id="arch-title">The legacy z/OS architecture beside the Java 25 and Spring
         Boot target architecture</title>
         <desc id="arch-desc">Two panels. The left panel shows the frozen mainframe stack:
@@ -875,7 +1130,16 @@ footer .lic{font-size:0.83rem}
       every box and with the outline styles named in the legend, so no meaning is carried by
       colour alone. The full text equivalent is the two paragraphs that follow, and the
       detailed diagram set is in
-      <a href="architecture-before-after.md">architecture-before-after.md</a>.</figcaption>
+      <a href="architecture-before-after/">architecture-before-after.md</a>.
+      One limitation is worth stating plainly rather than leaving to be discovered: the
+      diagram scales to the width available, so on a phone-width screen and on paper its
+      in-figure labels render well below comfortable reading size &mdash; about 4 to 6 px at a
+      375 px viewport, and 6 to 9 pt in print. Nothing is lost by that, because none of the
+      figure&rsquo;s content exists only inside it: the two paragraphs below carry the same
+      description in prose, the legend above is ordinary HTML text that scales with the body
+      copy, and the figure carries the whole walkthrough as its accessible description. Read
+      the prose in those two settings; the diagram is the summary, not the
+      source.</figcaption>
     </figure>
 
     <h3>Before, in words</h3>
@@ -923,7 +1187,7 @@ footer .lic{font-size:0.83rem}
 
     <p>Scope is expressed as a mapping rather than as a percentage. Twenty-two features are
     catalogued, F-001 through F-022, and each is realised by named artefacts
-    [<a href="technical-specifications.md">technical-specifications.md</a>].</p>
+    [<a href="technical-specifications/">technical-specifications.md</a>].</p>
 
     <div class="tablewrap">
       <table>
@@ -947,7 +1211,7 @@ footer .lic{font-size:0.83rem}
             <td class="num">17</td>
             <td>Authentication 1, menus 2, accounts 2, cards 3, transactions 3, billing 1,
             reporting 1, administration 4. Enumerated in
-            <a href="api-contracts.md">api-contracts.md</a>.</td>
+            <a href="api-contracts/">api-contracts.md</a>.</td>
           </tr>
           <tr>
             <th scope="row">Controller classes</th>
@@ -977,7 +1241,7 @@ footer .lic{font-size:0.83rem}
             <td class="num">14</td>
             <td>The modular structure the plan defines, each package documented with the COBOL
             artefacts it derives from
-            [<a href="technical-specifications.md">technical-specifications.md</a>].</td>
+            [<a href="technical-specifications/">technical-specifications.md</a>].</td>
           </tr>
         </tbody>
       </table>
@@ -1014,7 +1278,7 @@ footer .lic{font-size:0.83rem}
     </dl>
 
     <p>The paragraph-level mapping from every program to its Java counterpart is in
-    <a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a> at the repository root. It
+    <code>TRACEABILITY_MATRIX.md</code> at the repository root. It
     is the artefact that makes the coverage claim checkable, and it is referenced here rather
     than summarised.</p>
   </section>
@@ -1117,7 +1381,7 @@ footer .lic{font-size:0.83rem}
       unit &mdash; separated packages, one service bean per program, clear layering &mdash; which
       buys the maintainability benefit without spending the atomicity guarantee. The reasoning
       is developed at length in
-      <a href="architecture-before-after.md">architecture-before-after.md</a>.</p>
+      <a href="architecture-before-after/">architecture-before-after.md</a>.</p>
     </div>
   </section>
 
@@ -1224,7 +1488,7 @@ footer .lic{font-size:0.83rem}
       published, linked artefact that a reviewer can open.</p>
       <p>The authoritative ledger &mdash; which defines each gate, states its prerequisites,
       gives the literal command that runs it and records its current standing &mdash; is
-      <a href="validation-gates.md">validation-gates.md</a>. <strong>Read the standing of any
+      <a href="validation-gates/">validation-gates.md</a>. <strong>Read the standing of any
       gate there, not here.</strong> <strong>All eight gates have since been executed</strong>
       and their outcomes are recorded in that ledger against a named commit, a command and an
       exit code; consistent with its own wording, gate 3 is reported there as a measured
@@ -1238,7 +1502,7 @@ footer .lic{font-size:0.83rem}
         <caption>Table 4. The eight validation gates. The Result column states what
         <em>this summary</em> records, which is nothing; the prerequisite column states what is
         needed. The authoritative standing of each gate is in
-        <a href="validation-gates.md">validation-gates.md</a>.</caption>
+        <a href="validation-gates/">validation-gates.md</a>.</caption>
         <thead>
           <tr>
             <th scope="col" class="num">#</th>
@@ -1257,7 +1521,7 @@ footer .lic{font-size:0.83rem}
             <td><span class="na">Not available</span></td>
             <td>Nothing further is needed of this page. The oracle artefacts are committed under
             <code>src/test/resources/parity/gate1/</code> and the standing is in
-            <a href="validation-gates.md">validation-gates.md</a></td>
+            <a href="validation-gates/">validation-gates.md</a></td>
           </tr>
           <tr>
             <th scope="row" class="num">2</th>
@@ -1306,8 +1570,8 @@ footer .lic{font-size:0.83rem}
             <td>All 28 programs mapped at paragraph level through a checkable matrix</td>
             <td><span class="na">Not available</span></td>
             <td>Nothing further is needed of this page. Its standing is recorded in
-            <a href="validation-gates.md">validation-gates.md</a> against
-            <a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a></td>
+            <a href="validation-gates/">validation-gates.md</a> against
+            <code>TRACEABILITY_MATRIX.md</code></td>
           </tr>
           <tr>
             <th scope="row" class="num">8</th>
@@ -1338,41 +1602,41 @@ footer .lic{font-size:0.83rem}
         </thead>
         <tbody>
           <tr>
-            <th scope="row"><a href="../DECISION_LOG.md">DECISION_LOG.md</a></th>
+            <th scope="row"><code>DECISION_LOG.md</code></th>
             <td>Repository root</td>
             <td>Every mechanism substitution, preserved quirk, labelled deviation and resolved
             conflict, each citing its source locator</td>
           </tr>
           <tr>
-            <th scope="row"><a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a></th>
+            <th scope="row"><code>TRACEABILITY_MATRIX.md</code></th>
             <td>Repository root</td>
             <td>Paragraph-level mapping from all 28 programs to their Java counterparts</td>
           </tr>
           <tr>
-            <th scope="row"><a href="validation-gates.md">validation-gates.md</a></th>
+            <th scope="row"><a href="validation-gates/">validation-gates.md</a></th>
             <td><code class="cite">docs/</code></td>
             <td>Gate definitions, commands, prerequisites, current standing and the
             residual-risk register</td>
           </tr>
           <tr>
-            <th scope="row"><a href="technical-specifications.md">technical-specifications.md</a></th>
+            <th scope="row"><a href="technical-specifications/">technical-specifications.md</a></th>
             <td><code class="cite">docs/</code></td>
             <td>The full plan: scope, transformation mapping, dependency inventory and
             per-program analysis</td>
           </tr>
           <tr>
-            <th scope="row"><a href="api-contracts.md">api-contracts.md</a></th>
+            <th scope="row"><a href="api-contracts/">api-contracts.md</a></th>
             <td><code class="cite">docs/</code></td>
             <td>The 17 operations, their payloads, error envelope and pagination contract</td>
           </tr>
           <tr>
-            <th scope="row"><a href="architecture-before-after.md">architecture-before-after.md</a></th>
+            <th scope="row"><a href="architecture-before-after/">architecture-before-after.md</a></th>
             <td><code class="cite">docs/</code></td>
             <td>The detailed before and after architecture, and why a modular monolith is
             mandatory</td>
           </tr>
           <tr>
-            <th scope="row"><a href="onboarding-guide.md">onboarding-guide.md</a></th>
+            <th scope="row"><a href="onboarding-guide/">onboarding-guide.md</a></th>
             <td><code class="cite">docs/</code></td>
             <td>Prerequisites, configuration, and how to build, test and run the system</td>
           </tr>
@@ -1389,7 +1653,7 @@ footer .lic{font-size:0.83rem}
     <p>A substitution replaces a mainframe mechanism with a modern one while keeping observable
     behaviour identical. These are the ones a stakeholder is most likely to be asked about. Each
     is recorded with its source locator in
-    <a href="../DECISION_LOG.md">DECISION_LOG.md</a>.</p>
+    <code>DECISION_LOG.md</code>.</p>
 
     <div class="tablewrap">
       <table>
@@ -1452,8 +1716,8 @@ footer .lic{font-size:0.83rem}
     difference is disclosed rather than absorbed. Three are highlighted here because a
     stakeholder should know about them. They are <strong>improvements, not parity</strong>, and
     they are labelled that way in the register. The complete set of labelled deviations is
-    recorded in <a href="../DECISION_LOG.md">DECISION_LOG.md</a> and in the register in
-    <a href="validation-gates.md">validation-gates.md</a>; this is a selection, not the whole
+    recorded in <code>DECISION_LOG.md</code> and in the register in
+    <a href="validation-gates/">validation-gates.md</a>; this is a selection, not the whole
     list.</p>
 
     <div class="tablewrap">
@@ -1512,7 +1776,7 @@ footer .lic{font-size:0.83rem}
     <a href="#fidelity">section 6</a>: <strong>repairing them would change behaviour that the
     parity comparison is measured against</strong>, and the comparison is the only means of
     proving the migration correct. Each is recorded with its locator in the register in
-    <a href="validation-gates.md">validation-gates.md</a>, so that a later programme can decide
+    <a href="validation-gates/">validation-gates.md</a>, so that a later programme can decide
     to fix them deliberately, with parity re-baselined, rather than inheriting them unknowingly.</p>
   </section>
 
@@ -1521,7 +1785,7 @@ footer .lic{font-size:0.83rem}
 
     <p>Findings are classified Blocker, High, Medium or Low, each with a remediation. The
     identifiers match the authoritative register in
-    <a href="validation-gates.md">validation-gates.md</a>, which is
+    <a href="validation-gates/">validation-gates.md</a>, which is
     <strong>referenced here, not duplicated</strong>; that register also carries findings below
     the stakeholder threshold and is the place to read the full set.</p>
 
@@ -1549,7 +1813,7 @@ footer .lic{font-size:0.83rem}
             identifiers. <strong>Either one alone still fails the build</strong> &mdash; applying
             the override without the rename resolves artefacts that do not exist, and applying
             the rename without the override selects the wrong version. The coordinate-level
-            detail is in <a href="technical-specifications.md">technical-specifications.md</a></td>
+            detail is in <a href="technical-specifications/">technical-specifications.md</a></td>
           </tr>
           <tr>
             <th scope="row" class="fid">H-1</th>
@@ -1637,7 +1901,7 @@ footer .lic{font-size:0.83rem}
       <dt><strong>No gate result is recorded in this document.</strong></dt>
       <dd>Every entry in table 4 reads <span class="na">Not available</span>. Design, however
       thorough, is never a pass. The standing of each gate is maintained in
-      <a href="validation-gates.md">validation-gates.md</a> and should be read there.</dd>
+      <a href="validation-gates/">validation-gates.md</a> and should be read there.</dd>
 
       <dt><strong>No capture from the real legacy runtime exists.</strong></dt>
       <dd>The gap is narrow, and stating it more widely &mdash; that <em>&ldquo;no expected legacy
@@ -1665,7 +1929,7 @@ footer .lic{font-size:0.83rem}
 
     <p>The state of the authoring host decides which gates can run at all, so it is published
     rather than assumed, as a dated reading in
-    [<a href="validation-gates.md">validation-gates.md</a>]. That reading records a
+    [<a href="validation-gates/">validation-gates.md</a>]. That reading records a
     <strong>container runtime that is available</strong> &mdash; Docker Engine with Compose and a
     reachable daemon &mdash; together with a host Java runtime and compiler, Maven, the cloud
     emulator, the cloud command-line client and the documentation site generator, whose strict
@@ -1684,13 +1948,13 @@ footer .lic{font-size:0.83rem}
     It was found before it could break anything, because every dependency was verified against the
     public package registry rather than assumed, and the remediation is written into the plan. The
     coordinate-level detail is in
-    <a href="technical-specifications.md">technical-specifications.md</a>.</p>
+    <a href="technical-specifications/">technical-specifications.md</a>.</p>
 
     <h3>11.4 Deferred hardening, disclosed as residual risk</h3>
 
     <p>Eight items are knowingly out of scope. They are <strong>disclosed rather than
     dropped</strong>, each with the trigger that would bring it into scope, in the register in
-    <a href="validation-gates.md">validation-gates.md</a>: table partitioning; read replicas;
+    <a href="validation-gates/">validation-gates.md</a>: table partitioning; read replicas;
     connection-pool tuning; transport-layer security termination; request rate limiting;
     URI-based API versioning; generated API specification tooling; and encryption at rest for
     personally identifiable data. Two of those &mdash; transport security and encryption at rest
@@ -1700,7 +1964,7 @@ footer .lic{font-size:0.83rem}
     <h3>11.5 On the prior attempt's numbers</h3>
 
     <div class="callout callout-alert">
-      <p><a href="project-guide.md">project-guide.md</a> is retained unchanged as
+      <p><a href="project-guide/">project-guide.md</a> is retained unchanged as
       <strong>prior-run</strong> evidence, because deleting it would erase the record of what a
       previous attempt reported. <strong>Its completion, hours, test-count, coverage and
       gate-pass claims are not evidence for the current implementation</strong>, and none of them
@@ -1710,7 +1974,7 @@ footer .lic{font-size:0.83rem}
       <p>For the same reason, this document states <strong>no</strong> completion percentage, no
       effort figure, no test count, no coverage measurement, no throughput or latency figure and
       no financial or business-benefit quantification. Where such a figure has been measured it is
-      maintained in <a href="validation-gates.md">validation-gates.md</a> and read there;
+      maintained in <a href="validation-gates/">validation-gates.md</a> and read there;
       restating one here would create a second copy that goes stale silently, and publishing an
       unsupported figure in a stakeholder summary is the most damaging thing this page could
       do.</p>
@@ -1722,8 +1986,11 @@ footer .lic{font-size:0.83rem}
       <li><strong>Obtain a capture from the real legacy runtime</strong>, or formally agree that
       the two committed expectations are the accepted oracle. That capture is the one piece of
       gate 1 evidence this repository cannot produce.</li>
-      <li><strong>Bring up the six-service compose topology and capture the result</strong>, which
-      is the outstanding half of gate 8.</li>
+      <li><strong>Keep the compose topology bring-up current as the topology changes.</strong> The
+      bring-up that was once the outstanding half of gate 8 has been produced, against the
+      <strong>seven</strong>-service topology the stack now declares, all seven containers healthy
+      with a second <code>up</code> converging in 1.11 seconds. What remains is upkeep rather than
+      absence: a service count is evidence that expires whenever the topology is changed.</li>
       <li><strong>Keep the host toolchain provisioned</strong> so that build and
       documentation verification remain reproducible rather than dependent on one machine's
       state.</li>
@@ -1741,33 +2008,33 @@ footer .lic{font-size:0.83rem}
     here.</p>
 
     <dl>
-      <dt><a href="onboarding-guide.md">onboarding-guide.md</a></dt>
+      <dt><a href="onboarding-guide/">onboarding-guide.md</a></dt>
       <dd>Prerequisites, the configuration profiles and their defaults, and how to build, test
       and run the system. <strong>Start here if you intend to run anything.</strong></dd>
 
-      <dt><a href="api-contracts.md">api-contracts.md</a></dt>
+      <dt><a href="api-contracts/">api-contracts.md</a></dt>
       <dd>The API surface: all 17 operations, their request and response shapes, the error
       envelope and the pagination contract.</dd>
 
-      <dt><a href="architecture-before-after.md">architecture-before-after.md</a></dt>
+      <dt><a href="architecture-before-after/">architecture-before-after.md</a></dt>
       <dd>The detailed before and after architecture diagrams, and the full argument for a
       single deployable unit.</dd>
 
-      <dt><a href="validation-gates.md">validation-gates.md</a></dt>
+      <dt><a href="validation-gates/">validation-gates.md</a></dt>
       <dd>The evidence ledger: gate definitions, commands, prerequisites, current standing and
       the residual-risk register. <strong>The authoritative source for any gate
       result.</strong></dd>
 
-      <dt><a href="technical-specifications.md">technical-specifications.md</a></dt>
+      <dt><a href="technical-specifications/">technical-specifications.md</a></dt>
       <dd>The complete plan, including the per-program analysis of the places where a naive
       translation would silently diverge.</dd>
 
-      <dt><a href="../DECISION_LOG.md">DECISION_LOG.md</a> and
-      <a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a></dt>
+      <dt><code>DECISION_LOG.md</code> and
+      <code>TRACEABILITY_MATRIX.md</code></dt>
       <dd>At the repository root: every decision with its source locator, and the
       paragraph-level mapping from all 28 programs to their Java counterparts.</dd>
 
-      <dt><a href="../README.md">README.md</a></dt>
+      <dt><code>README.md</code></dt>
       <dd>The legacy transaction, program and job inventories, preserved intact, alongside the
       Java build and run instructions.</dd>
     </dl>
@@ -1791,7 +2058,7 @@ footer .lic{font-size:0.83rem}
     <span class="na">Not available</span> because this document records none of them, not because
     none exists</strong> &mdash; all eight gates have been executed and design alone never
     constitutes a pass. The authoritative ledger is
-    <a href="validation-gates.md">validation-gates.md</a>.</p>
+    <a href="validation-gates/">validation-gates.md</a>.</p>
 
     <p class="lic">Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. Licensed
     under the Apache License, Version 2.0 (the &ldquo;License&rdquo;). You may not use this file
@@ -1799,8 +2066,8 @@ footer .lic{font-size:0.83rem}
     <code>http://www.apache.org/licenses/LICENSE-2.0</code>. Unless required by applicable law
     or agreed to in writing, software distributed under the License is distributed on an
     &ldquo;AS IS&rdquo; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-    implied. See the <a href="../LICENSE">LICENSE</a> for the specific language governing
-    permissions and limitations under the License, and the <a href="../NOTICE">NOTICE</a> for
+    implied. See the <code>LICENSE</code> for the specific language governing
+    permissions and limitations under the License, and the <code>NOTICE</code> for
     attribution.</p>
   </div>
 </footer>

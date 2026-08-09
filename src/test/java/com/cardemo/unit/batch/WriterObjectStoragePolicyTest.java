@@ -69,6 +69,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.batch.test.MetaDataInstanceFactory;
+import software.amazon.awssdk.services.s3.S3Client;
 
 /**
  * One object-storage policy across all three batch writers: abstraction, bucket validation, exception shape.
@@ -147,9 +148,9 @@ class WriterObjectStoragePolicyTest {
             // An unset property resolves to an empty string rather than to null, so a null-only guard lets a
             // zero-length bucket name reach the object store.
             assertRejects(() -> new TransactionWriter(mock(TransactionRepository.class),
-                    mock(S3Operations.class), new FileStatusMapper(), metrics(), "   ", "transact",
-                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS));
-            assertRejects(() -> new RejectWriter(mock(S3Operations.class), metrics(),
+                    mock(S3Operations.class), mock(S3Client.class), new FileStatusMapper(), metrics(),
+                    "   ", "transact"));
+            assertRejects(() -> new RejectWriter(mock(S3Operations.class), mock(S3Client.class), metrics(),
                     new FileStatusMapper(), "   ", GDG_PREFIX, null));
             assertRejects(() -> new StatementWriter(mock(S3Operations.class),
                     new FileStatusMapper(), FIXED_CLOCK, "   "));
@@ -159,9 +160,9 @@ class WriterObjectStoragePolicyTest {
         @DisplayName("An absent destination bucket is rejected by every writer")
         void anAbsentBucketIsRejectedEverywhere() {
             assertRejects(() -> new TransactionWriter(mock(TransactionRepository.class),
-                    mock(S3Operations.class), new FileStatusMapper(), metrics(), null, "transact",
-                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS));
-            assertRejects(() -> new RejectWriter(mock(S3Operations.class), metrics(),
+                    mock(S3Operations.class), mock(S3Client.class), new FileStatusMapper(), metrics(),
+                    null, "transact"));
+            assertRejects(() -> new RejectWriter(mock(S3Operations.class), mock(S3Client.class), metrics(),
                     new FileStatusMapper(), null, GDG_PREFIX, null));
             assertRejects(() -> new StatementWriter(mock(S3Operations.class),
                     new FileStatusMapper(), FIXED_CLOCK, null));
@@ -260,13 +261,13 @@ class WriterObjectStoragePolicyTest {
     private static List<WriterUnderTest> subjects() {
         final S3Operations forTransactions = mock(S3Operations.class);
         final TransactionWriter transactionWriter = new TransactionWriter(mock(TransactionRepository.class),
-                forTransactions, new FileStatusMapper(), metrics(), "carddemo-batch-output", "transact",
-                TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+                forTransactions, mock(S3Client.class), new FileStatusMapper(), metrics(),
+                "carddemo-batch-output", "transact");
         transactionWriter.beforeStep(MetaDataInstanceFactory.createStepExecution());
 
         final S3Operations forRejects = mock(S3Operations.class);
-        final RejectWriter rejectWriter = new RejectWriter(forRejects, metrics(), new FileStatusMapper(),
-                "carddemo-batch-output", GDG_PREFIX, null);
+        final RejectWriter rejectWriter = new RejectWriter(forRejects, mock(S3Client.class), metrics(),
+                new FileStatusMapper(), "carddemo-batch-output", GDG_PREFIX, null);
 
         final S3Operations forStatements = mock(S3Operations.class);
         final StatementWriter statementWriter = new StatementWriter(forStatements,

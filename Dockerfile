@@ -580,9 +580,79 @@ COPY observability/ observability/
 #               capability the code implements
 # Both are also already named in the scanned-file lists, so like the
 # Dockerfile their absence additionally made the image scan weaker than
-# the host scan rather than louder. All five are confined to this stage;
-# none reaches the runtime image.
-COPY DECISION_LOG.md TRACEABILITY_MATRIX.md Dockerfile mkdocs.yml README.md ./
+# the host scan rather than louder.
+#
+# The five dotfiles and mkdocs_hooks.py join them, one round later again,
+# and this time the LIST was closed rather than the instance - because the
+# instance had already been closed three times and come back.
+#
+# The failing one was .gitignore:
+# SourceCitationResolutionTest.everyCitedSymbolResolves threw
+# UncheckedIOException "Cannot read /workspace/.gitignore" - one error out
+# of 14,917 tests, which failed `docker compose up -d --build --wait`
+# outright while the identical suite passed on the host. That test's
+# citation table replaces line locators with symbol citations, so it must
+# read BOTH the citing file and its target, and unlike the scanned-file
+# lists it reads them UNCONDITIONALLY - correctly so, because a citation
+# check that silently skips its target checks nothing at all.
+#
+# .editorconfig and .gitattributes were then found WITHOUT running the
+# build, by enumerating every path that table reads and differencing it
+# against this COPY set. Both are cited targets - `end_of_line = lf` and
+# `whitespace=-blank-at-eol` - so both would have failed next, one build
+# apiece. Copying them together is why this is one round and not three.
+#
+# .dockerignore and mvnw.cmd fail differently and worse: they are named in
+# the scanned-file lists of both SourceCitationResolutionTest and
+# DocumentationConsistencyTest, which SKIP a path that is not a regular
+# file. Absent, they made the in-image scan cover strictly less than the
+# host scan without failing - a vacuity, not an error. That is the same
+# reasoning that copies this Dockerfile, and it is worth more than the
+# failures: a loud failure gets fixed, and a quiet one does not.
+#
+# mkdocs_hooks.py is copied for consistency rather than after a failure:
+# mkdocs.yml above declares it under `hooks:`, so carrying the
+# configuration without the file it names would put an unusable mkdocs.yml
+# in the context. No in-image test reads it today, because the
+# documentation-build guard skips when mkdocs is absent, which it is here.
+#
+# All eleven are confined to this stage; none reaches the runtime image.
+#
+# WHY THE FIVE DOTFILES ABOVE ARE ON THIS LINE, established by evidence in
+# four separate rounds and consolidated here rather than left as four
+# overlapping COPY statements:
+#   .gitignore      SourceCitationResolutionTest.everyCitedSymbolResolves
+#                   errored with UncheckedIOException "Cannot read
+#                   /workspace/.gitignore" - one citation row resolves the
+#                   /target/ entry of .gitignore from docs/validation-gates.md
+#   .gitattributes  the next row of the same table: whitespace=-blank-at-eol
+#                   cited from GateVerificationTest
+#   .editorconfig   the same table again: end_of_line = lf cited from
+#                   ImportHygieneTest, and the tree has no other formatter
+#                   configuration a claim about line endings could resolve against
+#   .dockerignore   no citation row names it, so its absence was not a failure -
+#                   it was worse. Both SourceCitationResolutionTest and
+#                   DocumentationConsistencyTest index it among the files they
+#                   scan and skip anything that is not a regular file, so a pruned
+#                   copy made the in-image scan strictly WEAKER than the host scan
+#                   without saying so. everyCitedTargetIsCarriedIntoTheImageBuild
+#                   reads it too, and so fell into the very trap it was written to
+#                   detect until it was copied
+#   mvnw.cmd        named in the same scanned-file lists, which likewise skip an
+#                   absent path
+#
+# WHY THESE ARE COPIED WHILE app/data/EBCDIC IS NOT, since the two cases look
+# alike and pull opposite ways. The EBCDIC datasets are pruned from the CONTEXT
+# by .dockerignore because the AAP puts them out of scope, so admitting them
+# would widen what the daemon receives to satisfy a test - the wrong lever, and
+# .dockerignore says so at length; the gate is narrowed instead, in one shared
+# rule read by both suites. These are already in the context: no rule reaches
+# them, and every one is an artefact this project authors and this tier asserts
+# on. Their omission was a gap in the COPY curation, not a scope decision.
+# ONE PHYSICAL LINE, deliberately. everyCitedTargetIsCarriedIntoTheImageBuild parses this file
+# line by line and only reads a line that begins with COPY, so a backslash continuation would
+# hide every name on its second line from the guard that exists to prove they are carried.
+COPY DECISION_LOG.md TRACEABILITY_MATRIX.md Dockerfile mkdocs.yml mkdocs_hooks.py README.md .gitignore .gitattributes .editorconfig .dockerignore mvnw.cmd ./
 
 COPY src/ src/
 

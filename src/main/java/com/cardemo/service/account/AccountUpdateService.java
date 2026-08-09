@@ -1853,7 +1853,8 @@ public class AccountUpdateService {
     /**
      * Refuses a call that reached a snapshot-bearing entry point without an authenticated principal.
      *
-     * <p>The two entry points this guards - {@link #sealSnapshotForUpdate(String, String)} and
+     * <p>The two entry points this guards -
+     * {@link #sealSnapshotForUpdate(AccountViewService.AccountViewRecords, String)} and
      * {@link #updateAccount(AccountUpdateRequest, String)} - are only reachable through routes
      * {@code SecurityConfig} declares authenticated, so an absent principal is a wiring defect rather than a
      * request a client made. It is therefore an {@link IllegalArgumentException} and not a
@@ -1947,15 +1948,29 @@ public class AccountUpdateService {
     }
 
     /**
-     * Reads one account and returns the {@code ACUP-OLD-DETAILS} group its update will require, sealed into
-     * one opaque value the caller echoes back.
+     * Projects the {@code ACUP-OLD-DETAILS} group from two already-read master records and seals it into one
+     * opaque value the caller echoes back on the write turn.
      *
-     * <p><b>What it does.</b> It drives exactly the conversation {@link #fetchForUpdate(String)} drives -
-     * Enter, re-entered, {@code ACUP-DETAILS-NOT-FETCHED}, so that the {@code :2568} arm of the decider
-     * performs {@code 9000-READ-ACCT} - takes what {@code 9500-STORE-FETCHED-DATA} stored at
-     * {@code :3805-3813}, and seals it. It exists because {@code fetchForUpdate} projects the whole screen, of
-     * which the snapshot group is one part, and the read operation needs that part on its own to hand to the
-     * client.</p>
+     * <p><b>What it does, and what it deliberately does not do.</b> It runs
+     * {@code 9500-STORE-FETCHED-DATA} at {@code :3805-3847} over the account and customer records it is
+     * given, projects the snapshot group that paragraph stores, and seals it. <b>It performs no
+     * input-output.</b> That is the whole point of the signature: the records reach it from the traversal
+     * that has already read them.</p>
+     *
+     * <p><b>Why it stopped reading for itself.</b> It used to take an account identifier and drive the
+     * conversation {@link #fetchForUpdate(String)} drives, which meant its one caller - the {@code GET}
+     * handler of {@code com.cardemo.controller.AccountController} - resolved the same cross-reference,
+     * account and customer rows twice for a single request: two read-only transactions, two connections
+     * taken from the pool and the identical three statements issued twice, to reach two projections of one
+     * set of rows. The screen came from {@code com.cardemo.service.account.AccountViewService} and the
+     * snapshot came from here, so the second read produced nothing the first had not already produced. It
+     * now receives
+     * {@code com.cardemo.service.account.AccountViewService.AccountViewRecords} and one traversal answers
+     * both.</p>
+     *
+     * <p>The records, not the rendered screen, are what cross that boundary - for the reason the next
+     * paragraph gives about offsets. Passing the projected screen instead would have required rebuilding the
+     * group from displayed text, which is exactly the trap.</p>
      *
      * <p><b>Why sealed, and why the group rather than a derived form.</b> Transformation Rule 7 carries the
      * group in the request body of the matching write, because {@code WS-THIS-PROGCOMMAREA} at {@code :652}
@@ -1974,40 +1989,54 @@ public class AccountUpdateService {
      * write can establish that the group it compares was issued by this server, for that account, to that
      * caller, recently.</p>
      *
-     * <p><b>Side effects.</b> None. This is a read, and the sealing draws a random nonce but touches no
-     * state.</p>
+     * <p><b>Side effects.</b> None whatsoever. No statement is issued, no state is touched, and the sealing
+     * draws a random nonce. It carries no {@code @Transactional} annotation for that reason: a transaction
+     * here would be a transaction around no statement, and the caller's own read-only transaction is where
+     * the records came from.</p>
      *
-     * @param accountFilter the account identifier as typed into screen field {@code ACCTSIDI}; relayed
-     *                      verbatim, so {@code null}, empty, all blanks and {@code *} all mean "not
-     *                      supplied" and the source's own edits decide
-     * @param subject       the authenticated principal the snapshot is issued to; must not be {@code null} or
-     *                      blank
+     * @param records the projection and the two master records one traversal resolved; must not be
+     *                {@code null}, and neither record may be {@code null}
+     * @param subject the authenticated principal the snapshot is issued to; must not be {@code null} or
+     *                blank
      * @return the sealed as-displayed snapshot, never {@code null}
-     * @throws IllegalArgumentException when {@code subject} is {@code null} or blank
-     * @throws ValidationException      when the account filter is blank or is non-numeric, short or
-     *                                  all-zeroes, exactly as {@link #fetchForUpdate(String)} reports it, and
-     *                                  when the read reached no populated group to seal
-     * @throws RecordNotFoundException  when any link of the three-dataset chain has no matching record
-     * @throws FileAccessException      for a physical or logical input-output failure
+     * @throws IllegalArgumentException when {@code subject} is {@code null} or blank, or when {@code records}
+     *                                 is {@code null}
+     * @throws ValidationException     when the records carry no populated group to seal, which is the state
+     *                                 {@code INITIALIZE ACUP-OLD-DETAILS} leaves at {@code :981-983}
      */
-    @Transactional(readOnly = true)
-    public String sealSnapshotForUpdate(final String accountFilter, final String subject) {
+    public String sealSnapshotForUpdate(final AccountViewService.AccountViewRecords records,
+                                        final String subject) {
         requireSubject(subject);
-        final AccountUpdateResult fetched = fetchForUpdate(accountFilter);
-        final AccountUpdateRequest screen = fetched.screen();
-        final AccountUpdateRequest.OldDetails snapshot =
-                screen == null ? null : screen.getOldDetails();
+        if (records == null) {
+            throw new IllegalArgumentException(
+                    "the account view records must be supplied: this method projects ACUP-OLD-DETAILS from"
+                            + " the records a traversal already read and performs no read of its own");
+        }
+        // 9500-STORE-FETCHED-DATA at :3805-3847 over the records the traversal read. The context is a work
+        // area and nothing else here - no request was received, no edit ran and no dispatch happened - so it
+        // is seeded with the empty screen and the two records, exactly the state the paragraph expects.
+        final UpdateContext context = new UpdateContext(emptyScreenRequest(null),
+                ATTENTION_IDENTIFIER_ENTER,
+                ChangeAction.DETAILS_NOT_FETCHED,
+                EntryMode.REENTER,
+                null);
+        context.readAccount = records.account();
+        context.readCustomer = records.customer();
+        storeFetchedData9500(context);
+        storeFetchedData9500Exit();
+        final AccountUpdateRequest.OldDetails snapshot = projectOldDetails(context);
         if (snapshot == null) {
-            // The fetch reached neither an exception nor a populated snapshot, which is the state
-            // INITIALIZE ACUP-OLD-DETAILS leaves at :981-983 when nothing was stored back. There is nothing
-            // to seal and no write could be confirmed against it, so this is reported rather than answered
-            // with an empty group that would fail every later comparison for an unexplained reason.
+            // Neither record carried a populated group, which is the state INITIALIZE ACUP-OLD-DETAILS
+            // leaves at :981-983 when nothing was stored back. There is nothing to seal and no write could
+            // be confirmed against it, so this is reported rather than answered with an empty group that
+            // would fail every later comparison for an unexplained reason.
             throw ValidationException.missingField(OLD_DETAILS_FIELD, OLD_DETAILS_REQUIRED_MESSAGE);
         }
-        // The record key is the identifier the read actually resolved, taken from the projected screen rather
-        // than from the argument, so that the value the write must present matches what this read addressed.
+        // The record key is the identifier the read actually resolved, taken from the snapshot the paragraph
+        // stored rather than from any argument, so that the value the write must present matches what the
+        // traversal addressed.
         return this.snapshotTokenService.seal(SNAPSHOT_KIND,
-                snapshotRecordKey(screen.getAccountId()), subject, snapshot);
+                snapshotRecordKey(snapshot.getAccountId()), subject, snapshot);
     }
 
 
@@ -2989,6 +3018,33 @@ public class AccountUpdateService {
      * that by deriving the state from the value rather than storing a separate flag.</p>
      * <p>Second, the blank test at {@code :1859-1861} adds {@code OR ZEROS} to the usual low-values and
      * spaces pair, so a field of ASCII zeroes counts as not supplied.</p>
+     *
+     * <p><strong>Finding, severity Major - remediated here. The comparison is character-exact, and it used
+     * to case-fold.</strong> This method upper-cased and trimmed the value before testing it, so a submitted
+     * lower-case {@code y} or {@code n} passed the edit. Nothing in the source licenses that:
+     * {@code 88 FLG-YES-NO-ISVALID VALUES 'Y', 'N'} at {@code :78} is a condition name on the received
+     * character, and a condition name compares bytes. The fold was not merely a laxer edit either - it
+     * produced the <em>wrong failure</em>. A lower-case value reached the write, where
+     * {@code ck_customer_pri_card_holder_ind} refused it, so the operator was answered
+     * {@code 409 CARDDEMO-CONSTRAINT-REFUSED} naming no field at all, in place of the
+     * {@code 400 CARDDEMO-VALIDATION-REJECTED} on {@code ACSPFLG} the edit exists to produce. The correct
+     * comparison shape was already two files away, at
+     * {@code com.cardemo.service.card.CardUpdateService}'s {@code 1240-EDIT-CARDSTATUS}, which compares its
+     * status code directly.</p>
+     *
+     * <p>The {@code trim()} that accompanied the fold is removed with it rather than kept. It could never
+     * change an outcome: {@code WS-EDIT-YES-NO} is {@code PIC X(1)} and
+     * {@code com.cardemo.model.dto.AccountUpdateRequest} bounds both fields that reach here to one
+     * character, so the only value a trim could alter is a single space - which the blank branch above has
+     * already refused. Keeping it would be an unreachable transformation on a comparison whose whole point
+     * is that it transforms nothing.</p>
+     *
+     * <p><strong>What is deliberately <em>not</em> changed.</strong> {@code 1205-COMPARE-OLD-NEW} at
+     * {@code app/cbl/COACTUPC.cbl:1684-1770} and {@code 9700-CHECK-CHANGE-IN-REC} do fold, with
+     * {@code FUNCTION UPPER-CASE}, and both keep folding. Those paragraphs answer "did this value change",
+     * where the source genuinely treats {@code y} and {@code Y} as the same value; this one answers "is this
+     * value one of two permitted characters", where it does not. The asymmetry is the source's, and it is
+     * preserved on both sides.</p>
      * @param context the per-invocation state carrier; reads {@code editYesNo}, writes {@code yesNoState}
      */
     private void editYesNo1220(final UpdateContext context) {
@@ -3003,9 +3059,9 @@ public class AccountUpdateService {
             }
             return;
         }
-        // :1874-1888 IF FLG-YES-NO-ISVALID CONTINUE ELSE ... - the 88 tests the character itself
-        final String upper = value.trim().toUpperCase(Locale.ROOT);
-        if (YES_INDICATOR.equals(upper) || NO_INDICATOR.equals(upper)) {
+        // :1874-1888 IF FLG-YES-NO-ISVALID CONTINUE ELSE ... - the 88 tests the character itself, and the
+        // comparison is therefore CHARACTER-EXACT on the byte received.
+        if (YES_INDICATOR.equals(value) || NO_INDICATOR.equals(value)) {
             context.yesNoState = FieldState.VALID;
             return;
         }

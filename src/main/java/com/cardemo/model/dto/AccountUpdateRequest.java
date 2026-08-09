@@ -33,6 +33,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -581,6 +582,39 @@ public class AccountUpdateRequest {
     public static final int MAX_SNAPSHOT_LENGTH = 4096;
 
     /**
+     * The characters a {@code PIC X(n)} free-text field can hold: {@code U+0020}-{@code U+007E} and
+     * {@code U+00A0}-{@code U+00FF}.
+     *
+     * <p><strong>The field contract, not an invented rule.</strong> A {@code PIC X(n)} field is n
+     * <em>bytes</em> in a single-byte code page, so a character with no single-byte representation is not a
+     * value the field can hold. It matters here because the two address lines are the only free-text members
+     * of this request that reach the customer record <em>without</em> a character-class check of their own:
+     * {@code app/cbl/COACTUPC.cbl:1584-1590} validates the first address line for presence only - the source
+     * comment in {@code AccountUpdateService} says so in as many words - and the second line the source does
+     * not validate at all. Every other free-text member is already refused by the source's own rule, which is
+     * why none of them carries this constraint: the three name members, the state, the city and the country
+     * are alphabetic-only, and the postal code, the two telephone numbers, the social security number, the
+     * date of birth, the funds-transfer account and the credit score are numeric.
+     *
+     * <p>What the absence cost is not hypothetical. {@code StatementProcessor} renders
+     * {@code CUST-ADDR-LINE-1} and {@code CUST-ADDR-LINE-2} into the fixed-width statement lines of
+     * {@code app/jcl/CREASTMT.JCL} - 80 bytes of text and 100 of markup, both encoded {@code ISO-8859-1} - so
+     * an address line holding a character with no single-byte form is a statement run that fails on every
+     * subsequent execution until an operator edits the row by hand. The same class of defect was reported
+     * against the transaction-add boundary and is closed the same way, at the boundary the value enters
+     * through.
+     *
+     * <p>The pattern is declared here rather than shared with {@code TransactionAddRequest}, which declares
+     * its own. That mirrors this package's standing refusal to hoist a field contract into a shared type: the
+     * contract belongs to the map whose field it describes, and a shared declaration would invite a future
+     * edit to widen both at once.
+     *
+     * <p>An empty value matches, and {@code @Pattern} treats {@code null} as valid, so the absent, blank and
+     * marked states this type distinguishes are untouched: the constraint fires on content, never on absence.
+     */
+    public static final String FIXED_WIDTH_TEXT_PATTERN = "[\\x20-\\x7E\\xA0-\\xFF]*";
+
+    /**
      * Zero-based start of the year component, COBOL reference-modifier offset 1, per the snapshot comparison at
      * {@code app/cbl/COACTUPC.cbl:669-756}.
      */
@@ -863,6 +897,15 @@ public class AccountUpdateRequest {
 
     /**
      * Appends one component of a telephone overlay, right-padded with spaces to its declared width.
+     *
+     * <p><strong>This width is measured in {@code char} values, deliberately, and unlike the width guards
+     * on the response projections.</strong> Those guards bound a declared {@code PIC X(n)} field against a
+     * value that has round-tripped through a {@code character(n)} column, so they count character positions
+     * as code points. This method is not that: it is assembling a positional image whose component offsets
+     * are {@code substring} indices, and the padding it emits is computed from the same count it checks.
+     * Measuring code points here while indexing in code units would make the check and the padding disagree
+     * and could produce a negative repeat count. The three components are the numeric parts of a telephone
+     * number, for which the two units coincide in any case.</p>
      *
      * @param image     the overlay image being assembled
      * @param part      the component value; may be {@code null}, in which case its width is emitted as
@@ -1234,6 +1277,9 @@ public class AccountUpdateRequest {
     @Size(max = 50,
             message = "addressLine1 must not exceed its declared width of 50 characters"
                     + " (app/cpy-bms/COACTUP.CPY:228)")
+    @Pattern(regexp = FIXED_WIDTH_TEXT_PATTERN,
+            message = "addressLine1 must contain only characters representable in the fixed-width record"
+                    + " (U+0020-U+007E, U+00A0-U+00FF)")
     private final String addressLine1;
 
     /**
@@ -1251,6 +1297,9 @@ public class AccountUpdateRequest {
     @Size(max = 50,
             message = "addressLine2 must not exceed its declared width of 50 characters"
                     + " (app/cpy-bms/COACTUP.CPY:240)")
+    @Pattern(regexp = FIXED_WIDTH_TEXT_PATTERN,
+            message = "addressLine2 must contain only characters representable in the fixed-width record"
+                    + " (U+0020-U+007E, U+00A0-U+00FF)")
     private final String addressLine2;
 
     /**

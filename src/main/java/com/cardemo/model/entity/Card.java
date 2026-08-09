@@ -707,6 +707,14 @@ public class Card {
     /**
      * Validates one fixed-width text column and returns the value unchanged.
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param value the candidate value
      * @param property the Java property name, used in the failure message
      * @param cobolField the originating COBOL field name, used in the failure message
@@ -720,10 +728,11 @@ public class Card {
                     + " must not be null: " + cobolField
                     + " maps to a NOT NULL CHAR(" + width + ") column");
         }
-        if (value.length() > width) {
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > width) {
             throw new IllegalArgumentException(property
                     + " must be at most " + width + " characters to fit " + cobolField
-                    + ", but was " + value.length());
+                    + ", but was " + characterPositions);
         }
         return value;
     }

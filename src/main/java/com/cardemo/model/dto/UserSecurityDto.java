@@ -358,19 +358,38 @@ public record UserSecurityDto(
      * {@code PICTURE} clause but never the offending value, because every value on this projection is
      * either directly identifying or screen-control state.
      *
+     * <p><strong>The width is counted in Unicode code points, not in {@code char} values, and that unit
+     * is load-bearing rather than pedantic.</strong> A {@code PIC X(n)} clause declares <em>n character
+     * positions</em>, and the column each of these fields round-trips through is a PostgreSQL
+     * {@code character(n)}, which pads to <em>n characters</em> as well. A Java {@code String} measures
+     * itself in UTF-16 code units, and the two units diverge for any character outside the basic
+     * multilingual plane: a supplementary-plane character occupies one character position and one code
+     * point but two {@code char} values. Counting {@code char} values therefore made this guard reject
+     * values that the write path had accepted and the database had stored and padded - a twenty-character
+     * {@code sec_usr_fname} containing one such character reads back as twenty-one {@code char} values -
+     * so assembling a page that merely <em>contained</em> such a row raised from a response projection and
+     * became a 500 on the whole listing. Counting code points is what makes the inbound bound and this
+     * outbound bound the same bound. It is never the more permissive choice by accident either: a code
+     * point count is always less than or equal to a {@code char} count, so no value this guard now admits
+     * is a value the declared field could not have carried.
+     *
      * @param value     the value to check, or {@code null} when the field was absent
-     * @param maxLength the declared width of the source field
+     * @param maxLength the declared width of the source field, in character positions
      * @param fieldName the component name to name in the failure message
      * @param picClause the source {@code PICTURE} clause to quote in the failure message
-     * @throws IllegalArgumentException if {@code value} is non-{@code null} and longer than
-     *                                  {@code maxLength}
+     * @throws IllegalArgumentException if {@code value} is non-{@code null} and holds more code points
+     *                                  than {@code maxLength}
      */
     private static void requireWidthWithinLimit(final String value, final int maxLength,
             final String fieldName, final String picClause) {
-        if (value != null && value.length() > maxLength) {
+        if (value == null) {
+            return;
+        }
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > maxLength) {
             throw new IllegalArgumentException(fieldName + " must be at most " + maxLength
                     + " characters because the source field is " + picClause + ", but was "
-                    + value.length() + " characters long");
+                    + characterPositions + " characters long");
         }
     }
 

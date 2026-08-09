@@ -33,8 +33,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardemo.observability.HealthIndicators;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -129,9 +135,13 @@ class HealthIndicatorProbeTest {
     /** Stubbed queue client; no test lets it reach an endpoint. */
     private SqsAsyncClient sqsAsyncClient;
 
+    /** Mocked application datasource, so the bounded relational probe can be built and driven. */
+    private DataSource dataSource;
+
     @BeforeEach
     void setUp() {
         this.s3Client = Mockito.mock(S3Client.class);
+        this.dataSource = Mockito.mock(DataSource.class);
         this.sqsAsyncClient = Mockito.mock(SqsAsyncClient.class);
     }
 
@@ -147,7 +157,7 @@ class HealthIndicatorProbeTest {
      */
     private HealthIndicators indicators(final String inputBucket, final String outputBucket,
             final String statementsBucket, final String queue, final String queueLogical) {
-        return new HealthIndicators(this.s3Client, this.sqsAsyncClient,
+        return new HealthIndicators(this.s3Client, this.sqsAsyncClient, this.dataSource,
                 inputBucket, outputBucket, statementsBucket, queue, queueLogical);
     }
 
@@ -448,7 +458,15 @@ class HealthIndicatorProbeTest {
         @Test
         @DisplayName("a null object-storage client is refused at construction")
         void nullS3ClientIsRefused() {
-            assertThatThrownBy(() -> new HealthIndicators(null, sqsAsyncClient,
+            assertThatThrownBy(() -> new HealthIndicators(null, sqsAsyncClient, dataSource,
+                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL))
+                    .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("a null datasource is refused at construction")
+        void nullDataSourceIsRefused() {
+            assertThatThrownBy(() -> new HealthIndicators(s3Client, sqsAsyncClient, null,
                     INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL))
                     .isInstanceOf(NullPointerException.class);
         }
@@ -456,7 +474,7 @@ class HealthIndicatorProbeTest {
         @Test
         @DisplayName("a null queue client is refused at construction")
         void nullSqsClientIsRefused() {
-            assertThatThrownBy(() -> new HealthIndicators(s3Client, null,
+            assertThatThrownBy(() -> new HealthIndicators(s3Client, null, dataSource,
                     INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, QUEUE_LOGICAL))
                     .isInstanceOf(NullPointerException.class);
         }
@@ -464,7 +482,7 @@ class HealthIndicatorProbeTest {
         @Test
         @DisplayName("null resource names are normalised to empty rather than throwing")
         void nullResourceNamesAreNormalised() {
-            HealthIndicator indicator = new HealthIndicators(s3Client, sqsAsyncClient,
+            HealthIndicator indicator = new HealthIndicators(s3Client, sqsAsyncClient, dataSource,
                     null, null, null, null, null).s3HealthIndicator();
 
             Health health = indicator.health();
@@ -482,6 +500,7 @@ class HealthIndicatorProbeTest {
 
             assertThat(holder.s3HealthIndicator()).isNotSameAs(holder.s3HealthIndicator());
             assertThat(holder.sqsHealthIndicator()).isNotSameAs(holder.sqsHealthIndicator());
+            assertThat(holder.dbHealthIndicator()).isNotSameAs(holder.dbHealthIndicator());
         }
 
         @Test
@@ -489,6 +508,15 @@ class HealthIndicatorProbeTest {
         void publishedNamesArePinned() {
             assertThat(HealthIndicators.S3_HEALTH_COMPONENT_NAME).isEqualTo("s3");
             assertThat(HealthIndicators.SQS_HEALTH_COMPONENT_NAME).isEqualTo("sqs");
+            assertThat(HealthIndicators.DB_HEALTH_COMPONENT_NAME)
+                    .as("the bounded relational probe deliberately takes the SAME key the "
+                            + "framework contributor used, so the readiness group, the container "
+                            + "health check and every published gate reading keep their spelling")
+                    .isEqualTo("db");
+            assertThat(HealthIndicators.DB_HEALTH_INDICATOR_BEAN_NAME)
+                    .as("Actuator derives the component key by stripping the HealthIndicator "
+                            + "suffix, so the bean name is what actually fixes the key")
+                    .isEqualTo("dbHealthIndicator");
             assertThat(HealthIndicators.REASON_NOT_CONFIGURED).isEqualTo("not-configured");
             assertThat(HealthIndicators.REASON_INVALID_NAME).isEqualTo("invalid-name");
             assertThat(HealthIndicators.REASON_MISSING).isEqualTo("missing");
@@ -496,6 +524,121 @@ class HealthIndicatorProbeTest {
             assertThat(HealthIndicators.REASON_TIMEOUT).isEqualTo("timeout");
             assertThat(HealthIndicators.REASON_INTERRUPTED).isEqualTo("interrupted");
             assertThat(HealthIndicators.REASON_ERROR).isEqualTo("error");
+        }
+    }
+
+    /**
+     * The bounded relational probe that replaces the framework's unbounded {@code db} contributor.
+     *
+     * <p>Every test here asserts the BOUND as well as the verdict, because the verdict was already
+     * right before this probe existed: Boot's contributor also answered {@code DOWN} with the database
+     * stopped - it took 30 009 ms to do it, against a container health check that allows 5 s. A test
+     * that only asserted {@code DOWN} would have passed against the defect.
+     */
+    @Nested
+    @DisplayName("Bounded relational readiness")
+    class BoundedRelationalReadiness {
+
+        /** Comfortably above the 1 500 ms budget and comfortably below the pool's 30 s timeout. */
+        private static final long ALLOWED_ANSWER_MILLIS = 6_000L;
+
+        @Test
+        @DisplayName("a stalled acquisition still answers DOWN inside the budget, not after 30 seconds")
+        void aStalledAcquisitionAnswersInsideTheBudget() throws Exception {
+            Mockito.when(dataSource.getConnection()).thenAnswer(invocation -> {
+                // Stands in for Hikari retrying acquisition until connection-timeout expires. Far longer
+                // than the budget, far shorter than a test-suite hang if the bound were ever removed.
+                Thread.sleep(20_000L);
+                throw new SQLException("acquisition timed out");
+            });
+
+            long startedAtNanos = System.nanoTime();
+            Health health = fullyConfigured().dbHealthIndicator().health();
+            long elapsedMillis = (System.nanoTime() - startedAtNanos) / 1_000_000L;
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_COMPONENT,
+                            HealthIndicators.DB_HEALTH_COMPONENT_NAME)
+                    .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_TIMEOUT)
+                    .containsKey(HealthIndicators.DETAIL_ELAPSED_MILLIS);
+            assertThat(elapsedMillis)
+                    .as("the whole point of the contributor: the ANSWER is bounded, so a readiness probe "
+                            + "cannot outlast the container health check's own timeout and turn a database "
+                            + "blip into a restart loop")
+                    .isLessThan(ALLOWED_ANSWER_MILLIS);
+        }
+
+        @Test
+        @DisplayName("a connection that answers the validation query reports UP with its elapsed time")
+        void aWorkingConnectionReportsUp() throws Exception {
+            Connection connection = Mockito.mock(Connection.class);
+            Statement statement = Mockito.mock(Statement.class);
+            ResultSet answer = Mockito.mock(ResultSet.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement()).thenReturn(statement);
+            Mockito.when(statement.executeQuery(Mockito.anyString())).thenReturn(answer);
+            Mockito.when(answer.next()).thenReturn(true);
+            Mockito.when(answer.getInt(1)).thenReturn(1);
+
+            Health health = fullyConfigured().dbHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.UP);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_COMPONENT,
+                            HealthIndicators.DB_HEALTH_COMPONENT_NAME)
+                    .containsKey(HealthIndicators.DETAIL_ELAPSED_MILLIS);
+            Mockito.verify(statement).setQueryTimeout(Mockito.intThat(seconds -> seconds >= 1));
+            Mockito.verify(connection).close();
+            Mockito.verify(statement).close();
+        }
+
+        @Test
+        @DisplayName("a refused connection reports DOWN as unreachable, and never rethrows")
+        void aRefusedConnectionReportsUnreachable() throws Exception {
+            Mockito.when(dataSource.getConnection())
+                    .thenThrow(new SQLException("connection refused"));
+
+            Health health = fullyConfigured().dbHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON, HealthIndicators.REASON_UNREACHABLE);
+            assertThat(health.getDetails().toString())
+                    .as("a contributor publishes a symbolic reason and an elapsed time and nothing else: "
+                            + "a JDBC message routinely carries the host, the port and the role name")
+                    .doesNotContain("connection refused");
+        }
+
+        @Test
+        @DisplayName("a validation query answering anything but 1 is a mismatch, not a success")
+        void anUnexpectedAnswerIsAMismatch() throws Exception {
+            Connection connection = Mockito.mock(Connection.class);
+            Statement statement = Mockito.mock(Statement.class);
+            ResultSet answer = Mockito.mock(ResultSet.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement()).thenReturn(statement);
+            Mockito.when(statement.executeQuery(Mockito.anyString())).thenReturn(answer);
+            Mockito.when(answer.next()).thenReturn(false);
+
+            Health health = fullyConfigured().dbHealthIndicator().health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(health.getDetails())
+                    .containsEntry(HealthIndicators.DETAIL_REASON,
+                            HealthIndicators.REASON_ATTRIBUTE_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("the probe releases its thread when the contributor is closed")
+        void theProbeReleasesItsThreadOnClose() throws Exception {
+            HealthIndicator indicator = fullyConfigured().dbHealthIndicator();
+
+            assertThat(indicator)
+                    .as("the bean declares close() as its destroy method, so the one daemon thread this "
+                            + "probe owns is released when the context closes rather than leaked")
+                    .isInstanceOf(AutoCloseable.class);
+            ((AutoCloseable) indicator).close();
         }
     }
 }

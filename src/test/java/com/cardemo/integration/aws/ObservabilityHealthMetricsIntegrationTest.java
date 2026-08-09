@@ -70,6 +70,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Supplier;
+
+import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -147,7 +149,8 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       {@code ACCTDAT}, {@code CXACAIX} and {@code USRSEC}; {@code app/jcl/CLOSEFIL.jcl:22} is
  *       {@code //CLCIFIL EXEC PGM=SDSF} and {@code :26-30} issues the identical five with {@code CLO}.
  *       All five are VSAM datasets, so all five land on the relational substrate and are covered by the
- *       single auto-configured database contributor. {@code app/csd/CARDDEMO.CSD} defines exactly eight
+ *       single database contributor - which is the application's deadline-bounded one, the framework's
+ *       having stood down for the reason the assertion on it records. {@code app/csd/CARDDEMO.CSD} defines exactly eight
  *       online files, at {@code :1}, {@code :13}, {@code :25}, {@code :37}, {@code :50}, {@code :63},
  *       {@code :76} and {@code :88} - {@code ACCTDAT}, {@code CARDAIX}, {@code CARDDAT}, {@code CCXREF},
  *       {@code CUSTDAT}, {@code CXACAIX}, {@code TRANSACT} and {@code USRSEC} - while {@code TCATBALF},
@@ -513,6 +516,16 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
     @Autowired
     private Environment environment;
 
+    /**
+     * The application pool, injected so the hand-built holders below can carry a REAL datasource.
+     *
+     * <p>These tests drive the object-storage and queue contributors only, but the holder now also
+     * produces the bounded relational contributor, so its constructor requires a pool. Injecting the
+     * application's own keeps the holder identical to the one the context builds.
+     */
+    @Autowired
+    private DataSource dataSource;
+
     /** The mock web layer, the only route by which an HTTP-level contract can be asserted here. */
     @Autowired
     private MockMvc mockMvc;
@@ -811,6 +824,25 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                         componentKey)
                 .isInstanceOf(HealthIndicator.class);
         return (HealthIndicator) contributor;
+    }
+
+    /**
+     * Whether a registered contributor type is one that probes the relational substrate.
+     *
+     * <p>Two spellings are recognised, deliberately, because the point of the caller is to prove that only
+     * <em>one</em> of them is registered: the framework's own {@code DataSourceHealthIndicator}, and the
+     * application's deadline-bounded contributor nested in {@link HealthIndicators}. Matching on the type
+     * name rather than on the component key is what makes the check independent of the key: a second
+     * database probe registered under any other bean name - which is precisely how duplication would
+     * arrive - is still caught.
+     *
+     * @param contributorType the fully qualified type name of a registered contributor; must not be
+     *     {@code null}
+     * @return {@code true} when that type probes the database
+     */
+    private static boolean probesTheDatabase(final String contributorType) {
+        return contributorType.contains("DataSourceHealthIndicator")
+                || contributorType.startsWith(HealthIndicators.class.getName() + "$Database");
     }
 
     /**
@@ -1863,14 +1895,15 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         }
 
         @Test
-        @DisplayName("the two published component-name constants are the keys actually registered")
+        @DisplayName("the three published component-name constants are the keys actually registered")
         void thePublishedComponentNameConstantsAreTheRegisteredKeys() {
             assertThat(registeredComponentKeys())
                     .as("the published constants are what a configuration file and a dashboard cite "
                             + "instead of retyping a literal. Asserting them against the live registry is "
                             + "what makes a divergence between bean name and component key fail here "
                             + "rather than silently emptying a group")
-                    .contains(HealthIndicators.S3_HEALTH_COMPONENT_NAME,
+                    .contains(HealthIndicators.DB_HEALTH_COMPONENT_NAME,
+                            HealthIndicators.S3_HEALTH_COMPONENT_NAME,
                             HealthIndicators.SQS_HEALTH_COMPONENT_NAME);
 
             assertThat(HealthIndicators.S3_HEALTH_INDICATOR_BEAN_NAME)
@@ -1879,27 +1912,98 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                     .startsWith(HealthIndicators.S3_HEALTH_COMPONENT_NAME);
             assertThat(HealthIndicators.SQS_HEALTH_INDICATOR_BEAN_NAME)
                     .startsWith(HealthIndicators.SQS_HEALTH_COMPONENT_NAME);
+            assertThat(HealthIndicators.DB_HEALTH_INDICATOR_BEAN_NAME)
+                    .as("the database constant carries a second obligation the other two do not: the name "
+                            + "must ALSO be the one Boot's auto-configuration is @ConditionalOnMissingBean "
+                            + "on, so that this contributor replaces the framework's instead of joining it")
+                    .startsWith(HealthIndicators.DB_HEALTH_COMPONENT_NAME);
         }
 
         @Test
-        @DisplayName("the database contributor is auto-configured, not a duplicate of one")
-        void theDatabaseContributorIsAutoConfigured() {
-            final String contributorType = registeredIndicator("db").getClass().getName();
+        @DisplayName("the database contributor is this application's BOUNDED one, and it REPLACES the "
+                + "framework's rather than joining it")
+        void theDatabaseContributorIsTheBoundedReplacement() {
+            final HealthIndicator registered =
+                    registeredIndicator(HealthIndicators.DB_HEALTH_COMPONENT_NAME);
+            final String contributorType = registered.getClass().getName();
 
+            // ==========================================================================================
+            // THIS ASSERTION WAS INVERTED, AND THE REASON IS RECORDED RATHER THAN QUIETLY EDITED.
+            // ==========================================================================================
+            // It previously required the `db` contributor NOT to be this application's, on the ground
+            // that the framework already contributes one and a second would duplicate it. The
+            // anti-duplication ground still holds and is still asserted below - what changed is WHOSE
+            // probe occupies the key, because the framework's has no deadline of its own. It asks the
+            // pool for a connection and so inherits spring.datasource.hikari.connection-timeout, 30000
+            // ms, which was MEASURED: with the database stopped, /actuator/health/readiness answered
+            // 503 after 30.05 s while this application's own s3 and sqs probes answered inside their
+            // 1500 ms budgets. That is six times the --timeout=5s the Dockerfile HEALTHCHECK declares,
+            // so a brief database blip became a restart loop under any orchestrator that treats a
+            // readiness timeout as a failure. The narrow remedy is to bound the PROBE; bounding the
+            // POOL would change the data path for every caller, and pool tuning is out of scope.
             assertThat(contributorType)
-                    .as("the framework already contributes a database probe from the data source, so "
-                            + "writing a second one would duplicate it - which Rule 1 Clause C's "
-                            + "'avoid duplication' forbids - and would give two answers to one question. "
-                            + "The application therefore contributes the object store and the queue ONLY. "
-                            + "Registered type: %s", contributorType)
-                    .doesNotStartWith("com.cardemo")
-                    .startsWith("org.springframework.boot.actuate");
+                    .as("the `db` component key is now served by this application's bounded probe, "
+                            + "produced by HealthIndicators#dbHealthIndicator() and awaited for at most "
+                            + "its own budget. Registered type: %s", contributorType)
+                    .startsWith("com.cardemo.observability.HealthIndicators");
+
+            // Named specifically rather than accepted as "something of ours": the implementation is a
+            // private nested class, so its simple name is the strongest handle a test outside the
+            // package has, and pinning it means a silent swap for an UNBOUNDED probe of ours would fail
+            // here instead of passing.
+            assertThat(registered.getClass().getSimpleName())
+                    .as("the bounded implementation specifically, not merely something of ours parked "
+                            + "on that key")
+                    .isEqualTo("BoundedDataSourceHealthIndicator");
+
+            // Replacement, NOT addition - which is what keeps Rule 1 Clause C's 'avoid duplication'
+            // satisfied. management.health.db.enabled is false, so the framework's
+            // DataSourceHealthIndicator is never registered, and exactly ONE probe answers for the
+            // database. Two contributors on one key would give two answers to one question; that is the
+            // failure this assertion still guards, from the other direction.
+            assertThat(registeredComponentKeys())
+                    .as("the key itself is unchanged, so the readiness group that names `db` - and "
+                            + "management.endpoint.health.validate-group-membership, which fails startup "
+                            + "on a group naming a contributor that does not exist - still resolve")
+                    .contains(HealthIndicators.DB_HEALTH_COMPONENT_NAME);
+
+            assertThat(HealthIndicators.DB_HEALTH_INDICATOR_BEAN_NAME)
+                    .as("Actuator derives the component key by stripping the indicator suffix from the "
+                            + "bean name, so the bean name must begin with the key it produces - the same "
+                            + "contract the s3 and sqs constants are held to above")
+                    .startsWith(HealthIndicators.DB_HEALTH_COMPONENT_NAME);
+
+            final Set<String> databaseContributors = new TreeSet<>();
+            healthContributorRegistry.forEach(named -> {
+                if (named.getContributor() instanceof HealthIndicator indicator
+                        && probesTheDatabase(indicator.getClass().getName())) {
+                    databaseContributors.add(named.getName());
+                }
+            });
+            assertThat(databaseContributors)
+                    .as("non-duplication is still the rule, and is what this assertion now protects: "
+                            + "ONE contributor may answer the database question. Two would give an "
+                            + "orchestrator two answers to one question and would double the probe load "
+                            + "on an already-struggling pool during exactly the outage the probe exists "
+                            + "to report. Contributors that probe the database: %s", databaseContributors)
+                    .containsExactly(HealthIndicators.DB_HEALTH_COMPONENT_NAME);
+
+            assertThat(HealthIndicators.DB_HEALTH_INDICATOR_BEAN_NAME)
+                    .as("replacement rather than addition rests on ONE mechanism and nothing else: "
+                            + "Boot's DataSourceHealthContributorAutoConfiguration is "
+                            + "@ConditionalOnMissingBean on this exact bean name, so this literal is what "
+                            + "makes the framework stand down. Rename the bean and both probes register - "
+                            + "the duplication the assertion above forbids - with no error anywhere to "
+                            + "point at the rename. That is why the name is asserted as a literal here "
+                            + "rather than read from the constant on both sides")
+                    .isEqualTo("dbHealthIndicator");
         }
 
         @Test
-        @DisplayName("both application contributors are nested in the one declaring type")
-        void bothApplicationContributorsAreNestedInTheOneDeclaringType() {
-            for (final String key : List.of(HealthIndicators.S3_HEALTH_COMPONENT_NAME,
+        @DisplayName("every application contributor is nested in the one declaring type")
+        void everyApplicationContributorIsNestedInTheOneDeclaringType() {
+            for (final String key : List.of(HealthIndicators.DB_HEALTH_COMPONENT_NAME,
+                    HealthIndicators.S3_HEALTH_COMPONENT_NAME,
                     HealthIndicators.SQS_HEALTH_COMPONENT_NAME)) {
                 assertThat(registeredIndicator(key).getClass().getName())
                         .as("the plural type name is deliberate: ONE configuration type declares several "
@@ -2049,7 +2153,7 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         @DisplayName("an unconfigured substrate reports down with a safe reason, never a null dereference")
         void anUnconfiguredSubstrateReportsDownWithASafeReason() {
             final HealthIndicators unconfigured = new HealthIndicators(
-                    s3Client(), sqsAsyncClient(), "", "", "", "", "");
+                    s3Client(), sqsAsyncClient(), dataSource, "", "", "", "", "");
 
             final Health objectStore = unconfigured.s3HealthIndicator().health();
             final Health queue = unconfigured.sqsHealthIndicator().health();
@@ -2076,7 +2180,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         void anAbsentSubstrateReportsDownRatherThanThrowing() {
             final String absent = scopedResourceName("absent-substrate");
             final HealthIndicators pointingAtNothing = new HealthIndicators(
-                    s3Client(), sqsAsyncClient(), absent, absent, absent, absent + ".fifo", absent);
+                    s3Client(), sqsAsyncClient(), dataSource, absent, absent, absent,
+                    absent + ".fifo", absent);
 
             final Throwable fromObjectStore =
                     catchThrowable(() -> pointingAtNothing.s3HealthIndicator().health());
@@ -2114,8 +2219,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         void aResourceNameThatIsAnIdentifierIsRefusedWithoutEchoing() {
             final String qualifiedName = "arn:aws:s3:::" + batchInputBucket();
             final HealthIndicators misconfigured = new HealthIndicators(
-                    s3Client(), sqsAsyncClient(), qualifiedName, qualifiedName, qualifiedName,
-                    reportQueueName(), reportQueueLogicalName());
+                    s3Client(), sqsAsyncClient(), dataSource, qualifiedName, qualifiedName,
+                    qualifiedName, reportQueueName(), reportQueueLogicalName());
 
             final Health health = misconfigured.s3HealthIndicator().health();
 

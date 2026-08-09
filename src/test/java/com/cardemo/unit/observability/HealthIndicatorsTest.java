@@ -54,6 +54,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+
+import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -125,8 +127,8 @@ class HealthIndicatorsTest {
      * @return a fully configured factory
      */
     private static HealthIndicators indicators(S3Client s3Client, SqsAsyncClient sqsAsyncClient) {
-        return new HealthIndicators(s3Client, sqsAsyncClient, INPUT_BUCKET, OUTPUT_BUCKET,
-                STATEMENTS_BUCKET, QUEUE_NAME, QUEUE_LOGICAL_NAME);
+        return new HealthIndicators(s3Client, sqsAsyncClient, mock(DataSource.class), INPUT_BUCKET,
+                OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE_NAME, QUEUE_LOGICAL_NAME);
     }
 
     /**
@@ -893,7 +895,8 @@ class HealthIndicatorsTest {
         void unsetBucketIsRefused() {
             S3Client s3Client = mock(S3Client.class);
             HealthIndicators factory = new HealthIndicators(s3Client, mock(SqsAsyncClient.class),
-                    INPUT_BUCKET, "", STATEMENTS_BUCKET, QUEUE_NAME, QUEUE_LOGICAL_NAME);
+                    mock(DataSource.class), INPUT_BUCKET, "", STATEMENTS_BUCKET, QUEUE_NAME,
+                    QUEUE_LOGICAL_NAME);
 
             Health health = factory.s3HealthIndicator().health();
 
@@ -911,7 +914,8 @@ class HealthIndicatorsTest {
             String arn = "arn:aws:sqs:us-east-1:000000000000:carddemo-report-jobs.fifo";
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             HealthIndicators factory = new HealthIndicators(mock(S3Client.class), sqsAsyncClient,
-                    INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, arn, QUEUE_LOGICAL_NAME);
+                    mock(DataSource.class), INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, arn,
+                    QUEUE_LOGICAL_NAME);
 
             Health health = factory.sqsHealthIndicator().health();
 

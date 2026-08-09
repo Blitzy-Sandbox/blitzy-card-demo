@@ -5,11 +5,13 @@
 # * Function    : Scrapes the CardDemo Spring Boot application's Micrometer
 # *               exposition at /actuator/prometheus every 15 seconds, so the
 # *               measurements that replaced the legacy end-of-run reporting
-# *               are sampled continuously instead of once per job. Mounted
-# *               read-only into the `prometheus` service of the
-# *               repository-root docker-compose.yml and read by its
-# *               --config.file argument. This is the only scrape
-# *               configuration in the project.
+# *               are sampled continuously instead of once per job, AND scrapes
+# *               the Pushgateway at /metrics on the same cadence, which is
+# *               where the batch submission process leaves the totals it
+# *               computed before exiting. Mounted read-only into the
+# *               `prometheus` service of the repository-root
+# *               docker-compose.yml and read by its --config.file argument.
+# *               This is the only scrape configuration FILE in the project.
 # * Replaces    : The DISPLAY-only instrumentation of the frozen COBOL corpus.
 # *               app/cbl/CBTRN02C.cbl:L227 emits
 # *               DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and
@@ -23,13 +25,19 @@
 # *               in flight. The same corpus offers nothing else: even the
 # *               interest calculator app/cbl/CBACT04C.cbl reports only
 # *               through DISPLAY.
-# * Scrapes     : /actuator/prometheus only. That endpoint publishes the
-# *               Micrometer exposition - the four instruments declared by
+# * Scrapes     : /actuator/prometheus on the application, and /metrics on the
+# *               Pushgateway. The first publishes the Micrometer exposition -
+# *               the four instruments declared by
 # *               src/main/java/com/cardemo/observability/MetricsConfig.java,
 # *               four counters, the amount one partitioned by sign - plus the
 # *               JVM, HTTP, Hibernate
-# *               and Spring Batch meters the framework contributes. It does
-# *               NOT publish health: the composite readiness surface owned by
+# *               and Spring Batch meters the framework contributes. The second
+# *               publishes the same carddemo.* instruments as pushed by the
+# *               batch submission process, restricted to that namespace by the
+# *               MeterFilter in
+# *               src/main/java/com/cardemo/config/ObservabilityConfig.java.
+# *               Neither publishes health: the composite readiness surface
+# *               owned by
 # *               src/main/java/com/cardemo/observability/HealthIndicators.java
 # *               is served at /actuator/health and is not scraped here. This
 # *               file performs no probing of its own.
@@ -57,11 +65,23 @@
 # ============================================================================
 # WHAT THIS FILE DOES
 # ============================================================================
-# One Prometheus server, one scrape job, one target: every 15 seconds it issues
-# GET /actuator/prometheus against the running CardDemo application and stores
-# the exposition. Grafana renders those series through
+# One Prometheus server, two scrape jobs, one target each. Every 15 seconds it
+# issues GET /actuator/prometheus against the running CardDemo application and
+# GET /metrics against the Pushgateway, and stores both expositions. Grafana
+# renders the series through
 # observability/grafana/provisioning/datasources/datasource.yml, which declares
 # the same 15s as its datasource timeInterval.
+#
+# WHY TWO JOBS AND NOT ONE. The four named counters are not all written by the
+# same process. carddemo.auth.attempts is written by the long-lived application,
+# which is scraped. carddemo.batch.records.processed, .rejected and
+# carddemo.transaction.amount.total are written by POSTTRAN and COMBTRAN, which
+# run in the operator submission process documented on
+# com.cardemo.batch.jobs.BatchPipelineOrchestrator - a java -jar launch with
+# spring.main.web-application-type set to none, so it ends when its job ends and
+# has no endpoint to scrape at all. Those three are PUSHED as that process exits
+# and read back from the Pushgateway. The dashboard's expressions select no `job`
+# label, so sum() spans both jobs and the reader sees one figure.
 #
 # Ownership boundary - four responsibilities, no overlap:
 #   * MetricsConfig.java DEFINES the four application instruments and owns their
@@ -91,7 +111,12 @@
 #              image so the check matches the binary that reads the file.
 #   Targets    curl -fsS http://localhost:9090/api/v1/targets - the carddemo-app
 #              target must report health "up", scrapeUrl
-#              http://app:8080/actuator/prometheus and scrapeInterval 15s.
+#              http://app:8080/actuator/prometheus and scrapeInterval 15s, and
+#              the carddemo-pushgateway target must report health "up", scrapeUrl
+#              http://pushgateway:9091/metrics and the same interval. The second
+#              target is up as soon as the service is running, whether or not any
+#              batch run has pushed to it yet - an empty Pushgateway still
+#              answers /metrics.
 #   Served     curl -fsS http://localhost:9090/api/v1/status/config
 #              Confirms the read-only mount resolved to this file.
 #   Reload     docker compose restart prometheus
@@ -117,9 +142,12 @@
 #     two must stay in step or every rate() window on the dashboard misaligns.
 #   * scrape_timeout 10s, strictly below the interval - Prometheus rejects a
 #     configuration whose timeout is greater than or equal to its interval.
-#   * One job, job_name carddemo-app. Treat it as a published name: it labels
-#     every stored series.
-#   * One target, app:8080 - the Compose service and its CONTAINER port.
+#   * Two jobs, job_name carddemo-app and carddemo-pushgateway. Treat both as
+#     published names: the first labels every series scraped from the
+#     application. The SECOND DOES NOT label the series it collects, because
+#     honor_labels is true on that job - see its own block below.
+#   * One target each: app:8080 and pushgateway:9091, both the Compose service
+#     name and its CONTAINER port.
 #   * metrics_path /actuator/prometheus. Exposure is never `*`, so there is no
 #     /actuator/metrics and no /metrics to scrape, and the
 #     configuration-bearing endpoints are absent by construction.
@@ -194,6 +222,57 @@
 #     use will be. It does not apply to the CardDemo series, which are
 #     registered eagerly. `up{job="carddemo-app"}` remains the
 #     control: if that returns 1, scraping is fine and the gap is upstream.
+#   * A BATCH panel reads zero although a job has run. The three batch-fed
+#     counters - carddemo_batch_records_processed_total,
+#     carddemo_batch_records_rejected_total and
+#     carddemo_transaction_amount_total - are never written by the scraped
+#     application at all. They arrive only from the Pushgateway, and only if the
+#     batch launch enabled the push. Check, in order:
+#       up{job="carddemo-pushgateway"} returns 1;
+#       curl -fsS http://localhost:${PUSHGATEWAY_PORT:-9091}/metrics | grep '^carddemo_'
+#         lists the values, which proves the push arrived and the panel is a
+#         query problem;
+#       the launch carried
+#         --management.prometheus.metrics.export.pushgateway.enabled=true
+#         (see src/main/resources/application.yml, where it defaults to false so
+#         the scraped application cannot double-publish);
+#       the launch could REACH the gateway - a HOST-run launch needs
+#         CARDDEMO_PUSHGATEWAY_ADDRESS pointing at the PUBLISHED port, a
+#         container-run one uses pushgateway:9091, which docker-compose.yml
+#         already passes.
+#     Note that the application's own exposition ALSO carries these three names
+#     at 0.0, eagerly registered. That is why the dashboard sums without a `job`
+#     selector: the pushed value and the online zero add to the pushed value.
+#   * A batch RATE panel reads "Last *: 0 c/s" while the CUMULATIVE panels next
+#     to it read real totals. Both readings are correct, and this is the one
+#     place an operator is most likely to conclude wrongly that the push failed.
+#     The two cumulative panels reduce the counter itself, so they hold their
+#     value for as long as the Pushgateway retains the group. The two rate panels
+#     evaluate rate(<counter>[5m]) and reduce it with lastNotNull, so they report
+#     the INSTANTANEOUS rate at the right-hand edge of the time range. A push is
+#     a single step in an otherwise flat counter, so that step is inside the
+#     five-minute window for exactly five minutes and no longer. Measured on a
+#     real POSTTRAN run whose step landed at 22:12:43Z:
+#       22:16:58Z  sum(rate(carddemo_batch_records_processed_total[5m])) = 1.0552
+#       22:19:35Z  the same expression                                  = 0
+#       22:37:44Z  the same expression                                  = 0
+#     while sum(carddemo_batch_records_processed_total) stayed at 300 throughout.
+#     So a zero on a rate panel means "nothing is being processed right now",
+#     which is what a rate is for. The curve is still plotted inside the window -
+#     widen the dashboard time range to see the step. The cumulative panels, not
+#     the rate panels, are the durable evidence that a run happened.
+#   * A batch panel reads a value from a run that is long finished. That is the
+#     design, not a fault. A Pushgateway RETAINS what it is given until it is
+#     replaced, which is what makes an end-of-run total readable at all - the
+#     legacy DISPLAY had the same property and worse, since it was readable only
+#     in the job's own SYSOUT. To clear a stale group, remove the service's
+#     volume: `docker compose down -v pushgateway` is not a thing, so use
+#     `docker compose rm -sfv pushgateway` followed by `docker compose up -d
+#     pushgateway`. There is deliberately no HTTP route for it:
+#     --web.enable-admin-api is withheld in docker-compose.yml.
+#   * The Pushgateway target reports down, "no such host". Only a subset of
+#     services was started. `docker compose up -d pushgateway` brings it up and
+#     Prometheus re-resolves on the next scrape without a reload.
 #   * Prometheus refuses to start, complaining that a scrape timeout exceeds
 #     the scrape interval. Any scrape_timeout at or above scrape_interval is
 #     rejected at load. Keep it strictly below 15s.
@@ -227,21 +306,24 @@ global:
 #   * remote_write and remote_read - all traffic stays inside the local
 #     topology and no hosted or external endpoint is contacted.
 #   * service discovery of every kind - the topology is a single Docker Compose
-#     stack whose members are known at author time, so one static target is the
+#     stack whose members are known at author time, so two static targets are the
 #     deterministic choice.
 
 scrape_configs:
 
   # --------------------------------------------------------------------------
-  # The CardDemo modular monolith - the only scrape job in this project
+  # The CardDemo modular monolith - the online tier, scraped directly
   # --------------------------------------------------------------------------
-  # Deliberately the only job. Nothing consumes Prometheus self-metrics: the
-  # checked-in dashboard has no panel for them and selects no `job` label at
-  # all, so a self-scrape job would be a stanza no reader reads. Grafana,
-  # Jaeger, PostgreSQL and LocalStack have no exporter provisioned in
-  # docker-compose.yml, so a job for any of them would be permanently down and
-  # would make the integration sign-off evidence misleading rather than
-  # informative.
+  # One of exactly two jobs, and the enumeration is deliberately closed. Nothing
+  # consumes Prometheus self-metrics: the checked-in dashboard has no panel for
+  # them and selects no `job` label at all, so a self-scrape job would be a stanza
+  # no reader reads. Grafana, Jaeger, PostgreSQL and LocalStack have no exporter
+  # provisioned in docker-compose.yml, so a job for any of them would be
+  # permanently down and would make the integration sign-off evidence misleading
+  # rather than informative. The Pushgateway job below is the one addition, and it
+  # exists because a target that cannot be scraped is a different problem from a
+  # target nobody reads: the process that writes three of the four named counters
+  # has already exited by the time any scrape could reach it.
   - job_name: carddemo-app
     metrics_path: /actuator/prometheus
     scheme: http
@@ -306,4 +388,64 @@ scrape_configs:
           # per request or per record, and nothing identifying an account,
           # card, customer, transaction or user, belongs in a label. Those
           # values are carried by the application's structured logs.
+          service: carddemo
+
+  # --------------------------------------------------------------------------
+  # The Pushgateway - the batch tier, which cannot be scraped at all
+  # --------------------------------------------------------------------------
+  # WHY THIS JOB EXISTS. The end-of-run totals that replace
+  #     app/cbl/CBTRN02C.cbl:L227  DISPLAY 'TRANSACTIONS PROCESSED :' ...
+  #     app/cbl/CBTRN02C.cbl:L228  DISPLAY 'TRANSACTIONS REJECTED  :' ...
+  # are computed by POSTTRAN, and POSTTRAN runs in a process that ends when the
+  # job ends. Before this job existed, a real run printed
+  # TRANSACTIONS PROCESSED :000000300 and TRANSACTIONS REJECTED :000000038 while
+  # every corresponding series read 0.0, because there was no moment at which the
+  # values and a scrape coexisted. The batch process now pushes its final values
+  # as it exits and the Pushgateway retains them; this job reads them back.
+  #
+  # NO CREDENTIAL, AND THAT IS NOT AN OVERSIGHT. The Pushgateway serves /metrics
+  # anonymously and accepts a push anonymously - it has no authentication of its
+  # own, and adding basic_auth here would send credentials the server neither
+  # requires nor validates while implying a protection that does not exist. The
+  # control is REACH, not a credential: docker-compose.yml binds its published
+  # port to ${CARDDEMO_BIND_ADDRESS:-127.0.0.1} and withholds
+  # --web.enable-admin-api, so the write surface is loopback-only and the
+  # group-deleting routes are not published at all.
+  - job_name: carddemo-pushgateway
+    # The Pushgateway's own exposition path. NOT /actuator/prometheus: this is
+    # not a Spring Boot process.
+    metrics_path: /metrics
+    scheme: http
+
+    # ------------------------------------------------------------------------
+    # honor_labels: true - MANDATORY for a Pushgateway, not a preference
+    # ------------------------------------------------------------------------
+    # By default Prometheus treats `job` and `instance` as ITS labels and
+    # overwrites whatever a target reports, moving the target's own values aside
+    # under an exported_ prefix. Applied here that would rewrite every pushed
+    # series' job from carddemo-batch to carddemo-pushgateway - relabelling the
+    # producer as its own letterbox, and silently changing the identity of series
+    # that a later run must be able to replace. honor_labels: true keeps the
+    # labels the pushed data carries and applies the target labels below only
+    # where the data has none, which is the documented configuration for
+    # scraping a Pushgateway.
+    honor_labels: true
+
+    static_configs:
+      # One static target: the `pushgateway` service of the repository-root
+      # docker-compose.yml, reached by service name over the Compose bridge
+      # network. As with app:8080 the port is the CONTAINER port, because this
+      # file cannot interpolate a variable - Prometheus performs no environment
+      # substitution on its configuration file - so a parallel clone shifts only
+      # the PUBLISHED port and this literal stays correct.
+      - targets:
+          - pushgateway:9091
+        labels:
+          # The same one target label as the application job, for the same
+          # reason: application.yml states that spring.application.name must
+          # match the `service` label, and the pushed series come from the same
+          # application. Under honor_labels: true a target label is applied only
+          # where the scraped data does not already carry that name, so this adds
+          # `service` and cannot displace the `application` and `component`
+          # common tags the pushed exposition already carries.
           service: carddemo

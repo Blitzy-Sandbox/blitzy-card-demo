@@ -128,9 +128,11 @@ class CombineTransactionsJobTest {
     private final S3Operations objectStorage = mock(S3Operations.class);
     private final FileStatusMapper fileStatusMapper = new FileStatusMapper();
     private final MetricsConfig metricsConfig = new MetricsConfig(new SimpleMeterRegistry());
+    private final software.amazon.awssdk.services.s3.S3Client objectStoreClient =
+            mock(software.amazon.awssdk.services.s3.S3Client.class);
     private final TransactionWriter transactionWriter = new TransactionWriter(
-            mock(com.cardemo.repository.TransactionRepository.class), objectStorage, fileStatusMapper,
-            metricsConfig, BUCKET, "transact", TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+            mock(com.cardemo.repository.TransactionRepository.class), objectStorage, objectStoreClient,
+            fileStatusMapper, metricsConfig, BUCKET, "transact");
 
     private CombineTransactionsJob newJob() {
         return new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter,

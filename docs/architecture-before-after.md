@@ -190,19 +190,68 @@ the check.** Material's integration does not leave the SVG inline in the `<pre>`
 `mermaid` class, replaces the `<pre>` with a fresh `<div class="mermaid">`, and puts the SVG in
 a shadow root opened with `mode: "closed"` — observed nine times, once per diagram. So on a
 page where every diagram renders correctly, `document.querySelectorAll('pre.mermaid svg')`,
-`div.mermaid svg` and `svg[id^="mermaid"]` all return **zero**. A durable check asserts
-`document.querySelectorAll('div.mermaid').length === 9` **and**
-`document.querySelectorAll('pre.mermaid').length === 0`, because a surviving `pre.mermaid` is
-precisely the failed-render signature.
+`div.mermaid svg` and `svg[id^="mermaid"]` all return **zero**.
 
-**One console error exists on every page of this site, and it is not caused by any document.**
-`search/main.js:106` throws `Uncaught ReferenceError: base_url is not defined`. It is the stock
-MkDocs search bootstrap, emitted because `techdocs-core` enables the `search` plugin while the
-Material theme ships its own search through its bundle and never defines the `base_url` global
-the stock script expects. It breaks the search web-worker, references nothing to do with
-Mermaid, and is a theme-and-plugin wiring defect rather than a content defect — recorded here
-because a reader who opens a developer console will see it, and disclosure is cheaper than a
-surprise.
+**A durable check must therefore assert `div.mermaid`. What `pre.mermaid` means depends on
+*which* failure you are looking for, and an earlier version of this paragraph got that wrong in
+one direction by generalising from a single regime.** It recommended asserting
+`pre.mermaid === 0` alongside `div.mermaid === 9`, on the reasoning that a surviving
+`pre.mermaid` is the failed-render signature; a later revision declared that reasoning simply
+wrong, having run the page with the renderer's CDN blackholed at the network layer. **Both
+statements are half right, and the theme's own mount function settles it.** The class strip is
+**unconditional and synchronous at mount** — before the CDN is contacted. The class is then
+**re-added at the top of the post-load callback, immediately *before* `mermaid.render()` is
+called** rather than after it succeeds, and the `<pre>` is replaced by the `<div>` only once that
+render resolves. Two different failures therefore look completely different:
+
+| Failure | `div.mermaid` | `pre.mermaid` | What the check tells you |
+|---|--:|--:|---|
+| **Renderer never loads** (CDN unreachable) | 0 | **0** | The subscription never fires, so the class is never re-added. `pre.mermaid` discriminates nothing here — this is the regime the earlier measurement was taken in |
+| **Renderer loads, one diagram fails to parse** | 8 | **1** | The class *was* re-added and the `<pre>` survived the throw. `pre.mermaid` is a **positive failure signal**, and names how many blocks failed |
+| **Everything renders** | 9 | 0 | The healthy state |
+
+Measured with unpkg unreachable: `pre.mermaid` 0, `div.mermaid` 0, `[class*="mermaid"]` 0,
+`typeof window.mermaid` `"undefined"`. Measured with unpkg reachable — it resolves 302 to
+`mermaid@11.16.1` and then 200 — **`div.mermaid` 9, `pre.mermaid` 0, nine `<svg>` inside nine
+closed shadow roots, and `mermaid.parse()` accepting all nine sources**, with a deliberately
+malformed stadium label made to throw `Expecting 'STADIUMEND'` to prove the check discriminates.
+**So assert `div.mermaid === 9` *and* `pre.mermaid === 0`, and read a non-zero `pre.mermaid` as a
+parse failure rather than as noise**; add `.md-typeset pre` totalling 13 on this page — nine
+diagram blocks plus four ordinary code blocks — if a positive count of surviving source blocks
+is also wanted. Chrome's accessibility tree is a third route that needs no shadow piercing at
+all: it exposes one `graphics-document` node per rendered diagram, carrying its own
+`roledescription` — `flowchart-v2`, `sequence` or `er`, one per grammar this page uses.
+
+**The offline fallback is readable, and it is the theme rather than this repository that makes
+it so.** With the renderer unreachable each diagram degrades to its own source text with line
+breaks and indentation intact, because the surviving `<pre>` computes `white-space: pre` from
+the user-agent default — the theme's `pre{white-space:pre-wrap}` applies only inside
+`@media print`. Five of the nine blocks are wider than the 688 px content column, and each is
+horizontally scrollable: setting `scrollLeft` on them returns exactly their overflow — 113, 203,
+56, 40 and 105 px — so no line is unreachable. That scroll comes from the theme's own
+`.md-typeset pre > code{overflow:auto;scrollbar-width:thin}`, which applies because the diagram
+source sits in a `<code>` child rather than as raw text in the `<pre>`. Nothing in
+`docs/stylesheets/carddemo.css` contributes to it, and a rule that tried to was written, measured
+against this and removed as dead; the withdrawal note in that file records why, so the same
+rule is not reintroduced. One caveat for anyone repeating the observation: this Chrome renders
+**overlay** scrollbars with a 0 px gutter, so the thumb is invisible in a still frame at rest
+even though the box scrolls perfectly. Prove reachability with a `scrollLeft` read-back, not
+with a screenshot.
+
+**No console error exists on any page of this site.** Measured across all seven rendered pages:
+zero messages of every type — not merely zero errors. This is a change, and the previous state
+is worth recording because the remedy is not obvious. Every page used to throw
+`Uncaught ReferenceError: base_url is not defined` from `search/main.js:106`, the stock MkDocs
+search bootstrap, which `techdocs-core` emitted because its `use_material_search` option
+defaults to **false** — installing the stock search plugin while still forcing the Material
+theme, whose template never defines the `base_url` global that script expects. The script threw
+before starting its web worker, so site search was dead as well as noisy. `mkdocs.yml` now sets
+`use_material_search: true`, which stops the stock plugin being installed at all, **and** also
+declares `material/search` explicitly, because the theme gates its search markup on that plugin
+key and `techdocs-core` registers Material's plugin under the bare key `search`. Both entries
+are required: the first removes the error, the second is what makes search render and work.
+Verified end to end — the field exists, the worker starts, the 511-document index loads with
+HTTP 200, and a query returns scored, term-highlighted results.
 
 Provisioning detail belongs to [onboarding-guide.md](onboarding-guide.md); this note exists
 only so that a reader knows exactly which claims on this page were executed and which were
@@ -223,7 +272,7 @@ implementation/evidence not yet generated"*. Those runs have since happened: the
 here **has** been stood up against a real containerised database and cloud-service emulator, the
 suites pass, and coverage and the performance baseline are measured. So the results are no longer
 absent; they are simply **not this page's to publish**. How far that standing-up reached — including
-the six-service compose topology, which has since been brought up as a unit in this working tree at
+the seven-service compose topology, which has since been brought up as a unit in this working tree at
 the commit the ledger names — is stated by the ledger, not summarised here.
 
 The one thing this page **does** report about itself is its own render and link integrity,
@@ -1120,7 +1169,7 @@ Three writers: `TransactionWriter`, `RejectWriter` at `LRECL=430` and `Statement
 
 ```mermaid
 flowchart TD
-    START(["Pipeline launch - SQS message or scheduled trigger"])
+    START(["Pipeline launch - operator submission, no time trigger"])
     PRE["Pre-flight - read-only checks folded in from CBTRN01C"]
     POST["Stage 1 - POSTTRAN - DailyTransactionPostingJob"]
     G1{"StageGateDecider - RC 0, 4, 8 or 12"}
@@ -1173,7 +1222,15 @@ label is the return code that selects it. A thick arrow `==>` marks the two bran
 **in parallel** after `FlowBuilder.split()`. A dashed arrow is an assertion-only relationship
 that writes nothing.
 
-**Prose equivalent.** The pipeline launches from an SQS message or a scheduled trigger and
+**Prose equivalent.** The pipeline launches from an **operator submission** —
+`spring.batch.job.name=CARDDEMO-PIPELINE` against the framework's own launcher, which is this
+architecture's `TSO SUBMIT`. It launches from nothing else: there is **no time trigger** anywhere
+in the main sources — no `@Scheduled` method, no cron expression, no task scheduler — because the
+legacy stream is operator-driven and queue-driven, and inventing one would be a behaviour change.
+The queue path is a **different and narrower** thing, and conflating the two is easy: the single
+`@SqsListener` launches the report job alone, never this pipeline. An earlier revision of this
+section and of the diagram above named a scheduled trigger as a launch point for it; that trigger
+has never existed. The pipeline
 begins with a pre-flight step folded in from `CBTRN01C`, which reads and validates without
 writing anything; the four read-only verification readers derived from `CBACT01C`, `CBACT02C`,
 `CBACT03C` and `CBCUS01C` contribute assertions here and never write. Stage 1 is daily
@@ -1246,6 +1303,12 @@ The card number at 263 and the processing date at 305 are exactly where the repo
   (logical name `carddemo-report-jobs`), created with `FifoQueue=true` and content-based
   deduplication switched off. An SQS listener replaces the JES2 internal reader, mapping the
   message body onto job parameters that reproduce the 80-byte parameter record.
+* **That queue carries a `RedrivePolicy`** naming `carddemo-report-jobs-dlq.fifo` with
+  `maxReceiveCount` 4. The mainframe needed no counterpart: the JES2 internal reader is not an
+  ordered group, so a deck it could not run failed on its own and delayed nothing behind it.
+  One ordered FIFO group carrying every submission is what creates the exposure, and a
+  dead-letter target is what bounds it — a message no consumer can act on leaves the group
+  instead of circulating at its head for the queue's whole retention period.
 * **Exactly three S3 buckets** — `carddemo-batch-input`, `carddemo-batch-output` and
   `carddemo-statements` — plus the notification topic `carddemo-notifications` and **its one
   subscriber**, the standard queue `carddemo-notifications-inbox`, all provisioned
@@ -1482,7 +1545,7 @@ refusal, is documented in [api-contracts.md](api-contracts.md) §2.2.
 
 ### 3.11 Deployment topology
 
-#### 3.11.0 Diagram 7: Docker Compose stack, six services
+#### 3.11.0 Diagram 7: Docker Compose stack, seven services
 
 ```mermaid
 graph LR
@@ -1491,8 +1554,13 @@ graph LR
         PGS[("postgres - PostgreSQL 16")]
         LS["localstack - S3, SQS, SNS"]
         JG["jaeger - OTLP receiver and trace UI"]
+        PG["pushgateway - retains end-of-run batch totals"]
         PM["prometheus - scrape and store"]
         GF["grafana - dashboards"]
+    end
+
+    subgraph BATCH["Operator submission - a process that exits when its job ends"]
+        BJ["java -jar, web-application-type=none, one JCL member"]
     end
 
     subgraph MOUNTS["Checked-in provisioning, mounted read-only"]
@@ -1506,6 +1574,9 @@ graph LR
     APP ==>|"S3, SQS and SNS at the LocalStack endpoint"| LS
     APP ==>|"spans over OTLP"| JG
     PM ==>|"scrapes /actuator/prometheus"| APP
+    PM ==>|"scrapes /metrics, honor_labels"| PG
+    BJ ==>|"pushes carddemo.* totals as it exits"| PG
+    BJ ==>|"JDBC"| PGS
     GF ==>|"queries"| PM
 
     P1 -.->|"scrape configuration"| PM
@@ -1515,21 +1586,38 @@ graph LR
 ```
 
 **Legend.** Rectangles are Compose services; the cylinder is the database service. The `STACK`
-subgraph is the Compose project and its single private bridge network; the `MOUNTS` subgraph is
-checked-in configuration mounted into a service rather than a running container. A thick
-labelled arrow `==>` is a runtime dependency between services; a dashed arrow is a
+subgraph is the Compose project and its single private bridge network; the `BATCH` subgraph is a
+short-lived process that is *not* a Compose service — it is started by an operator and exits when
+its job ends; the `MOUNTS` subgraph is checked-in configuration mounted into a service rather than
+a running container. A thick labelled arrow `==>` is a runtime dependency; a dashed arrow is a
 configuration file being consumed at start-up.
 
-**Prose equivalent.** Six services make up the stack: the application as a single Spring Boot
+**Prose equivalent.** Seven services make up the stack: the application as a single Spring Boot
 JAR on a JDK 25 base image, PostgreSQL 16, LocalStack providing S3, SQS and SNS, Jaeger as the
-OTLP receiver and trace user interface, Prometheus, and Grafana. The application connects to
-PostgreSQL over JDBC — Flyway applies the three migrations before Hibernate validates the
-schema — reaches S3, SQS and SNS at the LocalStack endpoint, and exports spans to Jaeger over
-OTLP. Prometheus scrapes the application's metrics endpoint and Grafana queries Prometheus.
-Four checked-in files are mounted as provisioning: the Prometheus scrape configuration, the
-Grafana datasource definition, the Grafana dashboard definition, and the LocalStack
-initialisation script that idempotently creates the three buckets, the FIFO queue and the
-notification topic.
+OTLP receiver and trace user interface, the Prometheus Pushgateway, Prometheus, and Grafana. The
+application connects to PostgreSQL over JDBC — Flyway applies the three migrations before
+Hibernate validates the schema — reaches S3, SQS and SNS at the LocalStack endpoint, and exports
+spans to Jaeger over OTLP. Prometheus scrapes the application's metrics endpoint and Grafana
+queries Prometheus. Four checked-in files are mounted as provisioning: the Prometheus scrape
+configuration, the Grafana datasource definition, the Grafana dashboard definition, and the
+LocalStack initialisation script that idempotently creates the three buckets, the FIFO queue and
+the notification topic.
+
+**Why the seventh service exists, since a topology diagram is exactly where a reader will ask.**
+The eighth box on the diagram is not a service at all: a batch submission is a separate `java -jar`
+process with `--spring.main.web-application-type=none`, so it ends when its job ends and serves no
+scrape endpoint at any point in its life. Three of the four named counters —
+`carddemo.batch.records.processed`, `carddemo.batch.records.rejected` and
+`carddemo.transaction.amount.total` — are written only there. Before the Pushgateway was added a
+real `POSTTRAN` run printed `TRANSACTIONS PROCESSED :000000300` and
+`TRANSACTIONS REJECTED :000000038` while every corresponding series read `0.0`, and six of the nine
+data panels on the checked-in dashboard could never hold a value. The legacy shape is the same one:
+`app/cbl/CBTRN02C.cbl` published its totals **once**, at end of run, to somewhere that kept them.
+The Pushgateway is that somewhere. `honor_labels: true` on its scrape job keeps the `job` label the
+producer set rather than relabelling every pushed series as its own letterbox, and a `MeterFilter`
+restricts a pushing process to the `carddemo.*` namespace so a dead JVM's retained heap gauge cannot
+inflate a live measurement. The deviation from the five-substrate-service plan is recorded in
+`DECISION_LOG.md`.
 
 **Hardening properties of the stack, stated because their absence would be a finding.**
 
@@ -2288,7 +2376,7 @@ Nine diagrams. Every one carries a title, a legend and a prose equivalent.
 | 4 | Relational schema, 11 tables and 10 foreign keys | [§3.5.1](#351-diagram-4-relational-schema-11-tables-and-10-foreign-keys) | `erDiagram` | yes | yes | yes |
 | 5 | Batch pipeline, gating and the parallel split | [§3.7.0](#370-diagram-5-batch-pipeline-gating-and-the-parallel-split) | `flowchart TD` | yes | yes | yes |
 | 6 | Observability signal paths | [§3.10.0](#3100-diagram-6-observability-signal-paths) | `graph LR` | yes | yes | yes |
-| 7 | Docker Compose stack, six services | [§3.11.0](#3110-diagram-7-docker-compose-stack-six-services) | `graph LR` | yes | yes | yes |
+| 7 | Docker Compose stack, seven services | [§3.11.0](#3110-diagram-7-docker-compose-stack-seven-services) | `graph LR` | yes | yes | yes |
 | 8 | Package graph and dependency direction | [§4.5](#45-diagram-8-package-graph-and-dependency-direction) | `graph TD` | yes | yes | yes |
 | 9 | Exception hierarchy as an architectural layer | [§6.1](#61-diagram-9-exception-hierarchy-as-an-architectural-layer) | `graph TD` | yes | yes | yes |
 

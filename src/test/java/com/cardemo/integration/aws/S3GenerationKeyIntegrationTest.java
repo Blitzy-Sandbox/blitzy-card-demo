@@ -758,8 +758,8 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      * @return a writer wired exactly as the container wires it, never {@code null}
      */
     private TransactionWriter productionWriter(final String bucket) {
-        return new TransactionWriter(transactionRepository, s3Template(), fileStatusMapper, metricsConfig,
-                bucket, handoffGenerationPrefix, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+        return new TransactionWriter(transactionRepository, s3Template(), s3Client(), fileStatusMapper,
+                metricsConfig, bucket, handoffGenerationPrefix);
     }
 
     /**
@@ -811,6 +811,39 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
                     declaredByTheInterface);
         }
         step.setWriteCount(step.getWriteCount() + 1L);
+    }
+
+    /**
+     * Ends the step, which is where the chunk parts become the one {@code (+1)} generation object.
+     *
+     * <p>{@code app/jcl/POSTTRAN.jcl} names a SINGLE dataset per output and a later {@code (0)} reference
+     * resolves that one dataset whole, so a chunk stages a transient part and the promotion at the end of the
+     * step concatenates every part into one object. A test that stopped at the write would observe parts and
+     * no generation, which is precisely the state that used to be published.
+     *
+     * @param writer the production writer
+     * @param step the step execution the writer is running under
+     * @return the concrete generation key the writer published, never {@code null}
+     */
+    private String promote(final TransactionWriter writer, final StepExecution step) {
+        writer.afterStep(step);
+        return step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+    }
+
+    /**
+     * A step execution under its own job instance, so that two of them are two generations.
+     *
+     * <p>One job instance produces one generation, which is what {@code (+1)} means; two generations therefore
+     * need two instances rather than two chunks of one step.
+     *
+     * @param jobInstanceId the job instance the generation prefix is scoped on
+     * @return the step execution
+     */
+    private static StepExecution stepUnderInstance(final long jobInstanceId) {
+        return MetaDataInstanceFactory.createStepExecution(
+                MetaDataInstanceFactory.createJobExecution("POSTTRAN", Long.valueOf(jobInstanceId),
+                        Long.valueOf(jobInstanceId)),
+                "dailyTransactionPostingStep", Long.valueOf(jobInstanceId));
     }
 
     /**
@@ -2091,7 +2124,7 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      * @return the writer, never {@code null}
      */
     private RejectWriter productionRejectWriter(final StepExecution stepExecution) {
-        return new RejectWriter(s3Template(), metricsConfig, fileStatusMapper,
+        return new RejectWriter(s3Template(), s3Client(), metricsConfig, fileStatusMapper,
                 batchOutputBucket(), configuredRejectGdgPrefix, stepExecution);
     }
 
@@ -2200,9 +2233,7 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
             final TransactionWriter writer = productionWriter(bucket);
 
             writeThrough(writer, step, posted);
-
-            final String published =
-                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            final String published = promote(writer, step);
             assertThat(published)
                     .as("the writer must publish the key it created under '%s'; without it a later step has "
                             + "nothing to read and the (+1)-then-read handoff cannot happen at all",
@@ -2227,47 +2258,47 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
         }
 
         /**
-         * The ordered job-scoped generation the writer publishes is complete and in creation order.
+         * Every chunk of the step lands in ONE generation object, and the manifest names exactly that object.
          *
-         * <p>{@code app/proc/TRANREPT.prc:L31} writes {@code (+1)} and {@code :L37} reads the same spelling,
-         * so a consumer needs the exact keys and not a count. Both the indexed entries and their count come
-         * from production; the test asserts they agree with what the object store holds.
+         * <p>{@code app/proc/TRANREPT.prc:L31} writes {@code (+1)} and {@code :L37} reads the same spelling, so
+         * a consumer resolving that generation expects to find the whole run there. One object per chunk broke
+         * that outright at the posting job's commit interval of one: the greatest key under the prefix was the
+         * <em>last record</em> of the run, and a consumer read a single 350-byte record as the entire day's
+         * postings. Both the manifest and the object come from production here; the test asserts they agree
+         * with what the store holds.
          */
         @Test
-        @DisplayName("the ordered job-scoped generation lists every key the writer created, in order")
-        void theOrderedGenerationListsEveryKeyInCreationOrder() {
+        @DisplayName("every chunk of the step lands in ONE generation object of the run's exact length")
+        void everyChunkLandsInOneGenerationObject() {
             final String bucket = ownVersionedBucket("gdg");
             final StepExecution step = MetaDataInstanceFactory.createStepExecution();
             final TransactionWriter writer = productionWriter(bucket);
 
-            final List<String> created = new ArrayList<>();
             for (int chunk = 0; chunk < multiRecordCount; chunk++) {
                 writeThrough(writer, step, handoffTransaction(handoffTransactionId(chunk)));
-                created.add(step.getExecutionContext()
-                        .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY));
             }
+            final String published = promote(writer, step);
 
             final ExecutionContext jobContext = step.getJobExecution().getExecutionContext();
             assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY, -1L))
-                    .as("the count under '%s' must equal the number of objects created",
+                    .as("the count under '%s' must be one, whatever the chunk count",
                             TransactionWriter.OBJECT_KEYS_COUNT_ENTRY)
-                    .isEqualTo(multiRecordCount);
+                    .isEqualTo(1L);
+            assertThat(jobContext.getString(TransactionWriter.objectKeysIndexEntry(0)))
+                    .as("and the single indexed entry must name the generation object itself")
+                    .isEqualTo(published);
 
-            final List<String> promoted = new ArrayList<>();
-            for (int index = 0; index < multiRecordCount; index++) {
-                promoted.add(jobContext.getString(TransactionWriter.objectKeysIndexEntry(index)));
-            }
-            assertThat(promoted)
-                    .as("the indexed entries must reproduce creation order exactly, because a consumer reads "
-                            + "index 0 through count-1 rather than re-resolving 'the latest'")
-                    .containsExactlyElementsOf(created);
-            assertThat(promoted)
-                    .as("and creation order must agree with lexicographic order, which is what makes the "
-                            + "greatest key the current generation")
-                    .isSortedAccordingTo(Comparator.naturalOrder());
             assertThat(keysUnder(bucket, handoffGenerationPrefix))
-                    .as("every published key must name an object that exists")
-                    .containsExactlyElementsOf(created);
+                    .as("exactly one object survives the step: the transient parts the chunks staged are "
+                            + "removed once the generation is committed, so a (0) resolution cannot land on "
+                            + "a fragment")
+                    .containsExactly(published);
+            assertThat(get(bucket, published))
+                    .as("and it is the whole run - %d records of %d bytes - at the unblocked geometry "
+                            + "app/jcl/POSTTRAN.jcl declares as RECFM=FB",
+                            Integer.valueOf(multiRecordCount),
+                            Integer.valueOf(TRANSACTION_RECORD_LENGTH))
+                    .hasSize(multiRecordCount * TRANSACTION_RECORD_LENGTH);
         }
 
         /**
@@ -2285,9 +2316,9 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
             final Transaction posted = handoffTransaction(transactionId);
             final StepExecution step = MetaDataInstanceFactory.createStepExecution();
 
-            writeThrough(productionWriter(bucket), step, posted);
-            final String promoted =
-                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            final TransactionWriter writer = productionWriter(bucket);
+            writeThrough(writer, step, posted);
+            final String promoted = promote(writer, step);
 
             final TransactionBackupReader reader = productionReader(bucket, promoted);
             final ExecutionContext readerContext = new ExecutionContext();
@@ -2341,15 +2372,18 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
             final String bucket = ownVersionedBucket("gdg");
             final String earlierId = handoffTransactionId(0);
             final String laterId = handoffTransactionId(1);
-            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
-            final TransactionWriter writer = productionWriter(bucket);
 
-            writeThrough(writer, step, handoffTransaction(earlierId));
-            final String earlierKey =
-                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
-            writeThrough(writer, step, handoffTransaction(laterId));
-            final String laterKey =
-                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            // Two generations, therefore two job instances: one instance produces one generation, which is
+            // what (+1) means. Two chunks of one step are two parts of the SAME generation.
+            final StepExecution earlierStep = stepUnderInstance(1L);
+            final TransactionWriter earlierWriter = productionWriter(bucket);
+            writeThrough(earlierWriter, earlierStep, handoffTransaction(earlierId));
+            final String earlierKey = promote(earlierWriter, earlierStep);
+
+            final StepExecution laterStep = stepUnderInstance(2L);
+            final TransactionWriter laterWriter = productionWriter(bucket);
+            writeThrough(laterWriter, laterStep, handoffTransaction(laterId));
+            final String laterKey = promote(laterWriter, laterStep);
 
             assertThat(earlierKey)
                     .as("the two generations must be distinct and ordered, or the precedence below proves "
@@ -2381,15 +2415,16 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
             final String bucket = ownVersionedBucket("gdg");
             final String checkpointedId = handoffTransactionId(0);
             final String promotedId = handoffTransactionId(1);
-            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
-            final TransactionWriter writer = productionWriter(bucket);
 
-            writeThrough(writer, step, handoffTransaction(checkpointedId));
-            final String checkpointedKey =
-                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
-            writeThrough(writer, step, handoffTransaction(promotedId));
-            final String promotedKey =
-                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            final StepExecution checkpointedStep = stepUnderInstance(1L);
+            final TransactionWriter checkpointedWriter = productionWriter(bucket);
+            writeThrough(checkpointedWriter, checkpointedStep, handoffTransaction(checkpointedId));
+            final String checkpointedKey = promote(checkpointedWriter, checkpointedStep);
+
+            final StepExecution promotedStep = stepUnderInstance(2L);
+            final TransactionWriter promotedWriter = productionWriter(bucket);
+            writeThrough(promotedWriter, promotedStep, handoffTransaction(promotedId));
+            final String promotedKey = promote(promotedWriter, promotedStep);
 
             final ExecutionContext restarted = new ExecutionContext();
             restarted.putString(generationObjectKeyContextEntry, checkpointedKey);
@@ -2421,13 +2456,16 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
             final String bucket = ownVersionedBucket("gdg");
             final String earlierId = handoffTransactionId(0);
             final String latestId = handoffTransactionId(1);
-            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
-            final TransactionWriter writer = productionWriter(bucket);
 
-            writeThrough(writer, step, handoffTransaction(earlierId));
-            writeThrough(writer, step, handoffTransaction(latestId));
-            final String greatestKey =
-                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            final StepExecution earlierStep = stepUnderInstance(1L);
+            final TransactionWriter earlierWriter = productionWriter(bucket);
+            writeThrough(earlierWriter, earlierStep, handoffTransaction(earlierId));
+            promote(earlierWriter, earlierStep);
+
+            final StepExecution latestStep = stepUnderInstance(2L);
+            final TransactionWriter latestWriter = productionWriter(bucket);
+            writeThrough(latestWriter, latestStep, handoffTransaction(latestId));
+            final String greatestKey = promote(latestWriter, latestStep);
 
             final TransactionBackupReader reader = productionReader(bucket, null);
             final ExecutionContext readerContext = new ExecutionContext();

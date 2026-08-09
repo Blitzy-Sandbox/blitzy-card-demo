@@ -56,15 +56,19 @@ import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -85,6 +89,14 @@ import org.springframework.batch.item.ExecutionContext;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable;
 
 /**
  * Unit tests for {@link TransactionWriter}, the Java form of {@code 2900-WRITE-TRANSACTION-FILE} at
@@ -143,14 +155,41 @@ class TransactionWriterTest {
     /** The default object prefix, as {@code application.yml} configures it. */
     private static final String PREFIX = "transact";
 
+    /**
+     * The base name inside every key, which is a constant in the writer and not the configured prefix.
+     *
+     * <p>It happens to equal {@link #PREFIX} under the shipped configuration, and stating it separately is
+     * what keeps the two distinguishable: a test that reused {@code PREFIX} for both would pass even if the
+     * writer started naming its objects after the configured value.
+     */
+    private static final String BASE_NAME = "transact";
+
     /** The job instance identifier the object key is scoped on. */
     private static final long JOB_INSTANCE_ID = 7L;
 
     /** {@code TRAN-RECORD}, the record length {@code app/cpy/CVTRA05Y.cpy} declares. */
     private static final int RECORD_LENGTH = 350;
 
+    /** The job execution identifier, which names the generation object and separates one attempt's parts. */
+    private static final long JOB_EXECUTION_ID = 7L;
+
     private TransactionRepository repository;
     private S3Operations objectStorage;
+
+    /**
+     * The paging and batch-deleting half of the object store.
+     *
+     * <p>The writer stages each chunk as a transient part and concatenates every part into the one generation
+     * object when the step ends, and it lists those parts through {@code listObjectsV2Paginator} rather than
+     * through {@code S3Operations.listObjects}: one {@code ListObjectsV2} truncates at a thousand keys, and
+     * the posting step commits once per record by parity contract, so a page-bounded listing would have
+     * concatenated the first thousand records and published them as the whole day.
+     */
+    private S3Client objectStoreClient;
+
+    /** A fake object store both collaborators share: every object it currently holds, insertion ordered. */
+    private Map<String, byte[]> store;
+
     private MeterRegistry meterRegistry;
 
     /**
@@ -169,10 +208,13 @@ class TransactionWriterTest {
     void buildWriterAndCaptureLogs() {
         repository = Mockito.mock(TransactionRepository.class);
         objectStorage = Mockito.mock(S3Operations.class);
+        objectStoreClient = Mockito.mock(S3Client.class);
+        store = new LinkedHashMap<>();
+        stubObjectStore();
         meterRegistry = new SimpleMeterRegistry();
         metricsConfig = new MetricsConfig(meterRegistry);
-        writer = new TransactionWriter(repository, objectStorage, new FileStatusMapper(), metricsConfig,
-                BUCKET, PREFIX, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+        writer = new TransactionWriter(repository, objectStorage, objectStoreClient, new FileStatusMapper(),
+                metricsConfig, BUCKET, PREFIX);
         stepExecution = stepExecution(JOB_INSTANCE_ID);
         writer.beforeStep(stepExecution);
 
@@ -204,8 +246,102 @@ class TransactionWriterTest {
      */
     private static StepExecution stepExecution(final long instanceId) {
         JobExecution jobExecution = new JobExecution(new JobInstance(Long.valueOf(instanceId), "POSTTRAN"),
-                Long.valueOf(instanceId), new JobParameters());
+                Long.valueOf(JOB_EXECUTION_ID), new JobParameters());
         return new StepExecution("dailyTransactionPostingStep", jobExecution);
+    }
+
+    /**
+     * Wires the fake store behind both collaborators, so a part is a complete object the promotion can read
+     * back and the promotion's own upload is observable.
+     *
+     * <p>The listing stub reports a single untruncated page, which is enough for every fixture here bar the
+     * paging test, and {@code listObjectsV2Paginator} returns a real {@link ListObjectsV2Iterable} over the
+     * same stub so the protocol is exercised rather than simulated.
+     */
+    private void stubObjectStore() {
+        Mockito.when(objectStorage.upload(Mockito.anyString(), Mockito.anyString(),
+                        Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class)))
+                .thenAnswer(invocation -> {
+                    final String key = invocation.getArgument(1, String.class);
+                    try (InputStream body = invocation.getArgument(2, InputStream.class)) {
+                        store.put(key, body.readAllBytes());
+                    }
+                    return storedResource(key);
+                });
+        Mockito.when(objectStorage.download(Mockito.anyString(), Mockito.anyString()))
+                .thenAnswer(invocation -> storedResource(invocation.getArgument(1, String.class)));
+        Mockito.when(objectStoreClient.listObjectsV2(Mockito.any(ListObjectsV2Request.class)))
+                .thenAnswer(invocation -> {
+                    final String prefix = invocation.getArgument(0, ListObjectsV2Request.class).prefix();
+                    final List<String> matching = new ArrayList<>();
+                    for (final String key : new ArrayList<>(store.keySet())) {
+                        if (key.startsWith(prefix)) {
+                            matching.add(key);
+                        }
+                    }
+                    java.util.Collections.sort(matching);
+                    final List<S3Object> contents = new ArrayList<>(matching.size());
+                    for (final String key : matching) {
+                        contents.add(S3Object.builder().key(key).build());
+                    }
+                    return ListObjectsV2Response.builder()
+                            .contents(contents)
+                            .isTruncated(Boolean.FALSE)
+                            .build();
+                });
+        Mockito.when(objectStoreClient.listObjectsV2Paginator(Mockito.any(ListObjectsV2Request.class)))
+                .thenAnswer(invocation -> new ListObjectsV2Iterable(objectStoreClient,
+                        invocation.getArgument(0, ListObjectsV2Request.class)));
+        Mockito.when(objectStoreClient.deleteObjects(Mockito.any(DeleteObjectsRequest.class)))
+                .thenAnswer(invocation -> {
+                    for (final ObjectIdentifier identifier
+                            : invocation.getArgument(0, DeleteObjectsRequest.class).delete().objects()) {
+                        store.remove(identifier.key());
+                    }
+                    return DeleteObjectsResponse.builder().build();
+                });
+    }
+
+    /**
+     * A resource view of one object the fake store holds.
+     *
+     * @param key the object key
+     * @return a resource reporting that object's key, length and content
+     */
+    private S3Resource storedResource(final String key) {
+        final S3Resource resource = Mockito.mock(S3Resource.class);
+        final byte[] bytes = store.getOrDefault(key, new byte[0]);
+        Mockito.when(resource.getFilename()).thenReturn(key);
+        Mockito.when(resource.contentLength()).thenReturn(Long.valueOf(bytes.length));
+        try {
+            Mockito.when(resource.getInputStream()).thenReturn(new ByteArrayInputStream(bytes));
+        } catch (final java.io.IOException impossible) {
+            throw new IllegalStateException("stubbing cannot fail", impossible);
+        }
+        return resource;
+    }
+
+    /**
+     * The key of the transient part one chunk of this step stages.
+     *
+     * @param instanceId the job instance the generation prefix is scoped on
+     * @param ordinal the zero-based write ordinal of the chunk's first record
+     * @return the part key
+     */
+    private static String partKey(final long instanceId, final long ordinal) {
+        return String.format(Locale.ROOT, "%s/%019d/parts/%s-part-%019d-%019d.dat", PREFIX, instanceId,
+                BASE_NAME, JOB_EXECUTION_ID, ordinal);
+    }
+
+    /**
+     * The key of the one generation object this step's parts are concatenated into.
+     *
+     * @param instanceId the job instance the generation prefix is scoped on
+     * @return the generation object key
+     */
+    private static String generationKey(final long instanceId) {
+        return String.format(Locale.ROOT, "%s/%019d/%s-%019d.dat", PREFIX, instanceId, BASE_NAME,
+                JOB_EXECUTION_ID);
     }
 
     /**
@@ -278,26 +414,29 @@ class TransactionWriterTest {
         return new Chunk<>(List.of(items));
     }
 
-    /** @return the payload of the single upload the writer performed, decoded in the record charset. */
+    /**
+     * The payload of the single object the writer created, decoded in the record charset.
+     *
+     * <p>Read from the fake store rather than from a captured stream: the store consumes the upload's stream
+     * as the real one does, so a captured stream would already be at its end. The stored bytes are what the
+     * object holds, which is the thing every geometry assertion is actually about.
+     *
+     * @return the bytes of the one object, decoded
+     */
     private String uploadedPayload() {
-        ArgumentCaptor<InputStream> captor = ArgumentCaptor.forClass(InputStream.class);
-        Mockito.verify(objectStorage).upload(Mockito.eq(BUCKET), Mockito.anyString(), captor.capture(),
-                Mockito.any(ObjectMetadata.class));
-        try (InputStream stream = captor.getValue()) {
-            ByteArrayOutputStream sink = new ByteArrayOutputStream();
-            stream.transferTo(sink);
-            return new String(sink.toByteArray(), StandardCharsets.ISO_8859_1);
-        } catch (java.io.IOException failure) {
-            throw new IllegalStateException("cannot read the uploaded payload", failure);
-        }
+        return new String(uploadedBytes(), StandardCharsets.ISO_8859_1);
     }
 
-    /** @return the object key of the single upload the writer performed. */
+    /** @return the raw bytes of the single object the writer created. */
+    private byte[] uploadedBytes() {
+        assertThat(store).as("exactly one object was created").hasSize(1);
+        return store.values().iterator().next();
+    }
+
+    /** @return the object key of the single object the writer created. */
     private String uploadedKey() {
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        Mockito.verify(objectStorage).upload(Mockito.eq(BUCKET), captor.capture(),
-                Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
-        return captor.getValue();
+        assertThat(store).as("exactly one object was created").hasSize(1);
+        return store.keySet().iterator().next();
     }
 
     /** @return the metadata of the single upload the writer performed. */
@@ -335,19 +474,20 @@ class TransactionWriterTest {
     class Construction {
 
         @ParameterizedTest(name = "a null {0} is refused by name")
-        @ValueSource(strings = {"transactionRepository", "objectStorage", "fileStatusMapper", "metrics"})
+        @ValueSource(strings = {"transactionRepository", "objectStorage", "objectStoreClient",
+                "fileStatusMapper", "metrics"})
         @DisplayName("every collaborator is refused by name when absent")
         void everyCollaboratorIsRefusedByName(final String absent) {
             TransactionRepository repositoryArgument = "transactionRepository".equals(absent) ? null : repository;
             S3Operations storeArgument = "objectStorage".equals(absent) ? null : objectStorage;
+            S3Client clientArgument = "objectStoreClient".equals(absent) ? null : objectStoreClient;
             FileStatusMapper mapperArgument =
                     "fileStatusMapper".equals(absent) ? null : new FileStatusMapper();
             MetricsConfig metricsArgument = "metrics".equals(absent) ? null : metricsConfig;
 
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new TransactionWriter(repositoryArgument, storeArgument, mapperArgument,
-                            metricsArgument, BUCKET, PREFIX,
-                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
+                    .isThrownBy(() -> new TransactionWriter(repositoryArgument, storeArgument, clientArgument,
+                            mapperArgument, metricsArgument, BUCKET, PREFIX))
                     .withMessage(absent + " must not be null");
         }
 
@@ -356,9 +496,8 @@ class TransactionWriterTest {
         @DisplayName("a blank bucket is refused, naming the property that must be configured")
         void aBlankBucketIsRefused(final String bucket) {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                            metricsConfig, bucket, PREFIX,
-                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
+                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage, objectStoreClient,
+                            new FileStatusMapper(), metricsConfig, bucket, PREFIX))
                     .withMessage("carddemo.aws.s3.batch-output-bucket must be configured with a non-blank value");
         }
 
@@ -366,9 +505,8 @@ class TransactionWriterTest {
         @DisplayName("a null bucket is refused for the same reason")
         void aNullBucketIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                            metricsConfig, null, PREFIX,
-                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
+                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage, objectStoreClient,
+                            new FileStatusMapper(), metricsConfig, null, PREFIX))
                     .withMessage("carddemo.aws.s3.batch-output-bucket must be configured with a non-blank value");
         }
 
@@ -381,9 +519,8 @@ class TransactionWriterTest {
             // is what it should always have held: a message this test spells out in full can only be changed
             // by editing the test, and that makes an improvement to a diagnostic look like a regression.
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                            metricsConfig, BUCKET, "  ",
-                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
+                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage, objectStoreClient,
+                            new FileStatusMapper(), metricsConfig, BUCKET, "  "))
                     .withMessageStartingWith("carddemo.aws.s3.transaction-object-prefix")
                     .withMessageContaining("must not be blank")
                     .withMessageContaining("bucket root");
@@ -397,9 +534,8 @@ class TransactionWriterTest {
                     "transact/", "/transact", "transact//mirror", "transact/../mirror", " transact")) {
                 assertThatExceptionOfType(IllegalArgumentException.class)
                         .as("'%s' must be refused rather than silently rewritten", malformed)
-                        .isThrownBy(() -> new TransactionWriter(repository, objectStorage,
-                                new FileStatusMapper(), metricsConfig, BUCKET, malformed,
-                                TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
+                        .isThrownBy(() -> new TransactionWriter(repository, objectStorage, objectStoreClient,
+                                new FileStatusMapper(), metricsConfig, BUCKET, malformed))
                         .withMessageStartingWith("carddemo.aws.s3.transaction-object-prefix");
             }
         }
@@ -412,8 +548,8 @@ class TransactionWriterTest {
         @Test
         @DisplayName("writing before the listener callback fails fast rather than inventing a key")
         void writingBeforeTheCallbackFailsFast() {
-            TransactionWriter detached = new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                    metricsConfig, BUCKET, PREFIX, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+            TransactionWriter detached = new TransactionWriter(repository, objectStorage, objectStoreClient,
+                    new FileStatusMapper(), metricsConfig, BUCKET, PREFIX);
 
             assertThatExceptionOfType(FatalProcessingException.class)
                     .isThrownBy(() -> detached.write(chunk(posted())))
@@ -424,8 +560,8 @@ class TransactionWriterTest {
         @Test
         @DisplayName("writing before the callback tells the operator what to wire, and stores nothing")
         void writingBeforeTheCallbackStoresNothing() throws Exception {
-            TransactionWriter detached = new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                    metricsConfig, BUCKET, PREFIX, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+            TransactionWriter detached = new TransactionWriter(repository, objectStorage, objectStoreClient,
+                    new FileStatusMapper(), metricsConfig, BUCKET, PREFIX);
 
             assertThatExceptionOfType(FatalProcessingException.class)
                     .isThrownBy(() -> detached.write(chunk(posted())));
@@ -1022,25 +1158,40 @@ class TransactionWriterTest {
     class ObjectKeyAndPublication {
 
         @Test
-        @DisplayName("the key carries the prefix, the job instance, the base name and the write ordinal")
+        @DisplayName("a chunk stages a part named by the prefix, the job instance, the attempt and the ordinal")
         void theKeyCarriesTheOrdinal() throws Exception {
             writer.write(chunk(posted()));
 
             assertThat(uploadedKey())
-                    .isEqualTo(String.format(Locale.ROOT, "%s/%019d/%s-%019d.dat", PREFIX, JOB_INSTANCE_ID,
-                            PREFIX, 0L));
+                    .as("a chunk's bytes are a transient part beneath the generation prefix, not the "
+                            + "generation itself: app/jcl/POSTTRAN.jcl names ONE dataset per output")
+                    .isEqualTo(partKey(JOB_INSTANCE_ID, 0L));
         }
 
         @Test
-        @DisplayName("the write ordinal follows the step's own write count, so chunks cannot overwrite")
+        @DisplayName("the part ordinal follows the step's own write count, so chunks cannot overwrite")
         void theOrdinalFollowsTheWriteCount() throws Exception {
             stepExecution.setWriteCount(4L);
 
             writer.write(chunk(posted()));
 
             assertThat(uploadedKey())
-                    .as("a fresh generation per chunk is what the GDG guaranteed")
+                    .as("the ordinal orders the parts within the attempt, which is the order they must be "
+                            + "concatenated in")
                     .endsWith(String.format(Locale.ROOT, "-%019d.dat", 4L));
+        }
+
+        @Test
+        @DisplayName("a part key carries the job execution too, so a restart cannot overwrite the first "
+                + "attempt's earliest records")
+        void thePartKeyCarriesTheAttempt() throws Exception {
+            // The write count of a RESTARTED step begins again at zero while its reader resumes where the
+            // failed attempt stopped. Keyed on the ordinal alone, the restart's first chunk would overwrite
+            // the first attempt's first part - replacing the earliest records of the run with later ones.
+            writer.write(chunk(posted()));
+
+            assertThat(uploadedKey())
+                    .contains("-" + String.format(Locale.ROOT, "%019d", JOB_EXECUTION_ID) + "-");
         }
 
         @Test
@@ -1054,33 +1205,33 @@ class TransactionWriterTest {
         }
 
         @Test
-        @DisplayName("the object key is published for the next step to read")
+        @DisplayName("nothing is published while only a part exists, so no step reads a fraction of the run")
+        void nothingIsPublishedUntilTheGenerationExists() throws Exception {
+            writer.write(chunk(posted()));
+
+            assertThat(stepExecution.getExecutionContext()
+                    .containsKey(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
+                    .as("a key naming a part would tell a downstream step to read one chunk of the run")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the generation key is published once the step ends, and it names the one object")
         void theObjectKeyIsPublished() throws Exception {
             writer.write(chunk(posted()));
 
-            assertThat(stepExecution.getExecutionContext()
-                    .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
-                    .isEqualTo(uploadedKey());
-        }
-
-        @Test
-        @DisplayName("the published key is the newest one, not the first")
-        void thePublishedKeyIsTheNewest() throws Exception {
-            writer.write(chunk(posted()));
-            stepExecution.setWriteCount(1L);
-            writer.write(chunk(posted("0000000000000002", "1.00")));
+            writer.afterStep(stepExecution);
 
             assertThat(stepExecution.getExecutionContext()
                     .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
-                    .endsWith(String.format(Locale.ROOT, "-%019d.dat", 1L));
+                    .isEqualTo(generationKey(JOB_INSTANCE_ID));
         }
 
         @Test
-        @DisplayName("a custom object prefix is honoured in both key positions")
+        @DisplayName("a custom object prefix is honoured in every key position")
         void aCustomPrefixIsHonoured() throws Exception {
-            TransactionWriter prefixed = new TransactionWriter(repository, objectStorage,
-                    new FileStatusMapper(), metricsConfig, BUCKET, "systran",
-                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+            TransactionWriter prefixed = new TransactionWriter(repository, objectStorage, objectStoreClient,
+                    new FileStatusMapper(), metricsConfig, BUCKET, "systran");
             prefixed.beforeStep(stepExecution);
 
             prefixed.write(chunk(posted()));
@@ -1088,7 +1239,16 @@ class TransactionWriterTest {
             assertThat(uploadedKey())
                     .as("app/jcl/DEFGDGB.jcl defines several GDG bases, and the prefix selects one")
                     .startsWith("systran/")
-                    .contains("/transact-");
+                    .contains("/parts/transact-part-");
+
+            prefixed.afterStep(stepExecution);
+
+            assertThat(stepExecution.getExecutionContext()
+                    .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
+                    .as("the configured value selects the generation namespace; the base name inside it is a "
+                            + "constant, so a prefix change relocates the generation without renaming it")
+                    .startsWith("systran/")
+                    .contains("/" + BASE_NAME + "-");
         }
     }
 
@@ -1245,135 +1405,280 @@ class TransactionWriterTest {
     }
 
     // ==================================================================================================
-    // 9 - FINDING, severity Medium, RESOLVED. The indexed manifest used to grow with no bound of any kind,
-    //     and the posting step commits once per record by parity contract, so Spring Batch re-serialised
-    //     the whole job execution context once per record: the cost of the manifest was quadratic in the
-    //     record count. A measured 300-record run published 262 indexed entries and a 36,664-byte context.
-    //     The enumeration is now bounded; the count, the generation prefix and the latest key are not.
+    // 9 - FINDING, severity Critical, RESOLVED. The writer used to emit ONE OBJECT PER CHUNK under the
+    //     generation prefix, and the posting step commits once per record by parity contract, so a
+    //     300-record run left 300 objects of 350 bytes and no generation object at all. A consumer
+    //     resolving the (0) generation as the lexicographically greatest key under the prefix therefore
+    //     read the LAST RECORD of the run as the entire day's postings, and the job execution context grew
+    //     an indexed key manifest that had to be capped to keep its re-serialisation affordable. Each chunk
+    //     now stages a transient part and afterStep concatenates every part into ONE generation object,
+    //     which is what app/jcl/POSTTRAN.jcl's single-dataset output means; the manifest holds one key and
+    //     needs no cap.
     // ==================================================================================================
 
     @Nested
-    @DisplayName("9. MEDIUM: the indexed manifest is bounded, and what stays exact when it is")
-    class IndexedManifestBound {
+    @DisplayName("9. CRITICAL: the run's chunk parts are consolidated into ONE generation object")
+    class GenerationConsolidation {
 
         @Test
-        @DisplayName("below the bound every key is indexed, in creation order, and nothing is marked")
-        void belowTheBoundEveryKeyIsIndexed() throws Exception {
+        @DisplayName("three chunks stage three parts and promote to one object holding all three records")
+        void threeChunksBecomeOneGenerationObject() throws Exception {
             writeChunks(3);
 
+            assertThat(store.keySet())
+                    .as("before the step ends the run exists as its parts, so nothing is lost by a failure")
+                    .containsExactly(partKey(JOB_INSTANCE_ID, 0L), partKey(JOB_INSTANCE_ID, 1L),
+                            partKey(JOB_INSTANCE_ID, 2L));
+
+            writer.afterStep(stepExecution);
+
+            assertThat(store.keySet())
+                    .as("app/jcl/POSTTRAN.jcl:L28 names ONE dataset, so the run is ONE object and the parts "
+                            + "it was assembled from are gone")
+                    .containsExactly(generationKey(JOB_INSTANCE_ID));
+            assertThat(store.get(generationKey(JOB_INSTANCE_ID)))
+                    .as("and it holds every record of the run, at the exact 350-byte geometry")
+                    .hasSize(3 * RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the records appear in the order the chunks wrote them")
+        void theRecordsKeepTheirWriteOrder() throws Exception {
+            writeChunks(3);
+            writer.afterStep(stepExecution);
+
+            String payload = new String(store.get(generationKey(JOB_INSTANCE_ID)),
+                    StandardCharsets.ISO_8859_1);
+            assertThat(payload.substring(0, 16)).isEqualTo("0000000000000001");
+            assertThat(payload.substring(RECORD_LENGTH, RECORD_LENGTH + 16)).isEqualTo("0000000000000002");
+            assertThat(payload.substring(2 * RECORD_LENGTH, 2 * RECORD_LENGTH + 16))
+                    .isEqualTo("0000000000000003");
+        }
+
+        @Test
+        @DisplayName("the manifest holds exactly one key, so no bound is needed to keep it affordable")
+        void theManifestHoldsExactlyOneKey() throws Exception {
+            writeChunks(3);
+            writer.afterStep(stepExecution);
+
             ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
-            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY)).isEqualTo(3L);
-            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_INDEXED_ENTRY))
-                    .as("indexed equals the count on any run that stays within the bound")
-                    .isEqualTo(3L);
-            assertThat(jobContext.containsKey(TransactionWriter.OBJECT_KEYS_TRUNCATED_ENTRY))
-                    .as("the marker's absence is the complete-manifest case")
+            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY))
+                    .as("one generation is one object, whatever the record count, so the context cost is "
+                            + "constant rather than quadratic in the run length")
+                    .isEqualTo(1L);
+            assertThat(jobContext.getString(TransactionWriter.objectKeysIndexEntry(0)))
+                    .isEqualTo(generationKey(JOB_INSTANCE_ID));
+            assertThat(jobContext.containsKey(TransactionWriter.objectKeysIndexEntry(1)))
+                    .as("and there is no second entry to read")
                     .isFalse();
-            assertThat(indexedKeys(jobContext, 3))
-                    .containsExactly(uploadedKeys().toArray(new String[0]));
         }
 
         @Test
         @DisplayName("the generation prefix names this job instance only, so listing it cannot race")
         void theGenerationPrefixNamesTheJobInstance() throws Exception {
             writeChunks(2);
+            writer.afterStep(stepExecution);
 
             String published = stepExecution.getJobExecution().getExecutionContext()
                     .getString(TransactionWriter.OBJECT_KEYS_GENERATION_PREFIX_ENTRY);
             assertThat(published)
-                    .isEqualTo(String.format(Locale.ROOT, "%s/%019d/", PREFIX, JOB_INSTANCE_ID))
                     .as("it is the created key up to its last separator, so it cannot drift from the "
                             + "key template")
-                    .isEqualTo(uploadedKeys().get(0)
-                            .substring(0, uploadedKeys().get(0).lastIndexOf('/') + 1));
+                    .isEqualTo(String.format(Locale.ROOT, "%s/%019d/", PREFIX, JOB_INSTANCE_ID));
         }
 
         @Test
-        @DisplayName("at the bound the count keeps rising while the enumeration stops, and says so once")
-        void atTheBoundTheEnumerationStopsAndTheCountDoesNot() throws Exception {
-            TransactionWriter bounded = new TransactionWriter(repository, objectStorage,
-                    new FileStatusMapper(), metricsConfig, BUCKET, PREFIX, 2);
-            bounded.beforeStep(stepExecution);
+        @DisplayName("the generation object declares its exact byte count and an opaque content type")
+        void theGenerationDeclaresItsLength() throws Exception {
+            writeChunks(2);
+            writer.afterStep(stepExecution);
 
-            for (int ordinal = 0; ordinal < 4; ordinal++) {
-                stepExecution.setWriteCount(ordinal);
-                bounded.write(chunk(posted(String.format(Locale.ROOT, "%016d", ordinal + 1), "1.00")));
+            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<ObjectMetadata> metadata = ArgumentCaptor.forClass(ObjectMetadata.class);
+            Mockito.verify(objectStorage, Mockito.atLeastOnce()).upload(Mockito.eq(BUCKET), keys.capture(),
+                    Mockito.any(InputStream.class), metadata.capture());
+            int generationUpload = keys.getAllValues().indexOf(generationKey(JOB_INSTANCE_ID));
+            assertThat(generationUpload).as("the generation was uploaded").isNotNegative();
+            assertThat(metadata.getAllValues().get(generationUpload).getContentLength())
+                    .as("app/jcl/POSTTRAN.jcl declares RECFM=FB, so a consumer finds boundaries by counting "
+                            + "350 bytes and a short or long concatenation must be refused rather than stored")
+                    .isEqualTo(Long.valueOf(2L * RECORD_LENGTH));
+            assertThat(metadata.getAllValues().get(generationUpload).getContentType())
+                    .isEqualTo("application/octet-stream");
+        }
+
+        @Test
+        @DisplayName("a run past one listing page still concatenates every part, and none is orphaned")
+        void aRunPastOneListingPageStillConcatenatesEveryPart() throws Exception {
+            // The boundary the truncating listing broke. A single ListObjectsV2 carries at most a thousand
+            // keys, and one part per record makes a thousand records the point at which a page-bounded
+            // listing silently published a prefix of the run. Slicing the answer into thousand-key pages
+            // here is what makes the paginator's contribution observable.
+            Mockito.when(objectStoreClient.listObjectsV2(Mockito.any(ListObjectsV2Request.class)))
+                    .thenAnswer(invocation -> {
+                        final ListObjectsV2Request request =
+                                invocation.getArgument(0, ListObjectsV2Request.class);
+                        final List<String> matching = new ArrayList<>();
+                        for (final String key : new ArrayList<>(store.keySet())) {
+                            if (key.startsWith(request.prefix())) {
+                                matching.add(key);
+                            }
+                        }
+                        java.util.Collections.sort(matching);
+                        final int from = request.continuationToken() == null
+                                ? 0
+                                : Integer.parseInt(request.continuationToken().substring("token-".length()));
+                        final int to = Math.min(from + PAGE_LIMIT, matching.size());
+                        final List<S3Object> contents = new ArrayList<>(to - from);
+                        for (int index = from; index < to; index++) {
+                            contents.add(S3Object.builder().key(matching.get(index)).build());
+                        }
+                        final boolean truncated = to < matching.size();
+                        return ListObjectsV2Response.builder()
+                                .contents(contents)
+                                .isTruncated(Boolean.valueOf(truncated))
+                                .nextContinuationToken(truncated ? "token-" + to : null)
+                                .build();
+                    });
+
+            final int records = PAGE_LIMIT + 3;
+            writeChunks(records);
+
+            writer.afterStep(stepExecution);
+
+            assertThat(store.keySet())
+                    .as("every part was named for concatenation and for deletion, including the ones past "
+                            + "the first listing page")
+                    .containsExactly(generationKey(JOB_INSTANCE_ID));
+            assertThat(store.get(generationKey(JOB_INSTANCE_ID)))
+                    .as("a single-page listing produced " + PAGE_LIMIT + " records here and called it the "
+                            + "whole day's postings")
+                    .hasSize(records * RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the promoted parts are deleted in batches of at most 1000 keys, each named once")
+        void thePartsAreDeletedInBoundedBatches() throws Exception {
+            writeChunks(3);
+            writer.afterStep(stepExecution);
+
+            ArgumentCaptor<DeleteObjectsRequest> deletes =
+                    ArgumentCaptor.forClass(DeleteObjectsRequest.class);
+            Mockito.verify(objectStoreClient, Mockito.atLeastOnce()).deleteObjects(deletes.capture());
+            List<String> named = new ArrayList<>();
+            for (final DeleteObjectsRequest request : deletes.getAllValues()) {
+                assertThat(request.delete().objects())
+                        .as("no batch may exceed the store's own limit for one DeleteObjects request")
+                        .hasSizeLessThanOrEqualTo(PAGE_LIMIT);
+                request.delete().objects().forEach(identifier -> named.add(identifier.key()));
             }
+            assertThat(named)
+                    .as("a per-key loop meant one round trip per posted transaction at the end of an "
+                            + "otherwise finished run")
+                    .containsExactly(partKey(JOB_INSTANCE_ID, 0L), partKey(JOB_INSTANCE_ID, 1L),
+                            partKey(JOB_INSTANCE_ID, 2L));
+        }
 
-            ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
-            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY))
-                    .as("the count is exact and is never capped")
-                    .isEqualTo(4L);
-            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_INDEXED_ENTRY))
-                    .as("the enumeration stops at the bound")
-                    .isEqualTo(2L);
-            assertThat(jobContext.getString(TransactionWriter.OBJECT_KEYS_TRUNCATED_ENTRY))
-                    .isEqualTo(TransactionWriter.OBJECT_KEYS_TRUNCATED_MARKER);
-            assertThat(jobContext.containsKey(TransactionWriter.objectKeysIndexEntry(2)))
-                    .as("nothing is written past the bound, so a consumer must read indexed and not count")
-                    .isFalse();
-            assertThat(indexedKeys(jobContext, 2))
-                    .containsExactly(uploadedKeys().get(0), uploadedKeys().get(1));
+        @Test
+        @DisplayName("a step that posted nothing creates no object at all")
+        void anEmptyStepCreatesNoObject() {
+            writer.afterStep(stepExecution);
+
+            assertThat(store).as("OPEN OUTPUT then CLOSE of an empty dataset writes no record").isEmpty();
             assertThat(stepExecution.getExecutionContext()
-                    .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
-                    .as("the latest key is published whatever the bound is")
-                    .isEqualTo(uploadedKeys().get(3));
-            assertThat(loggedMessages().stream()
-                    .filter(message -> message.contains("indexed transaction object-key manifest"))
-                    .toList())
-                    .as("once per job execution, not once per record: the condition holds for every "
-                            + "remaining record and one warning per record would bury the run")
-                    .hasSize(1)
-                    .allSatisfy(message -> assertThat(message)
-                            .contains("bound of 2 keys")
-                            .contains(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY)
-                            .contains(TransactionWriter.OBJECT_KEYS_GENERATION_PREFIX_ENTRY)
-                            .contains(TransactionWriter.KEY_MAX_INDEXED_OBJECT_KEYS));
-        }
-
-        @ParameterizedTest(name = "a bound of {0} is refused")
-        @ValueSource(ints = {0, -1})
-        @DisplayName("a non-positive bound fails the context at startup, naming its property")
-        void aNonPositiveBoundIsRefused(final int bound) {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage,
-                            new FileStatusMapper(), metricsConfig, BUCKET, PREFIX, bound))
-                    .withMessage(TransactionWriter.KEY_MAX_INDEXED_OBJECT_KEYS
-                            + " must be positive but was " + bound);
+                    .containsKey(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
+                    .isFalse();
         }
 
         @Test
-        @DisplayName("the default bound clears the 262 entries of the 300-record parity run")
-        void theDefaultBoundClearsTheParityRun() {
-            assertThat(TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS)
-                    .as("app/data/ASCII/dailytran.txt posts 262 of its 300 records, so the parity run is "
-                            + "enumerated in full and this fix changes nothing it measured")
-                    .isGreaterThan(262);
-            assertThat(TransactionWriter.KEY_MAX_INDEXED_OBJECT_KEYS)
-                    .isEqualTo("carddemo.batch.transaction-writer.max-indexed-object-keys");
+        @DisplayName("the promotion is idempotent, so a repeated callback creates no second object")
+        void thePromotionIsIdempotent() throws Exception {
+            writeChunks(2);
+
+            writer.afterStep(stepExecution);
+            writer.afterStep(stepExecution);
+
+            assertThat(store.keySet()).containsExactly(generationKey(JOB_INSTANCE_ID));
+            assertThat(store.get(generationKey(JOB_INSTANCE_ID))).hasSize(2 * RECORD_LENGTH);
         }
 
         @Test
-        @DisplayName("application.yml declares the property at the same value, so it is operable")
-        void theShippedProfileDeclaresTheBound() throws Exception {
-            // The reason it is declared at all: a key that is read at runtime but appears in no profile is
-            // invisible to whoever operates the job. Asserted against the file so deleting the declaration
-            // fails a test rather than silently hiding the knob. Note what this key is NOT - it bounds a
-            // diagnostic manifest and truncates it, where the statement processor's removed record ceilings
-            // refused whole runs (finding BAT-002).
-            String profile = java.nio.file.Files.readString(
-                    java.nio.file.Path.of("src/main/resources/application.yml"),
-                    StandardCharsets.UTF_8);
-            assertThat(profile)
-                    .contains("max-indexed-object-keys: "
-                            + TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+        @DisplayName("a step that ended badly keeps its parts and catalogues nothing, so the restart can "
+                + "concatenate the whole instance")
+        void aFailedStepRetainsItsPartsAndPublishesNothing() throws Exception {
+            writeChunks(2);
+            stepExecution.setStatus(org.springframework.batch.core.BatchStatus.FAILED);
+
+            writer.afterStep(stepExecution);
+
+            assertThat(store.keySet())
+                    .as("app/jcl/POSTTRAN.jcl declares its generation output DISP=(NEW,CATLG,DELETE), so an "
+                            + "abending step leaves nothing catalogued - and the parts are what lets a "
+                            + "restart produce ONE complete generation rather than a second partial one")
+                    .containsExactly(partKey(JOB_INSTANCE_ID, 0L), partKey(JOB_INSTANCE_ID, 1L));
+            assertThat(stepExecution.getExecutionContext()
+                    .containsKey(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
+                    .isFalse();
+            assertThat(loggedMessages())
+                    .anyMatch(message -> message.contains("are")
+                            && message.contains("retained so that a restart"));
         }
+
+        @Test
+        @DisplayName("the step's own exit status is left exactly as the step set it")
+        void theExitStatusIsUntouched() throws Exception {
+            // RC=4 - COMPLETED WITH REJECTS, app/cbl/CBTRN02C.cbl:L230 - is decided by the reject count and
+            // by nothing else, so the promotion must not overwrite it.
+            writeChunks(1);
+
+            assertThat(writer.afterStep(stepExecution))
+                    .as("returning null leaves whatever the step already concluded in place")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("a promotion the store refuses DISPLAYs, abends, and publishes no key")
+        void aFailedPromotionAbends() throws Exception {
+            writeChunks(1);
+            Mockito.when(objectStorage.upload(Mockito.anyString(),
+                            Mockito.eq(generationKey(JOB_INSTANCE_ID)), Mockito.any(InputStream.class),
+                            Mockito.any(ObjectMetadata.class)))
+                    .thenThrow(new IllegalStateException("the bucket is unreachable"));
+
+            assertThatExceptionOfType(FileAccessException.class)
+                    .isThrownBy(() -> writer.afterStep(stepExecution))
+                    .as("concatenating the parts IS this writer's CLOSE, so a failure takes the source's "
+                            + "own CLOSE path at app/cbl/CBTRN02C.cbl:L600-L616, 9100-TRANFILE-CLOSE")
+                    .satisfies(failure -> assertThat(failure.getCause())
+                            .isInstanceOf(IllegalStateException.class));
+
+            assertThat(loggedMessages())
+                    .as("the close paragraph has its own DISPLAY at :L611, and reporting the write's text "
+                            + "instead would name a diagnostic the source never emits at this point")
+                    .contains("ERROR CLOSING TRANSACTION FILE", "ABENDING PROGRAM")
+                    .doesNotContain("ERROR WRITING TO TRANSACTION FILE");
+            assertThat(stepExecution.getExecutionContext()
+                    .containsKey(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
+                    .isFalse();
+            assertThat(store.keySet())
+                    .as("and the parts survive, because until the generation exists they are the only mirror")
+                    .containsExactly(partKey(JOB_INSTANCE_ID, 0L));
+        }
+
+        @Test
+        @DisplayName("a null execution is tolerated by the callback, as beforeStep already is")
+        void aNullExecutionIsTolerated() {
+            assertThat(writer.afterStep(null)).isNull();
+        }
+
+        /** The store's own maximum for one listing page and for one batched delete. */
+        private static final int PAGE_LIMIT = 1000;
 
         /**
-         * Writes one single-record chunk per requested object, advancing the step's write count so each
-         * chunk composes its own key.
+         * Writes one single-record chunk per requested record, advancing the step's write count so each
+         * chunk stages its own part.
          *
-         * @param chunks how many objects to create
+         * @param chunks how many parts to stage
          * @throws Exception if the writer does
          */
         private void writeChunks(final int chunks) throws Exception {
@@ -1381,33 +1686,6 @@ class TransactionWriterTest {
                 stepExecution.setWriteCount(ordinal);
                 writer.write(chunk(posted(String.format(Locale.ROOT, "%016d", ordinal + 1), "1.00")));
             }
-        }
-
-        /**
-         * Reads the indexed entries a consumer would read.
-         *
-         * @param jobContext the job execution context the writer published into
-         * @param indexed how many entries to read
-         * @return the keys, in creation order
-         */
-        private List<String> indexedKeys(final ExecutionContext jobContext, final int indexed) {
-            List<String> keys = new java.util.ArrayList<>(indexed);
-            for (int index = 0; index < indexed; index++) {
-                keys.add(jobContext.getString(TransactionWriter.objectKeysIndexEntry(index)));
-            }
-            return keys;
-        }
-
-        /**
-         * Captures every object key the writer uploaded, in call order.
-         *
-         * @return the keys
-         */
-        private List<String> uploadedKeys() {
-            ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-            Mockito.verify(objectStorage, Mockito.atLeastOnce()).upload(Mockito.eq(BUCKET),
-                    captor.capture(), Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
-            return captor.getAllValues();
         }
     }
 }

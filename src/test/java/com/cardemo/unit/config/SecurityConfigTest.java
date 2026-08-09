@@ -42,8 +42,12 @@ import com.cardemo.security.JwtAuthenticationFilter;
 import com.cardemo.security.JwtTokenProvider;
 import jakarta.servlet.Filter;
 import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
@@ -53,8 +57,13 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -1050,6 +1059,618 @@ class SecurityConfigTest {
 
             final Outcome unmapped = call(ctx, "GET", "/nothing/declared", token);
             assertThat(unmapped.status()).isEqualTo(403);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The whole authorization surface, censused behaviourally, and the published H-6 figure pinned
+    // against that census
+    //
+    // The two tests above prove that a user reaches eleven operations and an administrator reaches a
+    // sample of the rest. Neither states what the whole authorizeHttpRequests surface IS, so neither
+    // notices a rule that widens. Drop the HttpMethod argument from one requestMatchers call and both
+    // stay green while every other method on that path becomes reachable; add a path constant with no
+    // rule of its own and both stay green while it falls to the catch-all unnoticed. What follows
+    // closes that by censusing all three kinds of caller against every operation, requiring the
+    // catch-all to refuse undeclared methods as well as undeclared paths, and requiring the ledger's
+    // own H-6 figures to agree with the measured census.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * How an operation admits callers, as OBSERVED through the chain rather than as declared.
+     *
+     * <p>Three shapes are permitted and a fourth is a failure, which is the point: a rule that admits
+     * an anonymous caller to a business operation, or refuses an administrator, produces a triple that
+     * matches none of these and is reported as such.
+     */
+    private enum Admission {
+
+        /** Reached by everyone, credential or not. Establishing identity is the one such operation. */
+        ANONYMOUS,
+
+        /** Refused anonymously, reached by both authenticated user types. */
+        DUAL_AUTHORITY,
+
+        /** Refused anonymously, refused for a standard user, reached only by an administrator. */
+        ADMIN_ONLY
+    }
+
+    /**
+     * One sourced CICS transaction as the REST surface exposes it.
+     *
+     * @param transaction  the {@code DEFINE TRANSACTION} identifier from {@code app/csd/CARDDEMO.CSD}
+     * @param method       the HTTP method the matcher binds, or {@code null} where the matcher binds none
+     * @param declaredPath the path, read from {@link SecurityConfig}'s own constant rather than retyped
+     */
+    private record Operation(String transaction, String method, String declaredPath) {
+
+        /**
+         * Turns the declared path into something dispatchable.
+         *
+         * <p>Two substitutions, both mechanical: the template variable of the account-view route takes a
+         * seeded identifier, and the administrative prefix takes its user collection. Neither changes which
+         * matcher is selected, which is what the test measures.
+         *
+         * @return a concrete request path, never {@code null}
+         */
+        String probeUri() {
+            return declaredPath.replace("/**", "/users").replace("{accountId}", "00000000001");
+        }
+
+        /**
+         * Renders this operation for an assertion description.
+         *
+         * @return the transaction identifier with the method and declared path, never {@code null}
+         */
+        String label() {
+            return transaction + " " + method + " " + declaredPath;
+        }
+    }
+
+    /** {@code DEFINE TRANSACTION(CAUP) GROUP(CARDDEMO)} of the frozen resource definitions. */
+    private static final Pattern CSD_TRANSACTION =
+            Pattern.compile("DEFINE\\s+TRANSACTION\\((?<id>[A-Z0-9]{1,4})\\)");
+
+    /** {@code PROGRAM(COACTUPC)}, which follows the transaction it belongs to. */
+    private static final Pattern CSD_PROGRAM = Pattern.compile("PROGRAM\\((?<name>[A-Z0-9]{1,8})\\)");
+
+    /** A method-and-path pair as the ledger writes one, for example {@code `GET /api/cards/detail`}. */
+    private static final Pattern LEDGER_OPERATION = Pattern.compile(
+            "`(?<method>GET|PUT|POST|DELETE|PATCH) (?<path>/[A-Za-z0-9/{}._-]*)`");
+
+    /** The identifier of the residual-risk row this census pins. */
+    private static final String UNSCOPED_FINDING = "H-6";
+
+    /** Cardinal number words zero through twenty, indexed by their own value. */
+    private static final List<String> NUMBER_WORDS = List.of("zero", "one", "two", "three", "four",
+            "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+            "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty");
+
+    /**
+     * Walks upward from the working directory to the repository root.
+     *
+     * <p>Same derivation the documentation suites use, and for the same reason: the surefire working
+     * directory is the project base directory in an ordinary build but need not be, and a hard-coded
+     * relative path fails silently by reading nothing.
+     *
+     * @return the directory holding {@code pom.xml}, {@code src/} and {@code app/}
+     */
+    private static Path repositoryRoot() {
+        final Path start = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        for (Path candidate = start; candidate != null; candidate = candidate.getParent()) {
+            if (Files.isRegularFile(candidate.resolve("pom.xml"))
+                    && Files.isDirectory(candidate.resolve("src"))
+                    && Files.isDirectory(candidate.resolve("app"))) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException(
+                "No directory from " + start + " upward holds pom.xml, src/ and app/, so the "
+                        + "authorization census cannot be checked against the frozen resource "
+                        + "definitions or against docs/validation-gates.md. Run this test with the "
+                        + "repository root, or any directory beneath it, as the working directory.");
+    }
+
+    /**
+     * Reads a text file that must exist.
+     *
+     * @param path the file to read; must not be {@code null}
+     * @return its contents, never {@code null}
+     */
+    private static String readTextFile(final Path path) {
+        try {
+            return Files.readString(path, StandardCharsets.UTF_8);
+        } catch (final IOException unreadable) {
+            throw new IllegalStateException("Cannot read " + path + ", so the authorization census has "
+                    + "nothing to reconcile against", unreadable);
+        }
+    }
+
+    /**
+     * Resolves one of {@link SecurityConfig}'s own path constants.
+     *
+     * <p>Read reflectively rather than retyped. A census that spelled these paths out again would agree
+     * with itself after a path was renamed and disagree with the running chain, which is the failure mode
+     * this whole section exists to remove.
+     *
+     * @param name the constant's simple name; must not be {@code null}
+     * @return its value, never {@code null}
+     */
+    private static String pathConstant(final String name) {
+        try {
+            final Field field = SecurityConfig.class.getDeclaredField(name);
+            field.setAccessible(true);
+            final Object value = field.get(null);
+            assertThat(value).as("SecurityConfig.%s must be a String path", name)
+                    .isInstanceOf(String.class);
+            return (String) value;
+        } catch (final ReflectiveOperationException absent) {
+            throw new IllegalStateException("SecurityConfig declares no constant named " + name
+                    + ", so the authorization census cannot be built from the configuration's own path "
+                    + "values. A renamed path constant must be renamed here too.", absent);
+        }
+    }
+
+    /**
+     * Every {@code PATH_}-prefixed constant {@link SecurityConfig} declares, by name.
+     *
+     * @return the constant names, in declaration order, never {@code null}
+     */
+    private static List<String> declaredPathConstantNames() {
+        return Arrays.stream(SecurityConfig.class.getDeclaredFields())
+                .filter(field -> field.getName().startsWith("PATH_"))
+                .filter(field -> field.getType() == String.class)
+                .map(Field::getName)
+                .toList();
+    }
+
+    /**
+     * The seventeen sourced transactions, each bound to the path constant its matcher uses.
+     *
+     * <p>The transaction identifiers are reconciled against {@code app/csd/CARDDEMO.CSD} and the paths are
+     * read out of {@link SecurityConfig}, so the only thing declared here is the correspondence between
+     * them - which is exactly the mapping transformation Rule 6 asserts and the one a reviewer needs
+     * written down. Its completeness is asserted, not assumed: see
+     * {@link #theCensusCoversEverySourcedTransactionAndEveryBusinessPathConstant}.
+     *
+     * @return the census, never {@code null}
+     */
+    private static List<Operation> sourcedOperations() {
+        final String admin = pathConstant("PATH_ADMIN");
+        final String accounts = pathConstant("PATH_ACCOUNTS");
+        final String cards = pathConstant("PATH_CARDS");
+        final String transactions = pathConstant("PATH_TRANSACTIONS");
+        return List.of(
+                new Operation("CC00", "POST", pathConstant("PATH_SIGN_ON")),
+                new Operation("CU00", "GET", admin),
+                new Operation("CU01", "POST", admin),
+                new Operation("CU02", "PUT", admin),
+                new Operation("CU03", "DELETE", admin),
+                new Operation("CA00", "GET", pathConstant("PATH_MENU_ADMIN")),
+                new Operation("CM00", "GET", pathConstant("PATH_MENU_MAIN")),
+                new Operation("CAVW", "GET", pathConstant("PATH_ACCOUNT_BY_ID")),
+                new Operation("CAUP", "PUT", accounts),
+                new Operation("CCLI", "GET", cards),
+                new Operation("CCDL", "GET", pathConstant("PATH_CARD_DETAIL")),
+                new Operation("CCUP", "PUT", cards),
+                new Operation("CT00", "GET", transactions),
+                new Operation("CT01", "GET", pathConstant("PATH_TRANSACTION_DETAIL")),
+                new Operation("CT02", "POST", transactions),
+                new Operation("CB00", "POST", pathConstant("PATH_BILL_PAYMENTS")),
+                new Operation("CR00", "POST", pathConstant("PATH_REPORTS")));
+    }
+
+    /**
+     * Pairs every {@code DEFINE TRANSACTION} in the frozen resource definitions with its program.
+     *
+     * @return transaction identifier to program name, in file order, never {@code null}
+     */
+    private static Map<String, String> csdTransactionPrograms() {
+        final Map<String, String> pairs = new LinkedHashMap<>();
+        String pending = null;
+        for (final String line : readTextFile(
+                repositoryRoot().resolve("app/csd/CARDDEMO.CSD")).split("\\R")) {
+            final Matcher transaction = CSD_TRANSACTION.matcher(line);
+            if (transaction.find()) {
+                pending = transaction.group("id");
+                continue;
+            }
+            if (line.stripLeading().startsWith("DEFINE")) {
+                pending = null;
+                continue;
+            }
+            if (pending == null) {
+                continue;
+            }
+            final Matcher program = CSD_PROGRAM.matcher(line);
+            if (program.find()) {
+                pairs.put(pending, program.group("name"));
+                pending = null;
+            }
+        }
+        return pairs;
+    }
+
+    /**
+     * Isolates one residual-risk row of the published ledger.
+     *
+     * @param identifier the row's identifier, for example {@code H-6}; must not be {@code null}
+     * @return the whole table row, never {@code null}
+     */
+    private static String ledgerRow(final String identifier) {
+        final List<String> matches = readTextFile(
+                repositoryRoot().resolve("docs/validation-gates.md")).lines()
+                .map(String::strip)
+                .filter(line -> line.startsWith("| " + identifier + " |"))
+                .toList();
+        assertThat(matches)
+                .as("docs/validation-gates.md must publish exactly one %s row for the census to pin; "
+                        + "a duplicated or renamed identifier makes the pin ambiguous", identifier)
+                .hasSize(1);
+        return matches.get(0);
+    }
+
+    /**
+     * Reads a cardinal number word.
+     *
+     * @param word the word, in any case; must not be {@code null}
+     * @return its value
+     */
+    private static int numberWordValue(final String word) {
+        final int value = NUMBER_WORDS.indexOf(word.toLowerCase(Locale.ROOT));
+        assertThat(value)
+                .as("'%s' is not a cardinal number word this test can read, so the published figure "
+                        + "cannot be compared with the measured one. Publish a word between %s and %s.",
+                        word, NUMBER_WORDS.get(0), NUMBER_WORDS.get(NUMBER_WORDS.size() - 1))
+                .isNotNegative();
+        return value;
+    }
+
+    /**
+     * Observes how the chain admits one operation, across all three kinds of caller.
+     *
+     * @param ctx        the refreshed context whose chain is exercised; must not be {@code null}
+     * @param operation  the operation to probe; must not be {@code null}
+     * @param userToken  a token carrying the standard-user authority; must not be {@code null}
+     * @param adminToken a token carrying the administrator authority; must not be {@code null}
+     * @return the observed admission, never {@code null}
+     * @throws Exception if the mock layer cannot dispatch, which is a harness failure
+     */
+    private static Admission admissionOf(final AnnotationConfigWebApplicationContext ctx,
+                                         final Operation operation,
+                                         final String userToken,
+                                         final String adminToken) throws Exception {
+        final String label = operation.label();
+        final Outcome anonymous = call(ctx, operation.method(), operation.probeUri(), null);
+        final Outcome user = call(ctx, operation.method(), operation.probeUri(), userToken);
+        final Outcome administrator = call(ctx, operation.method(), operation.probeUri(), adminToken);
+
+        // Transformation Rule 7 is stateless throughout, so this holds on every path and every principal.
+        for (final Outcome outcome : List.of(anonymous, user, administrator)) {
+            assertThat(outcome.sessionCreated()).as("%s must mint no session", label).isFalse();
+        }
+
+        if (anonymous.reachedApplication()) {
+            assertThat(user.reachedApplication())
+                    .as("%s is anonymous, so a credential cannot make it less reachable", label).isTrue();
+            assertThat(administrator.reachedApplication())
+                    .as("%s is anonymous, so an administrator reaches it too", label).isTrue();
+            return Admission.ANONYMOUS;
+        }
+
+        // Established by anonymousSurface: a missing credential is 401 and carries the bearer challenge,
+        // never 403 and never a silent pass.
+        assertThat(anonymous.status()).as("%s refused anonymously", label).isEqualTo(401);
+        assertThat(anonymous.challenge()).as("%s challenges for a bearer token", label).isEqualTo("Bearer");
+
+        assertThat(administrator.reachedApplication())
+                .as("%s must be reachable by an administrator; the source routed type 'A' to every "
+                        + "surface", label)
+                .isTrue();
+
+        if (user.reachedApplication()) {
+            return Admission.DUAL_AUTHORITY;
+        }
+        assertThat(user.status())
+                .as("%s refuses a standard user, and an authenticated refusal is 403 not 401", label)
+                .isEqualTo(403);
+        return Admission.ADMIN_ONLY;
+    }
+
+    /**
+     * The census names every transaction the frozen resource definitions source, and every business path
+     * the configuration declares.
+     *
+     * <p>Both halves are derived. The transaction half reconciles against {@code app/csd/CARDDEMO.CSD},
+     * which defines eighteen transactions of which one - {@code CDV1}, fronting {@code COCRDSEC} - has no
+     * program anywhere in {@code app/cbl}, so seventeen are sourced and the eighteenth has nothing to
+     * expose. The path half walks {@link SecurityConfig}'s own {@code PATH_} constants, so a new business
+     * path added to the configuration without a census entry fails here rather than going uncensused.
+     */
+    @Test
+    @DisplayName("the census covers every sourced CSD transaction, and every declared business path")
+    void theCensusCoversEverySourcedTransactionAndEveryBusinessPathConstant() {
+        final Map<String, String> defined = csdTransactionPrograms();
+        final Path corpus = repositoryRoot().resolve("app/cbl");
+        final List<String> sourced = defined.entrySet().stream()
+                .filter(entry -> Files.isRegularFile(corpus.resolve(entry.getValue() + ".cbl")))
+                .map(Map.Entry::getKey)
+                .sorted()
+                .toList();
+        final List<String> unsourced = defined.entrySet().stream()
+                .filter(entry -> !Files.isRegularFile(corpus.resolve(entry.getValue() + ".cbl")))
+                .map(entry -> entry.getKey() + " -> " + entry.getValue())
+                .toList();
+
+        assertThat(defined)
+                .as("app/csd/CARDDEMO.CSD is the endpoint inventory; if it stops parsing, every figure "
+                        + "below is unanchored")
+                .isNotEmpty();
+        assertThat(unsourced)
+                .as("exactly one defined transaction has no program in app/cbl, and it is CDV1 fronting "
+                        + "COCRDSEC - the dangling definition no endpoint is invented for")
+                .containsExactly("CDV1 -> COCRDSEC");
+
+        final List<String> censused = sourcedOperations().stream()
+                .map(Operation::transaction).sorted().toList();
+        assertThat(censused)
+                .as("the census must name each sourced transaction exactly once, so nothing is counted "
+                        + "twice and nothing is missing")
+                .doesNotHaveDuplicates()
+                .containsExactlyElementsOf(sourced);
+
+        final List<String> operationalPaths = List.of("PATH_HEALTH", "PATH_HEALTH_LIVENESS",
+                "PATH_HEALTH_READINESS", "PATH_INFO", "PATH_PROMETHEUS");
+        final List<String> censusedPaths = sourcedOperations().stream()
+                .map(Operation::declaredPath).distinct().toList();
+        for (final String constant : declaredPathConstantNames()) {
+            if (operationalPaths.contains(constant)) {
+                continue;
+            }
+            assertThat(censusedPaths)
+                    .as("SecurityConfig declares %s, which no census entry uses. Either it is a new "
+                            + "business operation - add it to the census so its authority is measured - "
+                            + "or it is operational, in which case name it in operationalPaths here.",
+                            constant)
+                    .contains(pathConstant(constant));
+        }
+        for (final String constant : operationalPaths) {
+            assertThat(declaredPathConstantNames())
+                    .as("%s is exempted from the census as operational, but SecurityConfig no longer "
+                            + "declares it, so the exemption is stale", constant)
+                    .contains(constant);
+        }
+    }
+
+    /**
+     * Every sourced operation admits exactly the callers its rule names, and no fourth shape exists.
+     *
+     * <p>This is the assertion the two surface tests above cannot make. They sample; this enumerates. The
+     * partition is observed rather than declared: {@link #admissionOf} classifies each operation from what
+     * the chain actually did to an anonymous caller, a standard user and an administrator, and refuses any
+     * triple that is not one of the three permitted shapes. Widening an administrator-only matcher to dual
+     * authority moves an operation between two partitions here and is reported by name.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("all seventeen operations partition into anonymous, dual-authority and admin-only")
+    void everySourcedOperationAdmitsExactlyTheCallersItsRuleNames() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            final JwtTokenProvider provider = ctx.getBean(JwtTokenProvider.class);
+            final String userToken = provider.issueToken("USER0001", UserType.USER);
+            final String adminToken = provider.issueToken("ADMIN001", UserType.ADMIN);
+
+            final Map<Admission, List<String>> partition = new LinkedHashMap<>();
+            for (final Admission admission : Admission.values()) {
+                partition.put(admission, new ArrayList<>());
+            }
+            for (final Operation operation : sourcedOperations()) {
+                partition.get(admissionOf(ctx, operation, userToken, adminToken))
+                        .add(operation.transaction());
+            }
+
+            // The one unauthenticated business operation is the one that establishes identity. Any other
+            // transaction appearing here is an authentication bypass, so the set is pinned exactly.
+            assertThat(partition.get(Admission.ANONYMOUS))
+                    .as("sign-on is the only anonymous business operation; anything else here is "
+                            + "reachable without a credential")
+                    .containsExactly("CC00");
+
+            // The user-administration transactions plus the administrative menu, mirroring the user-type
+            // gate of app/cbl/COSGN00C.cbl that routed only type 'A' to COADM01C.
+            assertThat(partition.get(Admission.ADMIN_ONLY))
+                    .as("the administrator-only surface is the four CU transactions and the CA00 menu, "
+                            + "and an operation leaving this set has been widened")
+                    .containsExactlyInAnyOrder("CU00", "CU01", "CU02", "CU03", "CA00");
+
+            // Everything else, exactly as both user types reached the main menu in the source.
+            assertThat(partition.get(Admission.DUAL_AUTHORITY))
+                    .as("the remaining transactions are reachable by both user types")
+                    .containsExactlyInAnyOrder("CM00", "CAVW", "CAUP", "CCLI", "CCDL", "CCUP",
+                            "CT00", "CT01", "CT02", "CB00", "CR00");
+
+            assertThat(partition.values().stream().mapToInt(List::size).sum())
+                    .as("the three partitions must account for every censused operation once")
+                    .isEqualTo(sourcedOperations().size());
+        }
+    }
+
+    /**
+     * Nothing a rule does not name is reachable, whoever asks.
+     *
+     * <p>{@code anyRequest().denyAll()} is the whole of this repository's defence against an endpoint
+     * shipped without a rule, and it is invisible in a passing test suite: removing a matcher makes an
+     * operation unreachable, which looks like a broken feature, whereas removing the catch-all makes every
+     * undeclared path reachable, which looks like nothing at all. The probes below are therefore of two
+     * kinds - a path no rule names, and a method no rule names on a path that has one - because a matcher
+     * bound to {@code GET} must not admit {@code DELETE} on the same path.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("the deny-all catch-all refuses undeclared paths AND undeclared methods, for everyone")
+    void theCatchAllRefusesEverythingNoRuleNames() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            final JwtTokenProvider provider = ctx.getBean(JwtTokenProvider.class);
+            final String userToken = provider.issueToken("USER0001", UserType.USER);
+            final String adminToken = provider.issueToken("ADMIN001", UserType.ADMIN);
+
+            final String[][] probes = {
+                // No rule names the path at all.
+                { "GET", "/nothing/declared" },
+                { "GET", "/api" },
+                { "GET", "/api/customers" },
+                { "GET", "/actuator" },
+                { "GET", "/actuator/env" },
+                { "GET", "/actuator/loggers" },
+                // A rule names the path but binds a different method. The four batch-only datasets and
+                // transaction CDV1 have no rule at all, which is why no probe for them is needed: they
+                // are covered by the undeclared-path probes above.
+                { "DELETE", "/api/cards" },
+                { "DELETE", "/api/accounts" },
+                { "GET", "/api/reports" },
+                { "GET", "/api/billing/payments" },
+                { "POST", "/api/menu/main" },
+                { "POST", "/api/cards/detail" },
+                { "GET", "/api/auth/signon" },
+                // The operational surface is GET-only, and the scrape is credentialed on its own chain.
+                { "POST", "/actuator/health" },
+                { "POST", "/actuator/info" } };
+
+            for (final String[] probe : probes) {
+                final String label = probe[0] + " " + probe[1];
+
+                final Outcome anonymous = call(ctx, probe[0], probe[1], null);
+                assertThat(anonymous.reachedApplication())
+                        .as("%s must not reach a handler anonymously", label).isFalse();
+                assertThat(anonymous.status()).as("%s refused anonymously", label).isEqualTo(401);
+
+                for (final String token : List.of(userToken, adminToken)) {
+                    final Outcome authenticated = call(ctx, probe[0], probe[1], token);
+                    assertThat(authenticated.reachedApplication())
+                            .as("%s must not reach a handler for an authenticated caller either - a "
+                                    + "credential is not an entitlement", label).isFalse();
+                    assertThat(authenticated.status())
+                            .as("%s refused for an authenticated caller", label).isEqualTo(403);
+                    assertThat(authenticated.sessionCreated()).as("%s mints no session", label).isFalse();
+                }
+            }
+        }
+    }
+
+    /**
+     * The published {@code H-6} figures agree with the census, and every operation the row names is
+     * genuinely reachable by a standard user.
+     *
+     * <p>{@code H-6} is an OPEN High-severity residual risk: authorisation is role-based only, so a
+     * standard user may name any account, card or transaction identifier and be served. The row states two
+     * numbers and lists the operations behind them, and until now all three were prose - a matcher change
+     * could have made the row wrong in either direction with nothing to notice. This closes that from both
+     * ends: the numbers are read out of the row and compared with the census, and each path the row names
+     * is dispatched with a standard user's token, so the disclosure is only published while it is true.
+     *
+     * <p><strong>Nothing here narrows the surface, and that is deliberate.</strong>
+     * {@code app/cpy/CSUSR01Y.cpy} carries no reference to an account, card or customer, so no ownership
+     * relation exists in the frozen source to enforce, and {@code app/cbl/COACTVWC.cbl} never consults
+     * {@code CDEMO-USER-ID} either. The absence is faithful and the Agent Action Plan forbids supplying a
+     * guard the source lacks, so the risk is PINNED rather than closed. Should a human ever decide the
+     * ownership relation, this test fails on the first operation that stops over-reaching - which is
+     * exactly the signal wanted, because the row must then be withdrawn.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("H-6: the published ten-of-seventeen figures agree with the measured census")
+    void thePublishedUnscopedOperationFigureAgreesWithTheCensus() throws Exception {
+        final String row = ledgerRow(UNSCOPED_FINDING);
+
+        final List<String> published = new ArrayList<>();
+        final Matcher operations = LEDGER_OPERATION.matcher(row);
+        while (operations.find()) {
+            published.add(operations.group("method") + " " + operations.group("path"));
+        }
+        assertThat(published)
+                .as("the %s row must name the operations behind its figure, so a reader can check them "
+                        + "and so this test has something to dispatch", UNSCOPED_FINDING)
+                .isNotEmpty()
+                .doesNotHaveDuplicates();
+
+        // Both figures come out of the row's own prose. Nothing about ten or eleven is written here.
+        final Matcher headline = Pattern.compile(
+                "(?<unscoped>[A-Za-z]+) of the (?<total>[a-z]+) operations scope nothing to the caller")
+                .matcher(row);
+        assertThat(headline.find())
+                .as("the %s row must state its figure as 'N of the M operations scope nothing to the "
+                        + "caller', which is the sentence this test reads", UNSCOPED_FINDING)
+                .isTrue();
+        final Matcher counted = Pattern.compile("finds \\*\\*(?<seen>[a-z]+)\\*\\*").matcher(row);
+        assertThat(counted.find())
+                .as("the %s row must state what a reader counting the dual-authority call in "
+                        + "SecurityConfig finds, because that figure differs from the headline one and "
+                        + "the difference is the whole explanation", UNSCOPED_FINDING)
+                .isTrue();
+
+        final int publishedUnscoped = numberWordValue(headline.group("unscoped"));
+        final int publishedTotal = numberWordValue(headline.group("total"));
+        final int publishedDualAuthority = numberWordValue(counted.group("seen"));
+
+        assertThat(publishedUnscoped)
+                .as("the %s row publishes '%s of the %s' but then lists %d operations; the figure and "
+                        + "the list must be the same claim", UNSCOPED_FINDING,
+                        headline.group("unscoped"), headline.group("total"), published.size())
+                .isEqualTo(published.size());
+        assertThat(publishedTotal)
+                .as("the %s row publishes a total of '%s' operations, but the census reconciled against "
+                        + "app/csd/CARDDEMO.CSD holds %d", UNSCOPED_FINDING, headline.group("total"),
+                        sourcedOperations().size())
+                .isEqualTo(sourcedOperations().size());
+
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            final JwtTokenProvider provider = ctx.getBean(JwtTokenProvider.class);
+            final String userToken = provider.issueToken("USER0001", UserType.USER);
+            final String adminToken = provider.issueToken("ADMIN001", UserType.ADMIN);
+
+            final List<String> measuredDualAuthority = new ArrayList<>();
+            for (final Operation operation : sourcedOperations()) {
+                if (admissionOf(ctx, operation, userToken, adminToken) == Admission.DUAL_AUTHORITY) {
+                    measuredDualAuthority.add(operation.method() + " " + operation.declaredPath());
+                }
+            }
+
+            assertThat(measuredDualAuthority)
+                    .as("the %s row says a reader counting the dual-authority grant finds '%s', but %d "
+                            + "operations are measurably reachable by both user types",
+                            UNSCOPED_FINDING, counted.group("seen"), measuredDualAuthority.size())
+                    .hasSize(publishedDualAuthority);
+            assertThat(measuredDualAuthority)
+                    .as("every operation the %s row names must be one of the dual-authority operations; "
+                            + "a name that is not is either a typo or an operation whose rule changed",
+                            UNSCOPED_FINDING)
+                    .containsAll(published);
+
+            final List<String> withoutAResourceIdentifier = new ArrayList<>(measuredDualAuthority);
+            withoutAResourceIdentifier.removeAll(published);
+            assertThat(withoutAResourceIdentifier)
+                    .as("the row explains its own ten-versus-%s gap by one operation carrying no "
+                            + "resource identifier, so exactly one dual-authority operation may be "
+                            + "unlisted, and it must be the main menu", counted.group("seen"))
+                    .containsExactly("GET " + pathConstant("PATH_MENU_MAIN"));
+
+            // The disclosure is only publishable while it is true, so each listed operation is dispatched.
+            for (final String operation : published) {
+                final int space = operation.indexOf(' ');
+                final String method = operation.substring(0, space);
+                final String uri = operation.substring(space + 1)
+                        .replace("{accountId}", "00000000001");
+                final Outcome reached = call(ctx, method, uri, userToken);
+                assertThat(reached.reachedApplication())
+                        .as("%s is published under %s as reachable by any authenticated standard user. "
+                                + "If it no longer is, an ownership guard has been added and the %s row "
+                                + "must be withdrawn rather than left standing.",
+                                operation, UNSCOPED_FINDING, UNSCOPED_FINDING)
+                        .isTrue();
+            }
         }
     }
 

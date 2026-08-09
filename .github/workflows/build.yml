@@ -410,6 +410,27 @@ jobs:
   repository-integrity:
     name: Frozen corpus, legacy inventory and migration integrity
     runs-on: ubuntu-24.04
+    # ------------------------------------------------------------------
+    # EVERY JOB IS BOUNDED, AND THE BOUND IS A CEILING RATHER THAN A TARGET.
+    #
+    # Left unset, a job inherits the platform default of six hours. Nothing here
+    # takes anything like that, so the default is not a budget - it is the
+    # duration a HUNG step would burn before anyone learned that the run was
+    # never going to finish: six hours per job, and five of the six jobs drive a
+    # container daemon or a network fetch that can stall rather than fail. The
+    # same reasoning already bounds the test tier's heap in the verify job, and
+    # this bounds the wall clock the same way.
+    #
+    # Each value below is a measured duration with room over it, never a
+    # performance objective - Gate 3 is a measurement and this file publishes no
+    # service level. A job that trips its ceiling is reporting that something
+    # stopped making progress, which is exactly the signal an unbounded job
+    # cannot give. Raise a ceiling only against a measurement that needs it.
+    #
+    # This job runs no toolchain at all - text, digests and git history only -
+    # and completes in about a minute.
+    # ------------------------------------------------------------------
+    timeout-minutes: 20
     steps:
       - name: Check out with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1124,24 +1145,114 @@ jobs:
 
           conclude 'Gate 6 - secret hygiene'
 
-      - name: Assert this workflow is the only file in .github
+      # ----------------------------------------------------------------------
+      # THE INTENT IS "NO SECOND PIPELINE", NOT "NO SECOND FILE".
+      #
+      # This guard compared the whole `.github` listing against the single
+      # literal `.github/workflows/build.yml`, and this folder has not matched
+      # that since the redacting filter and the plugin-graph scanner were
+      # authored. Both are INVOKED from this file - the integration job runs the
+      # filter to mask a captured response body before anything can print it, and
+      # the plugin-graph job runs the scanner with its dispositions - so the
+      # guard forbade the very files two of its own jobs depend on and reported a
+      # finding on every run. A guard that can never pass is not a gate: it
+      # trains a reader to skip the annotation, which leaves the tree less
+      # protected than an honest guard would.
+      #
+      # Rescoped rather than relaxed. The original wording argued against "a
+      # release, deploy, publish or second workflow, a composite action, a
+      # version-bump bot manifest, an owners file, a duplicate security policy or
+      # an issue template", and all of that is still refused - by three
+      # assertions, each holding a different part of it:
+      #
+      #   1. EXACTLY ONE WORKFLOW. `.github/workflows` must hold `build.yml` and
+      #      nothing else. This is the part that forbids a release, deploy or
+      #      publish pipeline and any second workflow, and it is the part the
+      #      remediation text was really about.
+      #   2. THE INVENTORY STAYS CLOSED. The complete listing is still compared
+      #      against an authored set, so a composite action, a bot manifest, an
+      #      owners file, a duplicate security policy or an issue template is
+      #      still a finding. None of those is a workflow, so assertion 1 alone
+      #      would not see them.
+      #   3. EVERY HELPER EARNS ITS PLACE. Each non-workflow member must carry a
+      #      real invocation in this file, so a helper cannot be added, forgotten,
+      #      and left sitting behind a passing gate as dead weight.
+      #
+      # Assertion 3 searches for the INVOCATION, assembled at run time from a
+      # directory variable, rather than for the bare path. The paths themselves
+      # appear in assertion 2's own list a few lines above, so a bare-path search
+      # would match this step's text and pass no matter what the jobs do; the
+      # assembled form appears nowhere in this file except at a genuine call site.
+      # ----------------------------------------------------------------------
+      - name: Assert .github holds one workflow and only the helpers it invokes
         run: |
           set -euo pipefail
           . "${RUNNER_TEMP}/finding.sh"
 
-          actual="$(find .github -type f | sort | tr '\n' ' ')"
-          expected='.github/workflows/build.yml '
-          if [ "${actual}" != "${expected}" ]; then
+          workflows="$(find .github/workflows -type f | sort | tr '\n' ' ')"
+          only_workflow='.github/workflows/build.yml '
+          if [ "${workflows}" != "${only_workflow}" ]; then
             remedy='this folder holds exactly one workflow. A release, deploy, publish or second'
-            remedy="${remedy}"' workflow, a composite action, a version-bump bot manifest, an owners file, a'
-            remedy="${remedy}"' duplicate security policy or an issue template all either contradict the determinism'
-            remedy="${remedy}"' this file exists to provide or duplicate guidance CONTRIBUTING.md already gives.'
+            remedy="${remedy}"' workflow contradicts the determinism this file exists to provide, and nothing'
+            remedy="${remedy}"' here publishes, deploys or releases anything.'
+            finding Medium .github/workflows 'workflow inventory' \
+              "${only_workflow}" "${workflows}" \
+              "${remedy}"
+          else
+            printf '.github/workflows holds exactly one workflow: build.yml\n'
+          fi
+
+          actual="$(find .github -type f | sort | tr '\n' ' ')"
+          expected='.github/plugin-graph/dispositions.json'
+          expected="${expected}"' .github/plugin-graph/scan_plugin_graph.py'
+          expected="${expected}"' .github/smoke/redact_auth_body.py'
+          expected="${expected}"' .github/workflows/build.yml '
+          if [ "${actual}" != "${expected}" ]; then
+            remedy='the inventory is closed on purpose. A composite action, a version-bump bot'
+            remedy="${remedy}"' manifest, an owners file, a duplicate security policy or an issue template all'
+            remedy="${remedy}"' either contradict that determinism or duplicate guidance CONTRIBUTING.md already'
+            remedy="${remedy}"' gives. Add a file here only alongside the step that invokes it, and extend this'
+            remedy="${remedy}"' list in the same commit.'
             finding Medium .github 'directory contents' \
               "${expected}" "${actual}" \
               "${remedy}"
           else
-            printf '.github holds exactly one file: .github/workflows/build.yml\n'
+            printf '.github holds one workflow and the three helpers it invokes.\n'
           fi
+
+          helpers="$(find .github -type f -not -path '.github/workflows/*' | sort | tr '\n' ' ')"
+          expected_helpers='.github/plugin-graph/dispositions.json '
+          expected_helpers="${expected_helpers}"'.github/plugin-graph/scan_plugin_graph.py '
+          expected_helpers="${expected_helpers}"'.github/smoke/redact_auth_body.py '
+          if [ "${helpers}" != "${expected_helpers}" ]; then
+            remedy='every non-workflow file under .github must be a helper THIS workflow executes, kept'
+            remedy="${remedy}"' outside the YAML so it can be unit tested. Adding one is a decision to record'
+            remedy="${remedy}"' here and to call from a step; an owners file, an issue template, a funding'
+            remedy="${remedy}"' manifest or a duplicate security policy is none of those.'
+            finding Medium .github 'non-workflow contents' \
+              "${expected_helpers}" "${helpers}" \
+              "${remedy}"
+          else
+            printf 'The three helper scripts are present and no other non-workflow file is.\n'
+          fi
+
+          smoke='.github/smoke'
+          graph='.github/plugin-graph'
+          for invocation in "python3 ${smoke}/redact_auth_body.py" \
+                            "python3 ${graph}/scan_plugin_graph.py" \
+                            "--dispositions ${graph}/dispositions.json"; do
+            if grep -qF -- "${invocation}" .github/workflows/build.yml; then
+              printf 'Invoked by this workflow: %s\n' "${invocation}"
+            else
+              remedy='delete the helper, or add the step that runs it. An unreferenced file here is'
+              remedy="${remedy}"' either dead weight, which Rule 1 clause B forbids, or a step someone'
+              remedy="${remedy}"' intended to add and did not.'
+              finding Medium .github 'helper invocation' \
+                "${invocation} appears in .github/workflows/build.yml" \
+                'no call site names it' \
+                "${remedy}"
+            fi
+          done
 
           conclude 'Workflow inventory'
 
@@ -1155,6 +1266,12 @@ jobs:
   verify:
     name: Zero-warning build, tests, coverage and vulnerability scan
     runs-on: ubuntu-24.04
+    # The longest job here by a wide margin, and the ceiling reflects both halves
+    # of it: `clean verify` was measured at 11 minutes, and the vulnerability
+    # scan runs for roughly half an hour whenever NVD_API_KEY is absent, since an
+    # unkeyed caller is rate-limited while refreshing the advisory data. Ninety
+    # minutes carries that worst case with room for a cold dependency cache.
+    timeout-minutes: 90
     env:
       # Bounded so a runaway test tier fails rather than consuming the whole job
       # allowance. Not a performance target - see Gate 3, which is a measurement.
@@ -1974,6 +2091,22 @@ jobs:
       # explicitly rather than hidden. On a run that failed before the tiers
       # executed this surfaces a second annotation, and that is intended: it
       # states that the tiers produced nothing, which is information.
+      #
+      # THE COST OF THAT CHOICE, MEASURED AND ACCEPTED RATHER THAN OVERLOOKED.
+      # A review observed the consequence precisely: after a test-tier failure
+      # `target/site/jacoco` and `target/gate-verification` do not exist, because
+      # both are written at verify, so these two uploads annotate a run that is
+      # already red. That is noise on a failed run and it is never a false green -
+      # an absent artifact cannot make a red run look green, and the run's own
+      # conclusion is the signal a reader acts on. "warn" was the alternative
+      # considered and refused: it would remove the annotation on a red run at the
+      # cost of the ONE setting that says an evidence artifact is required, and the
+      # asymmetry is what decides it - a missing report on a red run is expected
+      # and reported twice, while a missing report on a GREEN run is a defect that
+      # must not pass. That case is caught twice over: the
+      # "Assert every required report was produced" step above fails the job
+      # before any upload runs, and "error" here is the second line of defence for
+      # a report produced but empty. Keeping both is deliberate.
       # ----------------------------------------------------------------------
       - name: Upload the Surefire and Failsafe reports
         if: always()
@@ -2038,6 +2171,13 @@ jobs:
     name: Container topology, migrations, object store, queue and scrape target
     needs: verify
     runs-on: ubuntu-24.04
+    # Builds the image, then brings seven services to healthy and exercises them.
+    # `up --wait` carries its own 420-second deadline, so a topology that never
+    # becomes healthy already fails inside this ceiling; what this bounds is the
+    # rest - an image build, a pull and a dozen probe steps - none of which has a
+    # deadline of its own. Forty-five minutes is roughly three times the measured
+    # run.
+    timeout-minutes: 45
     env:
       # The bounded readiness the provisioning script honours. Named here so the
       # values are reviewable rather than implicit.
@@ -2342,7 +2482,8 @@ jobs:
           import re
           import sys
 
-          EXPECTED = {"app", "postgres", "localstack", "jaeger", "prometheus", "grafana"}
+          EXPECTED = {"app", "postgres", "localstack", "jaeger", "pushgateway",
+                      "prometheus", "grafana"}
           DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
           findings = []
 
@@ -2353,7 +2494,7 @@ jobs:
           if services != EXPECTED:
               findings.append(
                   "docker-compose.yml [services] expected: {} | actual: {} | "
-                  "remediation: the topology is exactly these six services.".format(
+                  "remediation: the topology is exactly these seven services.".format(
                       sorted(EXPECTED), sorted(services)))
 
           if len(networks) != 1:
@@ -2501,7 +2642,7 @@ jobs:
           if findings:
               sys.exit("Container topology: {} finding(s) above.".format(len(findings)))
 
-          print("Six digest-pinned services on one isolated network:")
+          print("Seven digest-pinned services on one isolated network:")
           for name, service in sorted(topology["services"].items()):
               print("  {:<11} {}".format(name, service.get("image", "<built locally>")))
 
@@ -2565,7 +2706,7 @@ jobs:
             --volume "${secrets_dir}:/etc/prometheus/secrets:ro" \
             "${image}" check config /etc/prometheus/prometheus.yml
 
-          # The interval and the single target are contract, not preference: the
+          # The interval and both targets are contract, not preference: the
           # dashboard panels and the metrics gate both assume them.
           if ! grep -qE '^[[:space:]]*scrape_interval:[[:space:]]*15s[[:space:]]*$' \
               observability/prometheus.yml; then
@@ -2578,6 +2719,27 @@ jobs:
             finding High observability/prometheus.yml 'scrape_configs[].metrics_path' \
               '/actuator/prometheus' 'a different path' \
               'point the job at the actuator scrape endpoint the application exposes.'
+          fi
+
+          # The SECOND job is equally contract. Three of the four named counters
+          # are written only by the batch submission process, which ends when its
+          # job ends and therefore cannot be scraped at all; they reach Prometheus
+          # through the Pushgateway or not at all. Losing this job silently would
+          # return six dashboard panels to the permanent zero they used to hold.
+          if ! grep -qE '^[[:space:]]*-[[:space:]]*job_name:[[:space:]]*carddemo-pushgateway[[:space:]]*$' \
+              observability/prometheus.yml; then
+            finding High observability/prometheus.yml 'scrape_configs[].job_name' \
+              'a carddemo-pushgateway job' 'absent' \
+              'restore the Pushgateway scrape job; without it the batch-fed counters reach nothing.'
+          fi
+          # honor_labels is not a preference. Without it Prometheus overwrites the
+          # pushed series' job label with the scrape job's own name, relabelling
+          # the producer as its own letterbox.
+          if ! grep -qE '^[[:space:]]*honor_labels:[[:space:]]*true[[:space:]]*$' \
+              observability/prometheus.yml; then
+            finding High observability/prometheus.yml 'scrape_configs[].honor_labels' \
+              'true on the Pushgateway job' 'absent or false' \
+              'set honor_labels: true so a pushed series keeps the job label its producer set.'
           fi
 
           conclude 'Prometheus configuration'
@@ -2978,22 +3140,28 @@ jobs:
             fi
           done
 
-          # TWO queues, asserted BY NAME rather than by count. The report queue
-          # replaces the JOBS transient data queue of app/csd/CARDDEMO.CSD; the
-          # notification inbox is the SNS subscriber that turns an accepted
-          # publish into a delivered notice, and without it the topic discards
-          # everything sent to it. Comparing the sorted name set catches a
-          # missing queue, an extra queue and a misspelled queue in one
-          # comparison, which a count cannot: a count of two is also what one
-          # correct queue beside one stray queue produces.
+          # THREE queues, asserted BY NAME rather than by count. The report queue
+          # replaces the JOBS transient data queue of app/csd/CARDDEMO.CSD; its
+          # -dlq companion is the dead-letter target its RedrivePolicy names, so
+          # that a submission the producer accepts but the consumer can never run
+          # is quarantined instead of circulating at the head of an ordered FIFO
+          # group; the notification inbox is the SNS subscriber that turns an
+          # accepted publish into a delivered notice, and without it the topic
+          # discards everything sent to it. Comparing the sorted name set catches
+          # a missing queue, an extra queue and a misspelled queue in one
+          # comparison, which a count cannot: a count of three is also what two
+          # correct queues beside one stray queue produces.
           queues="$(inventory 'awslocal sqs list-queues --query "QueueUrls[]" --output text' \
             | tr -s '[:space:]' '\n' | awk 'NF' | sed 's#.*/##' | sort | tr '\n' ' ')"
-          expected_queues='carddemo-notifications-inbox carddemo-report-jobs.fifo '
+          expected_queues='carddemo-notifications-inbox carddemo-report-jobs-dlq.fifo '
+          expected_queues="${expected_queues}"'carddemo-report-jobs.fifo '
           if [ "${queues}" != "${expected_queues}" ]; then
-            remedy='two queues are provisioned and both are consumed. carddemo-report-jobs.fifo must keep its'
-            remedy="${remedy}"' .fifo suffix, because ordering is required: it carries report job submissions in'
-            remedy="${remedy}"' the order the operator made them. carddemo-notifications-inbox is a standard'
-            remedy="${remedy}"' queue and is the topic subscriber. Re-run the ready hook with "docker compose'
+            remedy='three queues are provisioned and each is load bearing. carddemo-report-jobs.fifo must keep'
+            remedy="${remedy}"' its .fifo suffix, because ordering is required: it carries report job submissions'
+            remedy="${remedy}"' in the order the operator made them. carddemo-report-jobs-dlq.fifo is its'
+            remedy="${remedy}"' dead-letter target and must also be FIFO, which AWS requires of the target of a'
+            remedy="${remedy}"' FIFO queue. carddemo-notifications-inbox is a standard queue and is the topic'
+            remedy="${remedy}"' subscriber. Re-run the ready hook with "docker compose'
             remedy="${remedy}"' exec localstack bash /etc/localstack/init/ready.d/init-aws.sh"; it is idempotent.'
             finding Blocker localstack-init/init-aws.sh 'SQS queue inventory' \
               "${expected_queues}" "${queues:-none}" \
@@ -3001,6 +3169,30 @@ jobs:
           else
             printf 'Queues: %s\n' "${queues}"
           fi
+
+          # The RedrivePolicy is asserted from the edge, not from the script that
+          # applied it. Without it the report queue has no containment at all: a
+          # message the consumer cannot classify circulates for the whole
+          # four-day retention, one visibility window at a time, and an ordered
+          # FIFO group cannot deliver past it.
+          redrive="$(inventory 'awslocal sqs get-queue-attributes \
+            --queue-url "$(awslocal sqs get-queue-url --queue-name carddemo-report-jobs.fifo \
+            --query QueueUrl --output text)" --attribute-names RedrivePolicy \
+            --query "Attributes.RedrivePolicy" --output text' | tr -d '[:space:]' | tr -d '\\\\"')"
+          case "${redrive}" in
+            *carddemo-report-jobs-dlq.fifo*maxReceiveCount:4*)
+              printf 'RedrivePolicy confirmed by read-back: maxReceiveCount 4 to the -dlq queue.\n'
+              ;;
+            *)
+              remedy='the report queue must carry a RedrivePolicy naming carddemo-report-jobs-dlq.fifo with'
+              remedy="${remedy}"' maxReceiveCount 4, so a message no consumer can act on leaves the group.'
+              remedy="${remedy}"' Re-run the ready hook; ensure_redrive_policy converges an existing queue.'
+              finding Blocker localstack-init/init-aws.sh 'sqs RedrivePolicy' \
+                'deadLetterTargetArn:...carddemo-report-jobs-dlq.fifo,maxReceiveCount:4' \
+                "${redrive:-absent}" \
+                "${remedy}"
+              ;;
+          esac
 
           fifo="$(inventory 'awslocal sqs get-queue-attributes \
             --queue-url "$(awslocal sqs get-queue-url --queue-name carddemo-report-jobs.fifo \
@@ -3445,6 +3637,10 @@ jobs:
     name: Delivered image and bill of materials (fail on HIGH or CRITICAL)
     needs: verify
     runs-on: ubuntu-24.04
+    # An image build plus a scanner that downloads its advisory database on every
+    # run, by the deliberate choice recorded above. A download is the step most
+    # able to stall rather than fail, which is precisely what a ceiling is for.
+    timeout-minutes: 45
     env:
       TRIVY_IMAGE: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
       TRIVY_DB: mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
@@ -3815,6 +4011,10 @@ jobs:
     name: Build plugin graph advisories (fail on undispositioned HIGH or CRITICAL)
     needs: verify
     runs-on: ubuntu-24.04
+    # Resolves the plugin graph and queries a live advisory service once per
+    # coordinate. No image build and no container, so the ceiling covers the
+    # network calls and little else.
+    timeout-minutes: 30
     env:
       PLUGIN_SCAN_OUT: ${{ github.workspace }}/target/plugin-graph
     steps:
@@ -3884,14 +4084,30 @@ jobs:
       - verify
       - integration
       - image-scan
+      # plugin-graph-scan produces a security result of its own - a High or
+      # Critical advisory on the BUILD PLUGIN graph, accepted only against a
+      # written, expiring disposition - and it was the one gate job whose
+      # conclusion this document never mentioned. Its failure already failed the
+      # run, so nothing was ever reported green on its silence; what was missing
+      # is the reverse, and it is the more insidious half. A reader of the
+      # evidence could not tell whether that scan had run at all, and an
+      # evidence document that omits a scan reads exactly like one whose scan
+      # passed. Declaring it here puts its conclusion into the collation and into
+      # the verdict below.
+      - plugin-graph-scan
     if: always()
     runs-on: ubuntu-24.04
+    # Two artefact downloads and one python generation pass. Both downloads carry
+    # continue-on-error, so an absent artefact is reported rather than waited on,
+    # and this ceiling covers the transfers themselves.
+    timeout-minutes: 20
     env:
       # Routed through env: rather than interpolated into the script body.
       INTEGRITY_RESULT: ${{ needs.repository-integrity.result }}
       VERIFY_RESULT: ${{ needs.verify.result }}
       INTEGRATION_RESULT: ${{ needs.integration.result }}
       IMAGE_SCAN_RESULT: ${{ needs.image-scan.result }}
+      PLUGIN_GRAPH_RESULT: ${{ needs.plugin-graph-scan.result }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Check out
@@ -4005,6 +4221,7 @@ jobs:
               "verify": os.environ.get("VERIFY_RESULT", ""),
               "integration": os.environ.get("INTEGRATION_RESULT", ""),
               "image-scan": os.environ.get("IMAGE_SCAN_RESULT", ""),
+              "plugin-graph-scan": os.environ.get("PLUGIN_GRAPH_RESULT", ""),
           }
 
 
@@ -4355,7 +4572,9 @@ jobs:
           add("- Result: source and secret hygiene - " + observed("repository-integrity")
               + " (job conclusion " + (CONCLUSIONS["repository-integrity"] or NA)
               + "); delivered image - " + observed("image-scan") + " (job conclusion "
-              + (CONCLUSIONS["image-scan"] or NA) + ")")
+              + (CONCLUSIONS["image-scan"] or NA) + "); build plugin graph - "
+              + observed("plugin-graph-scan") + " (job conclusion "
+              + (CONCLUSIONS["plugin-graph-scan"] or NA) + ")")
           add("  - Floating-point types in financial fields: "
               + figure("gate6.floatingPointInFinancialFields", "a harness run"))
           add("  - Declared money precisions: "
@@ -4479,7 +4698,8 @@ jobs:
           for pair in "repository-integrity:${INTEGRITY_RESULT}" \
                       "verify:${VERIFY_RESULT}" \
                       "integration:${INTEGRATION_RESULT}" \
-                      "image-scan:${IMAGE_SCAN_RESULT}"; do
+                      "image-scan:${IMAGE_SCAN_RESULT}" \
+                      "plugin-graph-scan:${PLUGIN_GRAPH_RESULT}"; do
             job="${pair%%:*}"
             result="${pair#*:}"
             printf '%-22s %s\n' "${job}" "${result}"

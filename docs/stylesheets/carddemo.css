@@ -1,0 +1,142 @@
+/* ******************************************************************
+ * Program     : carddemo.css
+ * Application : CardDemo
+ * Type        : MkDocs published-site stylesheet (Backstage TechDocs)
+ * Function    : Two corrections to the Material for MkDocs theme that
+ *               the theme cannot make for itself, each one closing a
+ *               measured accessibility defect: in-prose links stop
+ *               relying on colour alone, and the footer copyright
+ *               reaches its contrast minimum. Between them these two
+ *               rules took mobile accessibility from 90 to 100 on
+ *               architecture-before-after.md and from 94 to 100 on
+ *               index.md, with link-in-text-block and color-contrast
+ *               both reporting zero failing elements afterwards.
+ *               Every rule here is verified to MATCH elements and to
+ *               CHANGE a computed value; a rule that matches nothing
+ *               does not belong in this file. A third rule targeting
+ *               pre.mermaid was written, measured and then removed for
+ *               precisely that reason - see the note at the foot.
+ * Source      : app/csd/CARDDEMO.CSD and app/cbl/** by way of the
+ *               documents that describe them: this stylesheet governs
+ *               the published rendering of the six Markdown documents
+ *               that carry the migration's evidence, and is registered
+ *               through the extra_css entry in mkdocs.yml @ 7756d89
+ ******************************************************************
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License.
+ ****************************************************************** */
+
+/* ------------------------------------------------------------------
+   1. In-prose links must not rely on colour alone.
+
+   The theme distinguishes a body-text link from its surrounding
+   sentence by colour only. That fails WCAG 1.4.1 for a reader who
+   cannot separate the two hues, and an automated audit reported it as
+   link-in-text-block against 58 links on a single page. Underlining
+   restores the second, non-colour channel.
+
+   Scoped to typeset prose and explicitly not to the theme's
+   affordances: the heading permalink, footnote back-references and
+   button-styled links are already distinguishable by position or
+   shape, and underlining them would be noise.
+   ------------------------------------------------------------------ */
+.md-typeset a:not(.headerlink):not(.footnote-backref):not(.md-button){
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  /* Keep the rule from thickening dense tables of citations. */
+  text-decoration-thickness: from-font;
+}
+
+/* Hover and focus must not remove the channel they were meant to add. */
+.md-typeset a:not(.headerlink):not(.footnote-backref):not(.md-button):hover,
+.md-typeset a:not(.headerlink):not(.footnote-backref):not(.md-button):focus{
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------
+   2. Footer copyright contrast.
+
+   The theme sets the copyright line to --md-footer-fg-color--lighter,
+   which is #ffffff73 - white at 45% - over the darkened footer meta
+   band. Measured, that lands at 4.47:1 against a 4.5:1 minimum: not a
+   rounding artefact but a fail, and the kind that is invisible to
+   inspection because the text looks perfectly fine to anyone who can
+   read it. Raising the alpha clears the threshold with margin rather
+   than by a hair, so a later change to either token cannot quietly
+   push it back under.
+   ------------------------------------------------------------------ */
+.md-copyright{
+  color: rgba(255, 255, 255, 0.92);
+}
+
+/* The link in that same line needs only the second channel, not a colour.
+   Material sets it through `.md-footer-meta.md-typeset a`, specificity
+   (0,2,1), which out-specifies anything selected as `.md-copyright a` at
+   (0,1,1) regardless of source order - so a colour declaration here would
+   simply not apply, and one that does not apply is dead weight in a
+   stylesheet. It does not need to apply: measured, that link already
+   reaches 9.2:1, comfortably past the 4.5:1 minimum. Underlining is the
+   part Material does not do, and text-decoration is not out-specified
+   because Material declares no decoration on it at all. */
+.md-copyright a{
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------
+   Withdrawn rule, recorded so it is not reintroduced.
+
+   A third rule was written here to make the offline Mermaid fallback
+   scrollable:
+
+     .md-typeset pre.mermaid{overflow-x:auto;overflow-y:hidden;
+       white-space:pre;scrollbar-width:thin}
+
+   It was removed because it matches nothing, and three assumptions
+   behind it turned out to be false of this theme build. All three were
+   established by loading the page with the renderer's CDN blackholed
+   at the network layer, not by reading the theme.
+
+   1. The failed-render signature is NOT a surviving `pre.mermaid`.
+      Material removes the `mermaid` class synchronously when it mounts
+      the element, BEFORE it contacts the CDN, and re-adds it only
+      inside the success callback. So on any renderer failure the
+      element that survives is `<pre class="">`, and this selector
+      matches zero elements exactly when it was meant to apply. With
+      the class artificially restored the rule does take effect - and
+      still produces no scrollbar, because of point 2.
+   2. The diagram source is NOT raw text in the `<pre>`. It sits in a
+      `<code>` child, so the theme's own
+      `.md-typeset pre > code{overflow:auto;scrollbar-width:thin}`
+      already supplies the scroll. Measured offline: five of the nine
+      boxes overflow, and setting scrollLeft on each returns exactly
+      its overflow - 113, 203, 56, 40 and 105 px - so every clipped
+      line is reachable already. No rule placed on the `<pre>` can
+      produce a scrollbar while the text scrolls inside a
+      display:block, overflow:auto child.
+   3. The theme's competing `pre{white-space:pre-wrap}` lives inside
+      `@media print` only. On screen the `<pre>` is already
+      `white-space: pre` from the UA default, so the fallback never
+      wrapped and its indentation was never mangled.
+
+   The reported defect - clipped source with no way to reach it - is
+   therefore not reproducible on this build; it had to be synthesised
+   to be observed at all, by forcing BOTH overflow axes to `visible`
+   (forcing only one is coerced back to `auto` by the CSS Overflow
+   spec, which is its own trap for anyone re-testing this). What a
+   still screenshot shows instead is an overlay scrollbar: this Chrome
+   measures a 0 px scrollbar gutter, so the thumb occupies no layout
+   space and is invisible at rest while remaining fully functional.
+   That is a browser rendering mode, not a site defect.
+   ------------------------------------------------------------------ */

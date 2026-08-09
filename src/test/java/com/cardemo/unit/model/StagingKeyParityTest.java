@@ -54,6 +54,14 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable;
 
 /**
  * The staging key: {@code DailyTransaction.ingestSequence} is a fourteenth mapped property on a
@@ -219,29 +227,45 @@ class StagingKeyParityTest {
                     }
                     return storedResource(key, bytes);
                 });
-        when(objectStorage.listObjects(anyString(), anyString())).thenAnswer(invocation -> {
-            final String prefix = invocation.getArgument(1, String.class);
-            final java.util.List<S3Resource> found = new java.util.ArrayList<>();
-            for (final java.util.Map.Entry<String, byte[]> entry
-                    : new java.util.LinkedHashMap<>(objects).entrySet()) {
-                if (entry.getKey().startsWith(prefix)) {
-                    found.add(storedResource(entry.getKey(), entry.getValue()));
-                }
-            }
-            return found;
-        });
         when(objectStorage.download(anyString(), anyString())).thenAnswer(invocation -> {
             final String key = invocation.getArgument(1, String.class);
             return storedResource(key, objects.getOrDefault(key, new byte[0]));
         });
         when(objectStorage.objectExists(anyString(), anyString())).thenAnswer(invocation ->
                 Boolean.valueOf(objects.containsKey(invocation.getArgument(1, String.class))));
-        org.mockito.Mockito.doAnswer(invocation -> {
-            objects.remove(invocation.getArgument(1, String.class));
-            return null;
-        }).when(objectStorage).deleteObject(anyString(), anyString());
 
-        final RejectWriter writer = new RejectWriter(objectStorage,
+        // The part listing and the part deletion go through the paging client rather than through
+        // S3Operations, because a single ListObjectsV2 truncates at a thousand keys and a run rejecting more
+        // records than that staged more parts than one page could name - finding H-11. One page is enough
+        // here: this test emits a single record.
+        final S3Client objectStoreClient = mock(S3Client.class);
+        when(objectStoreClient.listObjectsV2(org.mockito.Mockito.any(ListObjectsV2Request.class)))
+                .thenAnswer(invocation -> {
+                    final String prefix = invocation.getArgument(0, ListObjectsV2Request.class).prefix();
+                    final List<S3Object> contents = new ArrayList<>();
+                    for (final String key : new java.util.ArrayList<>(objects.keySet())) {
+                        if (key.startsWith(prefix)) {
+                            contents.add(S3Object.builder().key(key).build());
+                        }
+                    }
+                    return ListObjectsV2Response.builder()
+                            .contents(contents)
+                            .isTruncated(Boolean.FALSE)
+                            .build();
+                });
+        when(objectStoreClient.listObjectsV2Paginator(org.mockito.Mockito.any(ListObjectsV2Request.class)))
+                .thenAnswer(invocation -> new ListObjectsV2Iterable(objectStoreClient,
+                        invocation.getArgument(0, ListObjectsV2Request.class)));
+        when(objectStoreClient.deleteObjects(org.mockito.Mockito.any(DeleteObjectsRequest.class)))
+                .thenAnswer(invocation -> {
+                    for (final ObjectIdentifier identifier
+                            : invocation.getArgument(0, DeleteObjectsRequest.class).delete().objects()) {
+                        objects.remove(identifier.key());
+                    }
+                    return DeleteObjectsResponse.builder().build();
+                });
+
+        final RejectWriter writer = new RejectWriter(objectStorage, objectStoreClient,
                 new MetricsConfig(new SimpleMeterRegistry()), new FileStatusMapper(),
                 "carddemo-batch-output", "gdg/dalyrejs", null);
 

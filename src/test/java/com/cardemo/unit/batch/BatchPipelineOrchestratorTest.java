@@ -1529,6 +1529,96 @@ final class BatchPipelineOrchestratorTest {
 
             assertThat(code).doesNotContain("System.exit").doesNotContain("addShutdownHook");
         }
+
+        /**
+         * Documents in which a launch command may be published, and which are therefore checked here.
+         *
+         * <p>{@code docs/project-guide.md} is deliberately absent: it is retained unchanged as prior-run
+         * evidence, so a stale command inside it is a record of what a previous attempt published rather than
+         * an instruction to a reader of this one.
+         */
+        private static final List<String> LAUNCH_DOCUMENTING_FILES = List.of(
+                "README.md",
+                "docs/onboarding-guide.md",
+                "docs/architecture-before-after.md",
+                "docs/api-contracts.md",
+                "docs/validation-gates.md",
+                "docs/technical-specifications.md",
+                "docs/executive-presentation.html");
+
+        /**
+         * The command-line spelling of the withdrawn property, which only ever appears inside a command.
+         *
+         * <p>The bare key is <b>not</b> forbidden in prose, and must not be: a document that records the
+         * withdrawal has to be able to name what was withdrawn. The two leading hyphens are what separate the
+         * two cases, because a Spring option prefix has no use in a sentence.
+         */
+        private static final String WITHDRAWN_LAUNCH_OPTION = "--carddemo.batch.launch";
+
+        @Test
+        @DisplayName("no published document offers a launch command built on the withdrawn property")
+        void noPublishedCommandUsesTheWithdrawnLaunchProperty() throws Exception {
+            // Why this reads the documents and not only the code. theLaunchPropertyIsGone above already keeps
+            // the property out of src/main and out of every profile, and it passed for the whole time three
+            // commands built on that property stood in the onboarding guide as the only published way to run a
+            // batch job. Removing a property closes the code path; it does not close the instruction, and the
+            // instruction is what a reader executes. Each of those three commands started a web server,
+            // launched nothing and reported no error, so following the documentation produced a silent
+            // non-result - the failure mode this assertion exists to make loud.
+            for (final String file : LAUNCH_DOCUMENTING_FILES) {
+                final Path path = Path.of(file);
+                assertThat(path).as("%s is a document this assertion claims to cover", file).isRegularFile();
+                assertThat(Files.readString(path))
+                        .as("%s publishes a command built on a property that binds nothing, so a reader who "
+                                + "copies it starts a web server and launches no job", file)
+                        .doesNotContain(WITHDRAWN_LAUNCH_OPTION);
+            }
+        }
+
+        @Test
+        @DisplayName("the onboarding guide publishes the framework submission command in full")
+        void theOnboardingGuidePublishesTheFrameworkSubmissionCommand() throws Exception {
+            // The negative above is only half of the finding. "No wrong command is published" is also true of a
+            // document that publishes no command at all, which is the state the guide would have been left in
+            // by deleting the three inert ones - and a reader with no command is no better off than a reader
+            // with a broken one. These are the four fragments that make a submission work, each of which fails
+            // silently or misleadingly when omitted: the runner switch, the web-context suppression that lets
+            // the process end, the job name, and a job parameter in its bare form.
+            //
+            // The bean-name and --prefixed spellings are deliberately NOT forbidden in this file: the guide
+            // documents both as measured failure modes, and an assertion that banned them would fire on the
+            // very passage that warns against them.
+            final String guide = Files.readString(Path.of("docs", "onboarding-guide.md"));
+
+            assertThat(guide)
+                    .as("the guide must publish the runner switch, the web-context suppression and a real "
+                            + "job name together, because omitting any one of them launches nothing")
+                    .contains("--spring.batch.job.enabled=true")
+                    .contains("--spring.main.web-application-type=none")
+                    .contains("--spring.batch.job.name=POSTTRAN")
+                    .contains("parmDate=");
+
+            // A first draft of this test went on to forbid the option-prefixed parameter spelling outright,
+            // and it would have failed on the guide's own warning table, which prints that exact spelling as
+            // the thing not to type. Recorded because the mistake is the general one: an assertion written
+            // over prose cannot ban a string the prose has to quote. What is checkable instead is that the
+            // working form is present, which the assertion above does, and that every place the option form
+            // appears is a warning - which is a judgement, and belongs to review rather than to a matcher.
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"CARDDEMO-PIPELINE", "POSTTRAN", "INTCALC", "COMBTRAN", "CREASTMT",
+            "TRANREPT"})
+        @DisplayName("each submittable job name is published to the operator who has to type it")
+        void eachSubmittableJobNameIsPublishedToTheOperator(final String jobName) throws Exception {
+            // eachSubmittableJobNameIsPublished above pins each name against the code and the profile that
+            // declare it. That is necessary and not sufficient: a name that only the code knows is a name the
+            // operator has to reverse-engineer, and the reproduction that opened this finding was exactly a
+            // reader guessing a bean name because no document offered the real one.
+            assertThat(Files.readString(Path.of("docs", "onboarding-guide.md")))
+                    .as("%s is submittable, so the guide's launch section has to name it", jobName)
+                    .contains(jobName);
+        }
     }
 
     /**

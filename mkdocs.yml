@@ -26,6 +26,23 @@
 # * language governing permissions and limitations under the License
 # ******************************************************************
 
+# ALWAYS BUILD OUTSIDE THE REPOSITORY. Every verification recipe in this file
+# passes `--site-dir /tmp/carddemo-site`, and that is not a stylistic choice:
+#
+#   mkdocs build --strict --site-dir /tmp/carddemo-site
+#
+# No `site_dir` is set below, so a BARE `mkdocs build` writes ./site/ into the
+# working tree. That directory then holds the RENDERED form of every document,
+# including docs/project-guide.md - frozen prior-run evidence whose sign-on
+# example carries the seeded plaintext. Gate 6's credential walk excludes that
+# document by its exact source path, which cannot match a rendered copy of it,
+# so the very next `./mvnw verify` failed on
+# `site/project-guide/index.html` - two documented commands, each correct on
+# its own, mutually exclusive in sequence. The walk now also skips the
+# gitignored build-output roots, so the collision is closed from both ends; the
+# `--site-dir` here is the half that keeps the working tree clean.
+# `/site/` is gitignored, so a bare build commits nothing - it only breaks the
+# next build.
 site_name: 'blitzy-card-demo'
 # Backstage TechDocs publishes from this nav (catalog-info.yaml sets
 # `backstage.io/techdocs-ref: dir:.`), so every document under docs/ must
@@ -37,8 +54,9 @@ site_name: 'blitzy-card-demo'
 # raises that notice to a warning, which --strict then promotes to a failure;
 # it is the only automatic detection this silent-failure path has, so do not
 # remove it.
-# Verify with: mkdocs build --strict (expect 0 warnings), which the validation
-# block below is what makes meaningful.
+# Verify with: mkdocs build --strict --site-dir /tmp/carddemo-site
+# (expect 0 warnings), which the validation block below is what makes
+# meaningful.
 # DECISION_LOG.md and TRACEABILITY_MATRIX.md are deliberately absent: they
 # are root evidence artifacts outside docs_dir, linked from README.md, and
 # a `../` entry would not resolve here. Do not add or duplicate them.
@@ -49,6 +67,27 @@ site_name: 'blitzy-card-demo'
 # external script, style, font or image dependency of any kind. Because
 # nothing rewrites them for it, its own links target the PUBLISHED directory
 # URLs (`validation-gates/` and so on) rather than the source file names.
+# That byte-identical copy has a consequence worth stating outright, because
+# it cost a full round of findings once already: the `validation` block below
+# CANNOT see inside this file. MkDocs only resolves links it parses, and it
+# parses no part of a static file, so a wrong href here produces a 404 on the
+# published site while `mkdocs build --strict` still exits 0 with no warning.
+# The hrefs are therefore hand-maintained and must be hand-verified. Verify by
+# serving the built site and requesting each target, not by trusting the build:
+#   mkdocs build --strict --site-dir /tmp/carddemo-site && cd /tmp/carddemo-site \
+#     && python3 -m http.server 8600 &
+#   grep -o 'href="[^"#]*"' executive-presentation.html | sort -u   # expect
+#     only `<name>/` directory forms, and every one to answer 200
+# Two conventions follow from the same fact, and both are deliberate:
+#   - Link TEXT stays the source file name (`validation-gates.md`) while the
+#     href is the published URL (`validation-gates/`). A reader on the site
+#     clicks and arrives; a reader holding the raw file in the source tree
+#     still sees which file to open. The raw file's cross-document links do
+#     not resolve outside the published site, and that is the accepted cost.
+#   - Repository-root artefacts (DECISION_LOG.md, TRACEABILITY_MATRIX.md,
+#     README.md, LICENSE, NOTICE) are NAMED as <code> spans and never linked,
+#     because they live outside docs_dir and so have no published URL at all.
+#     This is the same rule every sibling document follows for `](../X)`.
 nav:
   - Home: index.md
   - Project Guide: project-guide.md
@@ -58,16 +97,126 @@ nav:
   - Onboarding Guide: onboarding-guide.md
   - Validation Gates: validation-gates.md
   - Executive Presentation: executive-presentation.html
+# techdocs-core forces the Material theme regardless of what is declared
+# here, so this block is not a theme choice - it is the only place the two
+# settings below can be expressed at all.
+#
+# `font: false` is load-bearing. Material's default typography pulls Roboto
+# and Roboto Mono from fonts.googleapis.com, which put a third-party network
+# dependency on every page of a site whose whole point is to be verifiable
+# offline: 2 stylesheet requests and 6 font-file requests to Google hosts,
+# on all eight pages, for typography that generic system stacks already
+# provide. Setting it false makes Material fall back to those stacks and
+# emits no font link at all. Verify with:
+#   grep -c 'fonts.googleapis.com\|fonts.gstatic.com' \
+#     /tmp/carddemo-site/index.html
+# which must print 0. The one remaining third-party host is the Mermaid
+# renderer on unpkg, which is disclosed in architecture-before-after.md and
+# has a working offline fallback; nothing else may be added.
+theme:
+  name: material
+  font: false
+
+# extra_css is the only hook for correcting theme behaviour that the theme
+# cannot correct for itself. docs/stylesheets/carddemo.css carries its own
+# rationale per rule; the three it fixes are the unreadable offline Mermaid
+# fallback, in-prose links distinguished by colour alone, and a footer
+# copyright that measured 4.47:1 against a 4.5:1 minimum.
+extra_css:
+  - stylesheets/carddemo.css
+
+# Enabling search below was a net improvement, but it brought a latent theme
+# defect into existence: Material renders its search block only when a search
+# plugin is active, and that block's outermost element is
+# `<div class="md-search" data-md-component="search" role="dialog">` with NO
+# accessible name, which an automated audit scores as a failure and which makes
+# a screen reader announce an unnamed dialog. Measured: mobile accessibility
+# fell from 100 to 96 on two pages the moment search began rendering.
+# CSS cannot add an ARIA attribute, and the only include of the search partial
+# is inside a Material template that exposes no overridable block - so an
+# override would mean vendoring the theme's header and keeping it in step with
+# every upgrade. The hook adds the attribute at build time instead, adds nothing
+# to the runtime, and FAILS THE BUILD if the markup it expects is not there, so
+# it cannot silently stop working after a theme upgrade. Delete it when the
+# theme names its own dialog; it logs when that day arrives.
+hooks:
+  - mkdocs_hooks.py
+
 plugins:
-  - techdocs-core
+  # use_material_search MUST stay true, and this is the one setting in this
+  # file whose default is actively harmful. techdocs-core defaults it to
+  # false, and when false it installs the STOCK MkDocs search plugin while
+  # still forcing the Material theme. The stock plugin appends its own
+  # search/main.js to extra_javascript; that script reads a `base_url`
+  # variable which only the stock MkDocs theme defines, so on a Material
+  # page it throws `base_url is not defined` on load - a console error on
+  # every page, and site search dead, because the worker it was about to
+  # start never starts. Setting it true swaps in Material's own search
+  # plugin, which is what the theme's template already expects, and
+  # search/main.js is not emitted at all. Verify with:
+  #   grep -c 'search/main.js' /tmp/carddemo-site/index.html   (expect 0)
+  - techdocs-core:
+      use_material_search: true
+  # BOTH of these entries are required, and neither is redundant. Removing
+  # either one breaks search in a different way, so this is worth stating
+  # precisely rather than trusting to memory.
+  #
+  # `use_material_search: true` above stops the STOCK plugin being installed,
+  # which is what removes search/main.js and the console error. But it
+  # registers Material's search plugin under the key `search`, while the
+  # Material theme's header template gates the ONLY include of its search
+  # partial on `"material/search" in config.plugins`. Key `search` does not
+  # satisfy a test for `material/search`, so the guard stayed false and the
+  # theme emitted NO search markup at all: no field, no results panel, not
+  # even a magnify button - and, because nothing rendered, the search worker
+  # was never started and the index was never fetched. Site search was
+  # therefore still dead after the first fix, silently and for a completely
+  # different reason: a clean console proved only that the old error was
+  # gone, not that search worked.
+  #
+  # Declaring `material/search` explicitly puts the plugin under the key the
+  # template actually tests, which restores the markup. The two registrations
+  # do not conflict: the emitted search_index.json is byte-identical either
+  # way, and the built HTML differs by exactly 40 added lines of search
+  # markup with none removed. Verify all three properties together, because
+  # each catches a different regression:
+  #   S=/tmp/carddemo-site
+  #   grep -c 'search/main.js'   $S/index.html   # 0 - stock plugin gone
+  #   grep -c 'md-search__input' $S/index.html   # 1 - the field exists
+  #   ls $S/search/                              # search_index.json
+  # and then type a query in a browser, because markup existing is still not
+  # the same thing as search returning results.
+  - material/search
   - mermaid2
 # The mermaid2 plugin alone is not sufficient here. techdocs-core enables
 # pymdownx.superfences, which claims every fenced block first, so a ```mermaid
 # fence was being rendered as a line-numbered, syntax-highlighted code block -
 # the diagram source shown as literal text instead of a diagram. Registering
 # mermaid as a custom fence hands those blocks to mermaid2 for client-side
-# rendering. Verify with: mkdocs build && grep -c '<pre class="mermaid"' \
-# site/technical-specifications/index.html   (expect 1 or more, not 0).
+# rendering. Verify against the BUILT html, not the live DOM, with:
+#   mkdocs build --strict --site-dir /tmp/carddemo-site
+#   grep -c '<pre class="mermaid"' \
+#     /tmp/carddemo-site/technical-specifications/index.html   # 1 or more
+# The live DOM reads `<pre class="">` at first, because Material strips the
+# class at mount, before the renderer is contacted. This comment used to stop
+# there and conclude that pre.mermaid is 0 whether rendering succeeded or
+# failed. That holds ONLY when the renderer never loads. Read against the
+# theme's own mount function, the class is RE-ADDED at the top of the
+# post-load callback - immediately BEFORE mermaid.render() - and the <pre> is
+# replaced by <div class="mermaid"> only once that render RESOLVES. So:
+#   * renderer never loads : div.mermaid 0, pre.mermaid 0 (no signal)
+#   * one block fails to parse : div.mermaid 8, pre.mermaid 1 <- a POSITIVE
+#     failure signal naming how many blocks failed
+#   * all healthy : div.mermaid 9, pre.mermaid 0
+# Assert BOTH counts. And never use `div.mermaid svg` as the success check: it
+# is 0 even on total success, because the svg is injected into a mode:"closed"
+# shadow root no light-DOM selector can reach. Pierce it (force attachShadow
+# to mode:"open" from an init script) or read Chrome's accessibility tree,
+# which exposes one graphics-document node per rendered diagram carrying its
+# own roledescription - flowchart-v2, sequence or er, one per grammar in use.
+# Measured 9/9 rendering with unpkg reachable, and a deliberately malformed
+# stadium label made to throw to prove the check discriminates. Grep the built
+# file here for the source-side count.
 markdown_extensions:
   - pymdownx.superfences:
       custom_fences:

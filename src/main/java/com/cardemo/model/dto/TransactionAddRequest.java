@@ -29,6 +29,7 @@ import com.fasterxml.jackson.annotation.JsonAnySetter;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -257,6 +258,19 @@ import jakarta.validation.constraints.Size;
  * blank, no enum binding and no cross-field date assertion the source does not perform
  * unconditionally.
  *
+ * <p>The five free-text components that reach the 350-byte record - {@code source},
+ * {@code description}, {@code merchantName}, {@code merchantCity} and {@code merchantZip} - carry one
+ * further constraint, {@link #FIXED_WIDTH_TEXT_PATTERN}, and it is not an exception to the sentence
+ * above. A {@code PIC X(n)} field is n <em>bytes</em> in a single-byte code page, so a character with
+ * no single-byte representation is not a value the field can hold; the constraint states the field
+ * contract rather than adding a rule to it, and every fixed-width emitter already refuses exactly the
+ * same class. Its own documentation records why the boundary is the right place to refuse it and what
+ * the absence cost. The remaining components do not carry it and must not: {@code amount} is parsed by
+ * the currency-tolerant parser, the identifiers and codes by the strict numeric parser and the two
+ * dates by the date validation service, so each is already refused there in the source's own words,
+ * and a pattern on {@code amount} would defeat the very parser the source uses. The header and
+ * error-line components are presentation only and reach no record at all.
+ *
  * <p>{@code app/cpy/CSSETATY.cpy} is a parameterised {@code COPY ... REPLACING} PROCEDURE DIVISION
  * template - parameters {@code (TESTVAR1)}, {@code (SCRNVAR2)}, {@code (MAPNAME3)} - whose verified
  * body is:
@@ -317,6 +331,11 @@ import jakarta.validation.constraints.Size;
  * <li><strong>Error mode - oversized component.</strong> A component longer than its PIC width fails
  *     its {@code @Size} constraint. The violation names the component and never quotes the value; the
  *     service maps it to the legacy per-field error marker.</li>
+ * <li><strong>Error mode - non-representable free text.</strong> A character outside
+ *     {@link #FIXED_WIDTH_TEXT_PATTERN} in {@code source}, {@code description}, {@code merchantName},
+ *     {@code merchantCity} or {@code merchantZip} fails that constraint, so the request is refused
+ *     here rather than persisted and then failing every fixed-width emitter that reads it. The
+ *     violation names the component and quotes no value. Latin-1 text is unaffected.</li>
  * <li><strong>Error mode - non-numeric identifier.</strong> Not detected here. It is detected by the
  *     service's strict parser, reproducing {@code app/cbl/COTRN02C.cbl:197} and
  *     {@code app/cbl/COTRN02C.cbl:211}, whose messages are
@@ -463,11 +482,14 @@ import jakarta.validation.constraints.Size;
  * @param source          BMS {@code TRNSRCI PIC X(10)}, {@code app/cpy-bms/COTRN02.CPY:84}. A plain
  *                        {@code String} and <strong>never</strong> the {@code TransactionSource}
  *                        enum: {@code app/cbl/COTRN02C.cbl:454} moves it directly into
- *                        {@code TRAN-SOURCE} with no validation, no lookup and no domain check
+ *                        {@code TRAN-SOURCE} with no validation, no lookup and no domain check.
+ *                        Constrained by {@link #FIXED_WIDTH_TEXT_PATTERN}, because it reaches the
+ *                        fixed-width record
  * @param description     BMS {@code TDESCI PIC X(60)}, {@code app/cpy-bms/COTRN02.CPY:90}. Moved
  *                        directly into {@code TRAN-DESC} at {@code app/cbl/COTRN02C.cbl:455}. The
  *                        screen width of 60 governs here even though the record field
- *                        {@code TRAN-DESC} is {@code X(100)} at {@code app/cpy/CVTRA05Y.cpy:9}
+ *                        {@code TRAN-DESC} is {@code X(100)} at {@code app/cpy/CVTRA05Y.cpy:9}.
+ *                        Constrained by {@link #FIXED_WIDTH_TEXT_PATTERN}
  * @param amount          BMS {@code TRNAMTI PIC X(12)}, {@code app/cpy-bms/COTRN02.CPY:96}. The
  *                        amount's <strong>display text</strong>, carried as {@code String} so that
  *                        the <strong>currency-tolerant</strong> parser can be applied downstream, per
@@ -490,14 +512,17 @@ import jakarta.validation.constraints.Size;
  * @param merchantName    BMS {@code MNAMEI PIC X(30)}, {@code app/cpy-bms/COTRN02.CPY:120}. Never
  *                        echoed in a validation message. The screen width of 30 governs here even
  *                        though {@code TRAN-MERCHANT-NAME} is {@code X(50)} at
- *                        {@code app/cpy/CVTRA05Y.cpy:12}
+ *                        {@code app/cpy/CVTRA05Y.cpy:12}. Constrained by
+ *                        {@link #FIXED_WIDTH_TEXT_PATTERN}
  * @param merchantCity    BMS {@code MCITYI PIC X(25)}, {@code app/cpy-bms/COTRN02.CPY:126}. Never
  *                        echoed in a validation message. The screen width of 25 governs here even
  *                        though {@code TRAN-MERCHANT-CITY} is {@code X(50)} at
- *                        {@code app/cpy/CVTRA05Y.cpy:13}
+ *                        {@code app/cpy/CVTRA05Y.cpy:13}. Constrained by
+ *                        {@link #FIXED_WIDTH_TEXT_PATTERN}
  * @param merchantZip     BMS {@code MZIPI PIC X(10)}, {@code app/cpy-bms/COTRN02.CPY:132}. Never
  *                        echoed in a validation message; moved into {@code TRAN-MERCHANT-ZIP} at
- *                        {@code app/cbl/COTRN02C.cbl:463}
+ *                        {@code app/cbl/COTRN02C.cbl:463}. Constrained by
+ *                        {@link #FIXED_WIDTH_TEXT_PATTERN}
  * @param confirmation    BMS {@code CONFIRMI PIC X(1)}, {@code app/cpy-bms/COTRN02.CPY:138}. The
  *                        two-phase confirmation gate, a raw one-character {@code String} and
  *                        <strong>never</strong> a {@code boolean}: blank, affirmative, negative and
@@ -519,17 +544,67 @@ public record TransactionAddRequest(
         @Size(max = 16, message = "cardNumber must not exceed 16 characters") String cardNumber,
         @Size(max = 2, message = "typeCode must not exceed 2 characters") String typeCode,
         @Size(max = 4, message = "categoryCode must not exceed 4 characters") String categoryCode,
-        @Size(max = 10, message = "source must not exceed 10 characters") String source,
-        @Size(max = 60, message = "description must not exceed 60 characters") String description,
+        @Size(max = 10, message = "source must not exceed 10 characters")
+        @Pattern(regexp = TransactionAddRequest.FIXED_WIDTH_TEXT_PATTERN,
+                message = FIXED_WIDTH_TEXT_MESSAGE_PREFIX + "source") String source,
+        @Size(max = 60, message = "description must not exceed 60 characters")
+        @Pattern(regexp = TransactionAddRequest.FIXED_WIDTH_TEXT_PATTERN,
+                message = FIXED_WIDTH_TEXT_MESSAGE_PREFIX + "description") String description,
         @Size(max = 12, message = "amount must not exceed 12 characters") String amount,
         @Size(max = 10, message = "originatingDate must not exceed 10 characters") String originatingDate,
         @Size(max = 10, message = "processingDate must not exceed 10 characters") String processingDate,
         @Size(max = 9, message = "merchantId must not exceed 9 characters") String merchantId,
-        @Size(max = 30, message = "merchantName must not exceed 30 characters") String merchantName,
-        @Size(max = 25, message = "merchantCity must not exceed 25 characters") String merchantCity,
-        @Size(max = 10, message = "merchantZip must not exceed 10 characters") String merchantZip,
+        @Size(max = 30, message = "merchantName must not exceed 30 characters")
+        @Pattern(regexp = TransactionAddRequest.FIXED_WIDTH_TEXT_PATTERN,
+                message = FIXED_WIDTH_TEXT_MESSAGE_PREFIX + "merchantName") String merchantName,
+        @Size(max = 25, message = "merchantCity must not exceed 25 characters")
+        @Pattern(regexp = TransactionAddRequest.FIXED_WIDTH_TEXT_PATTERN,
+                message = FIXED_WIDTH_TEXT_MESSAGE_PREFIX + "merchantCity") String merchantCity,
+        @Size(max = 10, message = "merchantZip must not exceed 10 characters")
+        @Pattern(regexp = TransactionAddRequest.FIXED_WIDTH_TEXT_PATTERN,
+                message = FIXED_WIDTH_TEXT_MESSAGE_PREFIX + "merchantZip") String merchantZip,
         @Size(max = 1, message = "confirmation must not exceed 1 character") String confirmation,
         @Size(max = 78, message = "errorMessage must not exceed 78 characters") String errorMessage) {
+
+    /**
+     * The characters a {@code PIC X(n)} free-text field can hold: {@code U+0020}-{@code U+007E} and
+     * {@code U+00A0}-{@code U+00FF}.
+     *
+     * <p><strong>This is the field contract, not an invented rule.</strong> A {@code PIC X(n)} field is n
+     * <em>bytes</em> in a single-byte code page, so a character with no single-byte representation is not a
+     * value the field can hold - the 3270 terminal could not transmit it and a {@code MOVE} could not store
+     * it. Every fixed-width emitter in the migration encodes {@code ISO-8859-1} and already refuses exactly
+     * this class: {@code TransactionWriter} rejects the C0 controls below {@code U+0020}, {@code DELETE},
+     * the C1 block {@code U+0080}-{@code U+009F} and anything above {@code U+00FF}, and
+     * {@code TransactionReportJob} and {@code StatementGenerationJob} apply the same test to every field
+     * they render. The constraint moves that refusal to the boundary the value enters through; it does not
+     * introduce one.
+     *
+     * <p>Declaring it here rather than leaving the emitters to catch it is what closes the failure the
+     * absence produced. A request carrying non-representable text was accepted with {@code 201}, persisted,
+     * and thereafter <strong>every</strong> run of the report and statement jobs failed on it - one accepted
+     * request disabled the whole batch tier until an operator deleted the row by hand. Refusing it costs the
+     * client one {@code 400} and costs the batch tier nothing.
+     *
+     * <p><strong>Latin-1 text stays valid.</strong> {@code U+00A0}-{@code U+00FF} covers the accented
+     * letters, so an accented merchant name is accepted and round-trips byte-exactly through the 350-byte
+     * record. Only what cannot be represented at all is refused.
+     *
+     * <p>An empty value matches, and {@code @Pattern} treats {@code null} as valid, so the three-state
+     * absent / blank / marked model this record documents is untouched: this constraint fires on content and
+     * never on absence.
+     */
+    public static final String FIXED_WIDTH_TEXT_PATTERN = "[\\x20-\\x7E\\xA0-\\xFF]*";
+
+    /**
+     * Message prefix for a non-representable free-text component, completed with the component's own name.
+     *
+     * <p>The message names the field and quotes no value, which is the same posture every other violation
+     * on this record takes: the merchant name, city and postal code are never echoed.
+     */
+    public static final String FIXED_WIDTH_TEXT_MESSAGE_PREFIX =
+            "must contain only characters representable in the fixed-width record "
+                    + "(U+0020-U+007E, U+00A0-U+00FF): ";
 
     /**
      * The legacy edited display mask for the transaction amount, {@code PIC +99999999.99}, declared at

@@ -75,7 +75,7 @@ pie title Project Completion Status
 
 | Component | Hours | Description |
 |-----------|-------|-------------|
-| Foundation & Build Infrastructure | 14 | pom.xml (Spring Boot 3.5.11, Java 25, 17+ dependencies), Dockerfile (multi-stage), docker-compose.yml (6 services), localstack-init/init-aws.sh, Maven wrapper, .gitignore |
+| Foundation & Build Infrastructure | 14 | pom.xml (Spring Boot 3.5.11, Java 25, 17+ dependencies), Dockerfile (multi-stage), docker-compose.yml (7 services), localstack-init/init-aws.sh, Maven wrapper, .gitignore |
 | Data Model Layer | 28 | 11 JPA entities with BigDecimal precision and @Version locking, 9 DTOs from BMS symbolic maps, 4 enums, 3 composite key classes, 1 converter |
 | Data Access Layer | 12 | 11 Spring Data JPA repositories with custom queries for pagination, alternate indexes, and composite key access |
 | Database Migrations | 10 | V1 schema (11 tables, 261 lines), V2 indexes (159 lines), V3 seed data from 9 ASCII fixtures (827 lines) |

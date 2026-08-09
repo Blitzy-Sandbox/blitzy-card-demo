@@ -188,15 +188,26 @@ import com.cardemo.service.shared.FileStatusMapper;
  * spelling, the same generation - and the pattern recurs at {@code app/proc/TRANREPT.prc:L31} to
  * {@code :L37} and again at {@code :L53} to {@code :L64}.
  * <p>
- * This reader's two inputs are {@code (0)}, so they <i>are</i> resolved by a lexical-greatest listing - but
- * <b>only inside {@link #open(ExecutionContext)}, exactly once, and the resolved keys are then recorded in
- * the execution context and reused for the remainder of the step</b>. {@link #read()} consults no listing,
- * no prefix and no "latest" rule. Re-resolving per chunk would produce a reader that passes every isolated
- * test and <b>races in the pipeline</b>, because a concurrent job writing a newer generation between two
- * chunks would shift the input underneath it. <b>Remediation if the symptom appears:</b> if a run is
- * observed to change generation part-way through a step, a key was re-resolved instead of carried forward;
- * the fix is to route it through {@link #resolveGeneration(ConcatenatedSource, String, String,
- * ExecutionContext, String)} at open time and through nothing else.
+ * This reader's two inputs are {@code (0)}, and each is resolved <b>only inside
+ * {@link #open(ExecutionContext)}, exactly once, after which the resolved keys are recorded in the execution
+ * context and reused for the remainder of the step</b>. {@link #read()} consults no listing, no prefix and
+ * no "latest" rule. Re-resolving per chunk would produce a reader that passes every isolated test and
+ * <b>races in the pipeline</b>, because a concurrent job writing a newer generation between two chunks would
+ * shift the input underneath it. <b>Remediation if the symptom appears:</b> if a run is observed to change
+ * generation part-way through a step, a key was re-resolved instead of carried forward; the fix is to route
+ * it through {@link #resolveGeneration(ConcatenatedSource, String, String, ExecutionContext, String)} at
+ * open time and through nothing else.
+ * <p>
+ * <b>Resolving once is necessary but not sufficient, and both legs are pinned rather than listed whenever a
+ * producer ran in the same stream.</b> Once-at-open closes a race <em>within</em> a step; it does nothing
+ * about a newer generation that appears <em>before</em> the step opens, which on a shared output bucket is
+ * the likelier accident and, for {@code TRANSACT.BKUP}, discards data the same job execution produced one
+ * step earlier. Each leg therefore prefers an exact generation its producer names -
+ * {@value #SYSTRAN_GENERATION_JOB_PARAMETER} from the launching pipeline for {@code SYSTRAN},
+ * {@value #BACKUP_GENERATION_CONTEXT_ENTRY} from the preceding archive step for {@code TRANSACT.BKUP} - and
+ * narrows its listing to that one generation, so <b>no lexical-greatest selection takes place at all on a
+ * handoff path</b>. Only a standalone submission, where no producer ran and there is nothing to inherit,
+ * resolves {@code (0)} by taking the greatest existing generation segment.
  *
  * <h3>Blocker: end of the first source is a transition, not end of input</h3>
  * {@link #read()} answers {@code null} <b>only when both sources are exhausted</b>. End of data on
@@ -553,6 +564,43 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     public static final String SYSTRAN_GENERATION_JOB_PARAMETER =
             "carddemo.combtran.systran-generation";
 
+    /**
+     * Job-execution-context entry through which the preceding archive step pins {@code TRANSACT.BKUP(0)}.
+     *
+     * <p><b>The same race the {@value #SYSTRAN_GENERATION_JOB_PARAMETER} pin closes, on the other leg of the
+     * concatenation - and this one is worse, because the generation being raced is one this very job
+     * execution created a step earlier.</b> {@code app/jcl/TRANBKP.jcl} writes
+     * {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)} and {@code app/jcl/COMBTRAN.jcl:L23-L24} then reads
+     * {@code (0)}; on z/OS those two resolve to the same dataset because the catalogue is updated atomically
+     * at close and only the operator's own stream is running against it. In an object store there is no
+     * catalogue: {@code (0)} was re-derived by listing the base prefix and taking the lexicographically
+     * greatest generation segment, so any newer generation appearing between the archive step and the sort
+     * step - a concurrent report branch, a second deployment sharing the output bucket, or the zero-length
+     * generation an empty archive leaves behind - is what the sort reads instead. The measured consequence
+     * was a run that reported {@code COMPLETED} with return code 0 having silently discarded every posted
+     * transaction its own archive step had just written.
+     *
+     * <p><b>Why the execution context rather than a job parameter.</b> The {@code SYSTRAN} pin crosses a job
+     * boundary - {@code BatchPipelineOrchestrator} launches a child job and can only speak to it through
+     * parameters - whereas this pin crosses a <em>step</em> boundary inside one execution, which is precisely
+     * what the job execution context is for. It also survives a restart for free: Spring Batch carries the
+     * job execution context forward, and the archive key is derived from the job <em>instance</em>
+     * identifier, so a restarted execution that skips the completed archive step still reads the same
+     * generation.
+     *
+     * <p>The entry carries the concrete object key the archive step wrote, because that is the fact the
+     * producer holds. The reader narrows it to that key's generation before listing - see
+     * {@link #requirePinnedBackupGeneration(String, String)} - because a pin must name a generation and never
+     * a single object: a generation may hold several objects, and pinning one of them would drop its
+     * siblings. Absent altogether the entry means the archive step did not run, which is a legitimate
+     * standalone {@code COMBTRAN} submission against generations already in hand, and only then does
+     * {@code (0)} mean "the greatest existing generation".
+     *
+     * @see com.cardemo.batch.jobs.CombineTransactionsJob#BACKUP_OBJECT_KEY_CONTEXT_ENTRY
+     */
+    public static final String BACKUP_GENERATION_CONTEXT_ENTRY =
+            "carddemo.gdg.transact-bkup.createdKey";
+
     /** Environment variable that supplies {@link #PROPERTY_OUTPUT_BUCKET}. */
     private static final String ENV_OUTPUT_BUCKET = "CARDDEMO_S3_BATCH_OUTPUT_BUCKET";
 
@@ -766,10 +814,14 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     private enum ConcatenatedSource {
 
         /** First DD: {@code TRANSACT.BKUP(0)}. */
-        BACKUP("TRANSACT.BKUP", "AWS.M2.CARDDEMO.TRANSACT.BKUP", 1),
+        BACKUP("TRANSACT.BKUP", "AWS.M2.CARDDEMO.TRANSACT.BKUP", 1,
+                "app/jcl/TRANBKP.jcl:L23-L33 unloads the whole cluster into TRANSACT.BKUP(+1), so an empty"
+                        + " cluster still catalogues a generation holding no record"),
 
         /** Second, unnamed continuation DD: {@code SYSTRAN(0)}. */
-        SYSTRAN("SYSTRAN", "AWS.M2.CARDDEMO.SYSTRAN", 2);
+        SYSTRAN("SYSTRAN", "AWS.M2.CARDDEMO.SYSTRAN", 2,
+                "app/jcl/INTCALC.jcl:L37-L41 catalogues SYSTRAN(+1) with DISP=(NEW,CATLG,DELETE) even when"
+                        + " app/cbl/CBACT04C.cbl:L214 suppressed every write");
 
         /** Short source name used in diagnostics. */
         private final String displayName;
@@ -781,19 +833,32 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
         private final int ddOrdinal;
 
         /**
+         * Why a catalogued generation of this source may legitimately hold no record.
+         *
+         * <p>Carried per source rather than written once at the single use site, because the two legs reach
+         * that state through different members and a diagnostic that cited the wrong one would send an
+         * operator to a job that had nothing to do with the run.
+         */
+        private final String emptyGenerationJustification;
+
+        /**
          * Creates one immutable source descriptor.
          *
          * @param displayName short diagnostic name
          * @param datasetName full generation-base name
          * @param ddOrdinal one-based DD order in {@code SORTIN}
+         * @param emptyGenerationJustification the member that allocates a generation this source may find
+         *     empty, quoted in the diagnostic that reports the empty leg
          */
         ConcatenatedSource(
                 final String displayName,
                 final String datasetName,
-                final int ddOrdinal) {
+                final int ddOrdinal,
+                final String emptyGenerationJustification) {
             this.displayName = displayName;
             this.datasetName = datasetName;
             this.ddOrdinal = ddOrdinal;
+            this.emptyGenerationJustification = emptyGenerationJustification;
         }
     }
 
@@ -931,6 +996,15 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
      */
     private final String pinnedSystranGeneration;
 
+    /**
+     * The {@code TRANSACT.BKUP} generation the preceding archive step created, or {@code null} standalone.
+     *
+     * <p>Normalised to a separator-terminated generation prefix at construction, so
+     * {@link #resolveGeneration} narrows its listing to that one generation and performs no lexical-greatest
+     * selection on the archive-handoff path. See {@link #BACKUP_GENERATION_CONTEXT_ENTRY}.
+     */
+    private final String pinnedBackupGeneration;
+
     /** Step-scoped cursor for the first concatenated source. */
     private final SourceCursor backupCursor;
 
@@ -975,6 +1049,9 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
      * @param pinnedSystranGeneration the exact generation the launching pipeline created, from
      *     {@value #SYSTRAN_GENERATION_JOB_PARAMETER}; {@code null} or blank on a standalone submission, and
      *     only then is {@code SYSTRAN(0)} resolved by listing
+     * @param archivedBackupObjectKey the exact object the preceding archive step wrote, from
+     *     {@value #BACKUP_GENERATION_CONTEXT_ENTRY} of the job execution context; {@code null} or blank when
+     *     that step did not run, and only then is {@code TRANSACT.BKUP(0)} resolved by listing
      * @throws NullPointerException if a collaborator is {@code null}
      * @throws IllegalArgumentException if a selector, page size, prefix, or required bucket is invalid
      */
@@ -993,7 +1070,9 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                     + DEFAULT_SYSTRAN_GENERATION_PREFIX + "}")
                     final String systranGenerationPrefix,
             @Value("#{jobParameters['" + SYSTRAN_GENERATION_JOB_PARAMETER + "']}")
-                    final String pinnedSystranGeneration) {
+                    final String pinnedSystranGeneration,
+            @Value("#{jobExecutionContext['" + BACKUP_GENERATION_CONTEXT_ENTRY + "']}")
+                    final String archivedBackupObjectKey) {
         this.transactionRepository =
                 Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
         this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
@@ -1013,6 +1092,9 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
         this.pinnedSystranGeneration = requirePinnedGeneration(
                 pinnedSystranGeneration,
                 this.systranGenerationPrefix);
+        this.pinnedBackupGeneration = requirePinnedBackupGeneration(
+                archivedBackupObjectKey,
+                this.backupGenerationPrefix);
         this.backupCursor = new SourceCursor(ConcatenatedSource.BACKUP);
         this.systranCursor = new SourceCursor(ConcatenatedSource.SYSTRAN);
     }
@@ -1045,7 +1127,7 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                         backupGenerationPrefix,
                         CONTEXT_KEY_BACKUP_OBJECT_KEY,
                         executionContext,
-                        null));
+                        pinnedBackupGeneration));
                 assignResolvedGeneration(systranCursor, resolveGeneration(
                         ConcatenatedSource.SYSTRAN,
                         systranGenerationPrefix,
@@ -1582,7 +1664,9 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
      * @param generationPrefix validated generation prefix
      * @param contextKey execution-context key carrying a prior resolution
      * @param executionContext current step context, or {@code null}
-     * @param pinnedGeneration the exact generation the launching pipeline created, or {@code null} standalone
+     * @param pinnedGeneration the exact generation this leg's producer created - the launching pipeline for
+     *     {@code SYSTRAN}, the preceding archive step for {@code TRANSACT.BKUP} - or {@code null} when no
+     *     producer ran in this stream and {@code (0)} therefore means the greatest existing generation
      * @return every object of the resolved generation in ascending key order, never {@code null}; empty only
      *     when a <em>pinned</em> generation was allocated by the preceding stage and holds no object, which is
      *     the catalogued-but-empty dataset {@code DISP=(NEW,CATLG,DELETE)} leaves behind
@@ -1665,19 +1749,20 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                         "no generation is catalogued under the base prefix");
             }
             // A pinned generation that holds no object is the object-store counterpart of the catalogued but
-            // EMPTY dataset that app/jcl/INTCALC.jcl:L37-L41 leaves behind: DISP=(NEW,CATLG,DELETE) allocates
-            // and catalogues SYSTRAN(+1) whether or not app/cbl/CBACT04C.cbl:L214 suppressed every write, so
-            // COMBTRAN's SORTIN allocation succeeds and SORT reads zero records from that half. The pin is
-            // what distinguishes the two cases: the launching pipeline asserting "stage 2 allocated this
-            // generation" is exactly the catalogue entry, whereas a standalone submission finding nothing at
-            // all under the base prefix has no allocation to inherit and fails as above.
+            // EMPTY dataset the producing member leaves behind: the allocation exists whether or not anything
+            // was written to it, so COMBTRAN's SORTIN allocation succeeds and SORT reads zero records from
+            // that half. The pin is what distinguishes the two cases: the producer asserting "this generation
+            // was allocated" is exactly the catalogue entry, whereas a standalone submission finding nothing
+            // at all under the base prefix has no allocation to inherit and fails as above. Which member did
+            // the allocating differs per leg, so the justification travels with the source rather than being
+            // written here - one citation for both legs would send an operator to the wrong job.
             LOG.info(
-                    "{} pinned {} generation '{}' holds no object; app/jcl/INTCALC.jcl:L37-L41 catalogues"
-                            + " SYSTRAN(+1) even when every disclosure rate was zero, so SORTIN DD {} reads"
-                            + " zero records rather than failing allocation",
+                    "{} pinned {} generation '{}' holds no object; {}, so SORTIN DD {} reads zero records"
+                            + " rather than failing allocation",
                     LOGICAL_FILE,
                     source.datasetName,
                     listingPrefix,
+                    source.emptyGenerationJustification,
                     Integer.valueOf(source.ddOrdinal));
             return List.of();
         }
@@ -2994,6 +3079,61 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                     normalised));
         }
         return normalised;
+    }
+
+    /**
+     * Narrows the archive step's own object key to the generation the sort step must read.
+     *
+     * <p>The producer publishes a concrete key because that is the fact it holds; the consumer needs a
+     * generation, because a generation is the unit {@code (0)} names and may hold more than one object.
+     * {@link #generationSegmentOf(String, String)} performs the narrowing and is the single place in this
+     * class that decides what a generation segment is, so a key written under any of the three coexisting
+     * conventions narrows correctly.
+     *
+     * <p>Absence is legitimate and means "the archive step did not run", which is the standalone
+     * {@code COMBTRAN} submission {@link com.cardemo.batch.jobs.CombineTransactionsJob}'s
+     * {@code archiveAndResetMaster} parameter defaults to. {@code null}, empty and all-blank all normalise to
+     * {@code null}, and only then does {@code TRANSACT.BKUP(0)} mean the greatest existing generation.
+     *
+     * <p>A value that <em>is</em> present is validated on exactly the terms
+     * {@link #requirePinnedGeneration(String, String)} applies to the sibling pin - printable ASCII, no
+     * {@code ..} and no {@code //}, bounded length, and beneath the configured base prefix - because it
+     * becomes an object-storage prefix. It has to name a key strictly beneath the base and not the base
+     * itself: a "generation" equal to the base would list every generation and restore the very
+     * lexical-greatest selection the pin exists to remove.
+     *
+     * @param archivedObjectKey the raw execution-context value, which may be {@code null}
+     * @param basePrefix the validated {@code TRANSACT.BKUP} base prefix the value must sit under
+     * @return the separator-terminated generation prefix, or {@code null} when the archive step did not run
+     * @throws IllegalArgumentException if a supplied value is not a printable key under {@code basePrefix}
+     */
+    private static String requirePinnedBackupGeneration(
+            final String archivedObjectKey,
+            final String basePrefix) {
+
+        if (archivedObjectKey == null || archivedObjectKey.isBlank()) {
+            return null;
+        }
+
+        final String stripped = archivedObjectKey.strip();
+        if (!isPrintableAscii(stripped)
+                || stripped.contains("..")
+                || stripped.contains("//")
+                || stripped.length() > MAX_OBJECT_KEY_LENGTH) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT,
+                    "%s must be a printable object key of at most %d characters without '..' or '//'"
+                            + " segments",
+                    BACKUP_GENERATION_CONTEXT_ENTRY,
+                    Integer.valueOf(MAX_OBJECT_KEY_LENGTH)));
+        }
+        if (!stripped.startsWith(basePrefix) || stripped.equals(basePrefix)) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT,
+                    "%s must name an object beneath '%s' but was '%s'",
+                    BACKUP_GENERATION_CONTEXT_ENTRY,
+                    basePrefix,
+                    stripped));
+        }
+        return basePrefix + generationSegmentOf(stripped, basePrefix) + KEY_SEPARATOR;
     }
 
     /**

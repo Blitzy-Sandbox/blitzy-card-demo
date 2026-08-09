@@ -137,7 +137,7 @@
 #
 # Container image: `docker compose up --build` is the documented one-shot
 # form and it works as documented. The committed docker-compose.yml declares
-# an `app` service alongside the five substrate services, building from this
+# an `app` service alongside the six substrate services, building from this
 # repository root against the committed Dockerfile and pinning
 # SPRING_PROFILES_ACTIVE=local, so `--build` builds this application. An
 # SPRING_PROFILES_ACTIVE=local, so `--build` builds this application - it does

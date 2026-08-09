@@ -43,7 +43,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ch.qos.logback.classic.Level;
@@ -61,7 +63,6 @@ import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -84,6 +85,14 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.MapPropertySource;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable;
 
 /**
  * Proves the integration contract of {@link TransactionWriter} and {@link RejectWriter}.
@@ -284,11 +293,11 @@ class WriterIntegrationContractTest {
     private TransactionWriter transactionWriter(TransactionRepository repository, S3Operations objectStorage) {
         return new TransactionWriter(repository,
                 objectStorage,
+                stubObjectStore(objectStorage),
                 new FileStatusMapper(),
                 metrics,
                 OUTPUT_BUCKET,
-                CONFIGURED_TRANSACTION_PREFIX,
-                TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+                CONFIGURED_TRANSACTION_PREFIX);
     }
 
     /**
@@ -299,8 +308,8 @@ class WriterIntegrationContractTest {
      * @return the writer; never {@code null}
      */
     private RejectWriter rejectWriter(S3Operations objectStorage, StepExecution execution) {
-        stubStreamedWrites(objectStorage);
         return new RejectWriter(objectStorage,
+                stubObjectStore(objectStorage),
                 metrics,
                 new FileStatusMapper(),
                 OUTPUT_BUCKET,
@@ -310,19 +319,24 @@ class WriterIntegrationContractTest {
 
     /**
      * Stubs an object-store mock so that a chunk's durable part upload succeeds instead of returning
-     * {@code null}.
+     * {@code null}, and returns the paging client that shares the same fake store.
      *
-     * <p>{@link RejectWriter} uploads each chunk as its own complete part object and assembles the one
-     * {@code (+1)} generation from them at close - findings H-04 and M-06 - so it reaches the store through
-     * {@code upload}, {@code listObjects} and {@code download}. A mock that does not answer those calls hands
-     * the writer a {@code null}, which the writer correctly reports as a physical write failure; stubbing them
-     * is what lets these contract assertions exercise the success path.
+     * <p>Both writers upload each chunk as its own complete part object and assemble the one {@code (+1)}
+     * generation from them when the step ends - findings H-04 and M-06 - so they reach the store through
+     * {@code upload} and {@code download} on {@link S3Operations}, and through {@code listObjectsV2Paginator}
+     * and {@code deleteObjects} on the {@link S3Client}. A mock that does not answer those calls hands the
+     * writer a {@code null}, which the writer correctly reports as a physical write failure; stubbing them is
+     * what lets these contract assertions exercise the success path.
+     *
+     * <p>The listing goes through the <em>client</em> rather than {@code S3Operations.listObjects} because a
+     * single {@code ListObjectsV2} truncates at a thousand keys and a run staging more parts than that
+     * concatenated only the first page of them - finding H-11. One page suffices for these fixtures, so the
+     * stub reports a single untruncated page while still exercising the paginator.
      *
      * @param objectStorage the mock to stub, never {@code null}
-     * @return the buffer holding the bytes of the most recent write, never {@code null}
+     * @return the paging and batch-deleting client over the same fake store, never {@code null}
      */
-    private static ByteArrayOutputStream stubStreamedWrites(S3Operations objectStorage) {
-        final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    private static S3Client stubObjectStore(S3Operations objectStorage) {
         final java.util.Map<String, byte[]> objects = new java.util.LinkedHashMap<>();
         when(objectStorage.upload(anyString(), anyString(), any(java.io.InputStream.class),
                 any(io.awspring.cloud.s3.ObjectMetadata.class)))
@@ -334,36 +348,40 @@ class WriterIntegrationContractTest {
                         bytes = body.readAllBytes();
                     }
                     objects.put(key, bytes);
-                    if (!key.contains("/parts/")) {
-                        // The promoted generation object. The sink holds the generation's content, not the
-                        // sum of the parts and the generation, so a caller reading it sees one copy.
-                        sink.reset();
-                        sink.write(bytes);
-                    }
                     return storedResource(key, bytes);
                 });
-        when(objectStorage.listObjects(anyString(), anyString())).thenAnswer(invocation -> {
-            final String prefix = invocation.getArgument(1, String.class);
-            final List<S3Resource> found = new java.util.ArrayList<>();
-            for (final java.util.Map.Entry<String, byte[]> entry
-                    : new java.util.LinkedHashMap<>(objects).entrySet()) {
-                if (entry.getKey().startsWith(prefix)) {
-                    found.add(storedResource(entry.getKey(), entry.getValue()));
-                }
-            }
-            return found;
-        });
         when(objectStorage.download(anyString(), anyString())).thenAnswer(invocation -> {
             final String key = invocation.getArgument(1, String.class);
             return storedResource(key, objects.getOrDefault(key, new byte[0]));
         });
         when(objectStorage.objectExists(anyString(), anyString())).thenAnswer(invocation ->
                 Boolean.valueOf(objects.containsKey(invocation.getArgument(1, String.class))));
-        org.mockito.Mockito.doAnswer(invocation -> {
-            objects.remove(invocation.getArgument(1, String.class));
-            return null;
-        }).when(objectStorage).deleteObject(anyString(), anyString());
-        return sink;
+
+        final S3Client objectStoreClient = mock(S3Client.class);
+        when(objectStoreClient.listObjectsV2(any(ListObjectsV2Request.class))).thenAnswer(invocation -> {
+            final String prefix = invocation.getArgument(0, ListObjectsV2Request.class).prefix();
+            final List<S3Object> contents = new java.util.ArrayList<>();
+            for (final String key : new java.util.ArrayList<>(objects.keySet())) {
+                if (key.startsWith(prefix)) {
+                    contents.add(S3Object.builder().key(key).build());
+                }
+            }
+            return ListObjectsV2Response.builder()
+                    .contents(contents)
+                    .isTruncated(Boolean.FALSE)
+                    .build();
+        });
+        when(objectStoreClient.listObjectsV2Paginator(any(ListObjectsV2Request.class)))
+                .thenAnswer(invocation -> new ListObjectsV2Iterable(objectStoreClient,
+                        invocation.getArgument(0, ListObjectsV2Request.class)));
+        when(objectStoreClient.deleteObjects(any(DeleteObjectsRequest.class))).thenAnswer(invocation -> {
+            for (final ObjectIdentifier identifier
+                    : invocation.getArgument(0, DeleteObjectsRequest.class).delete().objects()) {
+                objects.remove(identifier.key());
+            }
+            return DeleteObjectsResponse.builder().build();
+        });
+        return objectStoreClient;
     }
 
     /**
@@ -444,8 +462,11 @@ class WriterIntegrationContractTest {
                 });
 
                 // Scope A really did write, so the negative result below is about isolation and not about the
-                // writer being broken.
-                assertThat(publishedTransactionKeys(executionA)).hasSize(1);
+                // writer being broken. Observed as the chunk's PART reaching the store rather than as a
+                // published generation key: the generation is assembled when the step ends, and this test
+                // deliberately never ends one - it opens two scopes to compare the instances they resolve.
+                verify(context.getBean(S3Operations.class))
+                        .upload(anyString(), anyString(), any(), any());
 
                 assertThatThrownBy(() -> StepScopeTestUtils.doInStepScope(executionB, () -> {
                     proxy.write(new Chunk<>(List.of(transaction(SECOND_TRANSACTION_ID, CREDIT_AMOUNT))));
@@ -493,10 +514,12 @@ class WriterIntegrationContractTest {
             TransactionWriter firstWriter = transactionWriter(repository, objectStorage);
             firstWriter.beforeStep(first);
             firstWriter.write(new Chunk<>(List.of(transaction(TRANSACTION_ID, CREDIT_AMOUNT))));
+            firstWriter.afterStep(first);
 
             TransactionWriter secondWriter = transactionWriter(repository, objectStorage);
             secondWriter.beforeStep(second);
             secondWriter.write(new Chunk<>(List.of(transaction(SECOND_TRANSACTION_ID, CREDIT_AMOUNT))));
+            secondWriter.afterStep(second);
 
             List<String> firstKeys = publishedTransactionKeys(first);
             List<String> secondKeys = publishedTransactionKeys(second);
@@ -536,36 +559,43 @@ class WriterIntegrationContractTest {
             for (int chunk = 0; chunk < 3; chunk++) {
                 writer.write(new Chunk<>(List.of(transaction(TRANSACTION_ID, CREDIT_AMOUNT))));
                 // The framework advances the write count between chunks; doing it here keeps the ordinal
-                // distinct so the three keys differ, exactly as they would in a real step.
+                // distinct so the three parts differ, exactly as they would in a real step.
                 execution.setWriteCount(chunk + 1L);
             }
+            // And the framework ends the step, which is where the three parts become one generation object.
+            writer.afterStep(execution);
         }
 
         @Test
-        @DisplayName("the count entry reports every object, not just the latest")
+        @DisplayName("the count entry reports the ONE object three chunks produced, not one per chunk")
         void countCoversEveryObject() {
             assertThat(execution.getJobExecution()
                     .getExecutionContext()
                     .getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY))
-                    .isEqualTo(3L);
+                    .as("app/jcl/POSTTRAN.jcl names ONE dataset per output, so three chunks are three parts "
+                            + "of one generation and not three generations")
+                    .isEqualTo(1L);
         }
 
         @Test
-        @DisplayName("the indexed entries return the keys in creation order")
+        @DisplayName("the indexed entry names the generation object itself")
         void indexedEntriesPreserveOrder() {
             List<String> keys = publishedTransactionKeys(execution);
-            assertThat(keys).hasSize(3).doesNotHaveDuplicates();
-            // Creation order is also ascending lexicographic order, which is the property that lets a (0)
-            // generation reference resolve as "the lexicographically greatest prefix".
-            assertThat(keys).isSorted();
+            assertThat(keys).hasSize(1);
+            // The key sits directly under the generation prefix, above the transient parts segment, which is
+            // the property that lets a (0) reference - the lexicographically greatest key under the prefix -
+            // resolve to the generation rather than to a fragment of it.
+            assertThat(keys.getFirst())
+                    .startsWith(CONFIGURED_TRANSACTION_PREFIX + "/")
+                    .doesNotContain("/parts/");
         }
 
         @Test
-        @DisplayName("the step context still names the latest object for an in-step listener")
+        @DisplayName("the step context names the same one object for an in-step listener")
         void stepContextStillCarriesTheLatest() {
-            String latest = execution.getExecutionContext()
+            String published = execution.getExecutionContext()
                     .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
-            assertThat(latest).isEqualTo(publishedTransactionKeys(execution).getLast());
+            assertThat(published).isEqualTo(publishedTransactionKeys(execution).getFirst());
         }
 
         @Test
@@ -656,8 +686,8 @@ class WriterIntegrationContractTest {
                     .startsWith(CONFIGURED_REJECT_PREFIX + "/")
                     .doesNotContain("//");
 
-            assertThatThrownBy(() -> new RejectWriter(mock(S3Operations.class), metrics,
-                    new FileStatusMapper(), OUTPUT_BUCKET, CONFIGURED_REJECT_PREFIX + "/",
+            assertThatThrownBy(() -> new RejectWriter(mock(S3Operations.class), mock(S3Client.class),
+                    metrics, new FileStatusMapper(), OUTPUT_BUCKET, CONFIGURED_REJECT_PREFIX + "/",
                     stepExecution(5L)))
                     .as("the shared grammar refuses the trailing form by naming the property")
                     .isInstanceOf(IllegalArgumentException.class)
@@ -680,8 +710,8 @@ class WriterIntegrationContractTest {
             // The H-07 assertion. An inline default would make this construction succeed and write a whole
             // generation under a silently different prefix.
             assertThatThrownBy(() -> new TransactionWriter(mock(TransactionRepository.class),
-                    mock(S3Operations.class), new FileStatusMapper(), metrics, OUTPUT_BUCKET, "  ",
-                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
+                    mock(S3Operations.class), mock(S3Client.class), new FileStatusMapper(), metrics,
+                    OUTPUT_BUCKET, "  "))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 
@@ -715,8 +745,8 @@ class WriterIntegrationContractTest {
          * @return the constructed writer, which the refusal cases never reach
          */
         private RejectWriter rejectWriterWithPrefix(String prefix) {
-            return new RejectWriter(mock(S3Operations.class), metrics, new FileStatusMapper(),
-                    OUTPUT_BUCKET, prefix, stepExecution(1L));
+            return new RejectWriter(mock(S3Operations.class), mock(S3Client.class), metrics,
+                    new FileStatusMapper(), OUTPUT_BUCKET, prefix, stepExecution(1L));
         }
     }
 
@@ -1063,9 +1093,12 @@ class WriterIntegrationContractTest {
             TransactionRepository repository = mock(TransactionRepository.class);
             when(repository.saveAllAndFlush(any())).thenAnswer(invocation -> List.of());
             S3Operations objectStorage = mock(S3Operations.class);
-            when(objectStorage.upload(anyString(), anyString(), any(), any()))
-                    .thenThrow(new IllegalStateException("connection reset"));
             TransactionWriter writer = transactionWriter(repository, objectStorage);
+            // Stubbed AFTER construction and with doThrow, not when: the writer's own store stub is installed
+            // during construction, and a when(...) written first would be invoked by the second stubbing and
+            // throw from inside it rather than from the write under test.
+            doThrow(new IllegalStateException("connection reset")).when(objectStorage)
+                    .upload(anyString(), anyString(), any(), any());
             writer.beforeStep(stepExecution(1L));
 
             assertThatThrownBy(() -> writer.write(new Chunk<>(
@@ -1169,6 +1202,17 @@ class WriterIntegrationContractTest {
         @Bean
         S3Operations objectStorage() {
             return mock(S3Operations.class);
+        }
+
+        /**
+         * The paging and batch-deleting client the writer takes alongside {@link S3Operations}, so the
+         * container can satisfy the constructor.
+         *
+         * @return the client mock
+         */
+        @Bean
+        S3Client objectStoreClient() {
+            return mock(S3Client.class);
         }
 
         /**

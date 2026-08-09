@@ -39,7 +39,9 @@ package com.cardemo.integration.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.reset;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -82,6 +84,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.cardemo.batch.jobs.DailyTransactionPostingJob;
 import com.cardemo.e2e.PostingParityOracle;
 import com.cardemo.batch.writers.RejectWriter;
+import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.RejectCode;
 import com.cardemo.repository.AccountRepository;
@@ -231,8 +234,15 @@ class DailyTransactionPostingJobTest extends AbstractBatchIntegrationTest {
     @Autowired
     private DailyTransactionRepository dailyTransactionRepository;
 
-    /** Reads the committed posted rows and their fixed-width processing timestamps. */
-    @Autowired
+    /**
+     * Reads the committed posted rows and their fixed-width processing timestamps, and supplies the one
+     * controlled write failure that lets a chunk roll back after the end-of-run counters were bumped.
+     *
+     * <p>A spy rather than a replacement, exactly as {@link #accountRepository} is: every other test in this
+     * class still drives the real Spring Data repository, and the framework's after-method reset removes any
+     * stub before the next test without rebuilding the application context.
+     */
+    @MockitoSpyBean
     private TransactionRepository transactionRepository;
 
     /** Reads the category-balance relation before and after each posting run. */
@@ -836,6 +846,15 @@ class DailyTransactionPostingJobTest extends AbstractBatchIntegrationTest {
                 .as("app/cbl/CBTRN02C.cbl:442 follows the failed account rewrite and therefore never persists; "
                         + "neither legacy orphan survives the Java transaction")
                 .isZero();
+        assertThat(postingStepCounter(execution, DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY))
+                .as("finding B-08: the chunk that rolled back must contribute nothing to the counter either. "
+                        + "Its record is re-read on a restart and counted then, so counting it here as well "
+                        + "is what made a 300-record run report 301 processed")
+                .isZero();
+        assertThat(postingStepCounter(execution, DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY))
+                .as("and the reject counter likewise, which is not cosmetic: app/cbl/CBTRN02C.cbl:229-231 "
+                        + "derives return code 4 from it")
+                .isZero();
 
         final Throwable translated = failureChain(execution).stream()
                 .filter(failure -> failure.getMessage() != null
@@ -877,6 +896,141 @@ class DailyTransactionPostingJobTest extends AbstractBatchIntegrationTest {
     }
 
     /**
+     * A chunk that fails after the counters were bumped contributes nothing to them, and the restart reports
+     * 300 processed for 300 inputs.
+     *
+     * <p><b>Purpose.</b> Close QA finding B-08 with the reproduction the finding describes. The two end-of-run
+     * counters live in the step execution context so that they survive a restart, but an execution context is
+     * not a transactional resource: a chunk that rolled back used to leave its increments behind,
+     * {@code AbstractStep} then persisted that in-memory context in its own {@code finally} block, the reader
+     * re-read the same records after the restart, and they were counted a second time. The measured symptom
+     * was {@code TRANSACTIONS PROCESSED :000000301} for 300 distinct input records.
+     *
+     * <p><b>Inputs.</b> The 300-record fixture, and one injected {@link DataAccessResourceFailureException}
+     * on the 150th posted write - deliberately mid-run rather than on the first record, so that a real
+     * checkpoint exists to restart from. The commit interval is one record, so that failure rolls back exactly
+     * one chunk.
+     *
+     * <p><b>Output.</b> None. <b>Side effects:</b> two executions of the same job instance, the first failed
+     * and the second a restart; the run's posted rows, category balances and reject generations are committed
+     * and are disposed with the containers.
+     *
+     * <p><b>What is asserted, and why it cannot be satisfied by the defect.</b> After the failure, the
+     * processed counter must equal the committed posted rows plus the counted rejects - an invariant the defect
+     * breaks by exactly one, because the rolled-back chunk bumps the counter and commits no row. After the
+     * restart, the counters must read 300 and 38 rather than 301 and 38, with 262 committed rows and no
+     * duplicate identifier, which is the finding's own expected outcome.
+     *
+     * <p><b>Error modes.</b> A first run that completes means the injected failure never fired and the test
+     * proves nothing, so the status is asserted first. A restart that fails leaves the second set of
+     * assertions unreachable and the failure names the execution.
+     */
+    @Test
+    @DisplayName("13. a chunk that does not commit is not counted twice: the restart reports 300 for 300 inputs")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void aChunkThatDoesNotCommitIsNotCountedTwiceAcrossARestart() {
+        final List<String> expectedPosted =
+                PostingParityOracle.readCommittedExpectation("transactions.txt");
+        final String failingTransactionId = expectedPosted
+                .get(expectedPosted.size() / 2)
+                .split(java.util.regex.Pattern.quote(PostingParityOracle.FIELD_SEPARATOR))[0];
+        doThrow(new DataAccessResourceFailureException(
+                "simulated transaction write failure on " + failingTransactionId))
+                .when(transactionRepository).saveAllAndFlush(argThat(
+                        items -> items != null && containsTransactionId(items, failingTransactionId)));
+
+        final JobExecution failedRun = launchJob(dailyTransactionPostingJob, runIdParameters(Map.of()));
+
+        assertThat(failedRun.getStatus())
+                .as("the injected write failure must actually have fired; a completed first run would make "
+                        + "every assertion below vacuous")
+                .isEqualTo(BatchStatus.FAILED);
+
+        final long processedAfterFailure =
+                postingStepCounter(failedRun, DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY);
+        final long rejectedAfterFailure =
+                postingStepCounter(failedRun, DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY);
+        assertThat(processedAfterFailure)
+                .as("finding B-08: every record app/cbl/CBTRN02C.cbl:206 counted must have had its outcome "
+                        + "committed - a posted row or a counted reject. The chunk that rolled back committed "
+                        + "neither, so counting it here is what made the restart report one too many. "
+                        + "Resolved: processed %s, committed %s, rejected %s",
+                        Long.valueOf(processedAfterFailure), Long.valueOf(committedTransactionCount()),
+                        Long.valueOf(rejectedAfterFailure))
+                .isEqualTo(committedTransactionCount() + rejectedAfterFailure);
+
+        reset(transactionRepository);
+
+        final JobExecution restartedRun = launchJob(dailyTransactionPostingJob, runIdParameters(Map.of()));
+
+        assertThat(restartedRun.getStatus())
+                .as("the same parameters address the same job instance, so this launch restarts the failed "
+                        + "execution rather than starting a new one")
+                .isEqualTo(BatchStatus.COMPLETED);
+        assertThat(restartedRun.getId())
+                .as("and it is a second execution of that instance, not the first one returned again")
+                .isNotEqualTo(failedRun.getId());
+        final long expectedRejects = PostingParityOracle.readCommittedExpectation("rejects.txt").size();
+        assertThat(processedCount(restartedRun))
+                .as("app/cbl/CBTRN02C.cbl:206 counts each of the 300 input records exactly once across the "
+                        + "whole run. 301 is the finding's measured symptom")
+                .isEqualTo(seededDailyTransactionCount);
+        assertThat(rejectedCount(restartedRun))
+                .as("and app/cbl/CBTRN02C.cbl:214 likewise, which decides return code 4 at :229-:231. The "
+                        + "total comes from the committed parity expectation, not from a literal")
+                .isEqualTo(expectedRejects);
+        assertThat(restartedRun.getExitStatus().getExitCode())
+                .as("the fixture rejects more than zero rows, so :230 gives return code 4")
+                .isEqualTo(exitCodeCompletedWithRejects);
+        assertThat(committedTransactionCount())
+                .as("and every accepted record is committed exactly once across the two executions")
+                .isEqualTo(seededDailyTransactionCount - expectedRejects);
+        assertThat(distinctCommittedTransactionIds())
+                .as("with no identifier committed twice, which a restart that re-posted a committed chunk "
+                        + "would produce")
+                .isEqualTo(committedTransactionCount());
+    }
+
+    /**
+     * Whether a chunk handed to the posted writer carries the given transaction identifier.
+     *
+     * <p>Used as the argument matcher that selects exactly one chunk to fail. Matching on the payload rather
+     * than on an invocation count is deliberate: every other call is left unstubbed and so reaches the real
+     * repository through the spy, which is the only delegation an interface-backed Spring Data proxy supports.
+     *
+     * @param items the chunk the writer passed, never {@code null} at the call site
+     * @param transactionId the identifier to look for
+     * @return {@code true} if any item in the chunk carries that identifier
+     */
+    private boolean containsTransactionId(final Iterable<? extends Transaction> items,
+            final String transactionId) {
+
+        for (final Transaction item : items) {
+            if (item != null && transactionId.equals(item.getTransactionId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Counts the distinct committed transaction identifiers.
+     *
+     * <p>Read through the shared template with a fixed, parameter-free statement, like every other aggregate
+     * in this class.
+     *
+     * @return the number of distinct identifiers in the transaction relation
+     */
+    private long distinctCommittedTransactionIds() {
+        final Long count = jdbcTemplate.queryForObject(
+                "select count(distinct tran_id) from \"transaction\"", Long.class);
+        if (count == null) {
+            throw new IllegalStateException("The distinct identifier query returned no scalar result");
+        }
+        return count.longValue();
+    }
+
+    /**
      * Launches the assembled job with the deterministic per-test identifier and requires normal completion.
      *
      * @return the completed execution, never {@code null}
@@ -908,6 +1062,28 @@ class DailyTransactionPostingJobTest extends AbstractBatchIntegrationTest {
      */
     private long rejectedCount(final JobExecution execution) {
         return requiredContextCount(execution, DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY);
+    }
+
+    /**
+     * Reads one counter out of the posting step's own execution context, treating an absent entry as zero.
+     *
+     * <p>The step context rather than the promoted job context, because a step that failed never reaches the
+     * promotion in {@code PostTranStepListener.afterStep}, and this is the only place a failed run's counters
+     * can be observed. Absent counts as zero for the same reason the production reader treats it that way: a
+     * chunk that rolled back before writing anything leaves nothing behind, which is the outcome asserted.
+     *
+     * @param execution the finished execution, successful or failed
+     * @param key the production-owned context key
+     * @return the counter value, or zero when the entry is absent
+     */
+    private long postingStepCounter(final JobExecution execution, final String key) {
+        for (final StepExecution step : execution.getStepExecutions()) {
+            final ExecutionContext context = step.getExecutionContext();
+            if (context.containsKey(key)) {
+                return context.getLong(key);
+            }
+        }
+        return 0L;
     }
 
     /**

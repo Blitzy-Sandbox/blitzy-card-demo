@@ -50,9 +50,11 @@ import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.ZoneId;
 import java.util.Locale;
+import io.micrometer.core.instrument.config.MeterFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -97,9 +99,11 @@ import org.springframework.context.annotation.Configuration;
  *       the documented contract below, not a second set of bean definitions.</li>
  * </ol>
  *
- * <p><strong>Exactly one {@code @Bean} method is declared, and that count is asserted by
- * {@code com.cardemo.unit.config.ObservabilityConfigTest}.</strong> Nothing further is registered here
- * because nothing further is unowned: the meter registry, the Prometheus scrape endpoint, the tracer and its
+ * <p><strong>Two {@code @Bean} methods are declared, and that count is asserted by
+ * {@code com.cardemo.unit.config.ObservabilityConfigTest}.</strong> The second one,
+ * {@link #pushedMeterFilter()}, is <em>conditional</em>: it exists only in a process that has been asked to
+ * push to a Pushgateway, which is the operator batch submission and never the web application. Nothing
+ * further is registered here because nothing further is unowned: the meter registry, the Prometheus scrape endpoint, the tracer and its
  * exporter are auto-configured from the properties listed below; the common metric tags, the actuator
  * exposure list, the health group composition and the sampling probability are all set in
  * {@code src/main/resources/application.yml}; and the four observability classes register themselves - the
@@ -550,6 +554,57 @@ public class ObservabilityConfig {
                 systemClock.getZone(),
                 pinned ? "pinned by " + KEY_CLOCK_ZONE : "inherited from the runtime default");
         return systemClock;
+    }
+
+    /**
+     * Property key that switches the Pushgateway export path on, and therefore this filter with it.
+     *
+     * <p>Bound to {@code false} in {@code application.yml} so that the long-lived web application - which
+     * Prometheus scrapes directly - never publishes a second copy of a series it is already scraped for.
+     */
+    private static final String KEY_PUSHGATEWAY_ENABLED =
+            "management.prometheus.metrics.export.pushgateway.enabled";
+
+    /** The one meter-name prefix a pushing process is permitted to publish. */
+    private static final String PUSHED_METER_PREFIX = "carddemo.";
+
+    /**
+     * Restricts what a <em>pushing</em> process publishes to this application's own four instruments.
+     *
+     * <p><strong>Why this filter is necessary, and why it is conditional.</strong> The Pushgateway pushes the
+     * whole registry, and it <em>retains</em> what it is given until something replaces or deletes it - which
+     * is precisely the property that makes it the right sink for a batch job's end-of-run totals. Applied to
+     * the rest of the registry that same property is a defect: a batch JVM's {@code jvm_memory_used_bytes}
+     * would be retained for ever at whatever it read as the process exited, and the dashboard's heap panel
+     * sums that series across every instance without a job filter, so a dead batch process would inflate a
+     * live measurement indefinitely. The same argument applies to {@code hikaricp_*} and to the Spring Batch
+     * framework series, which carry a job execution id and would accumulate one retained group per run.
+     *
+     * <p>So a pushing process publishes exactly the {@code carddemo.} instruments defined by
+     * {@code com.cardemo.observability.MetricsConfig} - the four that replace the end-of-run DISPLAY totals at
+     * {@code app/cbl/CBTRN02C.cbl}:L236-L238 - and nothing else. Nothing is lost: no other consumer exists for
+     * a batch JVM's own metrics, because that process has no scrape endpoint at all, which is the whole reason
+     * the push path exists.
+     *
+     * <p><strong>It cannot affect the web application.</strong> The bean is conditional on
+     * {@value #KEY_PUSHGATEWAY_ENABLED}, which is {@code false} in every profile; only an explicit launch flag
+     * turns it on, and that flag belongs to the operator submission documented on
+     * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. In the scraped process this method is never
+     * called and the registry is unfiltered.
+     *
+     * <p>Side effects: none. It returns a stateless filter the registry applies; it performs no input or
+     * output, reads no further property and starts no thread.
+     *
+     * @return the deny-unless filter a pushing process applies to its registry; never {@code null}
+     */
+    @Bean
+    @ConditionalOnProperty(name = KEY_PUSHGATEWAY_ENABLED, havingValue = "true")
+    public MeterFilter pushedMeterFilter() {
+        LOG.info("Pushgateway export is enabled for this process, so only the {} instruments will be "
+                        + "published; a pushed series is RETAINED after this process exits, and retaining a "
+                        + "dead JVM's own gauges would corrupt the live measurements the dashboard sums",
+                PUSHED_METER_PREFIX);
+        return MeterFilter.denyUnless(id -> id.getName().startsWith(PUSHED_METER_PREFIX));
     }
 
     /**

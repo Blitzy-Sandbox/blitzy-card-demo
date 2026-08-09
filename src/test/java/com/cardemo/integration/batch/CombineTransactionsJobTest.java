@@ -636,8 +636,10 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                         + "held, and nothing else")
                 .containsExactlyElementsOf(loadedByRunOne);
 
-        // (b) and (c) the master ends holding only what run two combined - which proves both that the
-        // archive emptied it and that the first leg was the archive rather than the stale seeded generation.
+        // (b) and (c) the master ends holding only what run two combined - which proves both that the run
+        // emptied it and that the first leg was the archive rather than the stale seeded generation. The
+        // emptying itself is performed by the load step, inside the transaction that inserts, which is what
+        // anInstructedResetIsRolledBackWhenTheLoadFails below asserts from the other direction.
         final List<String> combinedByRunTwo = identifiersOf(combinedRecords(second));
         final List<String> expected = new ArrayList<>(loadedByRunOne);
         expected.addAll(identifiersOf(secondSystran));
@@ -650,6 +652,102 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .as("app/jcl/COMBTRAN.jcl:L48 loaded into an EMPTY target, so the master now holds the "
                         + "merged set exactly once - the property that makes the stream repeatable")
                 .isEqualTo(expected.size());
+    }
+
+    /**
+     * An instructed reset whose load then fails leaves the transaction master exactly as it was.
+     *
+     * <p>Purpose: assert the write atomicity of the reset. The reset and the load are the two halves of one
+     * outcome - {@code app/jcl/TRANBKP.jcl:L37-L45} empties the cluster so that {@code :L51-L67} can define it
+     * again and {@code app/jcl/COMBTRAN.jcl:L48} can {@code REPRO} into it - and a load that is refused must
+     * therefore leave the emptying undone. Performed in the archive step it could not: Spring Batch commits
+     * every step separately, so the emptying was durable before the load ran and <b>one</b> repeated identifier
+     * emptied the master permanently, while every account balance kept the effect of the rows that had
+     * vanished and every online transaction read returned nothing until an operator restored the backup
+     * generation by hand.
+     *
+     * <p>Shape of the case, which is two runs because a reset can only be observed against something to
+     * reset. Run one is standalone and fills the master. Run two carries
+     * {@value com.cardemo.batch.jobs.CombineTransactionsJob#JOB_PARAMETER_ARCHIVE_MASTER} <em>and</em> a
+     * {@code SYSTRAN} generation that repeats one of the identifiers the master already holds, so its own
+     * archive supplies that identifier as the first leg, the interest generation supplies it again as the
+     * second, and {@code :L48} must refuse the second exactly as a {@code REPRO} into a keyed cluster does.
+     *
+     * <p>The assertions are that run two fails as a typed duplicate naming the repeated identifier, that the
+     * master still holds <b>every</b> row it held before - by count and by membership, because a count alone
+     * would not distinguish a rollback from a reset followed by a partial reload - and that the archive
+     * generation was still written, so the run remains diagnosable and the data recoverable even though
+     * nothing was destroyed.
+     *
+     * <p>The complement of {@link #duplicateIdentifierFailsTheLoadRatherThanBecomingAnUpsert()}, which drives
+     * the same refusal <em>without</em> the instruction and asserts the master is left empty because it began
+     * empty. Together they say the load's transaction covers the inserts and the reset alike.
+     */
+    @Test
+    @DisplayName("2a. app/jcl/TRANBKP.jcl:L37-L67 with a refused app/jcl/COMBTRAN.jcl:L48 - the reset and the "
+            + "load are one unit of work, so a repeated TRAN-ID leaves the master intact rather than empty")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void anInstructedResetIsRolledBackWhenTheLoadFails() {
+        // ---- run one: standalone, no archive instruction. This is what fills the master.
+        final List<String> seededBackup = seedBackupGeneration(firstFixtureRecords(3));
+        final List<String> seededSystran = seedSystranGeneration(interestRecords(seededBackup, 1));
+        final JobExecution first = launchCombine();
+        assertCombineCompleted(first);
+
+        final List<String> masterBeforeRunTwo = identifiersOf(combinedRecords(first));
+        assertThat(transactionRepository.count())
+                .as("run one must actually fill the master, or there is nothing for run two's reset to "
+                        + "destroy and the case would pass vacuously")
+                .isEqualTo(seededBackup.size() + seededSystran.size());
+
+        // ---- run two: instructed to archive and reset, and handed an interest generation that repeats an
+        // identifier the master already holds. Run two's own archive becomes the first leg, so the merged set
+        // carries that identifier twice and the load must refuse the second occurrence.
+        final String repeated = masterBeforeRunTwo.get(0);
+        final String runTwoSystranGeneration = "0000000000000000011";
+        putGeneration(generationKey(systranPrefix, runTwoSystranGeneration, systranObjectName),
+                List.of(withIdentifier(firstFixtureRecords(1).get(0), repeated)));
+
+        final JobExecution second = launchJob(combineTransactionsJob, runIdParameters(Map.of(
+                CombineTransactionsJob.JOB_PARAMETER_ARCHIVE_MASTER, "true",
+                CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER,
+                generationPrefixKey(systranPrefix, runTwoSystranGeneration))));
+
+        assertThat(second.getStatus())
+                .as("a repeated identifier is a refused load, so the run must fail; the instruction to reset "
+                        + "does not soften that outcome")
+                .isEqualTo(BatchStatus.FAILED);
+        assertThat(second.getExitStatus().getExitCode())
+                .as("and the failed exit status must be the one the standalone refusal reports, unchanged")
+                .isEqualTo(ExitStatus.FAILED.getExitCode());
+        assertThat(duplicateFailure(second).getCollidingKey())
+                .as("the failure must still be the migration's typed duplicate naming the colliding key, "
+                        + "never an absorbed conflict")
+                .isEqualTo(repeated);
+
+        // The assertion this case exists for: the reset shares the load's transaction, so it rolled back.
+        assertThat(transactionRepository.count())
+                .as("app/jcl/TRANBKP.jcl's reset is rolled back with the inserts it exists to make room for, "
+                        + "so a refused load leaves the master holding every row it held before")
+                .isEqualTo(masterBeforeRunTwo.size());
+        for (final String surviving : masterBeforeRunTwo) {
+            assertThat(transactionRepository.existsById(surviving))
+                    .as("row %s must still be present. A count alone would not separate a rollback from a "
+                            + "reset followed by a partial reload, so membership is asserted too", surviving)
+                    .isTrue();
+        }
+
+        // And the archive still happened, so the run is diagnosable and the generation is there to read.
+        final String archivedKey = second.getExecutionContext()
+                .getString(CombineTransactionsJob.BACKUP_OBJECT_KEY_CONTEXT_ENTRY, null);
+        assertThat(archivedKey)
+                .as("app/jcl/TRANBKP.jcl:L23-L33 is a separate step from the reset and completed, so its "
+                        + "generation key must still be published even though the load was refused")
+                .isNotNull()
+                .startsWith(backupPrefix);
+        assertThat(identifiersOf(fixedWidthRecords(generationPayload(archivedKey))))
+                .as("and the generation holds exactly the master as the archive found it")
+                .containsExactlyElementsOf(masterBeforeRunTwo);
     }
 
     // STEP TOPOLOGY - app/jcl/COMBTRAN.jcl:L22 and :L41, and the absence of COND between them
@@ -1206,6 +1304,20 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
         assertThat(transactionRepository.count())
                 .as("and nothing is loaded from a run whose input could not be allocated")
                 .isZero();
+
+        // FINDING B-13, severity Minor. This job used to report every fatal path as an ordinary FAILED with
+        // an EMPTY exit description, so an operator reading BATCH_JOB_EXECUTION could not tell return code 8
+        // from return code 12 without descending into BATCH_STEP_EXECUTION - while the orchestrated pipeline,
+        // which scans the same failures itself, correctly raised the stage to 12. All four jobs now publish
+        // the same status for the same exception.
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("an unallocatable input abends: FatalProcessingException is return code 12, not 8")
+                .isEqualTo("ABEND");
+        assertThat(execution.getExitStatus().getExitDescription())
+                .as("and the description carries the abend code and the return code of AAP 0.7.2.2, so the "
+                        + "batch metadata alone classifies the failure")
+                .contains("abend code 999")
+                .contains("return code 12");
     }
 
     /**
@@ -1714,6 +1826,95 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
         assertThat(transactionRepository.count())
                 .as("and nothing was loaded from it")
                 .isZero();
+    }
+
+    /**
+     * The archive step's own generation is read even though a newer {@code TRANSACT.BKUP} generation exists.
+     *
+     * <p>Purpose: assert the resolution of the {@code TRANSACT.BKUP(0)} race - the sibling of finding C-04 on
+     * the other leg of the concatenation, and the more damaging of the two, because the generation being
+     * raced is one <em>this same job execution</em> created one step earlier. Inputs: a master filled by a
+     * first run, then a second run carrying the archive instruction with a lexicographically greater decoy
+     * generation already on the store. Output: a combined generation holding the archive's records and the
+     * pinned interest records, and nothing from the decoy. Side effects: the master ends holding exactly the
+     * merged set.
+     *
+     * <p>The measured failure this closes: with {@code (0)} re-derived by listing at sort-step open time, the
+     * decoy won, the archive that had just been written was discarded, and the run reported
+     * {@code COMPLETED} with return code 0 - so the only signal that 262 posted transactions had been
+     * dropped was the record count, which nothing compared. A decoy reaches the store through three ordinary
+     * routes: a concurrent {@code TransactionReportJob}, whose {@code STEP01R} writes this same base; a second
+     * deployment sharing the output bucket, since bucket names carry no clone suffix; and the zero-length
+     * generation an empty archive leaves behind, which sorts above nothing but is still a generation.
+     *
+     * <p>The decoy borrows the archive's own key shape and a genuine fixture record under an identifier that
+     * appears in neither leg, so an implementation that read it would <em>succeed</em> and be caught by the
+     * identifier set rather than by an exception - which is what the original defect did.
+     *
+     * <p>Error modes: a reader that ignores {@value CombinedTransactionReader#BACKUP_GENERATION_CONTEXT_ENTRY}
+     * reads the decoy and this fails on the identifiers; a reader that pinned the concrete object key instead
+     * of its generation would list a prefix no object sits under and read nothing, failing on the same
+     * assertion from the other side.
+     */
+    @Test
+    @DisplayName("16. the archive step's own TRANSACT.BKUP generation is read even though a newer one exists")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void theArchivedGenerationOutranksANewerBackupGeneration() {
+        // Run one fills the master, exactly as the daily stream leaves it for the archive to deal with.
+        seedBackupGeneration(firstFixtureRecords(3));
+        seedSystranGeneration(interestRecords(firstFixtureRecords(3), 2));
+        final JobExecution first = launchCombine();
+        assertCombineCompleted(first);
+        final List<String> loadedByRunOne = identifiersOf(combinedRecords(first));
+        assertThat(loadedByRunOne)
+                .as("run one must load something, or the archive below would have nothing to protect")
+                .isNotEmpty();
+
+        // Run two's interest generation, pinned the way BatchPipelineOrchestrator pins it.
+        final String secondSystranGeneration = "0000000000000000009";
+        final List<String> secondSystran = List.of(withIdentifier(
+                firstFixtureRecords(1).get(0), interestIdentifier(sixDigitSuffix(400))));
+        putGeneration(generationKey(systranPrefix, secondSystranGeneration, systranObjectName),
+                secondSystran);
+
+        // THE DECOY: a TRANSACT.BKUP generation that sorts above every generation this run can allocate,
+        // holding one record whose identifier is in neither leg.
+        final String decoyIdentifier = interestIdentifier(sixDigitSuffix(999));
+        final String decoyKey =
+                generationKey(backupPrefix, greatestGenerationSegment, backupObjectName);
+        putGeneration(decoyKey,
+                List.of(withIdentifier(firstFixtureRecords(1).get(0), decoyIdentifier)));
+
+        final JobExecution second = launchJob(combineTransactionsJob, runIdParameters(Map.of(
+                CombineTransactionsJob.JOB_PARAMETER_ARCHIVE_MASTER, "true",
+                CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER,
+                generationPrefixKey(systranPrefix, secondSystranGeneration))));
+        assertCombineCompleted(second);
+
+        final String archivedKey = second.getExecutionContext()
+                .getString(CombineTransactionsJob.BACKUP_OBJECT_KEY_CONTEXT_ENTRY, null);
+        assertThat(archivedKey)
+                .as("the archive step must publish the concrete key it wrote; without it the sort step has "
+                        + "nothing to pin and falls back to the listing")
+                .isNotNull()
+                .startsWith(backupPrefix)
+                .isNotEqualTo(decoyKey);
+
+        final List<String> expected = new ArrayList<>(loadedByRunOne);
+        expected.addAll(identifiersOf(secondSystran));
+        Collections.sort(expected);
+        assertThat(identifiersOf(combinedRecords(second)))
+                .as("the first leg is the generation this execution's archive step wrote, not the newest one "
+                        + "on the store: every row the master held, plus the pinned interest record, and no "
+                        + "trace of the decoy")
+                .isEqualTo(expected);
+        assertThat(identifiersOf(combinedRecords(second)))
+                .as("stated the other way round, because a subset loaded under a success status is the one "
+                        + "outcome an operator cannot distinguish from a correct run")
+                .doesNotContain(decoyIdentifier);
+        assertThat(transactionRepository.count())
+                .as("and app/jcl/COMBTRAN.jcl:L48 loaded exactly that set into the emptied master")
+                .isEqualTo(expected.size());
     }
 
     /**

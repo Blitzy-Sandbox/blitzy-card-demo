@@ -78,6 +78,7 @@ import org.springframework.transaction.interceptor.DefaultTransactionAttribute;
 import com.cardemo.batch.readers.CombinedTransactionReader;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.ValidationException;
+import com.cardemo.observability.BatchJobSpanNamingConvention;
 import com.cardemo.observability.CorrelationIdFilter;
 
 /**
@@ -138,8 +139,10 @@ import com.cardemo.observability.CorrelationIdFilter;
  *       caller that already holds the {@value #JOB_BEAN_NAME} bean. This class declares <b>no runner of its
  *       own</b>: an operator submission - the modern equivalent of submitting the deck through TSO SUBMIT or
  *       SDSF - goes through the framework's own {@code JobLauncherApplicationRunner}, switched on for that
- *       one process with {@code --spring.batch.job.enabled=true --spring.batch.job.name=<jobBeanName>}. The
- *       command, and why an authored runner was removed rather than kept, are set out in full above
+ *       one process with {@code --spring.batch.job.enabled=true --spring.batch.job.name=POSTTRAN}, or any
+ *       other of the job NAMES that command names - never a bean name, because the runner matches
+ *       {@code Job.getName()}. The whole command, why the value is a name rather than a bean, and why an
+ *       authored runner was removed rather than kept, are set out in full above
  *       {@link #launchPipeline(Job, String, String, String)}. Seven job beans are namable that way: the whole
  *       stream, any one of its five stages, and the read-only dataset verification job, which
  *       {@code com.cardemo.config.BatchConfig} composes from the four steps that translate
@@ -1199,11 +1202,16 @@ public class BatchPipelineOrchestrator {
             @Qualifier(COMBTRAN_STEP_BEAN_NAME) final Step combTranStep,
             @Qualifier(SPLIT_FLOW_BEAN_NAME) final Flow statementReportSplitFlow) {
 
-        final JobExecutionDecider afterPostTran = new StageGateDecider(STAGE_POSTTRAN, LOCATOR_POSTTRAN);
-        final JobExecutionDecider afterIntCalc = new StageGateDecider(STAGE_INTCALC, LOCATOR_INTCALC);
-        final JobExecutionDecider afterCombTran = new StageGateDecider(STAGE_COMBTRAN, LOCATOR_COMBTRAN);
+        final JobExecutionDecider afterPostTran = new StageGateDecider(STAGE_POSTTRAN, LOCATOR_POSTTRAN,
+                List.of(new GatedStage(STAGE_POSTTRAN, INFIX_POSTTRAN)));
+        final JobExecutionDecider afterIntCalc = new StageGateDecider(STAGE_INTCALC, LOCATOR_INTCALC,
+                List.of(new GatedStage(STAGE_INTCALC, INFIX_INTCALC)));
+        final JobExecutionDecider afterCombTran = new StageGateDecider(STAGE_COMBTRAN, LOCATOR_COMBTRAN,
+                List.of(new GatedStage(STAGE_COMBTRAN, INFIX_COMBTRAN)));
         final JobExecutionDecider afterSplit = new StageGateDecider(
-                STAGE_CREASTMT + " || " + STAGE_TRANREPT, LOCATOR_CREASTMT + " and " + LOCATOR_TRANREPT);
+                STAGE_CREASTMT + " || " + STAGE_TRANREPT, LOCATOR_CREASTMT + " and " + LOCATOR_TRANREPT,
+                List.of(new GatedStage(STAGE_CREASTMT, INFIX_CREASTMT),
+                        new GatedStage(STAGE_TRANREPT, INFIX_TRANREPT)));
 
         return new FlowBuilder<SimpleFlow>(FLOW_BEAN_NAME)
                 .start(postTranStep)
@@ -1256,6 +1264,12 @@ public class BatchPipelineOrchestrator {
     @Bean(JOB_BEAN_NAME)
     public Job batchPipelineJob(@Qualifier(FLOW_BEAN_NAME) final Flow batchPipelineFlow) {
         return new JobBuilder(jobName, jobRepository)
+                // Finding B-12: without this the framework hands the ALL-CAPS job name to
+                // Micrometer Tracing, whose SpanNameUtil.toLowerHyphen hyphenates every
+                // upper-case character, so the run reached the trace store under a name no
+                // operator could search for. Registered per builder because Spring Batch
+                // resolves no convention bean from the context.
+                .observationConvention(BatchJobSpanNamingConvention.INSTANCE)
                 .validator(this::validateJobParameters)
                 .listener(new BatchPipelineJobListener())
                 .start(batchPipelineFlow)
@@ -1385,7 +1399,7 @@ public class BatchPipelineOrchestrator {
     //
     //       java -jar carddemo-1.0.0.jar --spring.main.web-application-type=none \
     //            --spring.batch.job.enabled=true --spring.batch.job.name=CARDDEMO-PIPELINE \
-    //            parm-date=2022071800 start-date=2022-01-01 end-date=2022-07-06
+    //            parmDate=2022071800 startDate=2022-01-01 endDate=2022-07-06
     //
     //     The value is the JOB NAME and not the bean name, which matters because they differ here by design:
     //     JobLauncherApplicationRunner compares spring.batch.job.name with Job.getName() - verified against
@@ -1395,7 +1409,12 @@ public class BatchPipelineOrchestrator {
     //     every job rather than none. The names are settable through carddemo.batch.pipeline.name and
     //     carddemo.batch.jobs.<member>.name; the defaults above are what an unconfigured deployment answers
     //     to. Non-option arguments of the form name=value become job parameters, which is how the JCL
-    //     parameter cards arrive. --spring.main.web-application-type=none is part of the command rather than
+    //     parameter cards arrive, and the three names are PARM_DATE_JOB_PARAMETER,
+    //     START_DATE_JOB_PARAMETER and END_DATE_JOB_PARAMETER as declared above - camel case, not the
+    //     hyphenated spelling the JCL suggests. This comment carried the hyphenated form until a review
+    //     ran it: INTCALC refused to start with JobParametersInvalidException naming parmDate, so the
+    //     command as written could not have launched the stage it documented.
+    //     --spring.main.web-application-type=none is part of the command rather than
     //     an extra: it is what makes the process end when the job ends, the way a submitted job freed its
     //     initiator, and without it the embedded servlet container holds the JVM open afterwards.
     //
@@ -2569,6 +2588,21 @@ public class BatchPipelineOrchestrator {
     // contract of app/cbl/CBTRN02C.cbl:L229-L231 a property of the topology.
 
     /**
+     * One stage whose own recorded outcome a gate reports in its diagnostic.
+     *
+     * <p>Pairs the display name a stage line spells with the execution-context infix
+     * {@link BatchPipelineOrchestrator#recordStage(JobExecution, String, int, JobExecution)} writes that
+     * stage's outcome under, so a gate can quote the stage's own return code instead of the pipeline
+     * aggregate. Carrying both explicitly rather than deriving one from the other keeps the two spellings
+     * independent: the infix is a persisted key that must never change silently, and the name is prose.
+     *
+     * @param name the stage's display name, spelled exactly as its {@code PIPELINE STAGE} log lines spell it
+     * @param infix the execution-context infix that stage's outcome is recorded under
+     */
+    private record GatedStage(String name, String infix) {
+    }
+
+    /**
      * The replacement for the {@code COND=} gating a JCL job stream would use between steps.
      *
      * <p>It reads the running aggregate return code and returns one of four outcomes. Two of them lead to the
@@ -2591,14 +2625,27 @@ public class BatchPipelineOrchestrator {
         private final String locator;
 
         /**
+         * The stages whose own recorded return codes this gate reports. Used only in the diagnostic.
+         *
+         * <p>One entry for the three sequential gates and two for the gate after the stage-4 split, in the
+         * order the split declares its branches, so the sentence a gate logs names the same stages in the
+         * same order as the stage lines immediately above it.
+         */
+        private final List<GatedStage> gatedStages;
+
+        /**
          * Creates a gate.
          *
          * @param afterStage the stage, or stage pair, this gate sits after
          * @param locator the {@code path:line} of the JCL step or steps that stage replaces
+         * @param gatedStages the stages whose own recorded return codes this gate reports, in declaration
+         *     order; copied defensively, so the caller may pass a mutable list
          */
-        private StageGateDecider(final String afterStage, final String locator) {
+        private StageGateDecider(final String afterStage, final String locator,
+                final List<GatedStage> gatedStages) {
             this.afterStage = afterStage;
             this.locator = locator;
+            this.gatedStages = List.copyOf(gatedStages);
         }
 
         /**
@@ -2614,6 +2661,18 @@ public class BatchPipelineOrchestrator {
          * clean run. So the step executions are inspected too, and the higher of the two codes wins. That is
          * what makes it impossible for any gate to proceed over a failed step, whatever the failure was.
          *
+         * <p><strong>What the diagnostic reports, and why it reports two numbers.</strong> The decision is
+         * the aggregate and must stay the aggregate for the reason just given, but the aggregate is a
+         * property of <em>the run so far</em>, not of the stage this gate is named after. Reporting only the
+         * aggregate told an operator that {@code INTCALC}, {@code COMBTRAN}, {@code CREASTMT} and
+         * {@code TRANREPT} had produced rejects on a run where only {@code POSTTRAN} can - it is the sole
+         * stage with a reject concept at all, per {@code app/cbl/CBTRN02C.cbl:L229-L231} - and it contradicted
+         * the {@code END OF PIPELINE STAGE} line printed moments earlier on the same thread. So both numbers
+         * are logged and each is attributed to what it actually describes: the stage's own recorded return
+         * code, read back from the entry {@link #recordStage(JobExecution, String, int, JobExecution)} wrote
+         * for it, and the pipeline aggregate that produced the decision. Nothing about the control flow
+         * changes; only the sentence does.
+         *
          * @param jobExecution the running pipeline execution, never {@code null}
          * @param stepExecution the step that has just finished; may be {@code null} after a split
          * @return the gate outcome, never {@code null}
@@ -2624,6 +2683,7 @@ public class BatchPipelineOrchestrator {
 
             final ExecutionContext context = jobExecution.getExecutionContext();
             final int aggregate;
+            final String stageReturnCodes;
             synchronized (context) {
                 final int recorded = readAggregateReturnCode(context);
                 final int implied = failedStepReturnCode(jobExecution);
@@ -2639,11 +2699,40 @@ public class BatchPipelineOrchestrator {
                             + " stage outcome; raising the aggregate return code from {} to {}",
                             afterStage, locator, Integer.valueOf(recorded), Integer.valueOf(aggregate));
                 }
+                stageReturnCodes = renderStageReturnCodes(context);
             }
             final String gate = gateFor(aggregate);
-            LOG.info("Pipeline gate after {} ({}) read return code {} and decided {}",
-                    afterStage, locator, Integer.valueOf(aggregate), gate);
+            LOG.info("Pipeline gate after {} ({}) read stage return code {} and pipeline aggregate return"
+                    + " code {}, and decided {}",
+                    afterStage, locator, stageReturnCodes, Integer.valueOf(aggregate), gate);
             return new FlowExecutionStatus(gate);
+        }
+
+        /**
+         * Renders the return codes the gated stages recorded for themselves.
+         *
+         * <p>Read under the caller's hold on the context monitor, for the same reason the aggregate is: the
+         * two stage-4 branches record concurrently, so an unguarded read could see one branch's entry and
+         * miss the other's and report a half-finished split as though it were the whole of it.
+         *
+         * <p>A single gated stage renders as the bare number, because naming the stage twice in one sentence
+         * reads worse than not naming it at all. The stage pair renders as {@code NAME=code} per branch so the
+         * two are distinguishable. A stage whose entry is missing renders as {@code absent} rather than as a
+         * fabricated zero - the only way the entry can be missing is the launcher-step failure the surrounding
+         * block has just escalated, and reporting that as a clean stage is precisely the misattribution this
+         * method exists to remove.
+         *
+         * @param context the pipeline execution context, already held by the caller
+         * @return the rendering, never {@code null} and never blank
+         */
+        private String renderStageReturnCodes(final ExecutionContext context) {
+            final List<String> rendered = new ArrayList<>(gatedStages.size());
+            for (final GatedStage stage : gatedStages) {
+                final Object recorded = context.get(CONTEXT_PREFIX + stage.infix() + RETURN_CODE_SUFFIX);
+                final String code = recorded instanceof Integer stageCode ? stageCode.toString() : "absent";
+                rendered.add(gatedStages.size() == 1 ? code : stage.name() + "=" + code);
+            }
+            return String.join(", ", rendered);
         }
 
         /**

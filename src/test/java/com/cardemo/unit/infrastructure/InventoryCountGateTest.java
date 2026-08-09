@@ -169,6 +169,36 @@ final class InventoryCountGateTest {
     private static final Path ROOT = repositoryRoot();
 
     /**
+     * The one subtree whose cited paths are resolved only when the subtree itself is present.
+     *
+     * <p>{@code app/data/EBCDIC} holds twelve fixed-width {@code .PS} datasets kept as byte-level codepage
+     * reference. The AAP puts them out of scope: nothing transcodes them and no build step parses them. They
+     * are consequently the one part of the frozen corpus a Docker build context legitimately prunes - and
+     * {@code .dockerignore} prunes it, because 204 KB of material no stage reads has no business crossing to
+     * the daemon.
+     *
+     * <p>That pruning collided with this class. The Dockerfile runs the unit tier inside the builder stage,
+     * where the subtree is absent, so the single register mention of it - {@code app/data/EBCDIC/**} in the
+     * §12.1 exclusions row, one of the sixty-one distinct paths row V-1 counts - read as "cited but does not
+     * resolve" and failed the image build on a defect that existed only in the build context. The observed
+     * signature was {@code Expecting empty but was: ["app/data/EBCDIC/"]}, one failure out of fifty-five, and
+     * {@code docker compose up -d --wait} exited 1 as a result. Nothing was wrong with the register, the
+     * corpus or the assertion; what was wrong is that the assertion could not tell a mistyped dataset name
+     * from a deliberately absent subtree.
+     *
+     * <p>{@link SourceCitationResolutionTest} met the identical collision first and answered it with an
+     * exemption keyed on the DIRECTORY rather than on the individual files. This is the same exemption in the
+     * same shape, and deliberately so: two gates read the same pruned tree for the same reason, and giving
+     * them two different rules would be the beginning of a divergence. When {@code app/data/EBCDIC} is
+     * present - in a clone, in CI, in a developer's build - every path cited under it must resolve exactly
+     * like any other, so a mistyped dataset name is still caught here. Only when the whole subtree is absent,
+     * which happens exclusively inside a pruned build context, are those paths passed over.
+     * {@link DecisionLogSelfChecks#thePrunableSubtreeExemptionIsNarrowAndSelfLimiting()} holds that shape and
+     * fails if the exemption is widened, or if it is left in place with nothing behind it.
+     */
+    private static final String PRUNABLE_TREE = PrunableCorpusSubtree.PATH;
+
+    /**
      * The eight controllers, each paired with the number of handlers it declares.
      *
      * <p>All eight are enumerated, so a controller added to {@code com.cardemo.controller} without a row here
@@ -257,6 +287,26 @@ final class InventoryCountGateTest {
         } catch (final IOException cause) {
             throw new UncheckedIOException("Cannot read " + path, cause);
         }
+    }
+
+    /**
+     * Collects every match of a pattern, in document order and with duplicates retained.
+     *
+     * <p>Declared on the enclosing class rather than inside one group, because two groups now scan the same
+     * register text: the self-check counts and the prunable-subtree rule below it. One implementation is what
+     * makes their two readings of "the paths this register cites" provably the same reading.
+     *
+     * @param text  the text to scan
+     * @param regex a pattern; its first capturing group is collected, or the whole match when it has none
+     * @return the collected strings, in order
+     */
+    private static List<String> captures(final String text, final String regex) {
+        final Matcher matcher = Pattern.compile(regex).matcher(text);
+        final List<String> found = new ArrayList<>();
+        while (matcher.find()) {
+            found.add(matcher.groupCount() >= 1 ? matcher.group(1) : matcher.group());
+        }
+        return found;
     }
 
     /**
@@ -990,7 +1040,8 @@ final class InventoryCountGateTest {
             "model/dto/UserListResponse.java",
             "model/dto/ApiMasking.java",
             "security/SnapshotTokenService.java",
-            "observability/TemplatedUriObservationConvention.java");
+            "observability/TemplatedUriObservationConvention.java",
+            "observability/BatchJobSpanNamingConvention.java");
 
     /** The sum of the plan's seventeen summary figures. */
     private static final int SCHEMA_PRODUCTION_TOTAL = 132;
@@ -1050,7 +1101,9 @@ final class InventoryCountGateTest {
         additions.put("package-info", Integer.valueOf(12));
         // DL-CR-06 group (d).
         additions.put("security", Integer.valueOf(1));
-        additions.put("observability", Integer.valueOf(1));
+        // DL-CR-06 group (d), second observability type: BatchJobSpanNamingConvention, which closes QA
+        // finding B-12. Two rather than one.
+        additions.put("observability", Integer.valueOf(2));
         return additions;
     }
 
@@ -1168,9 +1221,9 @@ final class InventoryCountGateTest {
             final int additions = SANCTIONED_ADDITIONS.values().stream().mapToInt(Integer::intValue).sum();
 
             assertThat(additions)
-                    .as("the four sanctioned groups of %s total 26 files; the register states that figure "
+                    .as("the four sanctioned groups of %s total 27 files; the register states that figure "
                             + "and this is where it is checked", REGISTER_ENTRY)
-                    .isEqualTo(26);
+                    .isEqualTo(27);
             assertThat(measured)
                     .as("the tree must equal the plan's floor (%d) plus the register (%d). Both operands "
                             + "are stated, so a failure names which half moved",
@@ -1181,7 +1234,7 @@ final class InventoryCountGateTest {
         @Test
         @DisplayName("every file the register admits exists, so no entry sanctions a phantom")
         void everySanctionedAdditionalTypeExistsOnDisk() {
-            assertThat(SANCTIONED_ADDITIONAL_TYPES).hasSize(14);
+            assertThat(SANCTIONED_ADDITIONAL_TYPES).hasSize(15);
             for (final String relativePath : SANCTIONED_ADDITIONAL_TYPES) {
                 assertThat(ROOT.resolve("src/main/java/com/cardemo").resolve(relativePath))
                         .as("%s admits %s; a register that names a file which is not there is worse than "
@@ -1215,7 +1268,7 @@ final class InventoryCountGateTest {
                     .contains("29 against 17 (**+12**)")
                     .contains("26 against 14 (**+12**)")
                     .contains("`security` 4 against 3 (**+1**)")
-                    .contains("`observability` 4 against 3 (**+1**)");
+                    .contains("`observability` 5 against 3 (**+2**)");
         }
 
         @Test
@@ -1337,6 +1390,36 @@ final class InventoryCountGateTest {
 
         /** The register, relative to the repository root. */
         private static final String REGISTER = "DECISION_LOG.md";
+
+        /**
+         * The one frozen-corpus subtree whose citations are resolved only when the subtree is present.
+         *
+         * <p>{@code app/data/EBCDIC} holds twelve fixed-width {@code .PS} datasets kept as byte-level codepage
+         * reference. The AAP puts them out of scope: nothing transcodes them and no build step parses them, so
+         * they are the one part of the corpus a Docker build context legitimately prunes - and
+         * {@code .dockerignore} prunes it, because 204 KB of material no stage reads has no business crossing
+         * to the daemon.
+         *
+         * <p>That pruning collided with the V-1 resolution check below. The Dockerfile runs this tier inside
+         * the builder stage, where the subtree is absent, so the register's citation of the directory read as
+         * "cited but does not resolve" and failed the image build with {@code Expecting empty but was:
+         * ["app/data/EBCDIC/"]} - a defect that existed only in the build context, while the identical test
+         * passed on the host and in CI. {@code docker compose up --build} is the first command a new operator
+         * runs, so a gate that fails only there is a gate that fails the operator.
+         *
+         * <p>The exemption is keyed on the DIRECTORY, never on a file: where {@code app/data/EBCDIC} is
+         * present - in a clone, in CI, in a developer build - every path cited under it must resolve exactly
+         * like any other, so a mistyped dataset name is still caught. Only when the whole subtree is absent,
+         * which happens exclusively inside a pruned build context, is the citation passed over. The V-1
+         * <em>count</em> is deliberately NOT exempted: it is derived from the register's own text, which is
+         * present in both contexts, so pruning cannot move it.
+         *
+         * <p>This is the same decision, on the same subtree, that
+         * {@code SourceCitationResolutionTest.PRUNABLE_TREE} records for the whole-tree citation scan. The two
+         * are held identical by {@link #theV1PrunableSubtreeExemptionIsNarrowAndAgreesWithItsTwin()} rather
+         * than by hope, because two copies of one rule are exactly the kind of thing that drifts.
+         */
+        private static final String PRUNABLE_TREE = PrunableCorpusSubtree.PATH;
 
         @Test
         @DisplayName("every entry carries all three mandatory fields, and §12.1 states the count it has")
@@ -1469,16 +1552,55 @@ final class InventoryCountGateTest {
             final List<String> register = lines(REGISTER);
             final String text = String.join("\n", register);
 
-            final List<String> appPaths = captures(text, "\\bapp/[A-Za-z0-9_./-]+").stream()
-                    .map(path -> path.replaceAll("[.,:)]+$", ""))
-                    .distinct()
-                    .toList();
+            final List<String> appPaths = citedCorpusPaths(text);
             assertThat(Integer.valueOf(singleInt(registerRow(register, "V-1"), "\\*\\*(\\d+)\\*\\* distinct paths")))
                     .as("V-1's distinct frozen-corpus path count must be the one the file cites: %s", appPaths)
                     .isEqualTo(Integer.valueOf(appPaths.size()));
-            assertThat(appPaths.stream().filter(path -> !Files.exists(ROOT.resolve(path))).toList())
+            // The COUNT above is unconditional - every path the register cites is counted in every context.
+            // Only RESOLUTION carries the prunable-subtree rule, and only because this class runs twice: once
+            // here, where the whole corpus is on disk, and once inside the Dockerfile's build stage, where
+            // .dockerignore has pruned the out-of-scope codepage datasets. The rule is keyed on the DIRECTORY
+            // being absent, so with app/data/EBCDIC present every citation into it is resolved as strictly as
+            // any other and a mistyped dataset name still fails. See PrunableCorpusSubtree, and
+            // PrunableSubtreeExemption below, which asserts that shape in whichever context it runs.
+            assertThat(appPaths.stream()
+                            .filter(path -> !PrunableCorpusSubtree.isExemptCitation(ROOT, path))
+                            .filter(path -> !Files.exists(ROOT.resolve(path)))
+                            .toList())
                     .as("V-1 claims 0 missing, so every cited frozen-corpus path must resolve with its case")
                     .isEmpty();
+
+            // The exemption's shape is asserted in BOTH contexts, which is what keeps it narrow rather than
+            // a hole. This is the same construction the citation-resolution guard holds itself to. Both lists
+            // read the one shared rule rather than a local copy of the prefix.
+            final boolean prunableTreePresent = PrunableCorpusSubtree.isPresentUnder(ROOT);
+            final List<String> citedUnderPrunableTree = appPaths.stream()
+                    .filter(path -> path.startsWith(PrunableCorpusSubtree.PATH))
+                    .toList();
+            final List<String> unresolvedUnderPrunableTree = citedUnderPrunableTree.stream()
+                    .filter(path -> !Files.exists(ROOT.resolve(path)))
+                    .toList();
+            assertThat(citedUnderPrunableTree)
+                    .as("the exemption must protect something real: this is the citation that failed the "
+                            + "image build when the subtree was pruned. If none is left, delete "
+                            + "PrunableCorpusSubtree and the branches that read it rather than keeping a rule "
+                            + "with nothing behind it")
+                    .isNotEmpty();
+            if (prunableTreePresent) {
+                assertThat(unresolvedUnderPrunableTree)
+                        .as("with the subtree on disk - a clone, CI, a developer build - every citation "
+                                + "under it resolves like any other, so the exemption is INERT here and "
+                                + "cannot be borrowed to carry a mistyped dataset name")
+                        .isEmpty();
+            } else {
+                assertThat(unresolvedUnderPrunableTree)
+                        .as("the subtree is absent, so this is a pruned build context and the exemption is "
+                                + "what keeps this check honest here. Every DISTINCT path cited under it "
+                                + "must be unresolvable: some resolving and some not means the subtree was "
+                                + "partially removed rather than pruned, and that is a damaged corpus no "
+                                + "exemption should hide")
+                        .containsExactlyElementsOf(citedUnderPrunableTree);
+            }
 
             assertThat(Integer.valueOf(singleInt(registerRow(register, "V-2"),
                             "Of \\*\\*(\\d+)\\*\\* markdown link targets")))
@@ -1526,6 +1648,193 @@ final class InventoryCountGateTest {
                     .isEqualTo(Integer.valueOf(countTables(register)));
         }
 
+        /**
+         * Every distinct frozen-corpus path the register cites, parsed once so two tests cannot disagree.
+         *
+         * <p>Extracted from {@link #theRemainingStructuralCountsMatchTheDocument()} when
+         * {@link #theV1PrunableSubtreeExemptionIsNarrowAndAgreesWithItsTwin()} came to need the same set. Two
+         * copies of one regex is how an exemption ends up protecting a population its own guard never sees.
+         *
+         * <p>Note that the trailing character is deliberately NOT stripped when it is a slash: the register
+         * cites the subtree as a directory, {@code app/data/EBCDIC/}, and that spelling is what the V-1 count
+         * is derived from. Any prefix test therefore has to tolerate both the bare and the slash-terminated
+         * form, which {@code startsWith} does.
+         *
+         * @param text the register as one string
+         * @return the distinct cited paths, in the order the register first cites them
+         */
+        private List<String> citedCorpusPaths(final String text) {
+            return captures(text, "\\bapp/[A-Za-z0-9_./-]+").stream()
+                    .map(path -> path.replaceAll("[.,:)]+$", ""))
+                    .distinct()
+                    .toList();
+        }
+
+        @Test
+        @DisplayName("the V-1 prunable-subtree exemption is narrow, matches its twin, and is inert on the host")
+        void theV1PrunableSubtreeExemptionIsNarrowAndAgreesWithItsTwin() {
+            assertThat(PRUNABLE_TREE)
+                    .as("""
+                        the exemption stays scoped to the one out-of-scope subtree, whichever context this \
+                        runs in. Widening this prefix - to app/data, or app/ - would silence V-1 resolution \
+                        failures across the corpus the register's evidence actually rests on, which is the \
+                        whole claim V-1 makes.""")
+                    .isEqualTo("app/data/EBCDIC");
+
+            // Pinned to the twin by reading its source, because the same subtree is exempted in two places
+            // for the same reason and a divergence between them would be silent in both. The declaration is
+            // matched in full, so renaming the constant or repointing it fails here rather than drifting.
+            final String twin =
+                    "src/test/java/com/cardemo/unit/infrastructure/SourceCitationResolutionTest.java";
+            assertThat(lines(twin))
+                    .as("""
+                        %s must still read the identical subtree from the shared rule. If that gate's \
+                        exemption is withdrawn or repointed, this one is wrong too: they are one decision \
+                        about one directory, and both now read it from PrunableCorpusSubtree rather than \
+                        holding a literal each.""",
+                        twin)
+                    .anySatisfy(line -> assertThat(line)
+                            .contains("PRUNABLE_TREE = PrunableCorpusSubtree.PATH"));
+
+            final List<String> cited = citedCorpusPaths(String.join("\n", lines(REGISTER))).stream()
+                    .filter(path -> path.startsWith(PRUNABLE_TREE))
+                    .toList();
+            assertThat(cited)
+                    .as("""
+                        the exemption must protect something real: this is the citation that failed the image \
+                        build when .dockerignore pruned the subtree. If the register stops citing it, delete \
+                        PRUNABLE_TREE and the branch that reads it rather than keeping a rule with nothing \
+                        behind it.""")
+                    .isNotEmpty();
+
+            final List<String> broken =
+                    cited.stream().filter(path -> !Files.exists(ROOT.resolve(path))).toList();
+
+            // This test runs in BOTH contexts and has to be meaningful in each - the point of keying the
+            // exemption on the directory. Where the subtree exists the exemption is inert and strictness is
+            // asserted; where it does not, the absence must be TOTAL, because a subtree missing only some of
+            // its members is a damaged corpus rather than a pruned context, and no exemption should hide that.
+            if (Files.isDirectory(ROOT.resolve(PRUNABLE_TREE))) {
+                assertThat(broken)
+                        .as("""
+                            with the subtree on disk - a clone, CI, a developer build - every path the \
+                            register cites under it resolves like any other. The exemption is keyed on the \
+                            DIRECTORY being absent, never on a file being absent, so it cannot be borrowed to \
+                            carry a mistyped dataset name.""")
+                        .isEmpty();
+            } else {
+                assertThat(broken)
+                        .as("""
+                            the subtree is absent, so this is a pruned build context and the exemption is \
+                            what keeps V-1 honest here. Every path cited under the subtree must be \
+                            unresolvable: if some resolve and some do not, the subtree was partially removed \
+                            rather than pruned.""")
+                        .containsExactlyInAnyOrderElementsOf(cited);
+            }
+        }
+
+        @Test
+        @DisplayName("the frozen-corpus exemption stays narrow, protects something real, and says so")
+        void theFrozenCorpusExemptionIsNarrowAndSelfLimiting() {
+            assertThat(PRUNABLE_TREE)
+                    .as("""
+                        the exemption stays scoped to the one out-of-scope subtree, whichever context this \
+                        runs in. Widening this prefix - to app/data, or app/ - would stop V-1's existence \
+                        check from catching a mistyped path across material the migration actually derives \
+                        from, which is the whole value of the row""")
+                    .isEqualTo("app/data/EBCDIC");
+
+            final List<String> exempted = citedFrozenCorpusPaths().stream()
+                    .filter(path -> path.startsWith(PRUNABLE_TREE))
+                    .toList();
+            assertThat(exempted)
+                    .as("""
+                        the exemption must protect something real: these are the citations that failed the \
+                        image build while the register cited a subtree .dockerignore prunes. If none is \
+                        left, delete PRUNABLE_TREE and the branch that reads it rather than keeping a rule \
+                        with nothing behind it""")
+                    .isNotEmpty();
+
+            if (Files.isDirectory(ROOT.resolve(PRUNABLE_TREE))) {
+                assertThat(exempted.stream().filter(path -> !Files.exists(ROOT.resolve(path))).toList())
+                        .as("""
+                            the subtree is present in this run, so the exemption is NOT in force and every \
+                            citation of it is resolved strictly - a passed-over citation here would mean \
+                            the branch keys on a file rather than on the directory""")
+                        .isEmpty();
+            }
+
+            assertThat(String.join("\n", lines(REGISTER)))
+                    .as("""
+                        V-1 is the row whose "0 missing" this exemption qualifies, so the qualification \
+                        belongs in the row rather than only in the test that applies it""")
+                    .contains("app/data/EBCDIC");
+        }
+
+
+        @Test
+        @DisplayName("the prunable-subtree exemption is narrow, and inert wherever the subtree is present")
+        void thePrunableSubtreeExemptionIsNarrowAndSelfLimiting() {
+            assertThat(PRUNABLE_TREE)
+                    .as("""
+                        the exemption stays scoped to the one out-of-scope subtree, whichever context this \
+                        runs in. Widening this prefix - to app/data, or app/ - would stop V-1 from noticing \
+                        a mistyped path into material the migration actually derives from, which is the \
+                        entire value of the row.""")
+                    .isEqualTo("app/data/EBCDIC");
+
+            final List<String> exempted = registerAppPaths().stream()
+                    .filter(path -> path.startsWith(PRUNABLE_TREE))
+                    .toList();
+            assertThat(exempted)
+                    .as("""
+                        the exemption must protect something real: this is the register path that failed the \
+                        image build when .dockerignore pruned the subtree. If none is left - the exclusions \
+                        row stopped naming the subtree - delete PRUNABLE_TREE and the branch that reads it \
+                        rather than keeping a rule with nothing behind it.""")
+                    .isNotEmpty();
+
+            final List<String> unresolved = exempted.stream()
+                    .filter(path -> !Files.exists(ROOT.resolve(path)))
+                    .toList();
+
+            // This test runs in BOTH contexts and must be meaningful in each, which is the whole point of an
+            // exemption keyed on the directory: where the subtree exists the exemption is inert and
+            // strictness is asserted; where it does not, the exemption is doing its job and the absence must
+            // be TOTAL rather than partial - a subtree missing some of its files is a damaged corpus, not a
+            // pruned context, and no exemption should hide that.
+            if (Files.isDirectory(ROOT.resolve(PRUNABLE_TREE))) {
+                assertThat(unresolved)
+                        .as("""
+                            with the subtree on disk - a clone, CI, a developer build - every path cited \
+                            under it resolves like any other. The exemption is keyed on the DIRECTORY being \
+                            absent, never on a file being absent, so it cannot be borrowed to carry a \
+                            mistyped dataset name.""")
+                        .isEmpty();
+            } else {
+                assertThat(unresolved)
+                        .as("""
+                            the subtree is absent, so this is a pruned build context and the exemption is \
+                            what keeps V-1 honest here. Every path cited under the subtree must be \
+                            unresolvable: if some resolve and some do not, the subtree was partially removed \
+                            rather than pruned.""")
+                        .containsExactlyInAnyOrderElementsOf(exempted);
+            }
+        }
+
+        /**
+         * The distinct {@code app/...} paths the register cites, derived exactly as row V-1 derives them.
+         *
+         * <p>Shared by the count gate and the exemption gate on purpose. Two independent transcriptions of
+         * the same parser would let the exemption be asserted against a path set the count never saw, which
+         * is the failure mode this whole group exists to prevent.
+         *
+         * @return the cited paths, in first-mention order, without duplicates
+         */
+        private List<String> registerAppPaths() {
+            return citedCorpusPaths(String.join("\n", lines(REGISTER)));
+        }
+
         @Test
         @DisplayName("both parsers stay published, so no count in §12.1 can outlive its reproduction command")
         void bothParsersRemainPublishedBesideTheCountsTheyProduce() {
@@ -1550,6 +1859,26 @@ final class InventoryCountGateTest {
                     .contains("all four figures are withdrawn")
                     .contains("both are withdrawn");
         }
+
+        /**
+         * Extracts every distinct frozen-corpus path the register cites, in document order.
+         *
+         * <p>Reads the register rather than disk, so the list is the same in a clone and inside a pruned
+         * build context. Trailing sentence punctuation is stripped because a citation is often the last
+         * thing in a sentence, and a wildcard suffix such as {@code /**} ends the match at the directory,
+         * which is the path a reader is being pointed at anyway.
+         *
+         * <p>Shared by {@link #theRemainingStructuralCountsMatchTheDocument()}, which counts and resolves
+         * these paths, and {@link #theFrozenCorpusExemptionIsNarrowAndSelfLimiting()}, which asserts the one
+         * exemption still has citations behind it. Deriving both from one method is what stops the two from
+         * disagreeing about what V-1 cites.
+         *
+         * @return the cited {@code app/...} paths, distinct and in the order the register states them
+         */
+        private List<String> citedFrozenCorpusPaths() {
+            return citedCorpusPaths(String.join("\n", lines(REGISTER)));
+        }
+
 
         /**
          * Applies Parser 1: scopes each entry from its heading to the next and lists its field labels.
@@ -1688,22 +2017,6 @@ final class InventoryCountGateTest {
         }
 
         /**
-         * Collects every match of a pattern, in document order and with duplicates retained.
-         *
-         * @param text  the text to scan
-         * @param regex a pattern; its first capturing group is collected, or the whole match when it has none
-         * @return the collected strings, in order
-         */
-        private List<String> captures(final String text, final String regex) {
-            final Matcher matcher = Pattern.compile(regex).matcher(text);
-            final List<String> found = new ArrayList<>();
-            while (matcher.find()) {
-                found.add(matcher.groupCount() >= 1 ? matcher.group(1) : matcher.group());
-            }
-            return found;
-        }
-
-        /**
          * Counts well-formed markdown tables, and fails the caller if any row's column count differs from its
          * header's.
          *
@@ -1825,6 +2138,94 @@ final class InventoryCountGateTest {
                         "DECISION_LOG.md no longer publishes a pair matching /" + regex + "/.");
             }
             return new int[] {Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))};
+        }
+    }
+
+    /**
+     * The prunable-subtree rule this class applies, held to the same shape the citation gate holds it to.
+     *
+     * <p>{@link DecisionLogSelfChecks#theRemainingStructuralCountsMatchTheDocument()} resolves every
+     * {@code app/...} path the register cites against disk. That assertion runs twice: here, with the whole
+     * frozen corpus present, and again inside the {@code Dockerfile} build stage, where {@code .dockerignore}
+     * has pruned {@code app/data/EBCDIC} out of the build context. It previously carried no rule for the
+     * second case at all, so it failed there - and because the build stage runs the unit tier, that failed the
+     * image build, and with it the two workflow jobs that build the image. The rule was present in
+     * {@link SourceCitationResolutionTest} and missing here; it is now shared through
+     * {@link PrunableCorpusSubtree} rather than duplicated, so a third suite cannot reopen the same gap.
+     *
+     * <p>These tests are the reason the rule cannot quietly widen. Both are meaningful in BOTH contexts, and
+     * neither is skipped in either: with the subtree present the rule is asserted to be INERT, and with the
+     * subtree absent it is asserted to be doing exactly its job and nothing more.
+     */
+    @Nested
+    @DisplayName("the prunable-subtree rule is narrow, and inert wherever the subtree is present")
+    final class PrunableSubtreeExemption {
+
+        @Test
+        @DisplayName("the rule names one out-of-scope subtree, and .dockerignore is what prunes it")
+        void theRuleIsScopedToTheOneSubtreeDockerignorePrunes() {
+            assertThat(PrunableCorpusSubtree.PATH)
+                    .as("the rule stays scoped to the one out-of-scope subtree. Widening this prefix - to "
+                            + "app/data, or app/ - would silence resolution failures across material the "
+                            + "migration actually derives from, starting with the nine ASCII fixtures that "
+                            + "seed nine tables")
+                    .isEqualTo("app/data/EBCDIC");
+
+            assertThat(lines(".dockerignore"))
+                    .as("the rule exists only because the build context prunes this subtree. If "
+                            + ".dockerignore no longer excludes it, delete PrunableCorpusSubtree and the two "
+                            + "branches that read it rather than keeping a rule with nothing behind it")
+                    .contains(PrunableCorpusSubtree.PATH);
+
+            assertThat(Boolean.valueOf(PrunableCorpusSubtree.isExemptCitation(ROOT, "app/cpy/CVACT01Y.cpy")))
+                    .as("a path outside the subtree is never exempt, in either context. This one is the "
+                            + "account record layout, which eleven entities' widths derive from")
+                    .isEqualTo(Boolean.FALSE);
+        }
+
+        @Test
+        @DisplayName("with the subtree on disk the rule is inert; with it pruned, the absence must be total")
+        void theRuleIsInertWhereTheSubtreeExistsAndTotalWhereItDoesNot() {
+            final List<String> cited = captures(String.join("\n", lines("DECISION_LOG.md")),
+                            "\\bapp/[A-Za-z0-9_./-]+").stream()
+                    .map(path -> path.replaceAll("[.,:)]+$", ""))
+                    .filter(path -> path.startsWith(PrunableCorpusSubtree.PATH))
+                    .distinct()
+                    .toList();
+            assertThat(cited)
+                    .as("the rule must protect something real: this is the register citation that failed the "
+                            + "image build when .dockerignore pruned the subtree")
+                    .isNotEmpty();
+
+            final List<String> unresolved = cited.stream()
+                    .filter(path -> !Files.exists(ROOT.resolve(path)))
+                    .toList();
+
+            if (PrunableCorpusSubtree.isPresentUnder(ROOT)) {
+                assertThat(unresolved)
+                        .as("with the subtree on disk - a clone, CI, a developer build - every path cited "
+                                + "under it resolves like any other, and the rule reports nothing exempt. It "
+                                + "is keyed on the DIRECTORY being absent, never on a file being absent, so "
+                                + "it cannot be borrowed to carry a mistyped dataset name")
+                        .isEmpty();
+                assertThat(cited.stream()
+                                .filter(path -> PrunableCorpusSubtree.isExemptCitation(ROOT, path))
+                                .toList())
+                        .as("and nothing at all is exempt here, which is what 'inert' means")
+                        .isEmpty();
+            } else {
+                assertThat(cited.stream()
+                                .filter(path -> PrunableCorpusSubtree.isExemptCitation(ROOT, path))
+                                .toList())
+                        .as("the subtree is absent, so this is a pruned build context and every path cited "
+                                + "under the subtree is exempt. A subtree that is partly present is a "
+                                + "damaged corpus rather than a pruned context, and no rule should hide it")
+                        .containsExactlyInAnyOrderElementsOf(cited);
+                assertThat(unresolved)
+                        .as("and in that context every one of them must be unresolvable: if some resolve "
+                                + "and some do not, the subtree was partially removed rather than pruned")
+                        .containsExactlyInAnyOrderElementsOf(cited);
+            }
         }
     }
 }

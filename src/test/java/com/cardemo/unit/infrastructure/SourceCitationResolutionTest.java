@@ -81,7 +81,9 @@ import org.junit.jupiter.api.Test;
  * passed over only when that whole directory is absent, which happens exclusively inside a Docker build
  * context that pruned the out-of-scope codepage datasets. With the directory present - here, and in CI - every
  * one of those citations is resolved strictly. {@link #theEbcdicExemptionIsNarrowAndSelfLimiting()} holds that
- * shape, and the reasoning is recorded on {@link #PRUNABLE_TREE}.
+ * shape, and the rule itself is shared with {@link InventoryCountGateTest} through
+ * {@link PrunableCorpusSubtree}, which records the reasoning. It is shared rather than copied because a review
+ * found it present here and missing there, which failed the image build inside the pruned context.
  *
  * <h2>Why the line number is checked too</h2>
  *
@@ -179,6 +181,12 @@ final class SourceCitationResolutionTest {
     /**
      * The one subtree whose citations are resolved only when the subtree itself is present.
      *
+     * <p>Read from {@link PrunableCorpusSubtree}, which is where the rule and the reasoning behind it live,
+     * rather than declared here. The rule applies to every suite that resolves an {@code app/...} path against
+     * disk, and it was a review finding that it held in this suite and was missing from
+     * {@link InventoryCountGateTest} - so the constant and the predicate are shared, and a suite either reads
+     * them or does not resolve corpus paths at all.
+     *
      * <p>{@code app/data/EBCDIC} holds twelve fixed-width {@code .PS} datasets kept as byte-level codepage
      * reference. The AAP puts them out of scope: nothing transcodes them and no build step parses them. They
      * are consequently the one part of the corpus a Docker build context legitimately prunes - and
@@ -191,13 +199,13 @@ final class SourceCitationResolutionTest {
      * a defect that existed only in the build context. Withdrawing the exclusion made the build green by
      * admitting out-of-scope data into the context, which fixed the symptom by widening the scope.
      *
-     * <p>The exemption below is keyed on the DIRECTORY, not on the individual files: when
-     * {@code app/data/EBCDIC} is present - in a clone, in CI, in a developer's build - every citation under it
-     * must resolve exactly like any other, so a mistyped dataset name is still caught. Only when the whole
-     * subtree is absent, which happens exclusively inside a pruned build context, are those citations passed
-     * over. {@link #theEbcdicExemptionIsNarrowAndSelfLimiting()} holds that shape.
+     * <p>The exemption is keyed on the DIRECTORY, not on the individual files: when {@code app/data/EBCDIC} is
+     * present - in a clone, in CI, in a developer's build - every citation under it must resolve exactly like
+     * any other, so a mistyped dataset name is still caught. Only when the whole subtree is absent, which
+     * happens exclusively inside a pruned build context, are those citations passed over.
+     * {@link #theEbcdicExemptionIsNarrowAndSelfLimiting()} holds that shape.
      */
-    private static final String PRUNABLE_TREE = "app/data/EBCDIC";
+    private static final String PRUNABLE_TREE = PrunableCorpusSubtree.PATH;
 
     /** Words that mark a citation as a statement of absence rather than a reference. */
     private static final List<String> NEGATIONS =
@@ -396,7 +404,6 @@ final class SourceCitationResolutionTest {
                                 + "occurrences were measured across the tree")
                 .hasSizeGreaterThan(5_000);
 
-        final boolean prunableTreePresent = Files.isDirectory(ROOT.resolve(PRUNABLE_TREE));
         final Set<String> unresolved = new TreeSet<>();
         final List<String> locations = new ArrayList<>();
         for (final Reference reference : references) {
@@ -405,7 +412,8 @@ final class SourceCitationResolutionTest {
             }
             // Passed over ONLY when the whole subtree is absent, which happens exclusively inside a build
             // context that pruned it. Where the subtree exists, these citations are checked like any other.
-            if (!prunableTreePresent && reference.citation().startsWith(PRUNABLE_TREE)) {
+            // The rule is the shared one, so this suite and InventoryCountGateTest cannot disagree about it.
+            if (PrunableCorpusSubtree.isExemptCitation(ROOT, reference.citation())) {
                 continue;
             }
             if (!Files.exists(ROOT.resolve(reference.citation()))) {
@@ -534,7 +542,8 @@ final class SourceCitationResolutionTest {
                 .as("""
                     the exemption stays scoped to the one out-of-scope subtree, whichever context this runs \
                     in. Widening this prefix - to app/data, or app/ - would silence citation failures across \
-                    material the migration actually derives from.""")
+                    material the migration actually derives from. Asserted on the SHARED constant, so this \
+                    also holds the value InventoryCountGateTest applies.""")
                 .isEqualTo("app/data/EBCDIC");
 
         final List<Reference> citations = allReferences().stream()
@@ -562,7 +571,7 @@ final class SourceCitationResolutionTest {
         // exemption keyed on the directory: where the subtree exists the exemption is inert and strictness is
         // asserted; where it does not, the exemption is doing its job and the absence must be TOTAL rather
         // than partial - a subtree missing some of its files is a damaged corpus, not a pruned context.
-        if (Files.isDirectory(ROOT.resolve(PRUNABLE_TREE))) {
+        if (PrunableCorpusSubtree.isPresentUnder(ROOT)) {
             assertThat(broken)
                     .as("""
                         with the subtree on disk - a clone, CI, a developer build - every citation under it \
@@ -825,9 +834,17 @@ final class SourceCitationResolutionTest {
             }
         }
 
-        @Test
-        @DisplayName("every symbol the citations name resolves in the file it names")
-        void everyCitedSymbolResolves() {
+        /**
+         * The symbol-citation table: every line locator this project converted, and what it became.
+         *
+         * <p>Extracted from {@link #everyCitedSymbolResolves()} so that
+         * {@link #everyCitedTargetIsCarriedIntoTheImageBuild()} asserts over the same rows rather than over a
+         * hand-copied subset. A guard that reads a second copy of the population it protects is a guard that
+         * stops covering the rows added after it was written.
+         *
+         * @return the citation rows, each of length four
+         */
+        private List<String[]> citationTable() {
             // The replacement for a line locator is only better if it is CHECKED. Each row carries four
             // fields: the citing file, the target file, the symbol AS CITED in prose, and the symbol AS
             // DECLARED in the target. The two spellings are separate on purpose. Prose says
@@ -836,7 +853,7 @@ final class SourceCitationResolutionTest {
             // the check passed, which is why the declaration form carries its `=` or `()` and is matched in
             // full. A rename in either direction now fails: the declaration must exist in the target, and
             // the citing file must still make the citation, so the table cannot rot while quietly passing.
-            final List<String[]> citations = List.of(
+            return List.of(
                     new String[] {"src/main/resources/application.yml", "localstack-init/init-aws.sh",
                                   "readonly INPUT_BUCKET", "readonly INPUT_BUCKET="},
                     new String[] {"src/main/resources/application.yml", "localstack-init/init-aws.sh",
@@ -913,6 +930,13 @@ final class SourceCitationResolutionTest {
                     new String[] {"docs/validation-gates.md", "pom.xml",
                                   "<arg>-Werror</arg>", "<arg>-Werror</arg>"},
                     new String[] {"docs/validation-gates.md", ".gitignore", "/target/", "/target/"},
+                    // The H-6 residual-risk row names the test that pins its two figures. Without this
+                    // row the citation would be the very thing the form rule exists to prevent: a
+                    // pointer that reads as evidence and rots silently on the next rename.
+                    new String[] {"docs/validation-gates.md",
+                                  "src/test/java/com/cardemo/unit/config/SecurityConfigTest.java",
+                                  "thePublishedUnscopedOperationFigureAgreesWithTheCensus",
+                                  "void thePublishedUnscopedOperationFigureAgreesWithTheCensus("},
                     new String[] {"docs/technical-specifications.md", "pom.xml",
                                   "spring-framework.version", "<spring-framework.version>"},
                     new String[] {"docs/technical-specifications.md", "pom.xml",
@@ -1014,6 +1038,12 @@ final class SourceCitationResolutionTest {
                     new String[] {"src/test/java/com/cardemo/unit/model/TransactionCategoryBalanceIdTest.java",
                                   "src/main/resources/db/migration/V1__create_schema.sql",
                                   "fk08_tcatbal_category", "CONSTRAINT fk08_tcatbal_category"});
+        }
+
+        @Test
+        @DisplayName("every symbol the citations name resolves in the file it names")
+        void everyCitedSymbolResolves() {
+            final List<String[]> citations = citationTable();
 
             final List<String> offenders = new ArrayList<>();
             for (final String[] citation : citations) {
@@ -1033,6 +1063,115 @@ final class SourceCitationResolutionTest {
             assertThat(offenders)
                     .as("""
                             A symbol citation is only an improvement on a line locator while it still                             resolves. Either the target renamed the symbol - update both - or the citation                             was reworded, in which case this table should lose the row.""")
+                    .isEmpty();
+        }
+
+        /**
+         * Every target the table reads has to be reachable inside the image build, not only on the host.
+         *
+         * <p><strong>Why this exists.</strong> {@link #everyCitedSymbolResolves()} reads each target file
+         * directly and throws {@code UncheckedIOException} when one is missing. On the host every target is
+         * present, so the test is green; inside the builder stage the repository is a CURATED subset, and a
+         * target the Dockerfile never copies makes the same test error - failing {@code docker compose up
+         * --build}, the first command a new operator runs, on a defect that exists only in the build context.
+         *
+         * <p>That is not hypothetical. Three rows - the ones naming {@code .gitignore},
+         * {@code .gitattributes} and {@code .editorconfig} - did exactly this: the suite passed on the host
+         * while the image build errored with {@code Cannot read /workspace/.gitignore}. The remedy was to
+         * carry the three files, because they are already in the build context, their sibling
+         * {@code .env.example} was already copied, and all three are artefacts this project authors and this
+         * tier asserts on: their omission was a gap in the COPY curation rather than a scope decision.
+         *
+         * <p>Carrying them fixes the three rows that existed. This test is what stops the fourth. It reads
+         * the same {@link #citationTable()} the assertion above reads, so a row added later is covered
+         * automatically, and it fails in milliseconds on a developer's machine instead of ten minutes into an
+         * image build.
+         *
+         * <p>Two ways a target can be unreachable are both checked, because only the first is obvious. It can
+         * be absent from the {@code COPY} set, which is what the three files were; or it can be inside a tree
+         * {@code .dockerignore} PRUNES, which would make a row naming {@code app/data/EBCDIC} or
+         * {@code samples} fail even though {@code app/} itself is copied wholesale.
+         */
+        @Test
+        @DisplayName("every target the citation table reads is carried into the image build, not just the host")
+        void everyCitedTargetIsCarriedIntoTheImageBuild() {
+            // What the builder stage receives. Every COPY that is not --from= names context paths, with the
+            // last token the destination; a trailing slash is dropped so `COPY src/ src/` registers as `src`.
+            final Set<String> carried = new TreeSet<>();
+            for (final String line : readLines(ROOT.resolve("Dockerfile"))) {
+                final String statement = line.strip();
+                if (!statement.startsWith("COPY ") || statement.contains("--from=")) {
+                    continue;
+                }
+                final String[] tokens = statement.substring("COPY ".length()).strip().split("\\s+");
+                for (int index = 0; index < tokens.length - 1; index++) {
+                    final String token = tokens[index];
+                    carried.add(token.endsWith("/") ? token.substring(0, token.length() - 1) : token);
+                }
+            }
+            // The last two entries are this test's OWN reads, and they are asserted for a reason: the guard
+            // reads the Dockerfile and .dockerignore, so it is itself subject to the rule it enforces. It
+            // proved that the hard way - written without .dockerignore copied, it errored inside the very
+            // image build it exists to protect. Pinning both here closes the recursion at no cost.
+            assertThat(carried)
+                    .as("""
+                        the Dockerfile COPY parse has to find the builder stage's inputs or this test proves \
+                        nothing at all - and the last two are the files this test reads, so without them it \
+                        cannot run in the build stage it is guarding. If the build stage stops copying any of \
+                        these, that is the change to examine, not this assertion.""")
+                    .contains("src", "pom.xml", "app", "Dockerfile", ".dockerignore");
+
+            // What .dockerignore prunes back out of it. Only literal directory patterns are read: a wildcard
+            // rule targets build output and editor droppings, never a citation target. The one negation the
+            // file carries is honoured, or .env.example would read as pruned by the .env rule above it.
+            final Set<String> pruned = new TreeSet<>();
+            final Set<String> readmitted = new TreeSet<>();
+            for (final String line : readLines(ROOT.resolve(".dockerignore"))) {
+                final String pattern = line.strip();
+                if (pattern.isEmpty() || pattern.startsWith("#")) {
+                    continue;
+                }
+                if (pattern.startsWith("!")) {
+                    readmitted.add(pattern.substring(1));
+                } else if (!pattern.contains("*")) {
+                    pruned.add(pattern);
+                }
+            }
+            assertThat(pruned)
+                    .as("the prune parse must find the two scope exclusions, or its half of this test is inert")
+                    .contains("samples", "app/data/EBCDIC");
+
+            final List<String> unreachable = new ArrayList<>();
+            for (final String[] row : citationTable()) {
+                final String citing = row[0];
+                final String target = row[1];
+                final String top = target.contains("/") ? target.substring(0, target.indexOf('/')) : target;
+
+                if (!carried.contains(target) && !carried.contains(top)) {
+                    unreachable.add(target + " is read by this table but no COPY carries it into the build "
+                            + "stage (cited by " + citing + ")");
+                    continue;
+                }
+                if (readmitted.contains(target)) {
+                    continue;
+                }
+                pruned.stream()
+                        .filter(prefix -> target.equals(prefix) || target.startsWith(prefix + "/"))
+                        .findFirst()
+                        .ifPresent(prefix -> unreachable.add(target + " is read by this table but "
+                                + ".dockerignore prunes [" + prefix + "] from the build context (cited by "
+                                + citing + ")"));
+            }
+
+            assertThat(unreachable)
+                    .as("""
+                        Each entry is a file this table READS that the image build does not have, so \
+                        `docker compose up --build` fails on it while the host run passes - the exact defect \
+                        this test was added to stop recurring. Fix it by carrying the file in the Dockerfile \
+                        when it is in-scope material already in the context, which is what the three \
+                        convention files needed. Do NOT fix it by exempting the row: an exemption is surface \
+                        that can later be borrowed to hide a genuinely broken citation. If the target is \
+                        out-of-scope material the context prunes deliberately, the row itself is wrong.""")
                     .isEmpty();
         }
 

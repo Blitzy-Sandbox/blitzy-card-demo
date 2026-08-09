@@ -84,6 +84,7 @@ import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
+import com.cardemo.observability.BatchJobSpanNamingConvention;
 import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
@@ -620,13 +621,19 @@ public class CombineTransactionsJob {
      *
      * <p><b>The {@code generation=} segment and the fixed terminal name are both load-bearing; neither is
      * decoration.</b> {@link com.cardemo.batch.jobs.TransactionReportJob} already writes this base with
-     * {@code <prefix>/generation=<19-digit>/TRANSACT.BKUP}, and
+     * {@code <prefix>/generation=<19-digit>/TRANSACT.BKUP}, and when no producer pinned a generation
      * {@link CombinedTransactionReader} resolves {@code (0)} by taking the lexicographically greatest
      * <em>generation segment</em>. A bare numeric segment would sort <b>below</b> every
      * {@code generation=...} segment, because {@code '0'} precedes {@code 'g'} - so an archive written under
      * one would never be resolved as the current generation while any report-branch backup existed, and the
      * combine would silently sort last run's master instead of this run's. The two producers of this base
      * must therefore share one convention.
+     *
+     * <p>The shared convention remains necessary even though this step now pins the generation it wrote
+     * through {@link #BACKUP_OBJECT_KEY_CONTEXT_ENTRY}: a standalone combine, which is what
+     * {@value #JOB_PARAMETER_ARCHIVE_MASTER} defaults to, has nothing to inherit and still resolves
+     * {@code (0)} by listing. Pinning removes the race on the handoff path; the convention is what keeps the
+     * unpinned path correct.
      *
      * <p>The terminal name is fixed rather than carrying the step execution, so a restarted archive
      * <b>replaces</b> its own object instead of adding a second one to the same generation - which
@@ -639,8 +646,22 @@ public class CombineTransactionsJob {
     /** Rows read per page while archiving, so the whole relation is never resident. */
     private static final int ARCHIVE_PAGE_SIZE = 1_000;
 
-    /** Job execution context entry carrying the archive object key this run created. */
-    public static final String BACKUP_OBJECT_KEY_CONTEXT_ENTRY = "carddemo.gdg.transact-bkup.createdKey";
+    /**
+     * Job execution context entry carrying the archive object key this run created.
+     *
+     * <p><b>This entry is a contract with {@link CombinedTransactionReader}, not a diagnostic, and the
+     * spelling has exactly one definition - the consumer's.</b> Publishing it is what stops the following
+     * sort step from re-deriving {@code TRANSACT.BKUP(0)} by listing, which is latest-wins and therefore
+     * reads any newer generation that appeared since this step ran - including the one a concurrent report
+     * branch or a second deployment sharing the output bucket wrote, and including the zero-length generation
+     * an empty archive leaves behind. The measured consequence of the unpinned resolution was a
+     * {@code COMPLETED} run, return code 0, that silently discarded all 262 transactions its own archive step
+     * had just written. See {@link CombinedTransactionReader#BACKUP_GENERATION_CONTEXT_ENTRY} for the
+     * consumer's side of the contract and for why the entry carries a concrete key that the reader narrows to
+     * its generation.
+     */
+    public static final String BACKUP_OBJECT_KEY_CONTEXT_ENTRY =
+            CombinedTransactionReader.BACKUP_GENERATION_CONTEXT_ENTRY;
 
     /** Job execution context entry carrying how many records the archive holds. */
     public static final String BACKUP_RECORD_COUNT_CONTEXT_ENTRY =
@@ -760,6 +781,27 @@ public class CombineTransactionsJob {
 
     /** Exit code of an abended step or flow: return code 12. */
     private static final String EXIT_CODE_ABEND = "ABEND";
+
+    /**
+     * Exit status published on the job when an abend was recorded, naming the abend code and the return code.
+     *
+     * <p><b>Finding B-13, severity Minor.</b> This job used to report an ordinary
+     * {@code FAILED} with an <em>empty</em> exit description for every fatal path - a missing
+     * {@code SYSTRAN} generation, an object store that refused a read, a numeric field that would not decode -
+     * so an operator reading the batch metadata could not tell return code 8 from return code 12 without
+     * descending into {@code BATCH_STEP_EXECUTION}. The same {@link FatalProcessingException} raised inside
+     * {@code POSTTRAN} or {@code INTCALC} surfaced as {@code ABEND} with a message, because both of those jobs
+     * publish this status from their own listeners. The vocabulary is now uniform across all four.
+     *
+     * <p>The text is composed from {@link FatalProcessingException}'s own constants rather than written out,
+     * so the abend code and the return code have one definition and this job cannot drift from the other
+     * three. {@code app/cbl/CBTRN02C.cbl:L710} is where 999 comes from; the conventional return code 12 is
+     * the language environment's consequence of {@code CALL 'CEE3ABD'} and is asserted rather than cited,
+     * because no {@code MOVE 12 TO RETURN-CODE} exists in the corpus.
+     */
+    private static final ExitStatus ABEND_EXIT_STATUS = new ExitStatus(EXIT_CODE_ABEND,
+            "abend code " + FatalProcessingException.BATCH_ABEND_CODE
+                    + ", return code " + FatalProcessingException.BATCH_RETURN_CODE);
 
     /** The Spring Batch wildcard transition pattern. */
     private static final String EXIT_CODE_ANY = "*";
@@ -1099,7 +1141,9 @@ public class CombineTransactionsJob {
         return new FlowBuilder<SimpleFlow>(FLOW_BEAN_NAME)
                 // app/jcl/TRANBKP.jcl precedes the member this job replaces, and its failure arms mirror the
                 // sort's: only a failure or an abend diverts, because an archive that did not complete must
-                // not be followed by a load into a relation whose emptying is now in doubt.
+                // not be followed by a load whose SORTIN leg is the generation it was supposed to write. The
+                // emptying is NOT here to be diverted around - it belongs to the load's transaction, so a
+                // diverted sort or a failed load leaves the master populated rather than half-reset.
                 .start(archiveStep).on(EXIT_CODE_FAILED).to(returnCodeDecider)
                 .from(archiveStep).on(EXIT_CODE_ABEND).to(returnCodeDecider)
                 .from(archiveStep).on(EXIT_CODE_ANY).to(sortStep)
@@ -1138,6 +1182,12 @@ public class CombineTransactionsJob {
             @Qualifier(FLOW_BEAN_NAME) final Flow combineTransactionsFlow) {
 
         return new JobBuilder(jobName, jobRepository)
+                // Finding B-12: without this the framework hands the ALL-CAPS job name to
+                // Micrometer Tracing, whose SpanNameUtil.toLowerHyphen hyphenates every
+                // upper-case character, so the run reached the trace store under a name no
+                // operator could search for. Registered per builder because Spring Batch
+                // resolves no convention bean from the context.
+                .observationConvention(BatchJobSpanNamingConvention.INSTANCE)
                 .listener(new CombineTransactionsJobListener())
                 .start(combineTransactionsFlow)
                 .end()
@@ -1157,7 +1207,7 @@ public class CombineTransactionsJob {
     }
 
     /**
-     * Archives the transaction relation to {@code TRANSACT.BKUP(+1)} and then empties it.
+     * Archives the transaction relation to {@code TRANSACT.BKUP(+1)}.
      *
      * <p>A no-operation unless {@value #JOB_PARAMETER_ARCHIVE_MASTER} is {@code true}. The parameter is read
      * from the job rather than a property because it is a per-run instruction from the stream, not a
@@ -1166,6 +1216,17 @@ public class CombineTransactionsJob {
      * <p>An empty relation still writes its generation. A zero-length object is how an empty dataset is
      * expressed - the generation exists and holds nothing - and suppressing it would make the following
      * {@code SORTIN} leg absent rather than empty, which are different states the reader distinguishes.
+     *
+     * <p><b>This step archives and does not empty.</b> {@code app/jcl/TRANBKP.jcl} both backs the cluster up
+     * and re-defines it, but the emptying belongs to the load's unit of work and is performed at the head of
+     * {@link #executeStep10(StepExecution, TransactionCombineProcessor)} instead. It was performed here, and
+     * that was a data-loss defect: Spring Batch commits every step separately, so the emptying was durable
+     * before the load ran and a single duplicate identifier in the combined generation left the transaction
+     * master permanently empty - with the account balances still carrying the effect of the very rows that had
+     * disappeared. Moving it is what makes {@code app/jcl/COMBTRAN.jcl:L48}'s load atomic with the reset it
+     * depends on, which is the write atomicity the modular monolith is justified on. It also removes a second
+     * hazard: the sort's first {@code SORTIN} leg can be configured to read the relation rather than the
+     * generation object, and emptying here made that leg read nothing at all.
      *
      * @param stepExecution the running step, whose context receives the created key
      */
@@ -1202,22 +1263,18 @@ public class CombineTransactionsJob {
         guardObjectOperation(ioStatus, DD_TRANSACT_BKUP, OPERATION_WRITE,
                 MSG_ERROR_WRITING_BACKUP, REASON_BACKUP_WRITE_FAILED, failure);
 
-        // Only now is the relation emptied. app/jcl/TRANBKP.jcl:L37-L45 deletes the cluster and :L51-L67
-        // defines it again; relationally that is one statement, and the schema stays where it belongs, in the
-        // Flyway migrations. The DELETE tolerating a not-found cluster has no analogue: a table that is
-        // already empty simply removes no rows.
-        final int removed = jdbcTemplate.update("DELETE FROM \"transaction\"");
-
         stepExecution.getExecutionContext().putString(BACKUP_OBJECT_KEY_CONTEXT_ENTRY, objectKey);
         stepExecution.getExecutionContext().putLong(BACKUP_RECORD_COUNT_CONTEXT_ENTRY, rowCount);
         final ExecutionContext jobContext = jobExecution.getExecutionContext();
         jobContext.putString(BACKUP_OBJECT_KEY_CONTEXT_ENTRY, objectKey);
         jobContext.putLong(BACKUP_RECORD_COUNT_CONTEXT_ENTRY, rowCount);
 
-        LOG.info("{} archived {} records ({} bytes) and emptied the transaction relation, removing {} rows;"
-                        + " app/jcl/COMBTRAN.jcl:L48 now loads into an empty target, which is what makes the"
-                        + " daily stream repeatable", DD_TRANSACT_BKUP, Long.valueOf(rowCount),
-                Long.valueOf(expectedBytes), Integer.valueOf(removed));
+        LOG.info("{} archived {} records ({} bytes) into generation '{}'; the relation is emptied by the"
+                        + " load step, inside the same transaction as app/jcl/COMBTRAN.jcl:L48's insert, so a"
+                        + " load that fails leaves the master exactly as this generation found it. The key is"
+                        + " published under {} so the following SORTIN reads this generation rather than"
+                        + " re-deriving (0) by listing.", DD_TRANSACT_BKUP, Long.valueOf(rowCount),
+                Long.valueOf(expectedBytes), objectKey, BACKUP_OBJECT_KEY_CONTEXT_ENTRY);
     }
 
     /**
@@ -1482,6 +1539,12 @@ public class CombineTransactionsJob {
      * step created, and re-resolving the latest generation here would let a concurrent writer's object be
      * loaded instead.
      *
+     * <p><b>The relation is emptied here, not in the archive step.</b> When the run was instructed to archive
+     * and reset, {@link #emptyMasterForReload(StepExecution)} runs immediately before the first insert so the
+     * emptying and the load are one unit of work; that method records why no other placement is both correctly
+     * ordered and atomic. A load that fails therefore leaves the master exactly as it was, which is the
+     * behaviour a run without the instruction has always had.
+     *
      * <p>Records are loaded in batches of {@link #chunkSize} through
      * {@link JdbcTemplate#batchUpdate(String, List)}. On a store failure the offending record is identified
      * from the driver's own update counts and handed to
@@ -1501,6 +1564,8 @@ public class CombineTransactionsJob {
 
         // :L43-L44 - the exact generation STEP05R created, never a re-resolved "latest".
         final String objectKey = requirePublishedGenerationKey(stepExecution);
+
+        emptyMasterForReload(stepExecution);
 
         // REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM) - app/jcl/COMBTRAN.jcl:L48 - streamed rather than
         // materialised. Downloading the whole generation with readAllBytes(), copying it
@@ -1570,6 +1635,48 @@ public class CombineTransactionsJob {
         publishLoadedRecordCount(stepExecution, loaded);
         LOG.info("{} loaded {} records from {} into the transaction relation", DD_TRANVSAM,
                 Integer.valueOf(loaded), objectKey);
+    }
+
+    /**
+     * Empties the transaction relation so {@code app/jcl/COMBTRAN.jcl:L48} loads into an empty target.
+     *
+     * <p>{@code app/jcl/TRANBKP.jcl:L37-L45} deletes the cluster and {@code :L51-L67} defines it again;
+     * relationally that is one statement, and the schema stays where it belongs, in the Flyway migrations. The
+     * {@code DELETE} tolerating a not-found cluster has no analogue: a table that is already empty simply
+     * removes no rows.
+     *
+     * <p>A no-operation unless {@value #JOB_PARAMETER_ARCHIVE_MASTER} instructed the archive and reset, which
+     * is why the instruction is read here as well as in {@link #executeTranbkp(StepExecution)}: the two halves
+     * of that member are performed in two different steps and each must consult the same per-run instruction
+     * rather than infer it from the other's side effects.
+     *
+     * <p><b>Called from the load and not from the archive, and that placement is the whole of the fix.</b>
+     * {@code combineTransactionsLoadTasklet} returns {@link RepeatStatus#FINISHED} after a single
+     * {@code execute}, so this statement and every {@link JdbcTemplate#batchUpdate(String, List)} that follows
+     * it share <b>one</b> transaction: a duplicate identifier in the combined generation now rolls the
+     * emptying back with the inserts, and the master is left exactly as the archive found it. Performed in the
+     * archive step it was durable before the load ran - Spring Batch commits each step separately - so one
+     * duplicate key emptied the transaction master permanently while every account balance kept the effect of
+     * the rows that had vanished, and every online transaction list and detail read returned nothing until an
+     * operator restored the backup generation by hand.
+     *
+     * <p>It cannot instead be sequenced <em>after</em> the load. The sort's first {@code SORTIN} leg is
+     * {@code TRANSACT.BKUP(0)} - the very generation the archive step writes - so the archive must precede the
+     * sort, and the load re-inserts the rows that generation holds, so the emptying must precede the load or
+     * every one of them collides with itself. Between the two, inside the load's unit of work, is the only
+     * placement that is both ordered correctly and atomic.
+     *
+     * @param stepExecution the running step, carrying the job parameters the instruction is read from
+     */
+    private void emptyMasterForReload(final StepExecution stepExecution) {
+        if (!archiveInstructed(stepExecution.getJobExecution())) {
+            return;
+        }
+
+        final int removed = jdbcTemplate.update("DELETE FROM \"transaction\"");
+        LOG.info("{} emptied the transaction relation, removing {} rows, inside the load's transaction;"
+                        + " app/jcl/COMBTRAN.jcl:L48 now loads into an empty target, which is what makes the"
+                        + " daily stream repeatable", DD_TRANSACT_BKUP, Integer.valueOf(removed));
     }
 
     /**
@@ -2389,6 +2496,16 @@ public class CombineTransactionsJob {
         public FlowExecutionStatus decide(
                 final JobExecution jobExecution, final StepExecution stepExecution) {
 
+            // FINDING B-13, severity Minor. An abend is classified before any exit code is consulted,
+            // because a step that raised a FatalProcessingException ends with the FAILED exit code like any
+            // other failure - the exception is what distinguishes return code 12 from return code 8, and the
+            // exit code alone cannot. Without this the decider reported FAILED for every fatal path, so
+            // COMBTRAN was the only job in the tree whose abends were invisible at job level while the
+            // orchestrated pipeline, which scans the same failures itself, correctly raised the stage to 12.
+            if (containsAbend(jobExecution, stepExecution)) {
+                return new FlowExecutionStatus(EXIT_CODE_ABEND);
+            }
+
             final ExitStatus exitStatus = stepExecution == null
                     ? jobExecution.getExitStatus()
                     : stepExecution.getExitStatus();
@@ -2407,6 +2524,58 @@ public class CombineTransactionsJob {
                     + " letting it fall through to success", DEFAULT_JOB_NAME, exitCode);
             return new FlowExecutionStatus(EXIT_CODE_ABEND);
         }
+    }
+
+    /**
+     * Publishes the abend exit status when an abend is among the recorded failures.
+     *
+     * <p>Finding B-13. Applied from the job listener rather than only from the decider, because a
+     * {@link FatalProcessingException} raised before the flow is entered - the sort step's reader failing at
+     * open, say - never reaches the decider at all, and because the flow's {@code .fail()} transition
+     * publishes {@code FAILED} on the job whatever the decider said. Setting it here is effective
+     * because Spring Batch persists the execution after
+     * {@link JobExecutionListener#afterJob(JobExecution)} returns.
+     *
+     * @param jobExecution the finishing execution
+     */
+    private static void applyAbendExitStatus(final JobExecution jobExecution) {
+        for (final Throwable failure : jobExecution.getAllFailureExceptions()) {
+            if (failure instanceof FatalProcessingException) {
+                jobExecution.setExitStatus(ABEND_EXIT_STATUS);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Reports whether an abend is among the failures recorded against the execution or the step.
+     *
+     * <p>Finding B-13. Both are inspected because Spring Batch records a step's failure on the step and,
+     * depending on how the failure propagated, may or may not also record it on the job. The same pair is
+     * what {@code BatchPipelineOrchestrator} scans when it raises a stage's return code to 12, so the
+     * standalone job and the orchestrated stage now classify the same evidence the same way.
+     *
+     * @param jobExecution the running execution
+     * @param stepExecution the step that has just finished; may be {@code null} after a flow transition
+     * @return {@code true} when a {@link FatalProcessingException} appears among either set of failures
+     */
+    private static boolean containsAbend(final JobExecution jobExecution,
+            final StepExecution stepExecution) {
+
+        for (final Throwable failure : jobExecution.getAllFailureExceptions()) {
+            if (failure instanceof FatalProcessingException) {
+                return true;
+            }
+        }
+        if (stepExecution == null) {
+            return false;
+        }
+        for (final Throwable failure : stepExecution.getFailureExceptions()) {
+            if (failure instanceof FatalProcessingException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2480,6 +2649,10 @@ public class CombineTransactionsJob {
         @Override
         public void afterJob(final JobExecution jobExecution) {
             try {
+                // Finding B-13. Applied BEFORE the end-of-run line, so the status the log reports is the
+                // status the batch repository will hold. Spring Batch persists the execution after this
+                // method returns, which is what makes setting it here effective at all.
+                applyAbendExitStatus(jobExecution);
                 LOG.info("END OF EXECUTION OF app/jcl/COMBTRAN.jcl with exit status {}",
                         jobExecution.getExitStatus());
             } finally {

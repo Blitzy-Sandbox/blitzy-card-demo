@@ -53,6 +53,9 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
 /**
  * The whole batch stream, run once, to a successful end - every sequential stage completed and both branches of
  * the parallel split completed.
@@ -271,9 +274,10 @@ class SuccessfulPipelineRunTest extends AbstractBatchIntegrationTest {
     private final String endDateParameter = "endDate";
 
     // =================================================================================================
-    // The one test. One launch, because the stream declares no incrementer: relaunching with unchanged
-    // parameters is refused by the job repository, deliberately, so that a repeated post surfaces rather
-    // than being absorbed. Every assertion below reads that single execution.
+    // The tests. One launch each, and each launch carries its own run identifier because the stream
+    // declares no incrementer: relaunching with unchanged parameters is refused by the job repository,
+    // deliberately, so that a repeated post surfaces rather than being absorbed. Every assertion in a test
+    // reads that test's own single execution.
     // =================================================================================================
 
     /**
@@ -600,5 +604,145 @@ class SuccessfulPipelineRunTest extends AbstractBatchIntegrationTest {
         assertThat(reloaded.getExitStatus().getExitCode())
                 .as("and the same exit code")
                 .isEqualTo(exitCodeCompletedWithRejects);
+    }
+
+    /**
+     * Every gate reports the stage's own return code and the pipeline aggregate as two distinct values.
+     *
+     * <p><b>Purpose.</b> Close QA finding B-11. The gate deliberately <em>decides</em> on the monotonic
+     * aggregate, and must keep doing so, but it used to <em>report</em> that aggregate as though the stage it
+     * is named after had produced it. On this fixture that told an operator that {@code INTCALC},
+     * {@code COMBTRAN}, {@code CREASTMT} and {@code TRANREPT} had produced rejects, when only
+     * {@code POSTTRAN} has a reject concept at all ({@code app/cbl/CBTRN02C.cbl:L229-L231}), and it
+     * contradicted the {@code END OF PIPELINE STAGE} line printed moments earlier on the same thread.
+     *
+     * <p><b>Inputs.</b> One pipeline launch on the seeded fixture, whose stage 1 rejects records so the
+     * aggregate becomes 4 while every later stage records 0 - the exact shape that made the two lines
+     * disagree. <b>Output:</b> none. <b>Side effects:</b> one committed pipeline run; a Logback appender is
+     * attached to the orchestrator's logger for the duration and always detached.
+     *
+     * <p><b>What is asserted.</b> Not a fixed sentence, but agreement: each gate's reported stage return code
+     * is compared with the code that stage actually recorded in the execution context, and with the code its
+     * own stage line printed. So the assertion cannot be satisfied by re-hardcoding the aggregate, and it
+     * stays valid if the fixture's reject count ever changes.
+     *
+     * <p><b>Error modes.</b> A missing gate line fails on the extraction with the captured lines in the
+     * message. A gate that still quotes the aggregate fails on the stage whose recorded code differs from the
+     * aggregate - {@code INTCALC} is the first such stage - rather than on stage 1, where the two values
+     * legitimately coincide.
+     */
+    @Test
+    @DisplayName("each gate reports the stage's own return code and the pipeline aggregate as distinct values")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void eachGateAttributesEachReturnCodeToWhatItDescribes() {
+        final ch.qos.logback.classic.Logger orchestratorLog = (ch.qos.logback.classic.Logger)
+                LoggerFactory.getLogger("com.cardemo.batch.jobs.BatchPipelineOrchestrator");
+        final ListAppender<ILoggingEvent> captured = new ListAppender<>();
+        captured.setContext(orchestratorLog.getLoggerContext());
+        captured.start();
+        orchestratorLog.addAppender(captured);
+
+        final JobExecution pipeline;
+        final List<String> lines;
+        try {
+            pipeline = launchJob(batchPipelineJob, runIdParameters(pipelineParameters()));
+            lines = captured.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        } finally {
+            orchestratorLog.detachAppender(captured);
+            captured.stop();
+        }
+
+        assertThat(pipeline.getStatus())
+                .as("the run this test reads must have finished, or the log it inspects is a partial one")
+                .isEqualTo(BatchStatus.COMPLETED);
+        assertThat(contextInt(pipeline, aggregateReturnCodeEntry))
+                .as("this test is only meaningful when the aggregate differs from a later stage's own code, "
+                        + "which on this fixture means stage 1 rejected records and the aggregate is 4")
+                .isEqualTo(returnCodeCompletedWithRejects);
+
+        final String aggregateReported = " and pipeline aggregate return code "
+                + contextInt(pipeline, aggregateReturnCodeEntry) + ",";
+
+        final Map<String, String> sequentialStages = new TreeMap<>();
+        sequentialStages.put("POSTTRAN", postTranInfix);
+        sequentialStages.put("INTCALC", intCalcInfix);
+        sequentialStages.put("COMBTRAN", combTranInfix);
+
+        for (final Map.Entry<String, String> stage : sequentialStages.entrySet()) {
+            final String gateLine = gateLineAfter(lines, stage.getKey());
+            final int recorded = stageReturnCode(pipeline, stage.getValue());
+
+            assertThat(gateLine)
+                    .as("the gate after %s must quote %s's own recorded return code (%s), not the pipeline "
+                            + "aggregate. Line: %s", stage.getKey(), stage.getKey(),
+                            Integer.valueOf(recorded), gateLine)
+                    .contains("read stage return code " + recorded + " and pipeline aggregate");
+            assertThat(gateLine)
+                    .as("and must still report the aggregate it decided on, separately labelled, because the "
+                            + "decision remains the aggregate. Line: %s", gateLine)
+                    .contains(aggregateReported);
+            assertThat(stageLineReturnCode(lines, stage.getKey()))
+                    .as("the stage line and the gate line must agree about %s - two contradictory numbers on "
+                            + "the same thread was the finding", stage.getKey())
+                    .isEqualTo(recorded);
+        }
+
+        final String splitGateLine = gateLineAfter(lines, "CREASTMT || TRANREPT");
+        assertThat(splitGateLine)
+                .as("the gate after the split names both branches with their own codes rather than one "
+                        + "aggregated number. Line: %s", splitGateLine)
+                .contains("read stage return code CREASTMT=" + stageReturnCode(pipeline, creaStmtInfix)
+                        + ", TRANREPT=" + stageReturnCode(pipeline, tranReptInfix) + " and pipeline aggregate")
+                .contains(aggregateReported);
+
+        for (final String stageWithoutRejects : List.of("INTCALC", "COMBTRAN")) {
+            assertThat(gateLineAfter(lines, stageWithoutRejects))
+                    .as("%s has no reject concept, so its gate line must not report a non-zero stage return "
+                            + "code for it", stageWithoutRejects)
+                    .contains("read stage return code " + returnCodeCompleted + " and");
+        }
+    }
+
+    /**
+     * The one gate line the orchestrator logged after the named stage or stage pair.
+     *
+     * <p>Inputs: the captured lines and the stage label exactly as the gate spells it. Output: the line. Side
+     * effects: none.
+     *
+     * @param lines the captured formatted log messages; must not be {@code null}
+     * @param stageLabel the stage or stage pair the gate sits after; must not be {@code null}
+     * @return the matching line, never {@code null}
+     */
+    private String gateLineAfter(final List<String> lines, final String stageLabel) {
+        final String prefix = "Pipeline gate after " + stageLabel + " (";
+        final List<String> matches = lines.stream()
+                .filter(line -> line.startsWith(prefix))
+                .toList();
+        assertThat(matches)
+                .as("exactly one gate line must have been logged after %s. Captured: %s", stageLabel, lines)
+                .hasSize(1);
+        return matches.get(0);
+    }
+
+    /**
+     * The return code the {@code END OF PIPELINE STAGE} line reported for the named stage.
+     *
+     * <p>Inputs: the captured lines and the stage's display name. Output: the code the stage line printed.
+     * Side effects: none.
+     *
+     * @param lines the captured formatted log messages; must not be {@code null}
+     * @param stageName the stage's display name; must not be {@code null}
+     * @return the return code the stage line printed
+     */
+    private int stageLineReturnCode(final List<String> lines, final String stageName) {
+        final String prefix = "END OF PIPELINE STAGE " + stageName + " - return code ";
+        final List<String> matches = lines.stream()
+                .filter(line -> line.startsWith(prefix))
+                .toList();
+        assertThat(matches)
+                .as("exactly one stage line must have been logged for %s. Captured: %s", stageName, lines)
+                .hasSize(1);
+        final String tail = matches.get(0).substring(prefix.length());
+        return Integer.parseInt(tail.substring(0, tail.indexOf(',')));
     }
 }

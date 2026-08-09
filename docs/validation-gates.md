@@ -63,9 +63,14 @@ for those citations is `7756d895ffeb65f7ea72aaa609e356d9899afcec` (short `7756d8
 > **four** did. Both are **withdrawn**: neither is true of this tree, and leaving either would
 > understate what has been measured as badly as overstating would have flattered it. **All eight**
 > Results now report measurements in full: [Gate 8](#gate-8) was the last to carry outstanding
-> clauses, and both of them — the six-service topology brought up as a unit, and its convergence on
+> clauses, and both of them — the compose topology brought up as a unit, and its convergence on
 > a second `up` — were produced in this working tree at the commit under test rather than argued
-> away.
+> away. That topology is now **seven** services rather than six: a Prometheus Pushgateway was
+> added so that the three batch-fed counters have a collection path at all, and the reading below
+> was re-taken against the seven-service stack rather than inherited from the six-service one.
+> The reading was additionally re-taken once the image build stage could exit 0; the reading it
+> replaces is withdrawn, because it named a `--build` command that could not have returned what it
+> reported.
 >
 > **"Measured" is still not "passed", and the distinction is deliberate.** Every figure below
 > carries the command, the date, the commit and the exit code that produced it, and the artefacts
@@ -166,6 +171,7 @@ Two qualifications on C1 matter, and neither is cosmetic:
   scan, so none of them can be green while another was never run. Re-derive it with
   `grep -n 'dependency-check.skip' .github/workflows/build.yml` — an empty result is the
   confirmation.
+
 * **The end-to-end tier is bound to Failsafe, not Surefire.** `pom.xml` gives Failsafe
   the includes `**/integration/**/*Test.java` and `**/e2e/**/*Test.java`, so a `test`
   goal alone never runs the harness. A gate claim resting on `./mvnw test` is
@@ -485,13 +491,13 @@ skips**, so the vulnerability scan is a result rather than an omission.
 
 | Item | Value |
 |---|---|
-| Commit under test | `9702da58730d31f7714b97d1fe9c5304c97c362c` (`9702da58`) — **the parent of the revision that publishes this row.** A document cannot cite the name of the commit that contains it: writing the stamp changes the tree, so a self-citation is unsatisfiable by any commit, which is why the parent is named and the child is described. The figures in this table were measured on the publishing revision's own tree — that parent plus the changes this revision records — with the working tree clean at launch and still clean when the run finished. **What pins the identity of the tree actually measured is the runtime marker rather than this cell:** `target/gate-verification/gate-verification-evidence.properties` records `gate.harness.commit`, read from git at the instant the harness writes it, and `.github/workflows/build.yml` reports a Blocker when it differs from the commit the job checked out. That is where commit identity is genuinely enforceable, and it is why no short internal object name is quoted here — two earlier revisions did quote one, `4a4ad1c9` and then `fbe63a90`, and neither resolves in this repository's published history, which is the defect this ledger records as `R-003`. Reproduce with `./mvnw -B -ntp clean verify` from the repository root, then compare `git rev-parse HEAD` against that marker |
+| Commit under test | `faf8dc78be8309cb6a972772624934086d9cecaa` (`faf8dc78`) — **the parent of the revision that publishes this row.** A document cannot cite the name of the commit that contains it: writing the stamp changes the tree, so a self-citation is unsatisfiable by any commit, which is why the parent is named and the child is described. The figures in this table were measured on the publishing revision's own tree — that parent plus the changes this revision records — with the working tree clean at launch and still clean when the run finished. **What pins the identity of the tree actually measured is the runtime marker rather than this cell:** `target/gate-verification/gate-verification-evidence.properties` records `gate.harness.commit`, read from git at the instant the harness writes it, and `.github/workflows/build.yml` reports a Blocker when it differs from the commit the job checked out. That is where commit identity is genuinely enforceable, and it is why no short internal object name is quoted here — two earlier revisions did quote one, `4a4ad1c9` and then `fbe63a90`, and neither resolves in this repository's published history, which is the defect this ledger records as `R-003`. Reproduce with `./mvnw -B -ntp clean verify` from the repository root, then compare `git rev-parse HEAD` against that marker |
 | Command | `./mvnw -B -ntp clean verify` |
 | Skips applied | **None.** No `-Ddependency-check.skip`, no `-Dtest` or `-Dit.test` narrowing, no coverage override |
-| Started, finished | **2026-08-07T17:29:14Z**, **2026-08-07T17:39:14Z** — Maven's own `Finished at: 2026-08-07T17:39:14Z`, total **09:58 min** |
+| Started, finished | **2026-08-09T09:38:43Z**, **2026-08-09T09:50:02Z** — Maven's own `Finished at: 2026-08-09T09:50:02Z`, total **11:19 min** |
 | Exit code | **0**, `BUILD SUCCESS` |
 | Toolchain | JDK 25.0.3 (Temurin-25.0.3+9), Maven 3.9.11, PostgreSQL 16 by digest, LocalStack 4.14.0 |
-| Compiler warnings | **0** under `-Xlint:all -Werror`. **No `[WARNING]` line in a nine-minute log comes from the compiler.** The run named above emitted exactly **one**, from the vulnerability-scan plugin: the sub-threshold finding below. A run whose plugin also refreshes its feed emits a second line advising that no NVD API key was supplied, so the line count varies between runs while the compiler count does not — which is why the figure asserted here is the compiler count, not the line count |
+| Compiler warnings | **0** under `-Xlint:all -Werror`. **No `[WARNING]` line in a fifteen-minute log comes from the compiler.** The run named above emitted exactly **one**, from the vulnerability-scan plugin: the banner line that opens its findings summary for the sub-threshold advisory below. The line count varies between runs — a plugin that refreshes its feed adds a second, advising that no NVD API key was supplied, and this run did not refresh — while the compiler count does not — which is why the figure asserted here is the compiler count, not the line count |
 | Doclint | **0 errors** — `javadoc:javadoc-no-fork@doclint-gate` ran inside this same invocation |
 
 **Suites and cases, counted from `testcase` elements.** The count comes from the elements
@@ -502,37 +508,125 @@ everything as one that ran nothing.
 
 | Tier | Suites | Cases | Failures | Errors | Skipped |
 |---|---:|---:|---:|---:|---:|
-| Unit — Surefire | 209 | **14,914** | 0 | 0 | 0 |
-| Integration — Failsafe | 35 | 799 | 0 | 0 | 0 |
-| End-to-end — Failsafe | 3 | 107 | 0 | 0 | 0 |
-| **Failsafe total** | **38** | **907** | **0** | **0** | **0** |
-| of which the gate harness | 1 | **58** | 0 | 0 | 0 |
+| Unit — Surefire | 212 | **15,092** | 0 | 0 | 0 |
+| Integration — Failsafe | 35 | 804 | 0 | 0 | 0 |
+| End-to-end — Failsafe | 3 | 115 | 0 | 0 | 0 |
+| **Failsafe total** | **38** | **919** | **0** | **0** | **0** |
+| of which the gate harness | 1 | **64** | 0 | 0 | 0 |
+
+**Every figure in that table is now reconciled by an assertion, and it is worth saying what
+it took, because a reading of this table had gone wrong in the cheapest possible way: it
+published an end-to-end total of 107 against an integration total of 799 and a Failsafe
+total of 907, so its own two tier rows summed to 906 and the table did not add up to
+itself.** Two fields disagreeing inside one table is the easiest error there is to catch and
+nothing was catching it, because the freshness assertion below the table held the *suite*
+census and no assertion held the *case* counts at all.
+
+`GateVerificationTest#publishedTierCensusIsReconciledAgainstTheRunItDescribes` now holds
+them, and what it can hold is decided by execution order rather than by preference. Surefire
+binds to `test`, so on any unnarrowed `verify` the unit tier's reports are complete on disk
+before the harness runs and both of its figures are measured exactly, from `testcase`
+elements in `target/surefire-reports`. A run narrowed with `-Dtest` executes no unit suite,
+leaves no report, and is recorded as *not measured* rather than as measured-zero — the
+distinction is written into `gate2.unitTierCensusBasis`, and it matters because CI and the
+container build both run unnarrowed, which is where a stale figure has to be caught. Failsafe
+runs `com.cardemo.e2e.*` **before**
+`com.cardemo.integration.*` under alphabetical order, so while the harness executes the
+integration tier has not run and no report of it exists — that figure cannot be measured
+here at all, and reading one would mean trusting an artefact from a previous invocation,
+which is the very hazard the paragraph below warns about. So the end-to-end row is measured
+from the source tree instead, and the integration row is pinned *transitively* by the
+table's own arithmetic: integration must equal the Failsafe total minus end-to-end, and any
+single wrong figure breaks that identity.
+
+Counting the end-to-end tier from source is exact **only** because that tier declares no
+parameterised test, which was verified against the run before being relied on; the unit and
+integration tiers do declare them, which is why neither is counted that way. One detail of
+that count is load-bearing and yields a plausible wrong number rather than an error: the
+annotation match is anchored on a word boundary, because a prefix test for `@Test` also
+matches `@TestConfiguration`, `@TestInstance` and `@Testcontainers`, and every suite in this
+tier carries some of those. The prefix reading over-counts the tier by nine cases — three,
+four and two across the three suites — and each of those totals is close enough to the truth
+to pass for one.
+
+**Two figures below remain a recorded reading rather than an assertion, and saying which is
+more useful than implying that everything here is enforced.** The coverage counters and the
+execution-data sizes are produced by goals bound to `verify`, after the harness has
+finished, so no test in this reactor can compare them without reading an artefact its own
+run did not write. Their authority is the reproduce command published above.
+
+**Every figure above is re-measured, and the counting method is part of the claim.** A suite
+case total is the number of `<testcase>` elements in its retained report, **not** the
+`tests=` attribute of the parent `<testsuite>` — for the reason given immediately above, a
+suite whose cases live in `@Nested` classes reports `tests="0"` on that attribute while
+carrying every case beneath it. Counted that way the per-suite sums reproduce Maven's own two
+summary lines exactly, `15,092` and `919`, which is what makes the method verifiable rather
+than merely asserted.
+
+*Historical, the run of 7 August 2026 timed 17:29:14Z to 17:39:14Z:* the same tiers stood at
+**209** surefire suites carrying **14,914** unit cases and **38** failsafe suites carrying
+**907** cases, with the gate harness at **58**. That run is the one cited by timestamp in
+[§3.2](#gate-5) and [§7](#gate-8) below, so **their figures are its and are correct for it**,
+not this table's. The movement since is **+3 surefire suites** —
+`src/test/java/com/cardemo/unit/model/FieldWidthUnitContractTest.java`, the field-width unit
+contract, plus `src/test/java/com/cardemo/unit/config/BatchJobSpanNamingTest.java` and
+`src/test/java/com/cardemo/unit/observability/BatchJobSpanNamingConventionTest.java`, which
+together pin the batch span-naming convention — **+178 unit cases and +12 failsafe cases**, all
+additions rather than corrections. **Sixty-three of those unit cases are the three new suites'
+own** — 39, 18 and 6 respectively, counted from their retained reports — and the remaining 115
+landed in suites that already existed, which is why the suite delta and the case delta are
+published separately rather than one being read off the other.
+
+**That historical row deliberately does not carry an integration/end-to-end split, because the
+previous revision's split did not add up and re-deriving it now is not possible.** It published
+**799** integration and **107** end-to-end against a total of **907**, and 799 + 107 is 906.
+The tier totals are Maven's own summary lines and are reliable; one of the two components was
+therefore misstated by one, and which one cannot be established from a run whose reports have
+since been replaced. Carrying the pair forward as fact would launder that error into this
+revision, so only the totals are carried. The present figures are stated per component **and**
+in total precisely so the same thing cannot happen again: 804 + 115 = 919, and it reconciles.
 
 The suite total reconciles against the source tree instead of being asserted about it.
-`src/test/java` holds **265** sources, of which 250 are suite-named and 15 are shared
-support types; **3** of the 250 are top-level abstract bases, leaving **247** concrete
+`src/test/java` holds **269** sources, of which 253 are suite-named and 16 are shared
+support types; **3** of the 253 are top-level abstract bases, leaving **250** concrete
 suites. A whole suite therefore cannot disappear while a case total stays plausible, which
 is the failure this reconciliation exists to catch rather than a statistic about it.
 
-**That census is a reading of the tree, not of the run, and the two now agree — which is
-stated rather than assumed, because they have not always agreed.** The run above collected
-209 + 38 = **247** reports, equal to the concrete census. An earlier reading of this
-paragraph recorded them differing by exactly one, and the suite that accounted for the
-difference is named rather than left implicit:
+**That census is a reading of the tree, not of the run, and the two agree exactly — which is
+stated rather than assumed, because they have not always agreed.** A clean `verify` at the
+present tree collects **212 surefire + 38 failsafe = 250** retained reports, and the tree
+holds **250** concrete suites. Both halves are counted, not inferred from the arithmetic:
+the first by listing `TEST-*.xml` in the two report directories, the second by the source
+census above.
+
+**The previous revision of this paragraph published figures that did not reconcile, and they
+are withdrawn rather than quietly overwritten.** It claimed the run and the census "now stand
+at the same figure" while publishing a census of **248** against a run of **209 + 38 = 247**
+in the same breath, and then closed with a third pair, *"**246** is what that run collected,
+and **247** is what this tree holds"* — three figures for two quantities. The cause was that
+the census had been re-read after a suite was added while the run figure had not, which is
+precisely the drift the reconciliation exists to catch and which it caught here on its own
+authors. The suite that accounted for the original difference is still worth naming rather
+than leaving implicit:
 `src/test/java/com/cardemo/unit/config/ProblemJsonErrorBoundaryTest.java`, authored to close
 a review finding that the container-level error-report valve installed by
-`WebConfig#problemJsonErrorReportValve()` carried no direct test anywhere in the tree. It is
-in the tree and it is collected, so the run and the census now stand at the same figure. A
-clean run at the present tree therefore collects **209 + 38 = 247**, measured from the
-retained report files rather than inferred from the arithmetic. Editing either number to
-make the two agree would be the dishonest repair: **246** is what that run collected, and
-**247** is what this tree holds.
+`WebConfig#problemJsonErrorReportValve()` carried no direct test anywhere in the tree. The census has
+since moved on again, by two suites: `src/test/java/com/cardemo/unit/observability/BatchJobSpanNamingConventionTest.java`
+and `src/test/java/com/cardemo/unit/config/BatchJobSpanNamingTest.java`, which together pin the batch
+span-naming convention that stops an all-capitals JCL member name reaching the trace store one hyphen
+per letter.
+
+**Editing a number to make two figures agree would be the dishonest repair, so neither was
+edited — both were re-measured.** The run and the census agree because the tree and the run genuinely
+hold the same number of suites, and if a suite is added without this paragraph being re-measured they
+will disagree again, visibly, which is the property being bought.
 
 **One measurement hazard belongs with the figure, because it yields a plausible wrong number
 instead of an error.** The report directories are cumulative, so a `verify` invoked
 **without** `clean` leaves the reports of earlier narrowed runs beside those of the current
 one and the suite count comes out high. It read **211** surefire reports on such an
-invocation here, the two extras being a since-deleted probe class and an earlier
+invocation here against the **209** the tree then held, the two extras being a since-deleted
+probe class and an earlier
 `-Dit.test` run of the gate harness — neither of which the tree still contains. Take this
 census from a `clean` run, or take it the way the assertion in
 `src/test/java/com/cardemo/e2e/GateVerificationTest.java` does, which counts the source
@@ -540,13 +634,13 @@ tree itself and so cannot be inflated by a stale artefact at all.
 
 | Coverage | Value |
 |---|---|
-| Line coverage | **0.9164** — `LINE missed=2030 covered=22256 total=24286` — against the 0.80 floor |
+| Line coverage | **0.914594** — `LINE missed=2112 covered=22617 total=24729` — against the 0.80 floor, over a **350**-class bundle, with BRANCH at 0.809738 and METHOD at 0.978114. Measured 9 August 2026. *Historical, 8 August 2026:* 0.915384 — `missed=2061 covered=22296 total=24357` over 343 classes; *7 August 2026:* 0.916413 — `missed=2030 covered=22256 total=24286` over 340 classes |
 | Gate outcome | `All coverage checks have been met.` |
-| Execution data | Two agents write two files — `target/jacoco.exec` (unit) **580,012 bytes** and `target/jacoco-it.exec` (integration) **≈ 1,148,000 bytes** — which the `merge` execution combines at `verify` into `target/jacoco-merged.exec`, **≈ 1,314,100 bytes**. The unit figure is exact and reproducible; the other two are given to the nearest hundred bytes deliberately, because the integration tier's probe data varies by a few dozen bytes between runs of the same tree — two readings of this tree gave 1,148,013 and 1,147,919 — so an exact byte count there would be a figure that reads as wrong on the next run rather than a checkable one. The `report` and `check` executions both read the merged file, which is why the coverage figure above spans both tiers |
-| Session data | **2** `sessioninfo` elements in `target/jacoco-merged.exec`, one per agent: `reverse-code-generator-36bdc29a-2l8fc-6c974ea2` (unit, 17:29:51Z to 17:32:01Z) and `…-5def0c36` (integration, 17:32:03Z to 17:38:50Z); combined window **2026-08-07T17:29:51Z** to **2026-08-07T17:38:50Z**, 539 s. Each unmerged file carries **one** of the two, so a count taken from `jacoco.exec` alone reads 1 |
+| Execution data | Two agents write two files — `target/jacoco.exec` (unit) **587,008 bytes** and `target/jacoco-it.exec` (integration) **≈ 1,150,300 bytes** — which the `merge` execution combines at `verify` into `target/jacoco-merged.exec`, **≈ 1,319,800 bytes**. The unit figure is exact and reproducible; the other two are given to the nearest hundred bytes deliberately, because the integration tier's probe data varies by a few dozen bytes between runs of the same tree — four readings across this checkpoint gave 1,150,294, 1,150,236, 1,148,699 and 1,148,618 — so an exact byte count there would be a figure that reads as wrong on the next run rather than a checkable one. The `report` and `check` executions both read the merged file, which is why the coverage figure above spans both tiers |
+| Session data | **2** `sessioninfo` elements in `target/jacoco-merged.exec`, one per agent: `reverse-code-generator-542a9b9d-wdp74-ed82eacf` (unit, 09:39:09Z to 09:41:21Z) and `…-6b645d45` (integration, 09:41:23Z to 09:49:39Z); combined window **2026-08-09T09:39:09Z** to **2026-08-09T09:49:39Z**, 630 s. Each unmerged file carries **one** of the two, so a count taken from `jacoco.exec` alone reads 1 |
 
 **The vulnerability scan, as a result rather than a skip.** `dependency-check-maven` 12.1.0
-scanned **166** dependencies against a reachable feed. It reported **one** advisory, and
+scanned **168** dependencies against a reachable feed. It reported **one** advisory, and
 that one sits **below** the configured threshold, so **zero findings stand at or above
 CVSS 7**.
 
@@ -574,16 +668,16 @@ vanishing. Neither
 
 | # | Evidence class | Path | Retained |
 |--:|---|---|---|
-| 1 | Unit test reports | `target/surefire-reports/` | 517 files, 18.8 MB |
+| 1 | Unit test reports | `target/surefire-reports/` | 520 files, 20 MB |
 | 2 | Integration and end-to-end reports | `target/failsafe-reports/` | 115 files, 8.5 MB |
-| 3 | Coverage report | `target/site/jacoco/` | 534 files, 20.3 MB |
-| 4 | Coverage execution and session data | `target/jacoco.exec`, `target/jacoco-it.exec` and the `target/jacoco-merged.exec` the two are merged into | 580,012 bytes exactly, plus ≈ 1,148,000 merging to ≈ 1,314,100; **2** sessions, both in the merged file. Only the unit figure is byte-stable across runs — see the execution-data row above |
-| 5 | Gate harness marker | `target/gate-verification/gate-verification-evidence.properties` and `-summary.properties` | 2 files, 26,304 bytes — 3,052 and 23,252 |
-| 6 | Vulnerability scan report | `target/dependency-check/dependency-check-report.html`, with the JSON and SARIF renderings beside it | 3 files, 4.5 MB |
+| 3 | Coverage report | `target/site/jacoco/` | 535 files, 21 MB |
+| 4 | Coverage execution and session data | `target/jacoco.exec`, `target/jacoco-it.exec` and the `target/jacoco-merged.exec` the two are merged into | 587,008 bytes exactly, plus ≈ 1,150,300 merging to ≈ 1,319,800; **2** sessions, both in the merged file. Only the unit figure is byte-stable across runs — see the execution-data row above |
+| 5 | Gate harness marker | `target/gate-verification/gate-verification-evidence.properties` and `-summary.properties` | 2 files, **≈ 42,700 bytes** — 3,046 exactly, plus ≈ 39,700. The second is given to the nearest hundred for the same reason the execution-data row above gives one: it records seventeen elapsed-time and timestamp values whose rendered width varies, so two readings of this same tree gave 39,700 and 39,699. An exact byte count there would be a figure that reads as wrong on the next run rather than a checkable one |
+| 6 | Vulnerability scan report | `target/dependency-check/dependency-check-report.html`, with the JSON and SARIF renderings beside it | 3 files, 4.2 MB |
 
 **The marker fixes the run's identity, not merely its recency.** It holds
 `gate.harness.commit=<the commit under test>` — the value is read from git at the instant the
-file is written, so it is the tree named above rather than a literal this document could go stale on — alongside `gate.harness.executedAtUtc=2026-08-07T17:32:29Z` and the runtime
+file is written, so it is the tree named above rather than a literal this document could go stale on — alongside `gate.harness.executedAtUtc=2026-08-08T23:12:18Z` and the runtime
 `25.0.3+9-LTS` from Eclipse Adoptium. A timestamp on its own cannot separate a fresh run
 from a stale artefact that happens to be recent; a commit can, which is why every consumer
 of this marker requires equality with the commit it asked to be tested rather than
@@ -616,12 +710,12 @@ the measurement was then taken — never because a judgement was revised.
 |---|---|---|---|---|
 | [1](#gate-1) | End-to-end boundary parity | Field-level and byte-level output parity for the daily posting pipeline against legacy behaviour | Required | **Pass** — the run matches **two independent expectations** on every field and every byte: the frozen program’s own captured output (38 rejects, 262 postings, 50 account images, 100 category balances, return code 4) and a source-derived expectation (300 processed, 262 posted, 38 rejected, return code 4). A captured **z/OS** run remains **Not available** and would corroborate rather than replace either; see [Gate 1](#gate-1). The two kinds of oracle, and which of them this rests on, are set out at [the oracle taxonomy](#gate-1-oracle) |
 | [2](#gate-2) | Zero-warning build | A repeatable, deterministic, warning-free build with a clean dependency-vulnerability scan | Partly — not for compile and scan; required for the integration and end-to-end tiers bound into `verify` | **Pass** — the exact-HEAD run in [§2.6](#env-run): exit code 0, **0** compiler warnings, coverage **0.9164** against the 0.80 floor, and a scan that ran rather than being skipped, reporting **0** findings at or above CVSS 7 |
-| [3](#gate-3) | Performance baseline | A **measured baseline**, recorded rather than compared against a target | Partly — the database and cloud-service dependencies run in containers | **Baselines measured and published** — 1,538 records/second, per-endpoint p95 from 21.5 ms to 105.1 ms, peak heap 170 MB as a JVM-wide envelope. **No threshold is applied to any of them**, because no service-level objective exists; see [Gate 3](#gate-3) |
+| [3](#gate-3) | Performance baseline | A **measured baseline**, recorded rather than compared against a target | Partly — the database and cloud-service dependencies run in containers | **Baselines measured and published** — 1,538 records/second, per-endpoint p95 from 21.5 ms to 105.1 ms, peak heap 170 MB as a JVM-wide envelope, **all four as read on 7 August at 17:29 UTC**. That throughput figure is one reading of five, which span **1,005 to 1,923 rec/s** over identical work; the authoritative per-run value is `gate3.recordsPerSecond`. **No threshold is applied to any of them**, because no service-level objective exists; see [Gate 3](#gate-3) |
 | [4](#gate-4) | Named fixture validation | All nine ASCII fixtures and the ten inline user records load correctly, with position-aware overpunch decoding and BCrypt hashing | Required | **Pass** — 300 daily-transaction rows seeded, **50** of them carrying negative overpunch amounts, 50 account rows compared field by field, and all **10** inline user records present as BCrypt digests; see [Gate 4](#gate-4) |
 | [5](#gate-5) | API contract verification | All 17 operations exercised against a real Spring application context, with role enforcement, statelessness and failure mapping asserted | Required | **Pass** — **17** mapped operations across the **8** named controllers, exercised over real HTTP against a running container; see [Gate 5](#gate-5) |
-| [6](#gate-6) | Security audit | The security invariants hold across the whole tree | Not required | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 78 candidates authenticating, **0** committed secrets, and the scan report `2026-08-07T17:39:05Z` over 166 dependencies with one active finding at CVSS 6.7 and **zero at or above 7**; one disclosed exclusion in a frozen document, see [Gate 6](#gate-6) |
-| [7](#gate-7) | Scope coverage | All 28 COBOL programs mapped at paragraph level through a machine-checkable matrix | Not required | **Assertions hold** — **58** gate assertions, exit code 0, against the matrix at `../TRACEABILITY_MATRIX.md` |
-| [8](#gate-8) | Integration sign-off | The full runtime topology stands up and is healthy | Required — **and it is available** | **Pass** — the application stood up against a real containerised database and emulator with **3** migrations applied, **11** domain tables, **3** alternate indexes and **8** health contributors reporting; **and** the six-service compose topology was brought up as a unit **in this working tree at the commit under test** — `docker compose up -d --build --wait`, exit code 0, all six containers `healthy` — with a second `up` converging in **one second** and recreating nothing; see [Gate 8](#gate-8) |
+| [6](#gate-6) | Security audit | The security invariants hold across the whole tree | Not required | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 83 candidates authenticating, **0** committed secrets, and the scan report `2026-08-07T17:39:05Z` over 166 dependencies with one active finding at CVSS 6.7 and **zero at or above 7**; one disclosed exclusion in a frozen document, see [Gate 6](#gate-6) |
+| [7](#gate-7) | Scope coverage | All 28 COBOL programs mapped at paragraph level through a machine-checkable matrix | Not required | **Assertions hold** — **59** gate assertions, exit code 0, against the matrix at `../TRACEABILITY_MATRIX.md` |
+| [8](#gate-8) | Integration sign-off | The full runtime topology stands up and is healthy | Required — **and it is available** | **Pass** — the application stood up against a real containerised database and emulator with **3** migrations applied, **11** domain tables, **3** alternate indexes and **8** health contributors reporting; **and** the **seven**-service compose topology was brought up as a unit **in this working tree at the commit under test** — `docker compose up -d --build --wait`, exit code 0, all **seven** containers `healthy` — with a second `up` converging in about a second and recreating nothing; see [Gate 8](#gate-8) |
 
 **How to read that column.** Four words are used, and they mean different things.
 
@@ -652,7 +746,7 @@ here rather than left for a reader to discover from a red badge.
 |---|---|---|
 | The eight gates | **Executed, and every Result above reports a measurement in full** | Each was produced by the command its own section names, at the commit that section records |
 | The CI pipeline as a whole | **Red, by design, and it will stay red until an owner decision is taken** | The `image-scan` job in `.github/workflows/build.yml` is defined to fail on any High or Critical finding in the delivered image and offers **no suppression path**. It is failing on the two advisories at [H-7](#findings), whose only remedy is to advance a pinned coordinate |
-| Which jobs are affected | `image-scan` fails, and `gate-evidence` then fails on purpose too | `gate-evidence` declares `image-scan` among its `needs` and runs `if: always()`, so it is **not skipped** — it collates the four gate-job results, prints each one, and exits 1 with a `::error title=Blocker` annotation naming the job and its conclusion. That is deliberate: the job may not report green on evidence that does not support it. `repository-integrity`, `verify`, `integration` and `plugin-graph-scan` are unaffected and pass |
+| Which jobs are affected | `image-scan` fails, and `gate-evidence` then fails on purpose too | `gate-evidence` declares `image-scan` among its `needs` and runs `if: always()`, so it is **not skipped** — it collates the **five** gate-job results, prints each one, and exits 1 with a `::error title=Blocker` annotation naming the job and its conclusion. That is deliberate: the job may not report green on evidence that does not support it. `repository-integrity`, `verify`, `integration` and `plugin-graph-scan` are unaffected and pass. **That last clause was not true when this block was written, and the correction belongs beside it rather than in a commit message:** `repository-integrity` was itself red on every run, for a reason unrelated to the image scan. Its final step asserted that `.github` held exactly one file, which the tree it shipped in contradicted — three helper scripts live there, and this workflow executes all three, one of them under a unit test that requires it to exist. A permanently red first gate protects nothing, so the assertion was restated as the two conditions it always meant: exactly one file under `.github/workflows/`, and outside it only helpers a step actually runs. Re-measured by executing all nine `run` steps of the job against this working tree — every one exits 0 *The fifth is `plugin-graph-scan`, added to that `needs` list after a review found it was the one gate job whose conclusion this document never reported: its failure always failed the run, so nothing was reported green on its silence, but a reader could not tell a scan that had passed from one that had never run.* |
 | Why it is not fixed here | [§0.6.1](technical-specifications.md) pins Spring Boot 3.5.11 and [§0.8.4](technical-specifications.md) requires a pinned version to be honoured as given, with any divergence **recorded rather than resolved unilaterally** | Advancing the pin is the fix, and it is a scope decision this delivery is not authorised to take. Lowering the gate's threshold, adding a suppression path or dropping `image-scan` from `gate-evidence`'s `needs` would each turn the pipeline green by removing the signal, which is the one outcome the gate exists to prevent |
 | What clears it | **One owner decision:** advance the parent to the latest 3.5.x, then re-run both scans | That is the same move [DL-RR-01] already recommends for a different reason, so one sign-off closes both. Full analysis at [DL-RR-11] in `DECISION_LOG.md` |
 
@@ -933,7 +1027,10 @@ results rather than after them.
 | **Legacy parity oracle** | Output captured from an execution of the frozen COBOL at a known input state | That the Java output **matches the source system** | — |
 | **Java-produced golden regression oracle** | Output captured from *this* implementation and committed as a reference | That behaviour has not **changed** since it was captured | That the behaviour was ever **correct**: it is derived from the thing under test |
 
-**This gate rests on the first kind, and both kinds are committed.**
+**This gate rests on the first kind. Two expectations are committed, and they are not the two rows
+of that table** — a distinction an earlier wording here lost by calling them "both kinds", which
+read as though output captured from this implementation had been committed, when the paragraph below
+says it has not been and it has not.
 `src/test/resources/parity/gate1` holds output captured from an
 execution of the frozen COBOL: `app/cbl/CBTRN02C.cbl` compiled **unmodified** and run against the
 frozen fixtures, with `PROVENANCE.properties` declaring `oracle.derivedFromJava=false`,
@@ -942,7 +1039,22 @@ committed beside the images so they can be regenerated rather than merely truste
 independent expectation sits at `src/test/resources/expected/posttran`, re-derived from the same
 COBOL source by `src/test/java/com/cardemo/e2e/PostingParityOracle.java`, which **imports no
 production type** — its only non-JDK import is a test-tier fixture loader. The run is diffed against
-both, so neither can drift unnoticed.
+both, so neither can drift unnoticed. A re-derivation from the source is a **third** thing, neither
+a legacy capture nor a capture of the implementation, and the table's second row remains committed
+**nowhere**.
+
+**The harness said the opposite of this page for one commit, and nothing caught it.** Two evidence
+strings it publishes were written before the oracle existed and were not revisited when it arrived:
+`gate1.oracleTaxonomy` ended "**NEITHER EXISTS IN THIS REPOSITORY**" and `gate1.assertionBasis`
+opened "**PROPERTY-BASED, not oracle-based. Absent an oracle…**". Both were true when written and
+false by the time they were last published, and they contradicted this page, the five images on disk
+and the status report the same test method composes a few lines above them. They survived a green
+run for a simple reason: **no assertion read either string.** Both are now composed by a named
+method and asserted — as *rejections of the withdrawn wording* rather than approvals of the new,
+because a paraphrase of the old claim is the way this would come back. The current strings say the
+gate rests on the legacy-derived images, name the directory and the GnuCOBOL provenance, and state
+that the second kind is committed nowhere; the assertion basis states **both** bases, since the
+property assertions are the part that would still hold if every expectation file were deleted.
 
 **So the circularity this gate is at risk of is avoided, not accepted.** No output captured from
 this implementation is committed anywhere, and none may be added silently: the harness holds the
@@ -978,11 +1090,16 @@ asserted there:
 **3.2.0**, BDB indexed handler, from `app/cbl/CBTRN02C.cbl` unmodified; the legacy run exited
 with **return code 4**. The Java comparison ran on the same date under JDK **25.0.3+9-LTS**
 and `maven-failsafe-plugin` **3.5.4**, **0 failures, 0 errors**, exit code **0**. The two
-classes that carry this gate declare **25** cases in `BatchPipelineE2ETest` and **58** in
+classes that carry this gate declare **25** cases in `BatchPipelineE2ETest` and **59** in
 `GateVerificationTest` as this tree stands, counted from the sources rather than copied from
-this page — with `OnlineTransactionE2ETest`'s 24 that is the 107 the `e2e/` tier runs. Count them
-with a comment-aware scan and not with `grep -c '@Test'`, which also matches the annotation
-name inside a doc comment.
+this page — with `OnlineTransactionE2ETest`'s **25** that is the **109** the `e2e/` tier runs,
+which is also what the failsafe reports record as *executed*, so declared and executed agree.
+Count them with a comment-aware scan and not with `grep -c '@Test'`, which also matches the
+annotation name inside a doc comment — that naive reading returns 66, 28 and 28 here.
+**Two of these three figures were restamped on 9 August 2026, for different reasons.**
+`GateVerificationTest` moved 58 → 59 because a case was added, pinning the credential walk's root
+and extension sets. `OnlineTransactionE2ETest` moved 24 → 25 because the earlier figure had simply
+drifted, and the total published beside it, 107, was wrong with it.
 
 **Result.** **PASS — parity demonstrated against two independent expectations, and the two
 agree with each other.**
@@ -1061,7 +1178,7 @@ severity threshold.
 | 1 | Implementation code and both test tiers | Present on this branch |
 | 2 | **JDK 25 and Maven 3.9.11** | Absent on the first host reading; present on the second — JDK 25.0.3 (Temurin-25.0.3+9) and Maven 3.9.11, [§2.2](#env-second) |
 | 3 | A container runtime, for the integration and end-to-end tiers bound into `verify` | Present |
-| 4 | A vulnerability feed reachable by `dependency-check-maven`, or an explicit, reported skip | **Present and exercised** — the run in [§2.6](#env-run) reached the advisory feed and scanned 166 dependencies, so this prerequisite is met by evidence rather than assumed. It stays listed because it is genuinely environment-dependent: an unreachable feed yields an *empty* report, which must be reported as a skip and never read as a clean scan |
+| 4 | A vulnerability feed reachable by `dependency-check-maven`, or an explicit, reported skip | **Present and exercised** — the run in [§2.6](#env-run) reached the advisory feed and scanned 168 dependencies, so this prerequisite is met by evidence rather than assumed. It stays listed because it is genuinely environment-dependent: an unreachable feed yields an *empty* report, which must be reported as a skip and never read as a clean scan |
 | 5 | A continuous-integration harness, so the run is repeatable rather than a one-off | `.github/workflows/build.yml` is present |
 
 The second prerequisite is the one to watch. On a host without a JDK the gate does not
@@ -1185,13 +1302,13 @@ published, and the one that names its commit is the primary reading**, because a
 names no commit cannot be checked against anything.
 
 **Execution date, tool versions, exit code.** The exact-HEAD run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-07T17:29:14Z to 17:39:14Z, JDK
-25.0.3 (Temurin-25.0.3+9) and Maven 3.9.11, **exit code 0**, total 09:58 min.
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, JDK
+25.0.3 (Temurin-25.0.3+9) and Maven 3.9.11, **exit code 0**, total 11:19 min.
 
 Corroborating run of the same date, finishing `2026-08-07T03:43:04Z` after **06:52**: one
 invocation of `./mvnw -B -ntp clean verify`, **with no `-Ddependency-check.skip=true`**, so all
 three halves were measured by the same command — the only invocation that satisfies this gate
-whole. **18 goals** ran, `dependency-check:12.1.0:check` among them. Toolchain: JDK
+whole. **19 goals** ran, `dependency-check:12.1.0:check` among them. Toolchain: JDK
 **25.0.3+9-LTS** (Eclipse Adoptium), Maven **3.9.11** through `./mvnw`, compiler plugin
 **3.14.1**, Surefire and Failsafe **3.5.4**, JaCoCo **0.8.12**, `dependency-check-maven`
 **12.1.0**. **Exit code 0**, `BUILD SUCCESS`.
@@ -1208,10 +1325,10 @@ the run recorded above, and each half is answered by an artefact it left behind 
 description of it:
 
 | Half | Figure | Artefact |
-
+|---|---|---|
 | Warning-free | **0** compiler warnings under `-Xlint:all -Werror`, **0** doclint errors. The nine-minute log's `[WARNING]` lines all come from the vulnerability-scan plugin — the sub-threshold advisory below, plus a missing-NVD-key advisory on runs where the plugin refreshes its feed — and none from the compiler | `target/surefire-reports/`, `target/failsafe-reports/` |
-| Coverage | **0.9164** line coverage — `missed=2030 covered=22256 total=24286` — against the 0.80 floor; `All coverage checks have been met.` | `target/site/jacoco/`, `target/jacoco.exec` with 2 `sessioninfo` elements |
-| Vulnerability scan | **Ran, not skipped.** 166 dependencies, **0** findings at or above CVSS 7. One 6.7 Medium advisory reported and left standing | `target/dependency-check/dependency-check-report.html`, with JSON and SARIF beside it |
+| Coverage | **0.914594** line coverage — `missed=2112 covered=22617 total=24729` — against the 0.80 floor; `All coverage checks have been met.` Measured 8 August 2026; *historical, 7 August:* 0.916413, `missed=2030 covered=22256 total=24286` | `target/site/jacoco/`, `target/jacoco.exec` with 2 `sessioninfo` elements |
+| Vulnerability scan | **Ran, not skipped.** 168 dependencies, **0** findings at or above CVSS 7. One 6.7 Medium advisory reported and left standing | `target/dependency-check/dependency-check-report.html`, with JSON and SARIF beside it |
 
 
 The same run read against the seven clauses this gate enumerates:
@@ -1220,23 +1337,26 @@ The same run read against the seven clauses this gate enumerates:
 | Clause | Reading |
 |---|---|
 | 1–2 — zero-warning compile and enforced floors | **0 `[ERROR]`** lines and **no compiler warning** under `-Xlint:all -Werror` with `-Werror` in force; the single `[WARNING]` line in the log is the scan plugin's own advisory banner, not a compiler diagnostic |
-| 3 — both test tiers | **14,477 unit tests** under Surefire and **850 integration and end-to-end tests** under Failsafe: **0 failures, 0 errors** in both |
-| 4 — coverage floor | `All coverage checks have been met`. Merged **LINE missed=2,002 covered=21,333 total=23,335**, ratio **0.9142** against the **0.80** floor, `haltOnFailure` true |
-| 5 — vulnerability scan | **166 dependencies**, **167 suppressed matches** each carrying its evidence, **one active finding** at **CVSS 6.7 MEDIUM** (`CVE-2026-40977`, `spring-boot-3.5.11.jar`) and therefore **zero at or above the `failBuildOnCVSS` 7 threshold**. Report timestamp `2026-08-07T03:42:57Z`, engine 12.1.0 |
+| 3 — both test tiers | **15,092 unit tests** under Surefire and **919 integration and end-to-end tests** under Failsafe: **0 failures, 0 errors, 0 skips** in both, as re-measured 9 August 2026. *This clause read 14,477 and 850 when it was first written, which were correct for the run behind it and are superseded rather than wrong.* |
+| 4 — coverage floor | `All coverage checks have been met`. Merged **LINE missed=2,112 covered=22,617 total=24,729**, ratio **0.914594** against the **0.80** floor, `haltOnFailure` true |
+| 5 — vulnerability scan | **168 dependencies**, **166 suppressed matches** each carrying its evidence, **one active finding** at **CVSS 6.7 MEDIUM** (`CVE-2026-40977`, `spring-boot-3.5.11.jar`) and therefore **zero at or above the `failBuildOnCVSS` 7 threshold**. Report timestamp `2026-08-09T09:49:54Z`, engine 12.1.0, from a no-skip `./mvnw -B -ntp clean verify` that exited 0. The suppressed figure read **167** at the `2026-08-07T03:42:57Z` timestamp and is counted as the `suppressedVulnerabilities` entries in `target/dependency-check/dependency-check-report.json`; **it moves as the advisory feed does, so it is a dated reading rather than a property of this repository**. What does not move is the register behind it — 17 `<suppress>` entries declaring 18 `<cve>` identifiers, 2 of them time-boxed — and the clause this gate turns on, which is the count at or above the threshold |
 | 6 — exact pinning | Every plugin and non-BOM dependency at an exact version |
 
-The two runs differ only as their trees differ: the primary reports **0.9164** line coverage
-(`missed=2030 covered=22256 total=24286`) and the corroborating run **0.9142**
-(`missed=2002 covered=21333 total=23335`), both against the **0.80** floor and both with
-`All coverage checks have been met`. Neither figure was obtained by lowering the floor.
+The runs differ only as their trees differ: the current reading of 9 August 2026 reports
+**0.914594** line coverage (`missed=2112 covered=22617 total=24729`), the 8 August reading
+reported **0.915384** (`missed=2061 covered=22296 total=24357`), the 7 August primary
+**0.916413** (`missed=2030 covered=22256 total=24286`) and its corroborating run
+**0.9142** (`missed=2002 covered=21333 total=23335`) — all against the **0.80** floor and all with
+`All coverage checks have been met`. No figure was obtained by lowering the floor, and the small
+downward moves are what adding production code — a bounded database probe, a credential guard,
+keyset finders and a span-naming convention — does to a ratio whose denominator grows with it.
 
 
 **This reading supersedes an earlier one that reported the gate as two halves of three.**
 That reading was accurate: the run behind it supplied `-Ddependency-check.skip=true`, and
 a skipped scan is never evidence of a pass. What closed the third half is a no-skip run,
-not a change to the threshold — see [Gate 6](#gate-6) for how the one clause that turned
-
-that is correct rather than contradictory.** The gate harness executes during
+not a change to the threshold — see [Gate 6](#gate-6) for why the one clause that changed
+there is correct rather than contradictory. The gate harness executes during
 `failsafe:integration-test`. Both `dependency-check:check` and `jacoco:check` are bound
 **later in the same `verify` lifecycle**, so at the instant the harness writes its evidence
 file neither report exists yet on disk. The harness therefore reports what it can observe —
@@ -1363,12 +1483,12 @@ one failure mode that would make this gate worse than having no gate.
 **Execution date, tool versions, exit code.** From the exact-HEAD run in
 [§2.6](#env-run): the commit this change publishes, `./mvnw -B -ntp clean verify` with **no skips**,
 2026-08-07T17:29:14Z to 17:39:14Z, JDK 25.0.3 (Temurin-25.0.3+9), Maven 3.9.11,
-PostgreSQL 16 by digest, LocalStack 4.14.0 — exit code 0, the harness's **58** cases green.
+PostgreSQL 16 by digest, LocalStack 4.14.0 — exit code 0, the harness's **59** cases green.
 Every figure below was re-measured by that run and is read from the `gate3.*` keys of
 `target/gate-verification/gate-verification-summary.properties` it wrote.
 
 *The figures move between runs, and that is the point of a baseline rather than a fault in
-it.* Four readings of this gate now exist over identical work, and they are published as a
+it.* Five readings of this gate now exist over identical work, and they are published as a
 series rather than overwritten, because the series is the finding:
 
 | Reading | Throughput | Sign-on p95 | Peak heap |
@@ -1377,8 +1497,19 @@ series rather than overwritten, because the series is the finding:
 | 7 August, 01:56-02:06 UTC, commit **not resolvable** | 1,923 rec/s | 98.2 ms | 532 MB |
 | 7 August, 02:33-02:42 UTC, commit **not resolvable** | 1,754 rec/s | 89.9 ms | 295 MB |
 | **7 August, 17:29-17:39 UTC, at the commit this change publishes** — the run this gate publishes | **1,538 rec/s** | **105.1 ms** | **170 MB** |
+| 9 August, 02:33 UTC, clone `carddemo-006` at this checkpoint | 1,005 rec/s | 89.7 ms | 203 MB |
 
-Two of those four rows name no commit, and that is deliberate. They were published against
+**A fifth reading is added rather than substituted, and the spread is now 1,005 to 1,923 records
+per second — a factor of 1.9 over identical work.** That range is the honest content of this
+gate. It also settles a question a reader is entitled to ask on meeting the headline figure: an
+independent reading taken between the fourth and fifth rows reported **1,904 rec/s** while this
+page published 1,538, which looks like a contradiction and is not one — the two are different
+runs of the same measurement on a shared, variably-loaded host. **The authoritative per-run value
+is `gate3.recordsPerSecond` in the harness's own artefact**, restamped by every run; the table
+below quotes one reading of it and names which. Any figure on this page that is not accompanied
+by a reading date should be treated as the series, not as a constant.
+
+Two of the five rows name no commit, and that is deliberate. They were published against
 object names — `fbe63a90` and `d985ec59` — that **no `git cat-file` in this repository can
 resolve**, so neither reading can be re-derived or attributed to a tree. The numbers are kept,
 because the spread they evidence is real and a reader interpreting the baseline needs it; the
@@ -1386,10 +1517,20 @@ object names are dropped, because printing one invites a checkout that cannot su
 implies an attribution the row cannot support. Treat those two as variance evidence only.
 
 No reading is wrong. The host is unpinned and shared, no service-level objective exists to
-compare any of them against, and a 55 % spread in throughput across runs of the same 200
-records — 1,242 to 1,923 rec/s — is exactly why this gate applies **no threshold**. Quoting only the most flattering
-of the four would be the dishonest option; quoting only the latest without the spread
+compare any of them against, and a **91 % spread** in throughput across runs of the same 200
+records — **1,005 to 1,923 rec/s**, the slowest and fastest of the five rows above — is exactly
+why this gate applies **no threshold**. Quoting only the most flattering
+of the five would be the dishonest option; quoting only the latest without the spread
 would understate the variance a reader needs in order to interpret it.
+
+**Both figures in that sentence were restamped when the fifth reading was added, and the reason
+is worth recording rather than hiding in a diff.** The sentence previously read "a 55 % spread
+… 1,242 to 1,923 rec/s", which were the correct endpoints of the *four*-row series: the fifth
+reading at 1,005 rec/s is the slowest of them all, so adding a row moved the lower bound and
+widened the percentage. A prose figure derived from a table is exactly the kind that goes stale
+silently when the table grows — the table itself never lies, but a sentence computed from it
+does — so the endpoints are now stated as "the slowest and fastest of the five rows above",
+which names its own basis and can be re-derived by a reader from the rows rather than trusted.
 
 **Result.** **Baselines measured and published.** Every figure below came out of the run
 named above and is recorded in
@@ -1406,7 +1547,7 @@ started by the tests that precede these in the same class.
 
 | # | Figure | Measured | Conditions |
 |---|---|---|---|
-| 1 | **Batch throughput** | **1,538 records/second** — 200 records in 130 ms | Four read-only steps, 50 rows each, read counts taken off the framework's own `StepExecution` counters rather than assumed: `{account=50, card=50, crossReference=50, customer=50}` |
+| 1 | **Batch throughput** | **1,538 records/second** — 200 records in 130 ms, **as read on 7 August at 17:29 UTC**; the per-run value is `gate3.recordsPerSecond` and the observed spread is in the series above | Four read-only steps, 50 rows each, read counts taken off the framework's own `StepExecution` counters rather than assumed: `{account=50, card=50, crossReference=50, customer=50}` |
 | 2 | **Per-endpoint p95 latency** | `POST /api/auth/signon` **105.1 ms**; `GET /api/menu/main` **30.2 ms**; `GET /api/cards` **37.9 ms**; `GET /api/transactions` **21.5 ms** | 40 samples per operation, warm, over real HTTP. Medians for comparison: 81.1 ms, 5.0 ms, 9.7 ms, 6.1 ms. Sign-on's median sits closest to its p95 — **1.3x** apart — because BCrypt cost 10 dominates it and is deliberate. On this run the three read operations sit **3.5x to 6.0x above** their medians, where another run of the same code had them within a few milliseconds of theirs: that is a first-request effect on a shared host, not a property of the endpoints, and it is the reason the tail rather than the median is published |
 | 3 | **Peak heap** | **169,635,568 bytes** (162 MiB) in the run named above. Seven runs of the same class over the same job have now measured **252 MB, 353 MB, 847 MB, 532 MB, 295 MB, 252 MB and 170 MB** | Sum of the heap pools' peak usage, with the trackers reset immediately before the batch run. **This is a JVM-wide peak, not the job's working set**, and the spread above is why that distinction is published rather than glossed: the same 200-record job has measured 3.4x apart across runs, because the pools belong to the whole test JVM — application context, container clients, the other fifty-seven assertions — and only partly to the work being timed. It is therefore published as an **envelope for the harness JVM**, and the harness asserts only that it is positive. A figure for the job's own footprint would need a JVM running nothing else, which this gate does not have |
 | 4 | **Database round trip p95** *(component, not an operation)* | **294,229 ns** (0.29 ms), median 232,468 ns | 40 samples of `SELECT count(*) FROM daily_transaction`. Recorded so that a later move in an endpoint percentile can be attributed to the substrate or to the application |
@@ -1594,7 +1735,7 @@ produces plausible wrong answers rather than an error.
   source has, not as a silent skip.
 
 **Execution date, tool versions, exit code.** The exact-HEAD run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-07T17:29:14Z to 17:39:14Z, exit
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit
 code 0, against a containerised PostgreSQL 16 raised by the integration tier.
 
 **Result.** **Pass.** Five clauses have to be measured rather than expected, and each is
@@ -1753,11 +1894,12 @@ or that collapses distinct outcomes is a contract break visible to every caller.
   whole rather than by component, or is being carried dash-separated. Compare by
   component and carry it compact.
 
-**Execution date, tool versions, exit code.** The exact-HEAD run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-07T17:29:14Z to 17:39:14Z, exit
+**Execution date, tool versions, exit code.** The run in [§2.6](#env-run):
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit
 code 0. The Failsafe tier retained at `target/failsafe-reports/` carries **38** suites and
-**907** cases, 0 failures and 0 errors, run against a real application context with
-containerised dependencies.
+**919** cases, 0 failures and 0 errors, run against a real application context with
+containerised dependencies. *An equivalent run of 2026-08-07T17:29:14Z reported 907 cases across the
+same 38 suites; the suite count is what this gate rests on and it has not moved.*
 
 **Result.** **Pass.** The census the harness recorded is `gate5.mappedOperations=17` across
 `gate5.controllers` — `AuthController`, `MenuController`, `AccountController`,
@@ -1806,7 +1948,7 @@ signing key, masked log output, and no reachable path to a live cloud endpoint.
 | # | Prerequisite | Standing |
 |---|---|---|
 | 1 | The full source tree, all four configuration profiles and the DDL | Present on this branch |
-| 2 | A vulnerability feed reachable by `dependency-check-maven`, for the scan clause | **Present and exercised** in the run in [§2.6](#env-run) — 166 dependencies scanned. Still environment-dependent, so an empty report elsewhere means an unreachable feed, not a clean one |
+| 2 | A vulnerability feed reachable by `dependency-check-maven`, for the scan clause | **Present and exercised** in the run in [§2.6](#env-run) — 168 dependencies scanned. Still environment-dependent, so an empty report elsewhere means an unreachable feed, not a clean one |
 | 3 | No container runtime | Not needed — every clause is a static scan or a migration-content check |
 
 **Exact command or test.**
@@ -1909,7 +2051,7 @@ whole of `src/test/**` including test resources.
 * **An unpinned dependency** is pinned to an exact version. Ranges are not permitted.
 
 **Execution date, tool versions, exit code.** The exact-HEAD run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-07T17:29:14Z to 17:39:14Z, exit
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit
 code 0, with `target/failsafe-reports/` and
 `target/dependency-check/dependency-check-report.html` both preserved. A corroborating run of
 the same date — also **without** `-Ddependency-check.skip=true`, so the scan clause was
@@ -1925,29 +2067,84 @@ kept, and one `dependency-check-maven` execution against a reachable feed — a 
 | Invariant | Measured | Key |
 |---|---|---|
 | No floating-point type in any financial field | **0** occurrences, across declared precisions `NUMERIC(12,2)`, `NUMERIC(11,2)` and `NUMERIC(6,2)` | `gate6.floatingPointInFinancialFields=0` |
-| Every seeded credential is a BCrypt digest | **10** hashes at cost **10**; of **84** credential candidates walked, **0** authenticate against the seed | `gate6.seededUserHashes=10`, `gate6.bcryptCost=10`, `gate6.credentialsAuthenticatingAgainstTheSeed=0` |
+| Every seeded credential is a BCrypt digest | **10** hashes at cost **10**; of **83** credential candidates walked over the **490** tracked text files the walk covers, **0** authenticate against the seed | `gate6.seededUserHashes=10`, `gate6.bcryptCost=10`, `gate6.credentialsAuthenticatingAgainstTheSeed=0`, `gate6.credentialWalkBasis`, `gate6.credentialWalkFileCount` |
 | No committed secret | **0** | `gate6.committedSecrets=0` |
 | No environment-specific literal in the harness | **0** here; 24 elsewhere in the test tree, every one a guard assertion that *names a forbidden endpoint in order to refuse it* | `gate6.environmentLiteralsInThisHarness=0` |
 | No risky execution, deserialization, shell or SQL-injection pattern | **0**, **0**, **0** | the three `gate6.riskyPattern*` keys |
-| Dependency scan | **166** dependencies, **0** findings at or above CVSS 7 | see [§2.6](#env-run) |
+| Dependency scan | **168** dependencies, **0** findings at or above CVSS 7 | see [§2.6](#env-run) |
 
 Read against the nine clauses this gate enumerates, the same evidence gives:
 
 | Clause | Reading |
 |---|---|
 | 1–7, 9 — the static security invariants | Asserted by the harness in the integration and end-to-end tier: **850 tests, 0 failures, 0 errors**. The censuses the harness recorded are in `target/gate-verification/gate-verification-summary.properties`, written in the same run |
-| 8 — the dependency-vulnerability scan | **166 dependencies** scanned; **167 suppressed matches**, every one carrying its tier and evidence in [`../owasp-suppressions.xml`]; **exactly one active finding** — `spring-boot-3.5.11.jar`, `CVE-2026-40977`, **CVSS 6.7 MEDIUM** — and therefore **zero findings at or above the CVSS 7 threshold** |
+| 8 — the dependency-vulnerability scan | **168 dependencies** scanned; **166 suppressed matches** as re-measured 9 August 2026, every one carrying its tier and evidence in [`../owasp-suppressions.xml`] and reading 167 at the 7 August timestamp; **exactly one active finding** — `spring-boot-3.5.11.jar`, `CVE-2026-40977`, **CVSS 6.7 MEDIUM** — and therefore **zero findings at or above the CVSS 7 threshold**, which is the only clause this gate turns on |
 | 8 — the pinning half | Every plugin and non-BOM dependency at an exact version; no range, no `LATEST`, no `RELEASE` |
 
-**The one exclusion, disclosed rather than absorbed.** The credential walk skips exactly one
-path — `gate6.credentialWalkExclusions=1` — and the harness states why in the artefact
-itself: `docs/project-guide.md` is prior-run evidence held FROZEN and REFERENCE, and its
+**The one *by-name* exclusion, disclosed rather than absorbed.** The credential walk excludes
+exactly one **named file** — `gate6.credentialWalkExclusions=1` — and the harness states why in
+the artefact itself: `docs/project-guide.md` is prior-run evidence held FROZEN and REFERENCE, and its
 sign-on example carries the seeded plaintext. Severity **Medium**. The remediation, for
 whoever owns that document, is to replace the example credential with a placeholder. This
 migration may not edit it, because [§0.3.1.6 of the specification] enumerates its three
 `UPDATE` files and that is not one of them, so the finding is disclosed here instead of
 closed. Suppressing the scan of that file to make the count zero would have been the
 dishonest alternative.
+
+**The denominator is now a property of the repository rather than of a working tree, and it
+took a wrong reading to notice.** The walk is restricted to the paths git tracks, read from
+`.git/index` — hence the **490** file count published above, of the **674** paths git tracks,
+and `gate6.credentialWalkBasis` recording which set was measured. Before that restriction the
+walk read the working tree, so it contradicted the name it carries: it counted four candidate
+values contributed by a gitignored scratch directory that no clean checkout would ever contain,
+overstating the denominator by that many. The figure for the committed tree is **83** over those
+490 files; the same restriction read **79** over 481 files before this checkpoint's test and
+documentation additions landed, and the denominator moved with the files rather than with the
+method. A denominator that moves with
+whatever files a developer happens to be holding cannot be pinned by any assertion, which is
+why the count and the restriction had to be fixed together rather than the number alone. The
+index is read directly instead of by running `git ls-files`, for the same reason the commit
+stamp is: spawning a process is one of the three patterns this very gate asserts absent from
+the tree, so a harness that spawned one would fail itself. Where the metadata cannot be read —
+an exported archive, a vendored copy — the walk falls back to the whole tree and says so in
+`gate6.credentialWalkBasis` rather than reporting a figure that looks reproducible and is not.
+
+**That count is scoped to by-name exclusions and says nothing about roots, which is a
+distinction the figure alone does not carry.** Read as "the walk skips exactly one thing", it
+contradicts the table immediately below, which enumerates **eight** directory roots the walk never
+enters. The two are different mechanisms held to different standards, and both are published:
+`gate6.credentialWalkExclusions` counts the named-file exclusion, while
+`gate6.credentialWalkUnscannedSourceRoots` and `gate6.credentialWalkUnscannedBuildOutputRoots`
+enumerate the roots. A reader comparing one figure against the other set is comparing a file
+count with a root list.
+
+**What the walk does not enter, and the two different reasons.** A by-name exclusion was pinned
+here from the start; the *root* exclusions and the *extension* list were not, and both went wrong.
+The harness now publishes each and holds each to a different standard, because only one of them
+carries a checkable justification:
+
+| Kind | Roots | How it is held |
+|---|---|---|
+| Frozen or out-of-scope **source** | `app`, `samples`, `diagrams`, `.git`, `.mvn` | Pinned literally. "Out of scope" is a judgement, so a change has to be argued on the assertion; each is additionally required **not** to be gitignored, since an ignored root would be output rather than source |
+| Gitignored **build output** | `target`, `site`, `blitzy` | Pinned, **and** each required to carry a root-anchored `/<root>/` rule in `.gitignore`. A root that is not ignored is authored, and an authored root belongs in the scan |
+
+`site/` and `blitzy/` were added because leaving them out made two documented commands mutually
+exclusive in sequence. `mkdocs.yml` sets no `site_dir`, so the bare `mkdocs build --strict` this
+repository publishes as a verification step writes `./site/` — which holds the **rendered** form of
+`docs/project-guide.md`. The by-name exclusion matches an exact source path and cannot match a
+rendered copy of it, so the very next `./mvnw -B -ntp clean verify` failed with
+`Expecting empty but was: {"P******* (8 characters, elided)"=["site/project-guide/index.html"]}`.
+Each command was correct alone. Both halves are now fixed: the walk skips gitignored output, and
+every published `mkdocs build` recipe passes `--site-dir /tmp/carddemo-site`. `blitzy/` was added
+before it bit — it holds screenshots and recordings today, but browser evidence is also `.txt`,
+`.json` and `.html`, all three of which this walk reads.
+
+**The extension list fails in the opposite direction, and silently.** A walk that cannot see a file
+cannot clear it, and the run is green either way. The set is published as
+`gate6.credentialWalkTextExtensions` and pinned; `py` and `css` were added when the documentation
+build gained `mkdocs_hooks.py` and `docs/stylesheets/carddemo.css`, neither of which this gate could
+previously read. The two are asserted through those files rather than through the set alone, because
+pinning a set would still pass if the walk stopped consulting it.
 
 **How the scan clause was brought to a pass, because the distinction is the whole
 point of this field.** `failBuildOnCVSS` remained **7**, `skipTestScope` and
@@ -2151,22 +2348,29 @@ behaviour — it breaks the ability to *know* what was delivered.
 * **A count taken with a case-sensitive glob** is re-taken case-insensitively, and the
   1,154-line shortfall above is the diagnostic that says which mistake was made.
 
-**Execution date, tool versions, exit code.** From the exact-HEAD run in
+**Execution date, tool versions, exit code.** From the run in
 [§2.6](#env-run): the commit this change publishes, `./mvnw -B -ntp clean verify` with **no skips**,
-started 2026-08-07T17:29:14Z and finished 17:39:14Z on JDK 25.0.3 (Temurin-25.0.3+9) with
-Maven 3.9.11. **Exit code 0**; the gate harness ran **58** cases with 0 failures and 0
-errors, alongside **14,914** unit cases and **907** Failsafe cases, all green. Reports at
+started 2026-08-09T09:38:43Z and finished 09:50:02Z on JDK 25.0.3 (Temurin-25.0.3+9) with
+Maven 3.9.11. **Exit code 0**; the gate harness ran **64** cases with 0 failures and 0
+errors, alongside **15,092** unit cases and **919** Failsafe cases, all green. *That supersedes an
+equivalent no-skip run of 2026-08-07T17:29:14Z which reported 58 harness cases alongside
+14,914 unit and 907 Failsafe cases; the two differ only by test additions made in between, and the
+older reading is retained here because the register entries were written against it.* Reports at
 `target/failsafe-reports/TEST-com.cardemo.e2e.GateVerificationTest.xml` and
 `target/gate-verification/gate-verification-summary.properties`, whose
 `gate.harness.executedAtUtc` and `gate.harness.runtime` are written into
 `target/gate-verification/gate-verification-evidence.properties` alongside it &mdash; a file
 whose **absence after a completed build is itself proof the class was never collected**, which
 is why the harness writes it.
-`gate.harness.commit` equals the commit above. The harness declares **58** cases as this tree
+`gate.harness.commit` equals the commit above. The harness declares **59** cases as this tree
 stands, counted from the source with a comment-aware scan rather than copied from this page —
 `grep -c '@Test'` over this class returns a larger number, because it also matches the annotation
-name inside its doc comments. The boundary section gained one case when the captured-oracle integrity check and the committed-expectation check were
-brought together, so both expectations are asserted rather than either alone.
+name inside its doc comments. The count last moved by five, and every one of the five is a guard over a figure this page
+publishes: two hold the Gate 1 narrative and the severity register against the documents they
+summarise, one holds the traceability matrix column by column, and two — added with this
+reading — hold the tier table below and the credential-candidate denominator against what the
+run measured. A page that publishes figures needs assertions that read them, and until those
+five existed it had none.
 
 *Superseding a stale stamp, and why it was stale rather than merely old.* This field
 previously published a run of 6 August 2026 at 12:10 UTC invoked with
@@ -2176,14 +2380,14 @@ first is about age. It **predated later commits to the tests and the workflow**,
 described a tree that no longer existed. It named **no commit at all**, so nothing about it
 could be checked. And it **skipped the vulnerability scan**, so the half of Gate 2 that
 scan satisfies was unevidenced while the stamp still read "exit code 0". The figures moved
-because the harness grew — 41 assertions to 58, and 14,461 unit cases to 14,914 — not
+because the harness grew — 41 assertions to 64, and 14,461 unit cases to 15,092 — not
 because either reading was mistaken at the time it was taken.
 
 | Figure | Value | How it was counted |
 |---|---|---|
-| Gate test cases in this class | **58**, 0 failures, 0 errors | `<testcase>` elements in `target/failsafe-reports/TEST-com.cardemo.e2e.GateVerificationTest.xml` |
-| Unit **test cases** across the whole run | **14,914**, 0 failures, 0 errors, 0 skips | `<testcase>` elements across 209 files in `target/surefire-reports/` |
-| Integration and end-to-end **test cases** across the whole run | **907**, 0 failures, 0 errors, 0 skips — 799 across the 35 concrete `integration/` classes and 107 across the 3 under `e2e/` | `<testcase>` elements across 38 files in `target/failsafe-reports/` |
+| Gate test cases in this class | **64**, 0 failures, 0 errors | `<testcase>` elements in `target/failsafe-reports/TEST-com.cardemo.e2e.GateVerificationTest.xml` |
+| Unit **test cases** across the whole run | **15,092**, 0 failures, 0 errors, 0 skips &mdash; it read 14,914 on 7 August | `<testcase>` elements across 212 files in `target/surefire-reports/` |
+| Integration and end-to-end **test cases** across the whole run | **919**, 0 failures, 0 errors, 0 skips — 804 across the 35 concrete `integration/` classes and 115 across the 3 under `e2e/`; it read 907 with a 107 end-to-end split on 7 August | `<testcase>` elements across 38 files in `target/failsafe-reports/` |
 
 **Three properties a stamp must have to be evidence at all, stated because a stamp missing any
 one of them still reads like a pass.**
@@ -2275,14 +2479,17 @@ against ephemeral containers by the `GateVerificationTest` methods whose display
 begin *Gate 8*, which cover the three applied migrations, the 11 domain tables and the
 live health registry.
 
-**Input.** The six-service compose topology, the three migrations, and the emulator
+**Input.** The seven-service compose topology, the three migrations, and the emulator
 initialisation script — all read from this branch, with no manual step between `up` and
 verification.
 
 **Expected assertions.**
 
-1. **All six compose services reach a healthy state**: the application, PostgreSQL 16,
-   the LocalStack emulator, Jaeger, Prometheus and Grafana.
+1. **All seven compose services reach a healthy state**: the application, PostgreSQL 16,
+   the LocalStack emulator, Jaeger, the Prometheus Pushgateway, Prometheus and Grafana. The
+   Pushgateway is the seventh, and it is a recorded deviation from the five-substrate
+   enumeration the plan fixes rather than an unremarked addition — see `DECISION_LOG.md`
+   DL-CR-11.
 2. **The composite health endpoint reports UP** for the database, the object store and
    the queue, with **liveness and readiness groups distinguishable** — a single
    aggregate that answers UP is not sufficient, because it cannot say what is ready.
@@ -2306,10 +2513,27 @@ verification.
    | Resource | Count | Detail |
    |---|---:|---|
    | S3 buckets | **3** | input, output and statements — **versioning on the output bucket only** |
-   | SQS FIFO queue | **1** | `carddemo-report-jobs.fifo`, with `FifoQueue=true` and `ContentBasedDeduplication=false` |
+   | SQS queues | **2** | `carddemo-report-jobs.fifo`, with `FifoQueue=true` and `ContentBasedDeduplication=false`; **and** `carddemo-notifications-inbox`, a **standard** queue that exists to be the topic's subscriber |
    | SNS topic | **1** | notifications. **Exactly one** — an alerts topic is deliberately not provisioned: nothing declares it and nothing consumes it, and least privilege forbids provisioning a delivery surface with no consumer |
-   | SNS subscriptions | **0** | deliberately none |
+   | SNS subscriptions | **1** | the inbox queue, protocol `sqs`, `RawMessageDelivery=true`. **At least one is the contract and zero is FATAL** — the script exits **7** on an unsubscribed topic |
    | S3 lifecycle rules | **0** | deliberately none — generation-group retention is documented, not enforced; see [§12.3](#legacy-defects) |
+
+   **This row read "SQS FIFO queue 1" and "SNS subscriptions 0 — deliberately none" for a
+   commit, and the second half was the more serious error of the two.** It did not merely
+   undercount; it published the script's **fatal** state as its intended one. An earlier
+   revision of `localstack-init/init-aws.sh` genuinely did provision the topic with no
+   subscriber and assert that emptiness as the contract, reasoning from least privilege — and
+   the reasoning was wrong in a way no publisher can detect: **a topic with no subscriber
+   accepts every publish and silently discards it**, so the notification capability reports
+   success while delivering nothing. Least privilege constrains what a provisioned resource may
+   *reach*; it does not license a delivery surface whose every message is thrown away. The
+   script was corrected to require **at least one** subscriber and to exit 7 without one, and
+   [`docs/onboarding-guide.md`] was corrected with it, but this table kept the withdrawn figure
+   — so the ledger contradicted both the script it describes and its own sibling document.
+   Re-measured against the running stack: **3** buckets, versioning `Enabled` on
+   `carddemo-batch-output` **only**, **2** queues, **1** topic, **1** subscription
+   (`sqs` → `carddemo-notifications-inbox`), **0** lifecycle rules
+   (`NoSuchLifecycleConfiguration`).
 
 5. **The initialisation is idempotent.** A second `docker compose up` **converges**
    rather than failing on already-existing resources, and this is asserted **by restarting
@@ -2321,12 +2545,56 @@ verification.
 7. **The topology is not privileged.** No Docker socket mount, no privileged container,
    no host networking, and **no `latest` image tag** — every image is pinned by tag and
    digest.
+8. **The provisioned dashboard renders its panels without clipping their content**, at a
+   narrow mobile width as well as at desktop width. A panel that shows a value only to a
+   reader with a wide monitor has not published that value.
+
+**The dashboard rendering reading, measured rather than eyeballed.** Panel geometry is the
+only honest detector here: a Grafana legend's `textContent` is byte-identical at every
+viewport width, so a text assertion and an accessibility assertion both pass while the
+pixels are cut. Every figure below was read in a real headless Chrome from
+`getBoundingClientRect`, `getComputedStyle` and character-level `Range` measurement against
+each legend's own scroll container, at the two widths named.
+
+| Panel | Reading | 375 × 812 before | 375 × 812 now | 1920 × 1080 now |
+|---|---|---|---|---|
+| `Processing and rejection rate` | horizontal overflow | 0 px | **0 px** | **0 px** |
+| | vertical overflow | **+12 px** | **+2 px** | +2 px |
+| | **glyph pixels sheared** | **~7 px of an 18 px row** | **0, with 4.31 px clearance** | **0, with 4.31 px clearance** |
+| | values fully legible | 1 of 2 | **2 of 2** | 2 of 2 |
+| `Rejection rate by reject code` | horizontal overflow | +118 px | +118 px | **0 px** |
+| | vertical overflow | **+2 px** | **0 px** | **0 px** |
+| | values fully visible | 4 of 5 | **4 of 5** | **5 of 5** |
+| | longest label | clipped mid-word | clipped mid-word | **renders in full** |
+
+`Processing and rejection rate` is **fixed**: its legend moved to table mode and its height
+rose from 5 to 7 grid units, and the row that used to be sheared now clears the container's
+visible bottom edge by 4.31 px, measured across all sixteen painted glyphs of that row. The
+remaining 2 px is the table row's padding box, it is identical at both widths, and it touches
+no text pixel.
+
+`Rejection rate by reject code` is **partially fixed, and the remainder is recorded rather
+than closed**. Its vertical overflow is gone, for the same reason — 11 to 13 grid units. Its
+horizontal overflow is not, because its longest series label is the forty-six characters of
+`103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION`, byte-identical to
+[app/cbl/CBTRN02C.cbl:L419] and asserted as such by three test classes, so it may not be
+shortened. **All six `options.legend` permutations available to a provisioned dashboard were
+measured at both widths and every one clipped the identical five characters `ATION`, none
+producing an ellipsis** — Grafana sets the label element's width to its own natural content
+width, 328.906 px, so the `text-overflow: ellipsis` it already carries can never engage, and
+`placement: right` is responsively collapsed to a bottom legend below 768 px. Table mode was
+measured as a **regression** here and reverted: its shared `Name` column sizes to the longest
+label, 366.9 px, which pushed **all five** values outside the 325 px box where list mode
+loses only one. The single hidden value remains reachable — the legend scrolls sideways by
+exactly its 118 px — the same five labels and values are fully legible in the bar gauge
+beside it, and the panel description now says so. Recorded as an accepted limitation in
+`../DECISION_LOG.md` DL-RM-15.
 
 **Evidence and report paths.**
 
 | Artefact | Path or command output to preserve |
 |---|---|
-| Service health | `docker compose ps` showing all six healthy, plus the composite health response body |
+| Service health | `docker compose ps` showing all seven healthy, plus the composite health response body |
 | Migration state | The Flyway schema-history rows, showing three successful migrations in order |
 | Object-store and queue state | The emulator's bucket, queue and topic listings after the first `up` **and** after the restart |
 | Ephemeral-container equivalent | `target/failsafe-reports/` and `target/gate-verification/gate-verification-summary.properties` |
@@ -2350,16 +2618,27 @@ application computes anything incorrectly — which is what separates it from a 
 * **A `latest` tag, a socket mount, a privileged flag or host networking** is removed. A
   digest pin is what makes this gate's result mean the same thing tomorrow.
 
-**Execution date, tool versions, exit code.** From **two** executions, both in this working
-tree at the same commit. First, the exact-HEAD run in [§2.6](#env-run): the commit this change publishes,
-`./mvnw -B -ntp clean verify`, 2026-08-07T17:29:14Z to 17:39:14Z, exit code 0, which stood the
-application up against a **containerised** PostgreSQL 16 and LocalStack 4.14.0 raised by the
-integration tier itself. Second, and separately, `docker compose up -d --build --wait` at the
-same commit with the working tree clean, 2026-08-07T17:44:59Z to 17:47:56Z, **exit code 0** on
-Docker Engine 29.7.0 — the six-service topology, brought up as a unit.
+**Execution date, tool versions, exit code.** From **two** executions in this working tree,
+and — stated plainly because an earlier reading of this paragraph claimed otherwise — **at two
+different commits**. First, the exact-HEAD run in [§2.6](#env-run): the commit this change
+publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit code 0, which
+stood the application up against a **containerised** PostgreSQL 16 and LocalStack 4.14.0 raised
+by the integration tier itself. Second, and separately, `docker compose up -d --build --wait`,
+2026-08-07T17:44:59Z to 17:47:56Z, **exit code 0** on Docker Engine 29.7.0 — the six-service
+topology, brought up as a unit — taken at `9702da58`, the commit the previous reading of this
+page published.
+
+**The compose half was not re-taken with this reading, and saying so is the point of this
+sentence.** The two halves of this gate rest on different evidence and only the first was
+re-measured: the second is carried forward at the commit named above rather than re-run, so it
+attests to that tree and not to this one. It was left as it stands because the changes between
+the two commits are confined to the test tree and to this page's own prose, neither of which the
+compose topology consumes — but a reader is entitled to know the difference rather than infer it
+from a shared date, which is precisely what the superseded wording invited by asserting both
+executions shared a commit.
 
 **Result.** **Available.** The distinction this gate turns on is between *the application
-assembling against real backing services* and *the six-service topology assembling as a
+assembling against real backing services* and *the seven-service topology assembling as a
 unit*. The first execution establishes the former; the second establishes the latter, and a
 convergence cycle recorded below closes the last clause. Both halves are now measurements
 rather than disclosures.
@@ -2375,43 +2654,110 @@ than merged.
 | Migrations apply cleanly | **Available** | `gate8.migrationsApplied=3` |
 | Schema materialises | **Available** | `gate8.domainTables=11`, `gate8.alternateIndexes=3` |
 | Composite health reports | **Available** | `gate8.healthContributors=8` — `db`, `s3`, `sqs`, `livenessState`, `readinessState`, `ssl`, `diskSpace`, `ping` |
-| Six services declared | **Available**, but this is a reading of the file, not of a running stack | `gate8.composeServices=6` |
-| Six services **running and healthy** | **Available**, observed directly in **this** working tree at the commit under test | All six containers reported `healthy`; see *The six-service bring-up* |
-| Convergence on a second `up` | **Available** | The second `up` returned in **one second** with **no** container recreated; see *Convergence* |
+| Seven services declared | **Available**, but this is a reading of the file, not of a running stack | `gate8.composeServices=7` |
+| Seven services **running and healthy** | **Available**, observed directly in **this** working tree at the commit under test | All seven containers reported `healthy`; see *The seven-service bring-up* |
+| Convergence on a second `up` | **Available** | The second `up` returned in **1.11 seconds** with **no** container recreated; see *Convergence* |
+| Both scrape targets reachable | **Available** | `carddemo-app` and `carddemo-pushgateway` each reported `health="up"` with an empty `lastError`; the second target is what lets a batch-fed panel hold a value at all |
 
 Both clauses that stood outstanding here have been produced, and by the exact means this
 field previously specified as what was needed: a `docker compose up -d --wait` cycle in
-**this** working tree, with the six-service health output, the composite health response, the
+**this** working tree, with the seven-service health output, the composite health response, the
 Flyway history and the emulator listings preserved, followed by a **second** `up` to
 demonstrate convergence.
 
 
-**The six-service bring-up, published as its own reading with its own provenance.** It is set down
+**The seven-service bring-up, published as its own reading with its own provenance.** It is set down
 separately, and deliberately not merged into the `verify` stamp above, because it is a different
 execution — and a stamp that blurs two runs together is the failure the freshness work in
 [§2.6](#env-run) exists to prevent. What makes this reading usable where an earlier one was not is
-**whose tree it came from**: it was taken in *this* working tree, at the commit under test, by this
-phase.
+**whose tree it came from**.
 
-Brought up on Friday, 7 August 2026 at **17:44:59 UTC** at commit
-the commit this change publishes with `docker compose up -d --build --wait
---wait-timeout 900` — **exit code 0**, all six reporting `Healthy` by 17:47:56 UTC — on Docker
-Engine **29.7.0**, compose project `carddemo-010` (`CLONE_INDEX=010`, host ports shifted to
-8100/5452/4586/16706/4338/9110/3020 so the stack cannot collide with a sibling).
-`git status --porcelain` was **empty both before and after**. The image was **built from this tree
-rather than reused**: compose resolves `carddemo:local-010`, which did not exist, and adopting an
-image built earlier in this session would have attributed a different tree's bytes to this commit.
-The build stage ran the unit tier **inside the container**, and live probes were taken immediately
-afterwards.
+<a id="gate-8-bringup-restamped"></a>
+
+**This stamp was replaced once, and the reason it had to be is recorded before the new figures.** The
+reading previously published here was taken on 7 August 2026 in a **different clone** — containers
+named `carddemo-*-010`, host ports 8100/5452/4586/16706/4338/9110/3020 — and roughly seven hours
+before the commit it was attributed to. In the interval, `docker compose up -d --build --wait` stopped
+working: it exited **1**, and this page went on asserting exit 0. That is a regression this page
+disclosed nowhere, and it is now disclosed twice — under *Two build-context defects* below and as
+`H-8` in the [severity-classified findings](#findings). The figures below come from a run in **this** clone,
+after the fixes that make it pass.
+
+Brought up on Sunday, 9 August 2026 at **00:50:06 UTC** with the exact documented command
+`docker compose up -d --build --wait --wait-timeout 900` — **exit code 0**, all six reporting
+`Healthy` by **00:53:28 UTC**, three minutes twenty-two seconds end to end — on Docker Engine
+**29.7.0** with Compose **5.3.1**, compose project `carddemo-006` (`CLONE_INDEX=006`, host ports
+shifted to 8086/5438/4576/16696/4328/9096/3006 so the stack cannot collide with a sibling; four
+sibling clones' stacks were running throughout and none was read).
+
+**The tree this came from, stated exactly rather than as "clean".** `git status --porcelain` was
+**not** empty: it carried the twelve modified and two new files this checkpoint had reached by then,
+which are
+precisely what makes the command exit 0 — publishing a clean-tree stamp would therefore have been
+impossible and pretending otherwise dishonest. The image was **built from that tree rather than
+reused**: `carddemo:local-006` did not exist, the `--build` copied the working tree into the
+context, and the build stage ran the unit tier **inside the container** — **14,917 tests, 0
+failures, 0 errors, 1 skipped**, `BUILD SUCCESS` in 2 min 32 s.
+
+**Re-run twice more the same day, after further work in the same checkpoint, and the third reading
+is the one this row now rests on.** The second was at **02:41:20 UTC** — exit code 0, all six
+healthy by 02:43:59 UTC, two minutes thirty-nine seconds, in-image unit tier **14,925 tests, 0
+failures, 0 errors, 1 skipped**. The third was at 05:10:59 UTC — exit code 0, in-image 14,929 tests. The fourth was at 06:11:24 UTC —
+exit code 0, in-image 14,931 tests. The fifth, which this
+fifth was at **07:39:26 UTC** against a tree then carrying
+**fifteen** modified files and **two** new paths — **exit code 0**, all six healthy by
+**07:42:04 UTC**, two minutes thirty-eight seconds, and the in-image unit tier **14,932 tests, 0
+failures, 0 errors, 1 skipped**, which was the host figure exactly.
+
+**The sixth reading is the one this row now rests on, and it is the first taken against a committed
+tree rather than a working one.** Brought up on Sunday, 9 August 2026 at **10:09:35 UTC** with the
+same documented command, with `git status --porcelain` **empty** — so, unlike every reading above it,
+this stamp needs no disclosure about uncommitted files. **Exit code 0**, and **all seven** services
+`Healthy` by **10:13:01 UTC**, three minutes twenty-six seconds end to end: the six of the earlier
+readings plus `pushgateway`, which is the service that makes the census seven. The image was built
+from that tree — the `--build` stage ran the unit tier **inside the container**, **15,092 tests, 0
+failures, 0 errors, 1 skipped**, which is the host figure exactly — and the same command issued
+immediately afterwards exited **0** in 1.5 s with nothing to rebuild and nothing to recreate, which
+is the idempotence the documented command is supposed to have. Ports bind on `127.0.0.1` at
+8080/5432/4566/16686/4318/9091/9090/3000 under the compose project `carddemo`. **Five bring-ups are recorded rather
+than one because each followed a test addition, and the point of re-running is that the added cases read
+the repository as data from inside the image** — a curated build context can omit a file the host has,
+so a documentation or test-only change is exactly the kind that passes on the host and fails in the
+image. Every one of the five exited 0.
+The count moved on each occasion because cases had landed that hold a published claim against the
+tree — first the batch-launch command against the job names the code registers, then this
+documentation set's structural counts against the files they describe — and the point of re-running
+rather than reasoning about it is
+that those cases read the repository **as data** from inside the image: a documentation edit is
+exactly the kind of change that can be green on the host and broken in a curated build context,
+which is the failure this row has now been through three times.
+
+**One observation from the third run is worth recording, because it looks like a defect and is
+the opposite of one.** `docker compose ps` after that run reported the application container as
+having been up for hours rather than freshly created, and the image `carddemo:local-006` kept
+the image ID and creation timestamp it had at **02:43:43 UTC** — so the build re-ran the entire
+unit tier, including the four newly landed cases, and still produced **no new image**. That is
+correct and is a property of what changed: test sources are not packaged into the runtime jar and
+documentation is not copied into the final stage, so a test-only and documentation-only checkpoint
+leaves the final image layers **byte-identical**, Docker's content-addressable store returns the
+existing image, and Compose has nothing to recreate. **The running container therefore cannot be
+stale with respect to this checkpoint — there is no newer image for it to be stale against.** The
+build is not being skipped: 15 layers came from cache, the Maven stage still executed, and its
+14,932 green tests are the evidence that it did.
+The single skip is unchanged and is
+`BuildProvenanceTest.aPlantedSentinelTokenCannotReachTheLog`, which assumes `python3` and finds none
+in the Maven builder image; the allowlist assertions on that filter's source run unconditionally, so
+the property is still covered. Live probes were taken immediately afterwards.
 
 | Service | Container | State |
 |---|---|---|
-| `app` | `carddemo-app-010` | Up, **healthy** |
-| `postgres` | `carddemo-postgres-010` | Up, **healthy** |
-| `localstack` | `carddemo-localstack-010` | Up, **healthy** |
-| `jaeger` | `carddemo-jaeger-010` | Up, **healthy** |
-| `prometheus` | `carddemo-prometheus-010` | Up, **healthy** |
-| `grafana` | `carddemo-grafana-010` | Up, **healthy** |
+| `app` | `carddemo-app` | Up, **healthy** |
+| `postgres` | `carddemo-postgres` | Up, **healthy** |
+| `localstack` | `carddemo-localstack` | Up, **healthy** |
+| `jaeger` | `carddemo-jaeger` | Up, **healthy** |
+| `pushgateway` | `carddemo-pushgateway` | Up, **healthy** |
+| `prometheus` | `carddemo-prometheus` | Up, **healthy** |
+| `grafana` | `carddemo-grafana` | Up, **healthy** |
 
 *Health endpoints* — `GET /actuator/health` returned HTTP 200 and exactly
 `{"status":"UP","groups":["liveness","readiness"]}`, with `/actuator/health/readiness` and
@@ -2421,31 +2767,85 @@ that is the configured posture rather than a gap**: `show-details` and `show-com
 therefore a reading of the health **registry** inside the test context, and it is not restated as
 an HTTP observation here, because over HTTP this endpoint deliberately discloses status only.
 
-*Flyway* — all three migrations applied and successful, read from `flyway_schema_history`: V1 create
-schema 46 ms, V2 create indexes 8 ms, V3 seed data 35 ms. The schema carries **11** domain tables and
-**3** `idx_` alternate-key indexes; `daily_transaction` carries **14** columns, the 13 copybook fields
-plus the sanctioned ingestion ordinal. The 17 tables the catalogue reports are those 11 plus the 6
-Spring Batch metadata tables, which the framework creates and the migrations do not.
+*Flyway* — all three migrations applied and successful, read from `flyway_schema_history` in this
+bring-up: V1 create schema **95 ms**, V2 create indexes **13 ms**, V3 seed data **39 ms**, each with
+`success = t`. Execution times are wall-clock and differ between runs; the earlier reading here
+recorded 46/8/35 ms in a different clone, and the figure that carries meaning is `success`, not the
+milliseconds. The schema carries **11** domain tables and **3** `idx_` alternate-key indexes —
+`idx_card_acct_id`, `idx_card_cross_reference_acct_id` and `idx_transaction_proc_ts`, one per legacy
+alternate index; `daily_transaction` carries **14** columns, the 13 copybook fields plus the
+sanctioned ingestion ordinal. `information_schema` reports **18** base tables in `public`, and the
+decomposition is stated in full because an earlier "17" here left the remainder to inference: those
+11, plus the **6** Spring Batch metadata tables the framework creates and the migrations do not,
+plus `flyway_schema_history`, which Flyway itself creates.
 
 *Emulator provisioning* — **3** buckets `carddemo-batch-input`, `carddemo-batch-output` and
 `carddemo-statements`, with `get-bucket-versioning` returning `Status: Enabled` on
 **`carddemo-batch-output` only** — the bucket the generation-to-object-version mapping requires it
-on — and an empty response on the other two. **2** queues, not one: the FIFO
-`carddemo-report-jobs.fifo` that carries report submissions, and the standard
+on — and an empty response on the other two. **3** queues, not one: the FIFO
+`carddemo-report-jobs.fifo` that carries report submissions, the FIFO
+`carddemo-report-jobs-dlq.fifo` that its `RedrivePolicy` names as the dead-letter target with
+`maxReceiveCount` 4, and the standard
 `carddemo-notifications-inbox` that receives the topic's fan-out. **1** SNS topic
 `carddemo-notifications`, carrying **exactly one** subscription, protocol `sqs`, endpoint
 `arn:aws:sqs:us-east-1:000000000000:carddemo-notifications-inbox`. Provisioning is idempotent, so the
-bring-up converged over an existing volume rather than failing on already-present resources.
+bring-up converged over an existing volume rather than failing on already-present resources. Every
+one of those readings was retaken against this clone's emulator on 9 August 2026 and every one
+matched, including `get-bucket-lifecycle-configuration` answering `NoSuchLifecycleConfiguration` on
+the output bucket — **0** lifecycle rules, which is the disclosed posture rather than an omission,
+because generation retention is carried by object versioning.
 
-*How the six were verified, stated precisely* (`gate8.serviceVerificationMethod`): `postgres` and
+*How the seven were verified, stated precisely* (`gate8.serviceVerificationMethod`): `postgres` and
 `localstack` are **execution-verified**, probed live through the health registry and a real query;
-the other four are **topology-and-wiring-verified** in the harness — declared in
-`docker-compose.yml` with their scrape, datasource, dashboard and OTLP wiring asserted — because the
-harness's own context does not start them. The bring-up above then observed all six `healthy`
-directly. Both statements are kept distinct rather than merged into a single claim of execution.
+the other five — `app`, `jaeger`, `pushgateway`, `prometheus` and `grafana` — are
+**topology-and-wiring-verified** in the harness, declared in `docker-compose.yml` with their scrape,
+datasource, dashboard and OTLP wiring asserted, because the harness's own context does not start
+them. The bring-up above then observed all seven `healthy` directly. Both statements are kept
+distinct rather than merged into a single claim of execution.
 
-**One prerequisite fix was required before any bring-up could reach that result, and it is recorded
-rather than absorbed.** An earlier `docker compose up --build` attempt **failed**: the image build stage runs the unit tier,
+<a id="gate-8-build-context"></a>
+
+**Two build-context defects had to be closed before this bring-up could reach exit 0, and they are
+the second and third instances of one recurring shape.** Both were *regressions*: `up --build`
+worked at the previous stamp and exited **1** here, on a defect that existed only inside the build
+context while the identical suite passed on the host. The shape is always the same — the image build
+stage runs the unit tier, the unit tier reads this repository as data, and the build context is a
+*curated subset* of the repository.
+
+* **`app/data/EBCDIC` pruned, against a register that names it.** `.dockerignore` prunes the twelve
+  out-of-scope codepage datasets, correctly. `SourceCitationResolutionTest` already carried a narrow
+  exemption for exactly that; `InventoryCountGateTest` did not, and its row V-1 check requires every
+  `app/…` path cited in `DECISION_LOG.md` §12.1 to resolve — one of which is
+  `app/data/EBCDIC/**`, named in that section's own exclusions row. Observed:
+  `Expecting empty but was: ["app/data/EBCDIC/"]`, **1 failure out of 55** in that class, and
+  `docker compose up -d --wait` exit **1**. The fix is the same directory-keyed exemption in the
+  same shape, with a self-limiting companion assertion. Held by controlled experiment in both
+  directions: with the subtree **present**, a deliberately mistyped path *under* it still fails; with
+  it **absent**, a mistyped path *outside* it still fails while the count stays at 61. Widening the
+  prune, or admitting the data to quieten the gate, were both rejected — the first hides real
+  breakage, the second fixes a build-context artefact by putting out-of-scope material permanently
+  into the context.
+* **Five root dotfiles never copied.** `SourceCitationResolutionTest.everyCitedSymbolResolves`
+  replaces line locators with symbol citations, so it must read both the citing file and its target,
+  and it reads them **unconditionally** — correctly, since a citation check that silently skips its
+  target checks nothing. Three of its targets were absent from the context. `.gitignore` failed
+  first: `UncheckedIOException: Cannot read /workspace/.gitignore`, **1 error out of 14,917 tests**.
+  `.editorconfig` and `.gitattributes` were then found **without building**, by enumerating every
+  path that table reads and differencing it against the `COPY` set — each would have failed next, one
+  build apiece. `.dockerignore` and `mvnw.cmd` were copied in the same change for the opposite
+  reason: they are named in scanned-file lists that **skip** an absent path, so their absence made
+  the in-image scan cover strictly *less* than the host scan without failing. That vacuity matters
+  more than the errors, because a loud failure gets fixed and a quiet one does not. `mkdocs_hooks.py`
+  joined them so the copied `mkdocs.yml`, which declares it under `hooks:`, is not left naming a file
+  the context lacks.
+
+**The lesson this page should carry, since the instance has now been closed four times.** Each round
+fixed the file that failed and left the *list* unexamined; the next round found the next file. This
+round closed the list instead — by enumeration against the `COPY` set rather than by another build —
+which is why two of the three failures above were never observed as failures at all.
+
+**The first instance, recorded when it happened and kept for the pattern.** An earlier
+`docker compose up --build` attempt **failed**: the image build stage runs the unit tier,
 and the `Dockerfile` copied a selected file list that omitted `DECISION_LOG.md` and
 `TRACEABILITY_MATRIX.md`, which unit guards read. Every one of the resulting failures was an
 `UncheckedIOException` for a file absent from the build context, while the identical suite passed on
@@ -2454,40 +2854,40 @@ silently skip a non-existent file, so its absence made the in-image scan cover s
 host run without failing. That is the same evidence-driven correction the `Dockerfile` had already
 applied twice, for `docs/` and `observability/`.
 
-**Convergence, demonstrated rather than asserted.** A second cycle was run in this same tree to
-close the last clause. `docker compose up -d --build --wait` at **18:07:51 UTC** returned **exit
-code 0** with all six healthy by 18:10:50 UTC; `docker compose up -d --wait` immediately afterwards,
-at **18:11:12 UTC**, returned **exit code 0 in one second** and **recreated nothing** — its log
-carries no `Recreate` and no `Created` line, and every container reported `Running` and then
-`Healthy`. The emulator's provisioning hook was then re-executed by hand inside the running
-container: **exit code 0**, 32 lines, **zero** `FATAL` or `ERROR`, ending `all resources provisioned
-and verified`, with its own summary line reading `sns subscriptions ....... 1 via sqs (read-back)`.
-Convergence therefore means what the troubleshooting note above requires it to mean — a create
-behaved as a create-if-absent, and nothing was deleted to achieve it.
+**Convergence, demonstrated rather than asserted.** `docker compose up -d --wait` was run again
+immediately after the bring-up above, at **00:54:42 UTC**, and returned **exit code 0 in 1.4
+seconds** having **recreated nothing** — its log carries no `Recreate` and no `Created` line, and
+every container reported `Running` and then `Healthy`. Convergence therefore means what the
+troubleshooting note above requires it to mean: a create behaved as a create-if-absent, and nothing
+was deleted to achieve it. The emulator listings retaken afterwards were identical to those taken
+before it, including the single SNS subscription read back through `sns list-subscriptions`, which
+`localstack-init/init-aws.sh` treats as **fatal at zero** rather than optional.
 
-One qualification about that second cycle, stated rather than left to inference: the working tree
-then differed from the commit under test in exactly **one** file — this page, which was being
-written. Because the `Dockerfile` copies `docs/` and the in-image unit tier reads it, the `--build`
-in that cycle re-executed those documentation guards against the edited text and still exited 0. The
-**clean-tree** reading published above at 17:44:59 UTC is the one this gate rests on for the
-six-service clause; this pair establishes convergence only.
+The convergence reading and the bring-up reading came from the **same** tree, one cycle apart, which
+is why they are published together rather than as two provenances. Both were taken with this
+checkpoint's changes present and uncommitted, stated plainly above; neither is presented as a
+clean-tree reading, because at the commit this page replaces the command did not succeed at all.
 
 **A parallel clone's stack was running throughout, and was deliberately not read.** A stack
 answering this repository's compose definition belongs to a **parallel agent's clone** — its
 `com.docker.compose.project.config_files` label resolves to a different working tree entirely — so
 it is neither this run's evidence to publish nor this run's stack to restart. Reading another
 clone's containers into this field would be a false provenance claim of exactly the kind the
-freshness work in [§2.6](#env-run) exists to prevent. It was left untouched; this tree's own
-project, `carddemo-010` on shifted host ports, was brought up beside it and afterwards torn down
-with `docker compose down -v --remove-orphans`, **exit code 0**. The stack is therefore *not*
-running as this is read: every figure above is a retained observation, and re-deriving it means
-re-running the two commands named.
+freshness work in [§2.6](#env-run) exists to prevent. **Four** sibling stacks were running during
+the 9 August bring-up — `carddemo`, `carddemo-000`, `carddemo-002` and `carddemo-004` — and none was
+read, restarted or torn down. This tree's own project, `carddemo-006` on shifted host ports, was
+brought up beside them and afterwards torn down with `docker compose down -v --remove-orphans`,
+**exit code 0**. The stack is therefore *not* running as this is read: every figure above is a
+retained observation, and re-deriving it means re-running the commands named.
 
-**The earlier sibling-clone reading is superseded, and is named rather than deleted.** Before this
-tree produced its own bring-up, this field published one taken at commit `1363f491` in compose
-project `carddemo-008` — a **different working tree**. It was disclosed as such at the time and is
-recorded here as the disclosure trail rather than as evidence: nothing in this gate's result now
-rests on it.
+**Two earlier readings are superseded, and both are named rather than deleted.** This field has now
+published a bring-up from three different clones. The first was taken at commit `1363f491` in project
+`carddemo-008`; the second on 7 August 2026 in project `carddemo-010`, roughly seven hours before the
+commit it was attributed to and — as it turned out — at a point where the command it recorded as exit
+0 had begun exiting 1. Both were disclosed as sibling-clone readings at the time. They are kept here
+as the disclosure trail rather than as evidence: nothing in this gate's result rests on either, and
+the failure of the second is the whole argument for stamping a bring-up with the clone and the tree
+state it came from rather than with a commit alone.
 
 **Residual risks.** A healthy stack proves the topology assembles and answers. It does
 not prove the deployment is production-ready: container orchestration stops at compose,
@@ -2542,7 +2942,7 @@ different actions:
 | B-1 | The container library's 2.x line renamed every module coordinate, so the bare 1.x identifiers do not resolve, and the framework parent already manages a 1.x version | `pom.xml` `<testcontainers.version>`; the `org.testcontainers` module coordinates | The build does not resolve, or resolves the wrong version silently | Already in scope; it is a precondition of every container-dependent gate | Apply **both** halves: override through the version property — never a second bill-of-materials import — **and** use only the four prefixed coordinates. Either half alone still fails. See [Gate 2](#gate-2) |
 | B-2 | Relocating or renaming the gate harness removes it from both test plugins **with no error** | `src/test/java/com/cardemo/e2e/GateVerificationTest.java`; the `maven-failsafe-plugin` includes in `pom.xml` | Every gate silently stops being verified while the build still reports success | Any refactor that moves test packages | Keep the class at that exact path, in that package, with the `Test` suffix. Confirm a run from the written evidence artefact, **never** from a green build alone |
 
-**High — 7.** `H-1` through `H-4` are prior-run open defects that this work closes. `H-5`
+**High — 9.** `H-1` through `H-4` are prior-run open defects that this work closes. `H-5`
 is a fifth of a different kind — a silent-failure path in documentation publication,
 discovered and measured during this work rather than inherited — and it is closed too. Each
 is listed here so the closure is auditable rather than assumed. **An earlier revision of
@@ -2558,6 +2958,18 @@ findings must meet them, and their remediation columns name the owner and the de
 than a change already made. **A reader must not infer from this table that every High item is
 resolved.**
 
+**`H-8` and `H-9` are a fourth kind: regressions this work introduced and then closed.** Every
+other entry is either inherited from a prior run or an exposure measured and left open. `H-8` is
+the documented compose bring-up beginning to exit 1 while [Gate 8](#gate-8) went on publishing
+exit 0, for two commits. `H-9` is a notification topic provisioned with **no subscriber**, so
+every publish was accepted and silently discarded — and, after the provisioning script had been
+corrected to make that state fatal, **this ledger went on publishing the fatal state as the
+intended one**. Both are disclosed rather than quietly fixed because a register that records only
+inherited defects reads as though this work introduced none, and that reading would be false.
+**`H-8` was for one revision the only entry of this kind, and that is why `H-9` matters beyond
+its own subject: the first instance of a shape is never the last.** An earlier revision of this
+line published only `H-8`; that reading is withdrawn.
+
 | # | Finding | Locator | Impact if unaddressed | Trigger | Remediation |
 |---|---|---|---|---|---|
 | H-1 | The token signing key was hardcoded in a prior implementation | [`docs/project-guide.md:L52`], [`:L215`]; the signing-key property in `application.yml` | Anyone with repository access can mint valid tokens | Closed by this work | Resolve from the environment with **no** committed default, so an unset variable aborts startup |
@@ -2565,8 +2977,10 @@ resolved.**
 | H-3 | No continuous-integration workflow existed in a prior implementation | [`docs/project-guide.md:L49`]; `.github/workflows/build.yml` | The zero-warning build is unrepeatable, so [Gate 2](#gate-2) rests on one person's machine | Closed by this work | Pin the workflow to the enforced toolchain — JDK 25 and Maven 3.9.11 — and run the same `verify` the developer runs |
 | H-4 | The vulnerability scan was never executed in a prior implementation | [`docs/project-guide.md:L50`]; `dependency-check-maven` in `pom.xml` | Dependency risk is unquantified while appearing to be covered | Closed by this work | Bind the scan to `verify` and **report the skip honestly** when it is skipped, rather than defaulting to skip |
 | H-5 | A page omitted from the `mkdocs.yml` `nav` silently never publishes — and, as measured, **a strict build did not catch it either**, because the omission is reported at INFO level by default | `mkdocs.yml` `nav` and its formerly absent `validation` block; [`catalog-info.yaml:L22`] | Documentation exists in the repository and is unreachable in the published site; **no error and no warning** signals it | Every new document, including this one | **CLOSED, 7 August 2026, by applying both halves of this remediation.** All five entries are in the `nav`, and `validation.nav.omitted_files: warn` is set, so the omission is now a **warning** that `--strict` promotes to a failure. Proved by mutation, not by inspection: removing one `nav` entry with the setting present aborts the build with 1 warning, and removing the setting as well returns it to exit 0 with the omission reported only at INFO. See [§2.4](#env-nav) and the measured runs in [§2.5](#env-mkdocs) |
-| H-6 | **Authorization is role-based only. Ten of the seventeen operations scope nothing to the caller**, so any authenticated standard user may read or modify any account, card or transaction, and may pay a bill or run a report against an account unrelated to them, by naming its identifier | `src/main/java/com/cardemo/config/SecurityConfig.java` — the ten matchers granting `hasAnyAuthority(ADMIN_AUTHORITY, USER_AUTHORITY)`. A reader counting that call in the file finds **eleven**; the eleventh is `GET` on the main-menu path, which carries no resource identifier and so has nothing to over-reach with. The ten are `GET /api/accounts/{accountId}`, `PUT /api/accounts`, `GET /api/cards`, `GET /api/cards/detail`, `PUT /api/cards`, `GET /api/transactions`, `GET /api/transactions/detail`, `POST /api/transactions`, `POST /api/billing/payments`, `POST /api/reports` | Every authenticated principal is effectively trusted with the entire data set. In a population where one user must not see another's data this is a **cross-tenant read and write** | **Any deployment reachable by more than one trust domain**, and in particular any exposure to end customers | **OPEN — and not implementable from the source.** [`app/cpy/CSUSR01Y.cpy`] is six fields — identifier, names, password, type, filler — and carries **no reference to an account, card or customer**, so no ownership relation exists to enforce; [`app/cbl/COACTVWC.cbl`] never consults `CDEMO-USER-ID` either, so the absence is faithful and [§0.8.3](technical-specifications.md) forbids supplying a guard the source lacks. **What a human must decide** is set out in full at [DL-RR-10] in `DECISION_LOG.md`: the authoritative user-to-resource relation, whether an administrator keeps unrestricted scope, whether an out-of-scope identifier answers `403` or `404`, and how the report and payment operations are scoped. The enforcement point is small once those are answered; it cannot be written before |
+| H-6 | **Authorization is role-based only. Ten of the seventeen operations scope nothing to the caller**, so any authenticated standard user may read or modify any account, card or transaction, and may pay a bill or run a report against an account unrelated to them, by naming its identifier | `src/main/java/com/cardemo/config/SecurityConfig.java` — the ten matchers granting `hasAnyAuthority(ADMIN_AUTHORITY, USER_AUTHORITY)`. A reader counting that call in the file finds **eleven**; the eleventh is `GET` on the main-menu path, which carries no resource identifier and so has nothing to over-reach with. The ten are `GET /api/accounts/{accountId}`, `PUT /api/accounts`, `GET /api/cards`, `GET /api/cards/detail`, `PUT /api/cards`, `GET /api/transactions`, `GET /api/transactions/detail`, `POST /api/transactions`, `POST /api/billing/payments`, `POST /api/reports` | Every authenticated principal is effectively trusted with the entire data set. In a population where one user must not see another's data this is a **cross-tenant read and write** | **Any deployment reachable by more than one trust domain**, and in particular any exposure to end customers | **OPEN — and not implementable from the source.** [`app/cpy/CSUSR01Y.cpy`] is six fields — identifier, names, password, type, filler — and carries **no reference to an account, card or customer**, so no ownership relation exists to enforce; [`app/cbl/COACTVWC.cbl`] never consults `CDEMO-USER-ID` either, so the absence is faithful and [§0.8.3](technical-specifications.md) forbids supplying a guard the source lacks. **What a human must decide** is set out in full at [DL-RR-10] in `DECISION_LOG.md`: the authoritative user-to-resource relation, whether an administrator keeps unrestricted scope, whether an out-of-scope identifier answers `403` or `404`, and how the report and payment operations are scoped. The enforcement point is small once those are answered; it cannot be written before. **Until then the risk is pinned rather than merely described**: `src/test/java/com/cardemo/unit/config/SecurityConfigTest.java` at `thePublishedUnscopedOperationFigureAgreesWithTheCensus` reads both figures out of this row, compares them against a census measured through the running filter chain, and dispatches every one of the ten operations above with a standard user's token. The row therefore fails the build in either direction — if a matcher widens or narrows, or if an ownership guard is added and this disclosure should have been withdrawn |
 | H-7 | **Two published High advisories on the delivered image whose only remedy is to advance a pinned version**, surfaced by a container scan the dependency scan cannot substitute for. A third High sits on the **build plugin graph only** and is a different kind of finding, so it is named here rather than counted with them | `carddemo.jar` inside the delivered image: `spring-boot:3.5.11` **CVE-2026-40973** (fixed 3.5.14) and `spring-data-commons:3.5.9` **CVE-2026-41695** (fixed 3.5.12). Plugin graph only, through `spring-boot-maven-plugin:3.5.11`: `spring-expression:6.2.16` **CVE-2026-41850** (fixed 6.2.19), already carrying a written Tier 3 disposition expiring `2027-02-01` in `.github/plugin-graph/dispositions.json`. **The application graph resolves the fixed `spring-expression:6.2.19`**, because `pom.xml` sets `spring-framework.version` to `6.2.19` as a forward override of the bill-of-materials `6.2.16`; measured with `./mvnw -B -ntp -o dependency:list -DincludeGroupIds=org.springframework` | The delivered image carries **two** disclosed High exposures, and **the image-scan gate fails the build on both** by design, since that gate offers no suppression path. The plugin-graph finding fails nothing, and there is no application-side occurrence to fail on. **An earlier reading of this row is withdrawn**: it published *three* High advisories and placed `spring-expression:6.2.16` *"on the application graph"*, which the resolved graph contradicts | Already in scope; the gate is failing now rather than at some future trigger | **OPEN by decision.** [§0.6.1](technical-specifications.md) pins Spring Boot 3.5.11 and [§0.8.4](technical-specifications.md) requires pinned versions be honoured with divergence recorded, not resolved unilaterally. Advancing the parent to the latest 3.5.x closes both image findings and is the recommended first step — **the same move [DL-RR-01] already recommends, so one decision closes both entries**. Overriding the two modules out from under their bill of materials was rejected as trading a disclosed risk for an undisclosed version skew. Full analysis at [DL-RR-11] in `DECISION_LOG.md`. These findings are **newly visible rather than newly true**: the image scan that surfaces them is itself new work delivered here |
+| H-8 | **REGRESSION introduced by this work: the documented `docker compose up -d --build --wait` began exiting 1 while [Gate 8](#gate-8) continued to publish exit 0.** Two gates that read this repository as data met a Docker build context that is a *curated subset* of it, so the in-image unit tier failed on defects existing only in that context while the identical suite passed on the host | `.dockerignore`'s `app/data/EBCDIC` prune against row V-1 of `DECISION_LOG.md` §12.1, checked by `InventoryCountGateTest.theRemainingStructuralCountsMatchTheDocument`; and five root dotfiles absent from the `Dockerfile` `COPY` set, three of them read unconditionally by `SourceCitationResolutionTest.everyCitedSymbolResolves`. Observed as `Expecting empty but was: ["app/data/EBCDIC/"]` and `UncheckedIOException: Cannot read /workspace/.gitignore` | A **Required** gate's documented command fails on first attempt, so nobody can bring up the topology by following the documentation — and because the `app` service cannot build, Prometheus's `app:8080` target never resolves, which removes the documented scrape path from execution verification altogether. The ledger asserting exit 0 throughout is the worse half: a reader had no signal at all | Closed by this work; the trigger for the **next** instance is any new unit assertion that reads a repository file, or any change to `.dockerignore` or the `COPY` set | **CLOSED, 9 August 2026, and held by controlled experiment rather than by inspection.** The pruned subtree gets the same directory-keyed exemption the citation gate already carried, plus a self-limiting companion assertion: with the subtree **present** a mistyped path under it still fails, and with it **absent** a mistyped path outside it still fails while the count stays at 61 — both measured in a pruned copy. The dotfiles are **COPYed**, not tolerated as absent, because a scan that skips an absent target covers strictly less than the host run without failing. Two of the three were found by **enumerating** every unconditionally-read path against the `COPY` set rather than by building again, which is why this is one round and not three. Verified end to end, and re-verified after every subsequent test addition in this checkpoint: `up -d --build --wait --wait-timeout 900` exit **0**, in-image **15,092 tests / 0 failures / 0 errors / 1 skipped**, all seven containers `healthy`; see [the restamped bring-up](#gate-8-bringup-restamped) and [the build-context analysis](#gate-8-build-context) |
+| H-9 | **REGRESSION introduced by this work: the notification topic was provisioned with NO subscriber and that emptiness was asserted as the contract**, reasoned from least privilege. A topic with no subscriber **accepts every publish and silently discards it**, so the notification capability reported success while delivering nothing — and no publisher can detect the difference, because acceptance is not delivery. `localstack-init/init-aws.sh` was corrected to require **at least one** subscriber and to exit **7** without one, and `docs/onboarding-guide.md` was corrected with it, **but this ledger went on publishing the withdrawn figure** — `SNS subscriptions 0 — deliberately none` — so the authoritative register described the script's *fatal* state as its intended one, and contradicted both the script it describes and its own sibling document | `localstack-init/init-aws.sh` notification-subscription verification; [Gate 8 clause 4](#gate-8); `docs/onboarding-guide.md` provisioned-resource table | Every operator notice is accepted and thrown away, invisibly, while the ledger asserts that is correct. A reader auditing the topology against this ledger would have *restored* the defect | Any change to the provisioned resource set, and any reading of a count published beside a guard's fatal threshold | **Closed by this work.** The row now publishes **2** queues and **1** subscription and states that zero is fatal, re-measured against the running stack, with the withdrawn figure recorded rather than overwritten. The general lesson is that a corrected mechanism and a corrected claim are **two** changes: least privilege constrains what a provisioned resource may *reach* and never licenses a delivery surface whose every message is discarded |
 
 **Medium — 7.** `M-1` through `M-5` and `M-7` are closed by measurement. **`M-6` is the one entry in this register that implementation cannot close**: a checkpoint checklist requires a seed total the frozen corpus does not support, so it names what a human must decide and is reported as **Not available** rather than passed. `M-7` was registered alongside it as the same kind of problem and turned out not to be one &mdash; a fuller census found the figure satisfiable and satisfied &mdash; which is why the row now reads as closed and says what the earlier census missed.
 
@@ -2689,12 +3103,15 @@ position into the request, so the equivalent protection has to be cryptographic.
 eight the plan enumerates. **None is dropped**; each is accepted knowingly, with the
 trigger that would bring it into scope.
 
-`R-9` and `R-10` are the **ninth and tenth rows and not a ninth and tenth hardening item.**
-`R-9` records the pinned framework line's finite support horizon, a version-currency residual
-rather than a piece of hardening anyone deferred. `R-10` records a build-stage base-image
-currency gap, which is the same kind of thing one layer lower. Both sit in this table because
-the response they call for is the same - an owner, a trigger and a date - and both are named
-here so the count of hardening items and the row total cannot be read as disagreeing.
+`R-9`, `R-10` and `R-11` are the **ninth, tenth and eleventh rows and not a ninth, tenth and
+eleventh hardening item.** `R-9` records the pinned framework line's finite support horizon, a
+version-currency residual rather than a piece of hardening anyone deferred. `R-10` records a
+build-stage base-image currency gap, which is the same kind of thing one layer lower. `R-11`
+records that the development topology places no network-level restriction on container egress,
+which is a property of the compose network rather than of anything the plan deferred. All three
+sit in this table because the response they call for is the same - an owner, a trigger and a
+date - and all three are named here so the count of hardening items and the row total cannot be
+read as disagreeing.
 
 | # | Deferred item | Why deferred | Severity | Impact if left unaddressed | Trigger that forces it into scope |
 |---|---|---|---|---|---|
@@ -2708,6 +3125,7 @@ here so the count of hardening items and the row total cannot be read as disagre
 | R-8 | **Encryption at rest for personally identifiable data** | The storage layer's encryption posture is a deployment decision | High | The nine-digit government identifier and customer addresses are stored unencrypted at the storage layer | Any deployment holding real customer data |
 | R-9 | **The framework line's support horizon.** Spring Boot **3.5.11** is pinned by requirement and is **not** advanced unilaterally | Advancing a pinned version is a scope decision, not a maintenance chore, and the pin is honoured exactly as instructed | Medium | A framework line eventually stops receiving open-source patches, after which a dependency finding may have no fixed version to move to | A stated need to move lines, or a finding with no fix available on 3.5.x |
 | R-10 | **The build stage's operating-system layer is one Ubuntu patch behind the delivered runtime's**, so the compiler host reports three High advisories - `CVE-2025-68973` in `gpgv` and `CVE-2026-45447` in `openssl` and `libssl3t64` - while the delivered runtime's layer reports zero. **The JDK is aligned:** both stages were interrogated and both report `25.0.3+9-LTS` | Neither available remedy belongs to this work. Pinned `apt` upgrades expire when the archive drops superseded versions, which is non-determinism introduced to fix a determinism defect; rebasing onto the digest-pinned Temurin JDK image would clear all three but that image ships no `curl`, `wget` or `unzip`, so the checksum-verifying wrapper cannot fetch its distribution there, and a base-image change is a toolchain pin move requiring sign-off. **The stage is scanned on every run and REPORTED, not gated** - matching the taxonomy this workflow already applies to the development-topology images, because with both remedies unavailable a gate's only remaining lever would be suppression. Findings are printed and uploaded as evidence. Remedy: rebase onto the Temurin JDK image and supply Maven by copying it from the official Maven image rather than downloading it. Full analysis at [DL-RR-12] in `DECISION_LOG.md` | Medium - the stage is **not delivered** | A compiler host one patch behind the runtime it produces. Nothing ships from it but the application archive, which the delivered-image gate then examines on its own terms | Any requirement that the build host meet the same currency bar as the runtime, or a build-host compromise concern |
+| R-11 | **Container egress is not restricted at the network layer.** The `carddemo` compose network is an ordinary bridge, so a process inside any service container can open a socket to an arbitrary public host. Verified rather than assumed: a raw TCP connection from the `app` container to a public host succeeds | The no-live-cloud guarantee is enforced at the CONFIGURATION layer, in three independent places, and all three were verified working: `docker-compose.yml` pins `AWS_ENDPOINT_URL` to an in-network literal, `AwsConfig` refuses a non-allowlisted endpoint at startup rather than falling back, and `localstack-init/init-aws.sh` refuses one with `[reason=HOST_NOT_ALLOWLISTED]` before it makes any call. Adding `internal: true` would have to be traded against the topology this project actually ships: every published port on this network is what [Gate 8](#gate-8) and the `integration` job probe from the host, so the change is a topology change requiring its own evidence rather than a one-line hardening. Nothing in [§0.3.2](technical-specifications.md) or in the compose file claims network-level isolation, so this is disclosed rather than implied | Low for the development topology this repository ships, where the substrate is an emulator holding no real data and every port is bound to loopback. It would be **High** for any deployment holding real data, where it compounds `R-4` and `R-8` | A container that can reach the internet can also reach a real cloud endpoint if a future change ever supplies a credential, so the configuration-layer refusals are the only thing standing between the two. They are asserted by tests; a network-level control would not depend on them | Any deployment beyond a trusted local network, or a requirement that the substrate be provably unreachable from outside. The narrowest form is a second, `internal: true` network carrying `app`, `postgres` and `localstack` with only the host-facing services on the bridge |
 
 **On R-9, one thing is deliberately not said.** This ledger makes **no present-tense
 claim about the support status of that line**, in either direction. No authoritative

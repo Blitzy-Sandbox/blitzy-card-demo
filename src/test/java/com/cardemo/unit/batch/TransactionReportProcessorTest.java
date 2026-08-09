@@ -609,13 +609,30 @@ class TransactionReportProcessorTest {
         }
 
         @Test
-        @DisplayName("an inverted period is refused, because no record could satisfy it")
-        void anInvertedPeriodIsRefused() {
-            assertThatExceptionOfType(FatalProcessingException.class)
-                    .isThrownBy(() -> newProcessor(END_DATE, START_DATE))
-                    .satisfies(abend -> assertThat(abend.getAbendReason())
-                            .contains("is inverted")
-                            .contains("the report would be empty"));
+        @DisplayName("an inverted period is accepted and simply selects nothing, as the source has it")
+        void anInvertedPeriodIsAcceptedAndSelectsNothing() {
+            // FINDING B-15, severity Major. This used to assert an abend. The source contains no
+            // start-before-end comparison anywhere: app/cbl/CBTRN03C.cbl:L466-L482 and :L605-L621 test
+            // DATEPARM-STATUS - the outcome of the OPEN and the CLOSE - and app/cbl/CORPT00C.cbl, the only
+            // producer of this period, tests each field and each date and never the pair. An inverted window
+            // is a request that selects nothing rather than an invalid one, because
+            // app/proc/TRANREPT.prc:L45-L46 expresses it as INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,
+            // AND,TRAN-PROC-DT,LE,PARM-END-DATE) and no record satisfies both halves when the bounds cross.
+            // Asserting an abend here contradicted the online tier, whose own
+            // ReportRequestTest.raisesNoOrderingErrorWhenStartIsLaterThanEnd asserts the faithful behaviour,
+            // and made every such submission a poison message on a single-group FIFO queue.
+            final TransactionReportProcessor inverted = newProcessor(END_DATE, START_DATE);
+
+            assertThat(inverted)
+                    .as("an inverted period is constructible: both bounds are present and ten characters, "
+                            + "which is everything the parameter card's OPEN and READ can establish")
+                    .isNotNull();
+            assertThat(inverted.process(transaction("10.00")))
+                    .as("and the inclusive filter of app/cbl/CBTRN03C.cbl:L173-L174 then selects nothing, "
+                            + "which is what the DFSORT INCLUDE COND of app/proc/TRANREPT.prc:L45-L46 "
+                            + "already did upstream: a record squarely inside the ordered window is "
+                            + "filtered by the crossed one, emitting no line at all")
+                    .isNull();
         }
 
         @Test

@@ -333,8 +333,12 @@ class DemoUserSeedGateContractTest {
             assertThat(mappings)
                     .as("the scan must find the topology's publishes, so a silent empty pass is impossible: "
                             + "app, postgres, localstack, the Jaeger UI and its OTLP/HTTP receiver, "
-                            + "Prometheus and Grafana")
-                    .hasSize(7);
+                            + "Prometheus, Grafana and the Pushgateway. Eight mappings across seven "
+                            + "services, because Jaeger publishes two. The Pushgateway's own publish is "
+                            + "what a HOST-run batch submission reaches to push its end-of-run totals, and "
+                            + "it is the mapping that makes this assertion an 8 rather than a 7 - see "
+                            + "DECISION_LOG.md DL-CR-11")
+                    .hasSize(8);
 
             assertThat(mappings)
                     .as("""

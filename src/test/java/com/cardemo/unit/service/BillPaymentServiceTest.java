@@ -63,6 +63,7 @@ import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.billing.BillPaymentService;
+import com.cardemo.service.billing.BillPaymentService.AidKey;
 import com.cardemo.service.billing.BillPaymentService.BillPaymentResult;
 import com.cardemo.service.billing.BillPaymentService.BillPaymentScreen;
 import com.cardemo.service.billing.BillPaymentService.ConfirmationBranch;
@@ -71,6 +72,7 @@ import com.cardemo.service.billing.BillPaymentService.EntryMode;
 import com.cardemo.service.billing.BillPaymentService.MessageKind;
 import com.cardemo.service.billing.BillPaymentService.PaymentOutcome;
 import com.cardemo.service.billing.BillPaymentService.PaymentReceipt;
+import com.cardemo.service.billing.BillPaymentService.ResponseKind;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.unit.model.FixedClockProvider;
 import java.lang.reflect.Method;
@@ -1770,6 +1772,156 @@ final class BillPaymentServiceTest {
                             .isPrivate(method.getModifiers()))
                             .as("%s is a paragraph, not an API member", method.getName())
                             .isTrue());
+        }
+    }
+
+    /**
+     * {@code RETURN-TO-PREV-SCREEN.} at {@code app/cbl/COBIL00C.cbl:273}-{@code :284} - the paragraph both
+     * {@code XCTL} arms share, and the one arm of this program no other test in this suite entered.
+     *
+     * <p>A coverage review found it dead. Not one line of the transfer paragraph was covered, and
+     * {@code BillPaymentService$Navigation} was one of only two production classes in the entire tree with
+     * nothing covered at all - its canonical constructor is built from that paragraph's own outcome and from
+     * nowhere else. That gap hid more than a figure. The paragraph decides the transfer target, and
+     * transformation Rule 7 makes that target the observable half of the translation: {@code XCTL
+     * PROGRAM(CDEMO-TO-PROGRAM)} at {@code :282} becomes URL navigation, so the resolved program name is what
+     * tells a caller which screen the legacy would have reached. Untested, it could resolve anywhere.
+     *
+     * <p>The paragraph is reached from two places that differ in what they resolve, so both are driven here.
+     * {@code :107}-{@code :109} is the no-communication-area arm, which nominates the sign-on program;
+     * {@code :128}-{@code :135} is the {@code PF3} arm, which nominates the main menu because
+     * {@code CDEMO-FROM-PROGRAM} is blank. The two also part on the outcome the pass reports, which is how a
+     * caller distinguishes "you arrived with no context" from "you pressed back".</p>
+     */
+    @Nested
+    @DisplayName("RETURN-TO-PREV-SCREEN :273-:284 - both XCTL arms resolve a target and send no screen")
+    final class TransferArm {
+
+        /**
+         * {@code PF3} on a re-entry pass transfers to the main menu and sends nothing.
+         *
+         * <p>{@code :129} tests {@code CDEMO-FROM-PROGRAM} against {@code SPACES OR LOW-VALUES}. Nothing in a
+         * stateless request carries that field and the service assigns it only on the way out, so the
+         * {@code :130} arm is the one that runs and the target is the main menu. The {@code :131}-{@code :133}
+         * arm is implemented and unreachable through this entry point by design, which
+         * {@code DECISION_LOG.md} holds as {@code DL-MS-06}.</p>
+         */
+        @Test
+        @DisplayName(":128-:135 PF3 resolves the main menu, stamps this program as origin and sends no screen")
+        void pressingPf3TransfersToTheMainMenu() {
+            final BillPaymentResult result = service()
+                    .processRequest(request(ACCOUNT_ID_TEXT, "Y"), "PF3", EntryMode.REENTER, null);
+
+            assertThat(result.responseKind())
+                    .as(":281-:284 EXEC CICS XCTL transfers control and terminates the caller, so the pass "
+                            + "reports a transfer and not a rendered screen")
+                    .isEqualTo(ResponseKind.TRANSFER);
+            assertThat(result.screen())
+                    .as("and SEND-BILLPAY-SCREEN is not on this arm, so no screen was ever assembled")
+                    .isNull();
+            assertThat(result.sendCount())
+                    .as("which the send counter corroborates independently of the screen being absent")
+                    .isZero();
+            assertThat(result.navigation())
+                    .as("toResult builds the navigation record only for a transfer, so its presence is "
+                            + "itself the assertion that this arm ran")
+                    .isNotNull();
+            assertThat(result.navigation().toProgram())
+                    .as(":129-:130 a blank CDEMO-FROM-PROGRAM resolves the main menu")
+                    .isEqualTo("COMEN01C");
+            assertThat(result.navigation().fromTransactionId())
+                    .as(":278 MOVE WS-TRANID TO CDEMO-FROM-TRANID - the outgoing context names THIS "
+                            + "transaction")
+                    .isEqualTo("CB00");
+            assertThat(result.navigation().fromProgram())
+                    .as(":279 MOVE WS-PGMNAME TO CDEMO-FROM-PROGRAM")
+                    .isEqualTo("COBIL00C");
+            assertThat(result.navigation().programContext())
+                    .as(":280 MOVE ZEROS TO CDEMO-PGM-CONTEXT - the next turn is a first entry")
+                    .isZero();
+            assertThat(result.outcome())
+                    .as("the pass succeeded: pressing back is a navigation, not a failure")
+                    .isEqualTo(PaymentOutcome.NAVIGATED_BACK);
+            assertThat(result.nextEntryMode())
+                    .as(":280 is what CDEMO-PGM-CONTEXT carried, so the receiving program sees a first entry")
+                    .isEqualTo(EntryMode.ENTER);
+            assertThat(result.aidKey())
+                    .as(":125 EVALUATE EIBAID took the :128 WHEN, and the folded key is reported as such")
+                    .isEqualTo(AidKey.PF3);
+            assertThat(result.retainedFailure())
+                    .as("nothing failed, so nothing is retained")
+                    .isNull();
+            verifyNoInteractions(accountRepository, transactionRepository, cardCrossReferenceRepository);
+        }
+
+        /**
+         * An invocation carrying no communication area transfers to sign-on before reading anything.
+         *
+         * <p>{@code :107} {@code IF EIBCALEN = 0} is the outermost decision of the whole program, taken before
+         * the map is bound and before any file is opened. {@code :108} nominates {@code COSGN00C} rather than
+         * the main menu, which is the one place the two transfer arms resolve different targets, so a caller
+         * that has lost its session is sent to sign on and not to a menu it may not be entitled to.</p>
+         */
+        @Test
+        @DisplayName(":107-:109 an absent communication area resolves sign-on, ahead of any read")
+        void anAbsentCommunicationAreaTransfersToSignOn() {
+            final BillPaymentResult result = service()
+                    .processRequest(request(ACCOUNT_ID_TEXT, "Y"), "ENTER", EntryMode.NO_CONTEXT, null);
+
+            assertThat(result.responseKind())
+                    .as(":109 PERFORM RETURN-TO-PREV-SCREEN, whose only exit is the XCTL at :281-:284")
+                    .isEqualTo(ResponseKind.TRANSFER);
+            assertThat(result.navigation().toProgram())
+                    .as(":108 MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM - sign-on, deliberately not the main menu "
+                            + "the :130 arm names")
+                    .isEqualTo("COSGN00C");
+            assertThat(result.outcome())
+                    .as("distinguishable from NAVIGATED_BACK, because :107 and :128 are different arms and a "
+                            + "caller needs to tell an absent session from a back key")
+                    .isEqualTo(PaymentOutcome.NO_CONTEXT);
+            assertThat(result.screen())
+                    .as(":107 is evaluated before RECEIVE-BILLPAY-SCREEN, so no map was ever bound")
+                    .isNull();
+            assertThat(result.returnTransactionId())
+                    .as("a transfer does not RETURN TRANSID, so toResult withholds the value rather than "
+                            + "reporting a pseudo-conversational turn that will not happen")
+                    .isNull();
+            verifyNoInteractions(accountRepository, transactionRepository, cardCrossReferenceRepository);
+        }
+
+        /**
+         * The two arms differ only where the source makes them differ, which is what makes the shared
+         * paragraph shared rather than duplicated.
+         *
+         * <p>Everything {@code :275}-{@code :284} assigns is identical on both arms - the origin stamp, the
+         * context reset and the absence of a screen - and only the target that {@code :108} and {@code :130}
+         * nominated differs. Asserting the pair together is what pins that division; asserting either alone
+         * would leave a change that leaked one arm's target into the other undetected.</p>
+         */
+        @Test
+        @DisplayName(":275-:284 is shared verbatim, so only the :108 and :130 targets may differ")
+        void bothArmsShareEverythingTheParagraphItselfAssigns() {
+            final BillPaymentResult back = service()
+                    .processRequest(request(ACCOUNT_ID_TEXT, "Y"), "PF3", EntryMode.REENTER, null);
+            final BillPaymentResult noContext = service()
+                    .processRequest(request(ACCOUNT_ID_TEXT, "Y"), "ENTER", EntryMode.NO_CONTEXT, null);
+
+            assertThat(back.navigation().fromTransactionId())
+                    .as(":278 is in the shared paragraph, so both arms stamp the same origin transaction")
+                    .isEqualTo(noContext.navigation().fromTransactionId());
+            assertThat(back.navigation().fromProgram())
+                    .as(":279 likewise")
+                    .isEqualTo(noContext.navigation().fromProgram());
+            assertThat(back.navigation().programContext())
+                    .as(":280 likewise")
+                    .isEqualTo(noContext.navigation().programContext());
+            assertThat(back.responseKind())
+                    .as(":281-:284 likewise: one XCTL serves both arms")
+                    .isEqualTo(noContext.responseKind());
+            assertThat(back.navigation().toProgram())
+                    .as("and the target is the one thing that must differ, because :108 and :130 nominate "
+                            + "different programs")
+                    .isNotEqualTo(noContext.navigation().toProgram());
         }
     }
 

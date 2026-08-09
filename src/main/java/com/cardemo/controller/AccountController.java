@@ -989,7 +989,12 @@ public class AccountController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        final AccountDto account = this.retrieveAccount(accountId);
+        // One traversal of the cross-reference, account and customer chain, inside the view service's own
+        // read-only transaction. The response needs the projection and the sealed snapshot, and both are
+        // projections of the same three rows: obtaining them from two service calls meant two transactions,
+        // two pool acquisitions and the identical three statements issued twice for one request.
+        final AccountViewService.AccountViewRecords records = this.retrieveAccount(accountId);
+        final AccountDto account = records.screen();
 
         // The sealed snapshot the matching update must echo back. It is produced by the UPDATE service,
         // because ACUP-OLD-DETAILS belongs to app/cbl/COACTUPC.cbl, and it is sealed rather than published:
@@ -1000,7 +1005,7 @@ public class AccountController {
         // comparison at :4109-4193 exact, since nothing is ever reassembled from displayed text - the live
         // record is dash-separated at offsets 1/6/9 and the snapshot unseparated at 1/5/7, and a rebuild
         // would differ on every request.
-        final String snapshot = this.acquireUpdateSnapshot(accountId, authentication.getName());
+        final String snapshot = this.acquireUpdateSnapshot(records, authentication.getName());
         final AccountViewResponse response = AccountViewResponse.of(account, snapshot);
 
         LOG.debug("Served transaction {} program {} from mapset COACTVW with the sealed as-displayed snapshot",
@@ -1175,7 +1180,8 @@ public class AccountController {
     }
 
     /**
-     * Delegates to the account-view service exactly once and returns its projection.
+     * Delegates to the account-view service exactly once and returns its projection together with the two
+     * master records the traversal resolved.
      *
      * <p>The filter is handed over untouched, for the reason given on
      * {@link #viewAccount}. The two catch clauses are asymmetric on purpose: a
@@ -1186,15 +1192,24 @@ public class AccountController {
      * {@code app/cbl/COACTVWC.cbl}'s program name as the culprit, <strong>preserving the original as the
      * cause</strong> so that no throwable is swallowed and no stack is lost.</p>
      *
+     * <p><strong>Why the records come back and not only the screen.</strong> The response carries the sealed
+     * as-displayed snapshot as well as the projection, and the snapshot is a projection of the same account
+     * and customer rows. Reading them a second time to obtain it opened a second read-only transaction, took
+     * a second connection from the pool and issued the identical three statements again - six statements and
+     * two transactions where three in one suffice. The records travel rather than the rendered screen because
+     * the snapshot must never be reassembled from displayed text: the live date of birth is dash-separated at
+     * offsets 1, 6 and 9 and the snapshot value is not, so a rebuild would differ on every request.</p>
+     *
      * @param accountFilter the contents of screen field {@code ACCTSIDI}, passed on verbatim.
-     * @return the thirty-seven-component account projection, never null
+     * @return the thirty-seven-component account projection and the account and customer records behind it,
+     * never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private AccountDto retrieveAccount(final String accountFilter) {
+    private AccountViewService.AccountViewRecords retrieveAccount(final String accountFilter) {
 
         try {
-            return this.accountViewService.viewAccount(accountFilter);
+            return this.accountViewService.viewAccountWithRecords(accountFilter);
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
         } catch (final RuntimeException unexpected) {
@@ -1231,30 +1246,35 @@ public class AccountController {
     }
 
     /**
-     * Obtains the sealed {@code ACUP-OLD-DETAILS} snapshot for one account.
+     * Obtains the sealed {@code ACUP-OLD-DETAILS} snapshot from the records the view traversal already read.
      *
      * <p>Delegates once to the update service, which owns the group and seals it. Sealing belongs to the
-     * service rather than here because the service is what reads the group, and sealing it at the moment it is
-     * produced is what makes "the group this server projected" and "the group this token carries" the same
-     * bytes. The catch clauses behave exactly as on {@link #retrieveAccount}: a typed failure is rethrown so
-     * the declared status mapping applies, and anything else becomes an abend with its cause preserved.</p>
+     * service rather than here because the service owns the {@code 9500-STORE-FETCHED-DATA} projection, and
+     * sealing at the moment the group is projected is what makes "the group this server projected" and "the
+     * group this token carries" the same bytes. The catch clauses behave exactly as on
+     * {@link #retrieveAccount}: a typed failure is rethrown so the declared status mapping applies, and
+     * anything else becomes an abend with its cause preserved.</p>
      *
-     * <p>The failure is <em>not</em> suppressed. Returning null on a failed acquisition would answer
-     * {@code 200} with a response a client cannot update from, which is the very gap this method closes;
-     * the two services read the same three-dataset chain, so a filter this one refuses is a filter the view
-     * would have refused as well.</p>
+     * <p><strong>It reads nothing.</strong> The records arrive from {@link #retrieveAccount}, so the whole
+     * response is served by one traversal inside one read-only transaction. This method used to pass the
+     * account identifier and let the update service resolve the chain again, which is what made a single
+     * {@code GET} issue six statements across two transactions and take two connections from the pool.</p>
      *
-     * @param accountFilter the contents of screen field {@code ACCTSIDI}, passed on verbatim.
+     * <p>The failure is <em>not</em> suppressed. Returning null on a failed projection would answer
+     * {@code 200} with a response a client cannot update from, which is the very gap this method closes.</p>
+     *
+     * @param records the projection and the two master records the view traversal resolved.
      * @param subject the authenticated principal the snapshot is issued to, taken from the resolved
      * {@code Authentication} and never from the request body.
      * @return the sealed as-displayed snapshot, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private String acquireUpdateSnapshot(final String accountFilter, final String subject) {
+    private String acquireUpdateSnapshot(final AccountViewService.AccountViewRecords records,
+                                         final String subject) {
 
         try {
-            return this.accountUpdateService.sealSnapshotForUpdate(accountFilter, subject);
+            return this.accountUpdateService.sealSnapshotForUpdate(records, subject);
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
         } catch (final RuntimeException unexpected) {

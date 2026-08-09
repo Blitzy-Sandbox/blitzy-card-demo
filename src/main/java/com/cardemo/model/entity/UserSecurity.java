@@ -790,6 +790,14 @@ public class UserSecurity {
      * helper on that path is the {@code this-escape} pattern that {@code -Xlint:all -Werror} fails the
      * build on.
      *
+     * <p>The width is a count of Unicode code points rather than of {@code char} values, and the unit is
+     * load-bearing. A {@code PIC X(n)} clause declares n character positions and the {@code CHAR(n)} column
+     * it maps to pads to n characters, while a Java {@code String} measures itself in UTF-16 code units; the
+     * two disagree for any supplementary-plane character. Counting code units let a value that had been
+     * accepted, stored and padded fail when it was read back and offered here again. A code point count never
+     * exceeds a code unit count, so this is the same bound the write path applies rather than a looser one.
+     * Held as {@code DL-MS-05} in {@code DECISION_LOG.md}.
+     *
      * @param value      the value offered by the caller, which may be {@code null}
      * @param property   the Java property name, used in the message
      * @param cobolField the originating COBOL item and its picture clause, used in the message
@@ -804,9 +812,10 @@ public class UserSecurity {
                     + ") must not be null: it maps to a NOT NULL CHAR(" + width
                     + ") column of table user_security");
         }
-        if (value.length() > width) {
+        final int characterPositions = value.codePointCount(0, value.length());
+        if (characterPositions > width) {
             throw new IllegalArgumentException(property + " (" + cobolField + ") must be at most " + width
-                    + " characters but the value offered is " + value.length()
+                    + " characters but the value offered is " + characterPositions
                     + " characters. The value itself is deliberately not reproduced in this message");
         }
         return value;

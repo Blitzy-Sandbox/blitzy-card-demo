@@ -81,6 +81,8 @@ import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -105,6 +107,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -526,12 +529,52 @@ class GateVerificationTest {
     private static final String TRACEABILITY_MATRIX_FILE = "TRACEABILITY_MATRIX.md";
 
     /**
+     * The decision register every mechanism substitution, preserved quirk and labelled deviation is entered in.
+     *
+     * <p>Named as a constant because four assertions read it - the no-op register spot check, the derived
+     * disposition census, the clause-F severity register and the matrix column resolution - and a document
+     * spelled four times is a document that can be renamed in three places.
+     */
+    private static final String DECISION_LOG_FILE = "DECISION_LOG.md";
+
+    /**
      * The gate ledger whose section 2.6 publishes the execution figures for the retained verification run.
      *
      * <p>It is named as a constant because two separate assertions read it: the feature-identifier gate, and
      * the freshness reconciliation that keeps its published census equal to the census of the tree it sits in.
      */
     private static final String VALIDATION_GATES_FILE = "docs/validation-gates.md";
+
+    /** The ledger section carrying the severity-classified findings of Rule 1 clause F. */
+    private static final String LEDGER_FINDINGS_SECTION = "### 12.2";
+
+    /** The ledger section carrying the evidence gaps stated as unavailable. */
+    private static final String LEDGER_UNAVAILABLE_SECTION = "### 12.7";
+
+    /** A published register row: an identifier, optionally emboldened, in the first cell. */
+    private static final Pattern LEDGER_REGISTER_ROW =
+            Pattern.compile("^\\|\\s*\\**([BHMLN]-\\d+)\\**\\s*\\|");
+
+    /** A register identifier anywhere in a section, used to hold the prose to the rows. */
+    private static final Pattern LEDGER_REGISTER_IDENTIFIER = Pattern.compile("\\b[BHMLN]-\\d+\\b");
+
+    /** A band heading with its own published count, as {@code **High \u2014 7.**}. */
+    private static final Pattern LEDGER_BAND_HEADING = Pattern.compile(
+            "^\\*\\*(Blocker|High|Medium|Low)\\s+\\u2014\\s+(\\d+)\\.", Pattern.MULTILINE);
+
+    /** The unavailable section's own count of the gaps it records. */
+    private static final Pattern LEDGER_UNAVAILABLE_PROSE =
+            Pattern.compile("\\*\\*([A-Z][a-z]+)\\*\\* items were recorded here");
+
+    /** The unavailable section's own count of the further gaps concerning the authoring host. */
+    private static final Pattern LEDGER_STANDING_GAP_PROSE =
+            Pattern.compile("\\*\\*([A-Z][a-z]+) further standing gaps");
+
+    /** Cells a register row must carry: identifier, subject, locator, standing and remediation. */
+    private static final int LEDGER_REGISTER_MINIMUM_CELLS = 5;
+
+    /** A table-cell boundary: a pipe the author did not escape. */
+    private static final Pattern UNESCAPED_PIPE = Pattern.compile("(?<!\\\\)\\|");
 
     /**
      * Matches the commit row of the retained-run table, capturing the 40-character object name.
@@ -575,8 +618,17 @@ class GateVerificationTest {
      * {@code com.cardemo.batch} itself, the common ancestor of the four counted sub-packages, so
      * {@code batch/jobs} is still six, {@code batch/processors} five, {@code batch/readers} seven and
      * {@code batch/writers} three, and {@code service/} is still the twenty-one the plan fixes.
+     *
+     * <p>Raised again from 133 to 134 when {@code com.cardemo.observability.BatchJobSpanNamingConvention}
+     * was authored, closing QA finding B-12: every batch job span reached the tracing backend with its name
+     * hyphenated character by character - {@code POSTTRAN} as {@code p-o-s-t-t-r-a-n} - because the all-caps
+     * job name is the observation's contextual name and {@code SpanNameUtil.toLowerHyphen} rewrites it. The
+     * convention supplies a hyphen-stable contextual name instead, and it is a type of its own rather than a
+     * lambda repeated at each of the seven job builders. It lands in {@code observability}, which
+     * {@link #SANCTIONED_ADDITION_COUNT} enumerates, so that register moves with it and the per-package
+     * figures below are again unmoved.
      */
-    private static final int EXPECTED_PRODUCTION_CLASS_COUNT = 133;
+    private static final int EXPECTED_PRODUCTION_CLASS_COUNT = 134;
 
     /**
      * Every {@code .java} file under {@code src/main/java}, package comments INCLUDED.
@@ -586,7 +638,7 @@ class GateVerificationTest {
      * noticing - and lets the schema's own total of {@value #SCHEMA_PRODUCTION_FILE_COUNT} appear satisfied
      * by a number that is counting something else.
      */
-    private static final int EXPECTED_PRODUCTION_FILE_COUNT = 159;
+    private static final int EXPECTED_PRODUCTION_FILE_COUNT = 160;
 
     /** Package comments under {@code src/main/java}: exactly one per package that declares a class. */
     private static final int EXPECTED_PACKAGE_COMMENT_COUNT = 26;
@@ -617,15 +669,17 @@ class GateVerificationTest {
      * and a reviewer who cannot tell those apart eventually edits the literal to make the build green. Stating
      * the total as schema floor plus register means a failure names which operand moved.</p>
      *
-     * <p>The 26 divide into four groups, all in {@code DL-CR-06}: 11 controller response types and the
-     * masking helper in {@code model/dto}, 12 further package documents, and 2 production types in
-     * {@code security} and {@code observability}. The per-area arithmetic is owned by
+     * <p>The 27 divide into four groups, all in {@code DL-CR-06}: 11 controller response types and the
+     * masking helper in {@code model/dto}, 12 further package documents, and 3 production types in
+     * {@code security} and {@code observability} - the third being
+     * {@code com.cardemo.observability.BatchJobSpanNamingConvention}, which closed QA finding B-12 and moved
+     * this register from 26 to 27 together with the class count. The per-area arithmetic is owned by
      * {@code com.cardemo.unit.infrastructure.InventoryCountGateTest}; this gate asserts the total and that
-     * the register is still published. It is 26 and not 27: the one further file the delivered tree carries
+     * the register is still published. It is 27 and not 28: the one further file the delivered tree carries
      * sits outside every area the schema enumerates and is counted by {@link #CENSUS_EXEMPT_ADDITION_COUNT}
      * instead, so that this figure and the per-area sum stay the same number.</p>
      */
-    private static final int SANCTIONED_ADDITION_COUNT = 26;
+    private static final int SANCTIONED_ADDITION_COUNT = 27;
 
     /** The register entry that sanctions every file beyond the schema's own enumeration. */
     private static final String SANCTION_REGISTER_ENTRY = "DL-CR-06";
@@ -672,6 +726,88 @@ class GateVerificationTest {
     /** Zero-based column of the test citation. */
     private static final int MATRIX_TEST_COLUMN = 11;
 
+    /** Zero-based column of the class of program the row's member belongs to. */
+    private static final int MATRIX_PROGRAM_CLASS_COLUMN = 2;
+
+    /** Zero-based column of the COBOL paragraph label the row maps. */
+    private static final int MATRIX_PARAGRAPH_NAME_COLUMN = 3;
+
+    /** Zero-based column of the line-locator pair into the frozen member. */
+    private static final int MATRIX_LOCATOR_COLUMN = 4;
+
+    /** Zero-based column of the verb and {@code PERFORM}-target inventory. */
+    private static final int MATRIX_VERBS_COLUMN = 5;
+
+    /** Zero-based column of the copybooks the paragraph consumes. */
+    private static final int MATRIX_COPYBOOKS_COLUMN = 6;
+
+    /** Zero-based column of the translation kind. */
+    private static final int MATRIX_KIND_COLUMN = 9;
+
+    /** Zero-based column of the decision-log citation. */
+    private static final int MATRIX_DECISION_COLUMN = 10;
+
+    /** Zero-based column of the gate citation. */
+    private static final int MATRIX_GATE_COLUMN = 12;
+
+    /** Zero-based column of the row's verification status. */
+    private static final int MATRIX_STATUS_COLUMN = 13;
+
+    /**
+     * The one paragraph name the matrix synthesises rather than reading out of a program.
+     *
+     * <p>Nine programs enter at their {@code PROCEDURE DIVISION} header rather than at a labelled paragraph,
+     * so the row that carries that entry has no label to name and names this instead. It is declared here
+     * because the paragraph-name guard has to admit exactly this value and nothing else: admitting anything
+     * unrecognised would readmit the corruption the guard exists to catch.
+     */
+    private static final String MATRIX_SYNTHETIC_PARAGRAPH = "PROCEDURE-DIVISION-ENTRY";
+
+    /** Rows carrying {@link #MATRIX_SYNTHETIC_PARAGRAPH}: the 9 inside the 537 that name no real label. */
+    private static final int MATRIX_SYNTHETIC_PARAGRAPH_ROWS = 9;
+
+    /** The three classes of program the matrix distinguishes: 17 online, 10 batch and 1 utility. */
+    private static final Set<String> MATRIX_PROGRAM_CLASSES = Set.of("online", "batch", "utility");
+
+    /** The translation kinds the matrix publishes; a value outside this set is an unreviewed row. */
+    private static final Set<String> MATRIX_TRANSLATION_KINDS =
+            Set.of("direct", "mechanism substitution", "parity-preserved quirk", "deviation");
+
+    /** The verification statuses the matrix publishes. */
+    private static final Set<String> MATRIX_ROW_STATUSES = Set.of("Target-verified");
+
+    /**
+     * Names a verb cell may carry that are call targets rather than paragraph labels.
+     *
+     * <p>{@code CBSTM03B} and {@code CSUTLDTC} are corpus programs called statically; {@code CEE3ABD} and
+     * {@code CEEDAYS} are Language Environment services with no source in this repository. Every other
+     * upper-case name in a verb cell is a {@code PERFORM}, {@code THRU} or {@code GO TO} target and must
+     * therefore resolve to a real label.
+     */
+    private static final Set<String> MATRIX_CALL_TARGETS =
+            Set.of("CBSTM03B", "CSUTLDTC", "CEE3ABD", "CEEDAYS");
+
+    /** One line locator inside a matrix locator cell, whose two occurrences bound the paragraph. */
+    private static final Pattern MATRIX_LINE_LOCATOR = Pattern.compile(":L(\\d+)");
+
+    /** A copybook named in a matrix cell, in either extension case. */
+    private static final Pattern MATRIX_COPYBOOK_REFERENCE =
+            Pattern.compile("`([A-Za-z0-9$#@-]+\\.[Cc][Pp][Yy])`");
+
+    /** An upper-case name in a verb cell: a paragraph target or one of {@link #MATRIX_CALL_TARGETS}. */
+    private static final Pattern MATRIX_VERB_TARGET = Pattern.compile("`([A-Z0-9][A-Z0-9-]{2,})`");
+
+    /** A decision-log citation, capturing the identifier and the anchor the link lands on. */
+    private static final Pattern MATRIX_DECISION_LINK =
+            Pattern.compile("\\[`(DL-[A-Z]{2}-\\d{2})`\\]\\(DECISION_LOG\\.md#([a-z0-9-]+)\\)");
+
+    /** A gate citation, capturing the anchor the link lands on. */
+    private static final Pattern MATRIX_GATE_LINK =
+            Pattern.compile("\\[[^\\]]+\\]\\(docs/validation-gates\\.md#([a-z0-9-]+)\\)");
+
+    /** An explicitly declared Markdown anchor, which is what makes an inbound fragment resolvable. */
+    private static final Pattern DECLARED_ANCHOR = Pattern.compile("<a id=\"([^\"]+)\"></a>");
+
     /**
      * A test citation in the matrix, as {@code `<path>.java::<method>`}.
      *
@@ -680,6 +816,18 @@ class GateVerificationTest {
      */
     private static final Pattern MATRIX_TEST_CITATION =
             Pattern.compile("`([^`]*?\\.java)::([A-Za-z_][A-Za-z0-9_]*)`");
+
+    /**
+     * The Java-symbol cell's grammar: a visibility keyword, an optional {@code static}, then the method name.
+     *
+     * <p>Every published paragraph row spells its carrier this way, with the argument list elided to an
+     * ellipsis entity or written as an empty pair, so both the visibility and the name are recoverable and
+     * both are checked against the declaration. Capturing the visibility as well as the name is what makes a
+     * row that publishes a private carrier for a method the tree declares public fail rather than pass on
+     * the name alone - the two halves say different things and a reader relies on both.
+     */
+    private static final Pattern MATRIX_JAVA_SYMBOL =
+            Pattern.compile("^(private|protected|public)\\s+(?:static\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*\\(");
 
     /** The annotations that make a method actually runnable by the test engine. */
     private static final Pattern EXECUTABLE_TEST_ANNOTATION =
@@ -719,8 +867,20 @@ class GateVerificationTest {
     /** Flyway migrations: schema, indexes and seed. A fourth would mean batch metadata leaked into them. */
     private static final int EXPECTED_MIGRATION_COUNT = 3;
 
-    /** Compose services: the application plus its database, emulator, tracer, scraper and dashboard. */
-    private static final int EXPECTED_COMPOSE_SERVICE_COUNT = 6;
+    /**
+     * Compose services: the application plus its database, emulator, tracer, push sink, scraper and
+     * dashboard.
+     *
+     * <p>Seven rather than the five substrate services the plan enumerates, and the seventh is a recorded
+     * deviation rather than drift. The plan also requires that the checked-in provisioning produce a
+     * <em>populated</em> dashboard with no manual step, and those two requirements were in conflict: three of
+     * the four named counters are written only by the batch submission process, which by design ends when its
+     * job ends and therefore has no endpoint to scrape. A real POSTTRAN run printing
+     * {@code TRANSACTIONS PROCESSED :000000300} while every corresponding series read {@code 0.0} is the
+     * measurement that settled it. The Pushgateway is where those end-of-run totals are published and
+     * retained; {@code DECISION_LOG.md} carries the entry.
+     */
+    private static final int EXPECTED_COMPOSE_SERVICE_COUNT = 7;
 
     /** BCrypt cost the seed migration used, and the only cost this project accepts. */
     private static final int REQUIRED_BCRYPT_COST = 10;
@@ -762,6 +922,70 @@ class GateVerificationTest {
      * whose body holds the seeded plaintext, which is disclosed as a residual finding rather than suppressed.
      */
     private static final String FROZEN_PRIOR_RUN_DOCUMENT = "docs/project-guide.md";
+
+    /**
+     * Top-level directories the credential walk does not enter because nothing in them is authored here.
+     *
+     * <p>{@code app/} is frozen: the legacy corpus is the system of record, and its inline seed data is the
+     * very thing the control value is read from, so entering it would flag the evidence. {@code samples/} and
+     * {@code diagrams/} hold z/OS build tooling and binary artefacts the AAP puts out of scope. {@code .git/}
+     * is object storage rather than source, and {@code .mvn/} carries only the wrapper pin.
+     *
+     * <p>Held apart from {@link #UNSCANNED_BUILD_OUTPUT_ROOTS} because the two are excluded for different
+     * reasons and only one of the two reasons can be mechanically checked. These five are a judgement about
+     * provenance; those three are a fact about {@code .gitignore}, and
+     * {@link #theCredentialWalkSkipsOnlyFrozenSourceAndGitignoredBuildOutput()} checks the fact instead of
+     * restating the judgement.
+     */
+    private static final Set<String> UNSCANNED_SOURCE_ROOTS =
+            Set.of("app", "samples", "diagrams", ".git", ".mvn");
+
+    /**
+     * Top-level directories the credential walk does not enter because they hold build output, not commits.
+     *
+     * <p>This method's name says {@code committedFiles}, and build output is by definition not committed.
+     * {@code target/} was already excluded on exactly that ground; {@code site/} and {@code blitzy/} are the
+     * same kind of thing and were not, which turned two documented commands into a build failure.
+     *
+     * <p><strong>The defect this closes, because the shape of it is easy to reintroduce.</strong>
+     * {@code mkdocs.yml} sets no {@code site_dir}, so a bare {@code mkdocs build --strict} - published in this
+     * repository as a verification step - writes {@code ./site/}. That directory then contains the RENDERED
+     * form of every document, including {@link #FROZEN_PRIOR_RUN_DOCUMENT}, whose sign-on example carries the
+     * seeded plaintext. The by-name exclusion above matches an exact source path and cannot match a rendered
+     * copy of it, so the very next {@code ./mvnw verify} failed with
+     * {@code Expecting empty but was: {"P******* (8 characters, elided)"=["site/project-guide/index.html"]}}.
+     * Two documented commands, each correct alone, were mutually exclusive in sequence.
+     *
+     * <p>Excluding the root is the honest fix rather than the convenient one: the walk's subject is committed
+     * files, and no assertion loses reach, because every source file whose rendering lands under
+     * {@code site/} is already scanned where it is authored. {@code blitzy/} is excluded for the same reason
+     * and before it bites: it is the run-evidence directory - screenshots and screen recordings today, but
+     * accessibility trees, Lighthouse reports and captured network responses are {@code .txt}, {@code .json}
+     * and {@code .html}, all three of which this walk reads.
+     *
+     * <p>Every entry here is required to be gitignored at the repository root, which is what stops this list
+     * from becoming a general-purpose way to quieten the walk: a root that is not ignored is authored, and an
+     * authored root belongs in the scan.
+     */
+    private static final Set<String> UNSCANNED_BUILD_OUTPUT_ROOTS = Set.of("target", "site", "blitzy");
+
+    /**
+     * The file extensions the credential walk reads, pinned so a new authored language is not skipped.
+     *
+     * <p>A walk that cannot see a file cannot clear it, and the gap is invisible: the run is green either
+     * way. This set was measured against the authored tree rather than assumed, and it is pinned by
+     * {@link #theCredentialWalkSkipsOnlyFrozenSourceAndGitignoredBuildOutput()} so that adding a file in a
+     * language absent from it is a decision rather than an oversight.
+     *
+     * <p>{@code py} and {@code css} were added when the documentation build gained a build-time hook and a
+     * stylesheet. Neither is a likely place for a credential and both are read anyway, precisely because
+     * "unlikely" is the argument that produced the omission in the first place.
+     */
+    private static final Set<String> CREDENTIAL_WALK_TEXT_EXTENSIONS = Set.of("java", "yml", "yaml", "xml",
+            "sql", "json", "sh", "md", "properties", "example", "cmd", "txt", "html", "conf", "py", "css");
+
+    /** Extensionless authored files the credential walk reads by name. */
+    private static final Set<String> CREDENTIAL_WALK_NAMED_FILES = Set.of("Dockerfile", "mvnw");
 
     /** Rows in the boundary fixture. */
     private static final int DAILY_FIXTURE_ROWS = 300;
@@ -823,11 +1047,130 @@ class GateVerificationTest {
      */
     private static final String GATE_ONE_ORACLE_DIRECTORY = PostingParityOracle.EXPECTATION_DIRECTORY;
 
+    /**
+     * Directory holding the legacy-derived Gate 1 expectation - the frozen program's own captured output.
+     *
+     * <p>Named once because three places need it and they had drifted apart: the reproducibility gate resolved
+     * the path as a literal, the self-collection guard matched on a prefix of it, and the published taxonomy
+     * did not mention it at all while asserting that no such directory existed. A path spelled in one place
+     * cannot go stale in two of them.
+     */
+    private static final String GATE_ONE_LEGACY_CAPTURE_DIRECTORY = "src/test/resources/parity/gate1";
+
     /** The six files that constitute the committed Gate 1 expectation, one per output the run writes. */
     private static final List<String> GATE_ONE_ORACLE_FILES = PostingParityOracle.EXPECTATION_FILES;
 
+    /**
+     * What kind of oracle Gate 1 rests on, published verbatim into the retained evidence record.
+     *
+     * <p>The taxonomy is the durable part and is kept: the two kinds prove different things, and confusing
+     * them is the mistake this key exists to prevent. What changed is which of them this repository holds.
+     *
+     * <p><strong>An earlier reading of this key stated that NEITHER kind existed here</strong>, and described
+     * the whole of {@code src/test/resources} as holding nothing but the nine frozen input fixtures. Both were
+     * true when written and neither is true now: the legacy parity oracle was subsequently produced, and the
+     * directory now carries two declared expected-output trees beside the fixtures at its root. Leaving those
+     * sentences in place made the machine-readable record for a Blocker-severity gate contradict four sibling
+     * keys in the same file - {@code gate1.oracle}, {@code gate1.oracleDerivedFrom},
+     * {@code gate1.oracleDirectory} and {@code gate1.oracleFileCount} - and understate the evidence the gate
+     * actually rests on. The withdrawal is stated here rather than performed silently, and
+     * {@link #WITHDRAWN_GATE_ONE_CLAIMS} stops either sentence returning.
+     */
+    private static final String GATE_ONE_ORACLE_TAXONOMY =
+            "TWO KINDS OF ORACLE, and they prove different things. A LEGACY PARITY ORACLE is output captured "
+                    + "from an execution of the frozen COBOL and can prove parity. A JAVA-PRODUCED GOLDEN "
+                    + "REGRESSION ORACLE is output captured from this implementation; it can prove that "
+                    + "behaviour has not CHANGED and cannot prove it was ever CORRECT, because it is derived "
+                    + "from the thing under test. THE FIRST EXISTS HERE AND THE SECOND STILL DOES NOT. "
+                    + "app/cbl/CBTRN02C.cbl was compiled unmodified under GnuCOBOL 3.2.0 "
+                    + "(-x -fsign=EBCDIC -std=ibm -I app/cpy), executed against the frozen ASCII fixtures, "
+                    + "and its DALYREJS, TRANSACT, ACCTDATA, TCATBALF and SYSOUT images committed with a "
+                    + "per-artefact sha256, a PROVENANCE.properties recording oracle.derivedFromJava=false, "
+                    + "and a regeneration harness, under " + GATE_ONE_LEGACY_CAPTURE_DIRECTORY + "; the same "
+                    + "outcome is independently re-derived from the same source by "
+                    + "com.cardemo.e2e.PostingParityOracle, which imports no production type, and committed "
+                    + "under " + GATE_ONE_ORACLE_DIRECTORY + ". The circularity risk is therefore still "
+                    + "avoided rather than accepted - no Java-derived expected output is committed anywhere. "
+                    + "That is held structurally, not by naming: the ROOT of src/test/resources must hold "
+                    + "exactly the nine frozen input fixtures, each byte-identical to app/data/ASCII, and "
+                    + "every other file under it must belong to one of those two DECLARED trees, so an "
+                    + "expected-output artefact cannot be added unnoticed whatever it is called. AN EARLIER "
+                    + "READING OF THIS KEY SAID NEITHER KIND EXISTED HERE; it predates the parity oracle and "
+                    + "is withdrawn. What is still missing is a capture from a real z/OS run - see "
+                    + "gate1.capturedMainframeRun and gate1.neededEvidence. If a Java-produced expectation is "
+                    + "ever adopted it MUST be labelled a regression oracle and MUST NOT be described as "
+                    + "parity evidence.";
+
+    /**
+     * What this tier's assertions rest on, published verbatim into the retained evidence record.
+     *
+     * <p><strong>An earlier reading of this key described the basis as property-based in the ABSENCE of an
+     * oracle, and disclaimed field-level parity against legacy output.</strong> It is withdrawn on the same
+     * evidence as {@link #GATE_ONE_ORACLE_TAXONOMY}: that parity is asserted now, against both committed
+     * expectations, field for field and byte for byte. The properties are still asserted, and are worth
+     * stating because they hold independently of any expected-output file - so they survive a regeneration of
+     * one and would catch an expectation regenerated wrongly.
+     */
+    private static final String GATE_ONE_ASSERTION_BASIS =
+            "ORACLE-BASED, with the property assertions retained in addition rather than in place of it. The "
+                    + "run is diffed against both committed expectations - " + GATE_ONE_ORACLE_DIRECTORY
+                    + " and " + GATE_ONE_LEGACY_CAPTURE_DIRECTORY + " - field for field and byte for byte, "
+                    + "and the two are diffed against each other, so neither can drift alone. The properties "
+                    + "asserted alongside hold independently of any expected-output file: the 430-byte reject "
+                    + "geometry and its 350 + 4 + 76 decomposition, the sign census at column 143 of "
+                    + "app/data/ASCII/dailytran.txt, which reject codes are reachable over these fixtures "
+                    + "(102 only) and which are not (100, 101, 103), and the resulting completed-with-rejects "
+                    + "return code. AN EARLIER READING OF THIS KEY PUT THE BASIS THE OTHER WAY ROUND, as "
+                    + "properties standing in for an oracle that did not exist, and disclaimed field-level "
+                    + "parity; both are withdrawn. What is still not claimed is parity against a capture from "
+                    + "a real z/OS run - see gate1.capturedMainframeRun.";
+
+    /**
+     * The Gate 1 claims this gate has disproved, which must not reappear anywhere in this harness.
+     *
+     * <p>Each is a statement that was true when written and is now false. A withdrawn claim left in the
+     * published record is worse than a missing one, because a reader takes a machine-readable evidence key as
+     * current: the two rewritten above understated a Blocker-severity gate while four sibling keys in the same
+     * file overrode them, which is a contradiction a reader has no way to resolve.
+     *
+     * <p><strong>Each phrase is assembled from two halves, and that is load-bearing.</strong> This guard
+     * searches this class's own source text, so a phrase written contiguously here would match its own
+     * prohibition and fail the gate it protects. Split, the contiguous form exists nowhere in the file except
+     * at a site that genuinely restates the withdrawn claim - which is exactly what must fail.
+     */
+    private static final List<String> WITHDRAWN_GATE_ONE_CLAIMS = List.of(
+            "NEITHER EXISTS" + " IN THIS REPOSITORY",
+            "PROPERTY-BASED, not " + "oracle-based",
+            "Absent an oracle this tier " + "asserts");
+
     /** The universal marker for information that has not been produced. Never replaced by a guess. */
     private static final String NOT_AVAILABLE = "Not available";
+
+    /**
+     * The key fragment that marks an evidence property as a superseded position rather than a current one.
+     *
+     * <p>A withdrawn claim is retained rather than deleted, because a register that silently drops what it
+     * retires cannot be audited. The namespace is what keeps retention from becoming restatement.
+     */
+    private static final String WITHDRAWN_NAMESPACE = "withdrawn.";
+
+    /** The opening every withdrawn evidence property must carry, so a reader meets the standing first. */
+    private static final String WITHDRAWN_MARKER = "WITHDRAWN -";
+
+    /**
+     * Phrasings that assert the Gate 1 expectation does not exist.
+     *
+     * <p>Each was true before the expectation was produced and is false now, which is exactly why they are
+     * enumerated: the failure this guards against is a sentence that was correct when written surviving into
+     * a record that has moved on. The list is deliberately specific rather than a ban on the word "absent",
+     * because Gate 1 must go on stating plainly that a captured z/OS run is {@value #NOT_AVAILABLE}.
+     */
+    private static final List<String> ORACLE_ABSENCE_CLAIMS = List.of(
+            "NEITHER EXISTS" + " IN THIS REPOSITORY",
+            "Absent an oracle",
+            "not oracle-based",
+            "no oracle exists",
+            "is not claimed");
 
     /** Directory for the machine-readable evidence artefact. Build output, and {@code .gitignore}d. */
     private static final String EVIDENCE_DIRECTORY = "target/gate-verification";
@@ -848,6 +1191,9 @@ class GateVerificationTest {
 
     /** Indicator-column characters that make a line a comment or a continuation rather than code. */
     private static final Set<Character> NON_CODE_INDICATORS = Set.of('*', '/', '-');
+
+    /** Columns a TAB advances to, used only to read a TAB-bearing line the way an editor would render it. */
+    private static final int TAB_STOP_WIDTH = 8;
 
     /**
      * The division detector. It uses a word boundary and <strong>requires no trailing period</strong>,
@@ -935,34 +1281,42 @@ class GateVerificationTest {
      * @param allDivisionParagraphs paragraph-shaped labels anywhere in the member
      * @param allDivisionSections {@code SECTION} labels anywhere in the member
      * @param procedureLabelNames the names behind {@code procedureParagraphs}, in declaration order
+     * @param allLabelNames the names behind {@code allDivisionParagraphs}, in declaration order. A copybook
+     *     carries no division header at all, so its labels appear here and never in
+     *     {@code procedureLabelNames} - which is why a matrix verb cell naming a copybook-contributed label
+     *     has to be resolved against this list rather than that one
      */
     private record LabelCensus(int procedureParagraphs, int procedureSections, int allDivisionParagraphs,
-            int allDivisionSections, List<String> procedureLabelNames) {
+            int allDivisionSections, List<String> procedureLabelNames, List<String> allLabelNames) {
 
         /**
-         * Canonical constructor, defensively copying the name list.
+         * Canonical constructor, defensively copying both name lists.
          *
-         * @throws NullPointerException if {@code procedureLabelNames} is {@code null}
+         * @throws NullPointerException if either name list is {@code null}
          */
         private LabelCensus {
             procedureLabelNames = List.copyOf(
                     Objects.requireNonNull(procedureLabelNames, "procedureLabelNames must not be null"));
+            allLabelNames = List.copyOf(
+                    Objects.requireNonNull(allLabelNames, "allLabelNames must not be null"));
         }
 
         /**
          * Adds two censuses, so a corpus total is the fold of its members rather than a second parse.
          *
          * @param other the census to add; must not be {@code null}
-         * @return a census whose counts are the sums and whose name list is the concatenation
+         * @return a census whose counts are the sums and whose name lists are the concatenations
          */
         private LabelCensus plus(final LabelCensus other) {
             Objects.requireNonNull(other, "other must not be null");
             final List<String> merged = new ArrayList<>(this.procedureLabelNames);
             merged.addAll(other.procedureLabelNames);
+            final List<String> mergedAll = new ArrayList<>(this.allLabelNames);
+            mergedAll.addAll(other.allLabelNames);
             return new LabelCensus(this.procedureParagraphs + other.procedureParagraphs,
                     this.procedureSections + other.procedureSections,
                     this.allDivisionParagraphs + other.allDivisionParagraphs,
-                    this.allDivisionSections + other.allDivisionSections, merged);
+                    this.allDivisionSections + other.allDivisionSections, merged, mergedAll);
         }
     }
 
@@ -1070,6 +1424,37 @@ class GateVerificationTest {
         LOW,
         /** Information that has not been produced. Never a pass. */
         NOT_AVAILABLE
+    }
+
+    /**
+     * One row of a published register section, exactly as the ledger states it.
+     *
+     * <p>This is the parsed form, kept distinct from {@link Finding} so that the published identifier
+     * survives into the evidence artefact. The identifier is what a reader greps for to confirm that a
+     * particular finding - an open one especially - was disclosed rather than dropped.
+     *
+     * @param identifier the published identifier, for example {@code H-6}
+     * @param severity the band its identifier's prefix files it under
+     * @param subject the finding as the register states it
+     * @param locator the cell that evidences it: a locator in the findings section, a standing in the
+     *     unavailable section
+     * @param remediation the last cell: the remediation, or what is needed to close the gap
+     */
+    private record RegisterRow(String identifier, Severity severity, String subject, String locator,
+            String remediation) {
+
+        /**
+         * Canonical constructor.
+         *
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        private RegisterRow {
+            Objects.requireNonNull(identifier, "identifier must not be null");
+            Objects.requireNonNull(severity, "severity must not be null");
+            Objects.requireNonNull(subject, "subject must not be null");
+            Objects.requireNonNull(locator, "locator must not be null");
+            Objects.requireNonNull(remediation, "remediation must not be null");
+        }
     }
 
     /**
@@ -1497,7 +1882,7 @@ class GateVerificationTest {
      * @return a census with all counts at zero, the identity of {@link LabelCensus#plus}
      */
     private static LabelCensus emptyCensus() {
-        return new LabelCensus(0, 0, 0, 0, List.of());
+        return new LabelCensus(0, 0, 0, 0, List.of(), List.of());
     }
 
     /**
@@ -1537,6 +1922,7 @@ class GateVerificationTest {
         int allParagraphs = 0;
         int allSections = 0;
         final List<String> procedureNames = new ArrayList<>();
+        final List<String> allNames = new ArrayList<>();
         boolean insideProcedureDivision = false;
 
         for (final String line : member.lines()) {
@@ -1567,6 +1953,7 @@ class GateVerificationTest {
                 }
             } else {
                 allParagraphs++;
+                allNames.add(label.group(1));
                 if (insideProcedureDivision) {
                     procedureParagraphs++;
                     procedureNames.add(label.group(1));
@@ -1574,7 +1961,7 @@ class GateVerificationTest {
             }
         }
         return new LabelCensus(procedureParagraphs, procedureSections, allParagraphs, allSections,
-                procedureNames);
+                procedureNames, allNames);
     }
 
     // GATE 7 - SCOPE COVERAGE. All 28 programs mapped forward, every citation resolved backward, and the
@@ -1846,6 +2233,99 @@ class GateVerificationTest {
     }
 
     /**
+     * Gate 7: the label parser's two known blind spots are proven unable to bite this corpus, rather than
+     * assumed unable to.
+     *
+     * <p>A hostile-input review of the geometry found the parser correct on seventeen of nineteen crafted
+     * probes and identified two inputs it would mis-handle: an area-A label spelled in lower or mixed case,
+     * which {@link #LABEL} does not match, and a TAB in the indicator column, which shifts every subsequent
+     * character left of where the fixed-column reading expects it. Both were reported as blind spots rather
+     * than defects on the grounds that neither occurs in the frozen corpus - and that is precisely the kind
+     * of premise that ought to be measured rather than believed, because it is the premise the whole label
+     * census rests on.
+     *
+     * <p>So it is measured here, across every tree the parser reads, using a deliberately <em>wider</em>
+     * label pattern than the parser's own: a case-insensitive one. If the two censuses ever differ the
+     * corpus has changed, which is forbidden, and this assertion says so instead of the paragraph total
+     * quietly moving. Widening the parser instead would have been the wrong repair: it cannot change any
+     * census here, and it would silently admit lower-case data-division text in a tree where none exists.
+     */
+    @Test
+    @DisplayName("Gate 7 app/**: no area-A label is non-uppercase and no indicator column is a TAB")
+    void theTwoParserBlindSpotsCannotBiteTheFrozenCorpus() {
+        final Pattern caseInsensitiveLabel =
+                Pattern.compile("^([A-Za-z0-9][A-Za-z0-9-]*)\\s*(SECTION)?\\s*\\.$", Pattern.CASE_INSENSITIVE);
+        final List<CorpusMember> everyParsedMember = new ArrayList<>(this.corpus.programs());
+        everyParsedMember.addAll(this.corpus.copybooks());
+        everyParsedMember.addAll(this.corpus.symbolicMaps());
+        everyParsedMember.addAll(this.corpus.jclMembers());
+
+        final List<String> nonUppercaseLabels = new ArrayList<>();
+        final List<String> tabBearingLabelCandidates = new ArrayList<>();
+        int tabBearingLines = 0;
+        for (final CorpusMember member : everyParsedMember) {
+            final List<String> lines = member.lines();
+            for (int index = 0; index < lines.size(); index++) {
+                final String line = lines.get(index);
+                if (line.length() <= INDICATOR_COLUMN_INDEX) {
+                    continue;
+                }
+                final String where = member.memberName() + " line " + (index + 1);
+                if (line.substring(0, AREA_A_START_INDEX).indexOf('\t') >= 0) {
+                    // A TAB left of area A shifts every following character, so this line is read under
+                    // BOTH conventions: as the parser reads it, and with tabs expanded to the eight-column
+                    // stops an editor would use. Neither may yield a label, or the census would depend on
+                    // which convention the reader assumed.
+                    tabBearingLines++;
+                    final String expanded = expandTabs(line);
+                    if (isAreaALabelCandidate(line, caseInsensitiveLabel)
+                            || isAreaALabelCandidate(expanded, caseInsensitiveLabel)) {
+                        tabBearingLabelCandidates.add(where + ": " + line.strip());
+                    }
+                    continue;
+                }
+                if (NON_CODE_INDICATORS.contains(Character.valueOf(line.charAt(INDICATOR_COLUMN_INDEX)))) {
+                    continue;
+                }
+                final String codeArea = line.substring(AREA_A_START_INDEX);
+                if (codeArea.length() - codeArea.stripLeading().length() >= AREA_A_WIDTH) {
+                    continue;
+                }
+                final String candidate = codeArea.strip();
+                if (caseInsensitiveLabel.matcher(candidate).matches()
+                        && !LABEL.matcher(candidate).matches()) {
+                    nonUppercaseLabels.add(where + ": " + candidate);
+                }
+            }
+        }
+
+        assertThat(nonUppercaseLabels)
+                .as("no member carries a label-shaped area-A line the uppercase pattern misses, so the "
+                        + "case blind spot cannot change any published census. Measured with a "
+                        + "case-insensitive pattern against the parser's own, over all %d members it reads",
+                        Integer.valueOf(everyParsedMember.size()))
+                .isEmpty();
+        assertThat(tabBearingLabelCandidates)
+                .as("TABs DO occur left of area A - %d lines carry one, all of them continuation data in "
+                        + "the lookup copybooks - and not one of those lines yields a label under either "
+                        + "the fixed-column reading or the tab-expanded one. That is what makes the TAB "
+                        + "blind spot unable to move a census, and it is measured rather than asserted",
+                        Integer.valueOf(tabBearingLines))
+                .isEmpty();
+
+        record("gate7.parserBlindSpotMembersScanned", everyParsedMember.size());
+        record("gate7.parserBlindSpotTabBearingLines", tabBearingLines);
+        record("gate7.parserBlindSpotLabelsAffected",
+                nonUppercaseLabels.size() + tabBearingLabelCandidates.size());
+        record("gate7.parserBlindSpotBasis", "MEASURED, not assumed. The two reported blind spots are a "
+                + "non-uppercase area-A label, of which app/cbl, app/cpy, app/cpy-bms and app/jcl carry "
+                + "none under a pattern deliberately wider than the parser's own, and a TAB left of area A, "
+                + "which does occur and is proven to yield no label under either the fixed-column or the "
+                + "tab-expanded reading. Neither can move a published census, and the parser is therefore "
+                + "left as it is rather than widened to admit text this corpus does not contain.");
+    }
+
+    /**
      * Gate 7: the per-program spot checks hold exactly, which is what makes the aggregate trustworthy.
      *
      * <p>The file-access subprogram is the sharpest of the four: its fourteen procedural labels sit
@@ -2093,24 +2573,32 @@ class GateVerificationTest {
      * all would leave the compiled map untouched and this gate green.
      *
      * <p>So the document is parsed here as data. Every paragraph row is required to name a Java target that
-     * exists, a Java symbol, and a test citation in {@code <file>::<method>} form whose file resolves and
-     * whose method is annotated as an executable test. The last clause is the one with teeth: a citation
-     * pointing at a fixture builder or a {@code setUp} would satisfy a name check and prove nothing, so the
-     * annotation is required and not merely the identifier.
+     * exists, a Java symbol that the target declares with the visibility the row publishes, and a test
+     * citation in {@code <file>::<method>} form whose file resolves and whose method is annotated as an
+     * executable test. The annotation clause has teeth: a citation pointing at a fixture builder or a
+     * {@code setUp} would satisfy a name check and prove nothing, so the annotation is required and not
+     * merely the identifier.
+     *
+     * <p><strong>The symbol column is resolved, not merely required to be non-blank.</strong> It used to be
+     * the one column checked by presence alone, and that gap let two rows publish
+     * {@code batch/writers/RejectWriter.java} carriers - one for {@code 0300-DALYREJS-OPEN} and one for
+     * {@code 9300-DALYREJS-CLOSE} - that the class does not declare under any visibility, while both rows
+     * carried the {@code Target-verified} stamp and this gate stayed green. A non-blank check cannot tell a
+     * carrier from a plausible-looking name, so it certified 537 rows while proving nothing about any of
+     * them. The resolution the Test column already performed is applied to this column too: the declaration
+     * must exist in the file the row names, and its declared modifiers must include the published
+     * visibility. The resolved set is asserted non-empty as well, so a parser that silently matched nothing
+     * cannot pass the two emptiness assertions vacuously.
      */
     @Test
     @DisplayName("Gate 7 TRACEABILITY_MATRIX.md: 537 rows parsed; every target, symbol and test citation resolves")
     void theTraceabilityMatrixIsParsedAndEveryCitationResolves() {
         final Path root = this.corpus.root();
-        final List<String> rows = readTextFile(root.resolve("TRACEABILITY_MATRIX.md")).lines()
-                .filter(line -> line.startsWith("| `TM-") && line.endsWith("|"))
-                .toList();
+        final List<List<String>> rows = matrixRows();
         final List<List<String>> paragraphRows = rows.stream()
-                .map(GateVerificationTest::splitMatrixRow)
                 .filter(cells -> cells.size() == MATRIX_PARAGRAPH_COLUMNS)
                 .toList();
         final long syntheticRows = rows.stream()
-                .map(GateVerificationTest::splitMatrixRow)
                 .filter(cells -> cells.size() != MATRIX_PARAGRAPH_COLUMNS)
                 .count();
 
@@ -2127,9 +2615,13 @@ class GateVerificationTest {
 
         final List<String> missingTargets = new ArrayList<>();
         final List<String> missingSymbols = new ArrayList<>();
+        final List<String> unresolvedSymbols = new ArrayList<>();
+        final List<String> symbolVisibilityMismatches = new ArrayList<>();
+        final Set<String> resolvedSymbols = new LinkedHashSet<>();
         final List<String> unresolvedTests = new ArrayList<>();
         final List<String> nonExecutableTests = new ArrayList<>();
         final Map<String, String> testTextCache = new LinkedHashMap<>();
+        final Map<String, String> targetTextCache = new LinkedHashMap<>();
         final Set<String> citedPrograms = new LinkedHashSet<>();
 
         for (final List<String> cells : paragraphRows) {
@@ -2137,12 +2629,37 @@ class GateVerificationTest {
             citedPrograms.add(unquote(cells.get(1)));
 
             final String javaTarget = unquote(cells.get(MATRIX_JAVA_FILE_COLUMN));
-            if (!javaTarget.isEmpty() && javaTarget.endsWith(".java")
-                    && !Files.isRegularFile(root.resolve("src/main/java/com/cardemo").resolve(javaTarget))) {
+            final Path targetPath = root.resolve("src/main/java/com/cardemo").resolve(javaTarget);
+            final boolean targetResolves = !javaTarget.isEmpty() && javaTarget.endsWith(".java")
+                    && Files.isRegularFile(targetPath);
+            if (!javaTarget.isEmpty() && javaTarget.endsWith(".java") && !targetResolves) {
                 missingTargets.add(rowId + " -> " + javaTarget);
             }
-            if (unquote(cells.get(MATRIX_JAVA_SYMBOL_COLUMN)).isBlank()) {
+            final String javaSymbol = unquote(cells.get(MATRIX_JAVA_SYMBOL_COLUMN));
+            if (javaSymbol.isBlank()) {
                 missingSymbols.add(rowId);
+            } else if (targetResolves) {
+                final Matcher symbol = MATRIX_JAVA_SYMBOL.matcher(javaSymbol);
+                if (!symbol.find()) {
+                    unresolvedSymbols.add(rowId + " -> [" + javaSymbol
+                            + "] is not <visibility> <method>(...), so it cannot be resolved at all");
+                } else {
+                    final String visibility = symbol.group(1);
+                    final String method = symbol.group(2);
+                    final String target = targetTextCache.computeIfAbsent(javaTarget,
+                            ignored -> readTextFile(targetPath));
+                    final Optional<List<String>> modifiers = declaredModifiersOf(target, method);
+                    if (modifiers.isEmpty()) {
+                        unresolvedSymbols.add(rowId + " -> " + javaTarget + "::" + method
+                                + " is published as the carrier, and that file declares no such method");
+                    } else if (!modifiers.get().contains(visibility)) {
+                        symbolVisibilityMismatches.add(rowId + " -> " + javaTarget + "::" + method
+                                + " is declared [" + String.join(" ", modifiers.get())
+                                + "] and published as " + visibility);
+                    } else {
+                        resolvedSymbols.add(javaTarget + "::" + method);
+                    }
+                }
             }
 
             final Matcher citation = MATRIX_TEST_CITATION.matcher(cells.get(MATRIX_TEST_COLUMN));
@@ -2177,6 +2694,22 @@ class GateVerificationTest {
                 .as("every row names the Java symbol that carries the paragraph, so a row cannot claim a "
                         + "file while leaving the method unstated")
                 .isEmpty();
+        assertThat(unresolvedSymbols)
+                .as("and every named symbol RESOLVES in the file the same row names. This is the assertion "
+                        + "that turns the symbol column from a label into evidence: two rows once published "
+                        + "RejectWriter carriers that the class declares under no visibility at all, and a "
+                        + "non-blank check certified both while proving nothing about either")
+                .isEmpty();
+        assertThat(symbolVisibilityMismatches)
+                .as("and each is published with the visibility it is declared with, because the column "
+                        + "states both and a reader following the private half of a public method is being "
+                        + "told something untrue about the surface")
+                .isEmpty();
+        assertThat(resolvedSymbols)
+                .as("the resolved carrier set is non-empty, so neither emptiness assertion above can pass "
+                        + "over a parse that matched nothing. %d rows resolve to distinct (file, method) "
+                        + "pairs", Integer.valueOf(resolvedSymbols.size()))
+                .isNotEmpty();
         assertThat(unresolvedTests)
                 .as("every row cites a test as <file>::<method> and BOTH halves resolve on disk. This is "
                         + "the assertion that makes the Test column evidence instead of decoration")
@@ -2204,6 +2737,256 @@ class GateVerificationTest {
         record("gate7.matrixSupplementalRows", syntheticRows);
         record("gate7.matrixDistinctTestCitations", distinctCitations);
         record("gate7.matrixCitedPrograms", citedPrograms.size());
+        record("gate7.matrixResolvedTargetSymbols", resolvedSymbols.size());
+        record("gate7.matrixSymbolVisibilityMismatches", symbolVisibilityMismatches.size());
+        record("gate7.matrixSymbolResolutionMethod", "RESOLVED, not presence-checked: each row's published "
+                + "carrier is located as a declaration in the file the same row names, and its declared "
+                + "modifiers must include the published visibility. The predecessor of this check asserted "
+                + "only that the cell was non-blank, which certified two RejectWriter carriers the class "
+                + "declares under no visibility at all.");
+    }
+
+    /**
+     * Gate 7: the nine matrix columns the citation check does not read are resolved here, so no cell of a
+     * published paragraph row goes unverified.
+     *
+     * <p><strong>Why this exists as a separate assertion.</strong>
+     * {@link #theTraceabilityMatrixIsParsedAndEveryCitationResolves()} reads five of the fourteen columns -
+     * the row identifier, the program, the Java file, the Java symbol and the test citation. The other nine
+     * were published unchecked, and the consequence was demonstrated rather than argued: the whole suite was
+     * run twice over a matrix carrying six deliberate corruptions - a decision identifier with no entry, a
+     * gate anchor with no heading, a status outside the vocabulary, a line range past the end of its member,
+     * a copybook that does not exist, and a paragraph name that appears in no program - and both runs were
+     * green. The row count reconciled throughout, so the aggregate looked complete while individual row
+     * identity was unexamined. The parser had even collected the real paragraph identities and discarded
+     * them; they are read here.
+     *
+     * <p>Each guard resolves a cell against the artefact it names rather than against a list kept in this
+     * file, so the check cannot pass because a transcription in the harness drifted the same way:
+     *
+     * <ul>
+     *   <li><strong>Paragraph name</strong> against the labels this class parsed out of that very program's
+     *       {@code PROCEDURE DIVISION}, plus the one synthesised entry-point name, whose row count is
+     *       asserted so a corrupted row cannot hide behind it.</li>
+     *   <li><strong>Locator pair</strong> against the member's own line count, ordered, so a range past the
+     *       end of a 4,236-line program fails instead of reading as provenance.</li>
+     *   <li><strong>Verb targets</strong> against the same labels, plus the copybook-contributed labels and
+     *       the four call targets - two corpus programs and two Language Environment services.</li>
+     *   <li><strong>Copybooks</strong> against the 28-member copybook census, folded for case because
+     *       {@code COSTM01.CPY} carries the uppercase extension.</li>
+     *   <li><strong>Decision citation</strong> against the anchors {@code DECISION_LOG.md} actually
+     *       declares, and the anchor is required to be the identifier folded to lower case, because a link
+     *       whose fragment does not match its identifier lands nowhere while still reading as a citation.</li>
+     *   <li><strong>Gate citation</strong> against the anchors the ledger declares.</li>
+     *   <li><strong>Class, kind and status</strong> against the vocabularies the document publishes, with
+     *       the class additionally cross-checked against the package its own Java target sits in and
+     *       required to be single-valued per program.</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Gate 7 TRACEABILITY_MATRIX.md: every paragraph, locator, copybook, register and status cell resolves")
+    void everyMatrixColumnResolvesAgainstTheArtefactItNames() {
+        final Path root = this.corpus.root();
+        final Set<String> decisionAnchors = declaredAnchorsOf(readTextFile(root.resolve(DECISION_LOG_FILE)));
+        final Set<String> ledgerAnchors = declaredAnchorsOf(readTextFile(root.resolve(VALIDATION_GATES_FILE)));
+        final Set<String> copybookNames = new LinkedHashSet<>(this.corpus.copybooks().stream()
+                .map(CorpusMember::upperName)
+                .toList());
+        final Set<String> copybookLabels = new LinkedHashSet<>(this.corpus.copybooks().stream()
+                .flatMap(member -> censusOf(member).allLabelNames().stream())
+                .toList());
+
+        final List<String> unknownParagraphs = new ArrayList<>();
+        final List<String> outOfRangeLocators = new ArrayList<>();
+        final List<String> unknownVerbTargets = new ArrayList<>();
+        final List<String> unknownCopybooks = new ArrayList<>();
+        final List<String> unresolvedDecisions = new ArrayList<>();
+        final List<String> unresolvedGates = new ArrayList<>();
+        final List<String> unknownVocabulary = new ArrayList<>();
+        final Map<String, Set<String>> classesByProgram = new LinkedHashMap<>();
+        final Set<String> citedDecisions = new LinkedHashSet<>();
+        int syntheticParagraphRows = 0;
+
+        for (final List<String> cells : matrixParagraphRows()) {
+            final String rowId = unquote(cells.get(0));
+            final String programName = unquote(cells.get(1));
+            final CorpusMember program = Corpus.require(this.corpus.programs(), programName);
+            final List<String> labels = labelNamesOf(programName);
+
+            final String paragraph = unquote(cells.get(MATRIX_PARAGRAPH_NAME_COLUMN));
+            if (MATRIX_SYNTHETIC_PARAGRAPH.equals(paragraph)) {
+                syntheticParagraphRows++;
+            } else if (!labels.contains(paragraph)) {
+                unknownParagraphs.add(rowId + " -> " + programName + " declares no paragraph " + paragraph);
+            }
+
+            final List<Integer> locators = MATRIX_LINE_LOCATOR.matcher(cells.get(MATRIX_LOCATOR_COLUMN))
+                    .results()
+                    .map(result -> Integer.valueOf(result.group(1)))
+                    .toList();
+            if (locators.size() != 2 || locators.get(0).intValue() < 1
+                    || locators.get(0).intValue() > locators.get(1).intValue()
+                    || locators.get(1).intValue() > program.lines().size()) {
+                outOfRangeLocators.add(rowId + " -> " + programName + " holds " + program.lines().size()
+                        + " lines and the row cites " + unquote(cells.get(MATRIX_LOCATOR_COLUMN)));
+            }
+
+            MATRIX_VERB_TARGET.matcher(cells.get(MATRIX_VERBS_COLUMN)).results()
+                    .map(result -> result.group(1))
+                    .filter(target -> !labels.contains(target) && !copybookLabels.contains(target)
+                            && !MATRIX_CALL_TARGETS.contains(target))
+                    .forEach(target -> unknownVerbTargets.add(rowId + " -> " + programName
+                            + " has no label or call target named " + target));
+
+            MATRIX_COPYBOOK_REFERENCE.matcher(cells.get(MATRIX_COPYBOOKS_COLUMN)).results()
+                    .map(result -> result.group(1))
+                    .filter(copybook -> !copybookNames.contains(copybook.toUpperCase(Locale.ROOT)))
+                    .forEach(copybook -> unknownCopybooks.add(rowId + " -> app/cpy holds no " + copybook));
+
+            final List<MatchResult> decisionLinks =
+                    MATRIX_DECISION_LINK.matcher(cells.get(MATRIX_DECISION_COLUMN)).results().toList();
+            if (decisionLinks.isEmpty()) {
+                unresolvedDecisions.add(rowId + " cites no decision entry in the register column");
+            }
+            for (final MatchResult link : decisionLinks) {
+                final String identifier = link.group(1);
+                citedDecisions.add(identifier);
+                if (!decisionAnchors.contains(identifier.toLowerCase(Locale.ROOT))) {
+                    unresolvedDecisions.add(rowId + " -> " + identifier + " has no entry in "
+                            + DECISION_LOG_FILE);
+                } else if (!link.group(2).equals(identifier.toLowerCase(Locale.ROOT))) {
+                    unresolvedDecisions.add(rowId + " -> " + link.group()
+                            + " links to an anchor that is not its own identifier");
+                }
+            }
+
+            final List<MatchResult> gateLinks =
+                    MATRIX_GATE_LINK.matcher(cells.get(MATRIX_GATE_COLUMN)).results().toList();
+            if (gateLinks.isEmpty()) {
+                unresolvedGates.add(rowId + " cites no gate in the gate column");
+            }
+            gateLinks.stream()
+                    .map(link -> link.group(1))
+                    .filter(anchor -> !ledgerAnchors.contains(anchor))
+                    .forEach(anchor -> unresolvedGates.add(rowId + " -> " + VALIDATION_GATES_FILE
+                            + " declares no anchor " + anchor));
+
+            final String programClass = unquote(cells.get(MATRIX_PROGRAM_CLASS_COLUMN));
+            final String kind = unquote(cells.get(MATRIX_KIND_COLUMN));
+            final String status = unquote(cells.get(MATRIX_STATUS_COLUMN));
+            if (!MATRIX_PROGRAM_CLASSES.contains(programClass)) {
+                unknownVocabulary.add(rowId + " class " + programClass);
+            }
+            if (!MATRIX_TRANSLATION_KINDS.contains(kind)) {
+                unknownVocabulary.add(rowId + " kind " + kind);
+            }
+            if (!MATRIX_ROW_STATUSES.contains(status)) {
+                unknownVocabulary.add(rowId + " status " + status);
+            }
+            if (!classAgreesWithTarget(programClass, unquote(cells.get(MATRIX_JAVA_FILE_COLUMN)))) {
+                unknownVocabulary.add(rowId + " class " + programClass + " contradicts its target "
+                        + unquote(cells.get(MATRIX_JAVA_FILE_COLUMN)));
+            }
+            classesByProgram.computeIfAbsent(programName, key -> new LinkedHashSet<>()).add(programClass);
+        }
+
+        assertThat(unknownParagraphs)
+                .as("every row names a paragraph its own program declares. This is the column the artefact "
+                        + "exists for, and it was the one nothing read: the labels are the ones parsed out "
+                        + "of app/cbl at run time, so a renamed or invented paragraph fails here")
+                .isEmpty();
+        assertThat(syntheticParagraphRows)
+                .as("exactly %d rows name the synthesised entry point %s, which is how many programs enter "
+                        + "at the division header rather than at a label. Asserting the count is what stops "
+                        + "the paragraph guard being satisfied by relabelling a corrupted row",
+                        Integer.valueOf(MATRIX_SYNTHETIC_PARAGRAPH_ROWS), MATRIX_SYNTHETIC_PARAGRAPH)
+                .isEqualTo(MATRIX_SYNTHETIC_PARAGRAPH_ROWS);
+        assertThat(outOfRangeLocators)
+                .as("every locator pair is ordered and lies inside its member, measured against the line "
+                        + "count this class parsed rather than against a remembered length")
+                .isEmpty();
+        assertThat(unknownVerbTargets)
+                .as("every backticked target in a verb cell resolves to a label of that program, to a label "
+                        + "a copybook contributes, or to one of the four declared call targets")
+                .isEmpty();
+        assertThat(unknownCopybooks)
+                .as("every copybook a row claims the paragraph consumes exists in the 28-member census")
+                .isEmpty();
+        assertThat(unresolvedDecisions)
+                .as("every row cites a decision entry, that entry has a declared anchor in %s, and the link "
+                        + "lands on its own identifier - a fragment that resolves to nothing reads exactly "
+                        + "like one that resolves", DECISION_LOG_FILE)
+                .isEmpty();
+        assertThat(unresolvedGates)
+                .as("every row cites a gate whose anchor %s declares", VALIDATION_GATES_FILE)
+                .isEmpty();
+        assertThat(unknownVocabulary)
+                .as("every class, kind and status is one the document publishes, and each row's class "
+                        + "agrees with the package its own Java target sits in")
+                .isEmpty();
+        assertThat(classesByProgram.values().stream().filter(classes -> classes.size() > 1).toList())
+                .as("no program is classified two ways across its rows; a single member is online, batch or "
+                        + "utility and cannot be both")
+                .isEmpty();
+        final long onlinePrograms = classesByProgram.values().stream()
+                .filter(classes -> classes.contains("online")).count();
+        final long batchPrograms = classesByProgram.values().stream()
+                .filter(classes -> classes.contains("batch")).count();
+        final long utilityPrograms = classesByProgram.values().stream()
+                .filter(classes -> classes.contains("utility")).count();
+        assertThat(onlinePrograms)
+                .as("the online census equals the mapset census, because a sourced screen program is "
+                        + "precisely a program with a BMS mapset. Derived from the corpus, so the figure "
+                        + "cannot be a total this file remembers")
+                .isEqualTo(this.corpus.mapsets().size());
+        assertThat(utilityPrograms)
+                .as("exactly one member is the statically-called date utility, which is neither a screen "
+                        + "program nor a job step")
+                .isEqualTo(1L);
+        assertThat(onlinePrograms + batchPrograms + utilityPrograms)
+                .as("and the three classes partition the corpus: every one of the %d programs is classified "
+                        + "exactly once, so the batch class is the remainder rather than an independent "
+                        + "count that could drift", Integer.valueOf(EXPECTED_PROGRAM_COUNT))
+                .isEqualTo(EXPECTED_PROGRAM_COUNT);
+        assertThat(citedDecisions)
+                .as("the rows between them cite a non-trivial set of decision entries; a matrix citing one "
+                        + "entry on all 537 rows would satisfy every check above and evidence nothing")
+                .hasSizeGreaterThan(1);
+
+        record("gate7.matrixResolvedColumns", MATRIX_PARAGRAPH_COLUMNS);
+        record("gate7.matrixSyntheticParagraphRows", syntheticParagraphRows);
+        record("gate7.matrixCitedDecisionEntries", citedDecisions.size());
+        record("gate7.matrixColumnResolution", "EVERY column of every paragraph row is resolved against the "
+                + "artefact it names: the paragraph against the labels parsed from app/cbl, the locator "
+                + "against the member's line count, the verbs against those labels plus the copybook labels "
+                + "and the four declared call targets, the copybooks against the 28-member census, the "
+                + "decision and gate citations against the anchors those documents declare, and the class, "
+                + "kind and status against the published vocabularies. Six columns previously carried no "
+                + "guard at all, and a full suite stayed green over six deliberate corruptions.");
+    }
+
+    /**
+     * Reports whether a row's class agrees with the package its own Java target sits in.
+     *
+     * <p>The two columns describe the same row from different ends, so they are checkable against each other
+     * without a third source. The batch class admits a shared-service target because two batch members are
+     * translated into services rather than into batch types: the file-access subprogram becomes the file
+     * service and the date utility becomes the date validation service.
+     *
+     * @param programClass the class cell, unquoted; must not be {@code null}
+     * @param javaTarget the Java target cell, unquoted and relative to the production package root; must not
+     *     be {@code null}
+     * @return {@code true} when the pair is consistent
+     */
+    private static boolean classAgreesWithTarget(final String programClass, final String javaTarget) {
+        Objects.requireNonNull(programClass, "programClass must not be null");
+        Objects.requireNonNull(javaTarget, "javaTarget must not be null");
+        return switch (programClass) {
+            case "online" -> javaTarget.startsWith("service/") || javaTarget.startsWith("controller/");
+            case "batch" -> javaTarget.startsWith("batch/") || javaTarget.startsWith("service/shared/");
+            case "utility" -> javaTarget.startsWith("service/shared/");
+            default -> false;
+        };
     }
 
     /**
@@ -2255,7 +3038,7 @@ class GateVerificationTest {
      * <p>The two shapes are checked separately because they are genuinely different: a type-declaring file
      * documents its type, while a {@code package-info.java} documents its package and declares no type at
      * all. Requiring a type comment of the latter would fail 26 correct files, and requiring only a package
-     * comment of the former would pass 133 undocumented ones.
+     * comment of the former would pass 134 undocumented ones.
      */
     @Test
     @DisplayName("Gate 7 src/main/java/**: every source carries the Apache banner, a Source line and a doc")
@@ -2638,6 +3421,56 @@ class GateVerificationTest {
                 .as("the scan found real COPY statements, so a zero for one member below means that member "
                         + "is genuinely unreferenced rather than that the scanner matched nothing at all")
                 .isNotEmpty();
+
+        // EVERY COUNTED MEMBER IS A MEMBER. The census is only evidence if each name in it is a copybook
+        // this repository holds or one the transaction monitor supplies; a name that is neither is a parser
+        // artefact, and it was one. Reading JCL comments with the COBOL indicator-column rule added DATA, OF
+        // and USER to this map from English prose in the job stream - see isNonCodeLine - and inflated the
+        // total from 46 to 49 without failing anything, because a total nobody decomposes cannot show that
+        // three of its members do not exist. The decomposition is asserted instead of the total: 27 of the
+        // 28 app/cpy copybooks (UNUSED1Y is the one exception, and its absence is the disposition this test
+        // exists to prove), all 17 app/cpy-bms symbolic maps, and the two copybooks CICS supplies and the
+        // repository consequently does not hold. Nothing else may appear, and no figure here is a literal.
+        final Set<String> copybookMembers = new LinkedHashSet<>();
+        for (final CorpusMember copybook : this.corpus.copybooks()) {
+            copybookMembers.add(memberBaseName(copybook));
+        }
+        final Set<String> symbolicMapMembers = new LinkedHashSet<>();
+        for (final CorpusMember symbolicMap : this.corpus.symbolicMaps()) {
+            symbolicMapMembers.add(memberBaseName(symbolicMap));
+        }
+        final List<String> copiedCopybooks = repositoryWideCopySites.keySet().stream()
+                .filter(copybookMembers::contains)
+                .sorted()
+                .toList();
+        final List<String> copiedSymbolicMaps = repositoryWideCopySites.keySet().stream()
+                .filter(name -> !copybookMembers.contains(name))
+                .filter(symbolicMapMembers::contains)
+                .sorted()
+                .toList();
+        final List<String> copiedElsewhere = repositoryWideCopySites.keySet().stream()
+                .filter(name -> !copybookMembers.contains(name) && !symbolicMapMembers.contains(name))
+                .sorted()
+                .toList();
+        assertThat(copiedElsewhere)
+                .as("every counted member that is not a copybook or a symbolic map of this repository is a "
+                        + "copybook the transaction monitor supplies, and there are exactly two of them. A "
+                        + "fourth name here is a parser artefact rather than a discovery: DATA, OF and USER "
+                        + "all landed in this list when JCL comments were read by the COBOL rule")
+                .containsExactly("DFHAID", "DFHBMSCA");
+        assertThat(copiedSymbolicMaps)
+                .as("all 17 symbolic maps are copied, which is what makes the screen-field contract reachable "
+                        + "from the programs at all")
+                .hasSameSizeAs(this.corpus.symbolicMaps());
+        assertThat(copiedCopybooks)
+                .as("and every copybook but one is copied somewhere. The exception is the dead member "
+                        + "asserted below, so this size is 28 minus 1 and is derived from the corpus rather "
+                        + "than stated: %s", copybookMembers)
+                .hasSize(this.corpus.copybooks().size() - 1);
+        assertThat(repositoryWideCopySites)
+                .as("the three groups partition the census exactly, so no member is counted twice and none "
+                        + "is left unclassified")
+                .hasSize(copiedCopybooks.size() + copiedSymbolicMaps.size() + copiedElsewhere.size());
         assertThat(repositoryWideCopySites.get("UNUSED1Y"))
                 .as("app/cpy/UNUSED1Y.cpy has ZERO COPY references repository-wide, which is the whole "
                         + "evidence for dispositioning it as documented dead. Its eighty-byte layout is a "
@@ -2733,6 +3566,13 @@ class GateVerificationTest {
                 .isEmpty();
 
         record("gate7.repositoryWideCopiedMembers", repositoryWideCopySites.size());
+        record("gate7.repositoryWideCopiedMemberGrammar", copiedCopybooks.size() + " of the "
+                + this.corpus.copybooks().size() + " app/cpy copybooks (UNUSED1Y excepted) + "
+                + copiedSymbolicMaps.size() + " app/cpy-bms symbolic maps + " + copiedElsewhere.size()
+                + " CICS-supplied (" + String.join(", ", copiedElsewhere) + ") = "
+                + repositoryWideCopySites.size() + ". DERIVED, and each group asserted separately: the "
+                + "predecessor of this census published 49 because JCL comments were read with the COBOL "
+                + "indicator-column rule, which admitted DATA, OF and USER from prose in the job stream.");
         record("gate7.deadCopybook",
                 "app/cpy/UNUSED1Y.cpy - documented dead, zero COPY references repository-wide");
         record("gate7.abendCopybook",
@@ -2998,7 +3838,7 @@ class GateVerificationTest {
      * exactly wherever the count is a contract, such as one entity per catalogued cluster.
      */
     @Test
-    @DisplayName("Gate 7 src/main/java/**: 133 production classes and one package comment per package")
+    @DisplayName("Gate 7 src/main/java/**: 134 production classes and one package comment per package")
     void productionSurfaceCompositionIsMeasuredNotAssumed() {
         final List<CorpusMember> classes = this.corpus.productionSources().stream()
                 .filter(source -> !"package-info.java".equals(source.memberName()))
@@ -3014,7 +3854,7 @@ class GateVerificationTest {
                         + "total drift unobserved")
                 .hasSize(EXPECTED_PRODUCTION_FILE_COUNT);
         assertThat(classes)
-                .as("the production tier holds 133 classes, excluding package comments")
+                .as("the production tier holds 134 classes, excluding package comments")
                 .hasSize(EXPECTED_PRODUCTION_CLASS_COUNT);
         assertThat(packageComments)
                 .as("and 26 are package comments, asserted exactly rather than left as a remainder")
@@ -3053,7 +3893,7 @@ class GateVerificationTest {
                         Integer.valueOf(SANCTIONED_ADDITION_COUNT), CENSUS_EXEMPT_REGISTER_ENTRY,
                         Integer.valueOf(CENSUS_EXEMPT_ADDITION_COUNT))
                 .isEqualTo(EXPECTED_PRODUCTION_FILE_COUNT);
-        assertThat(readTextFile(this.corpus.root().resolve("DECISION_LOG.md")))
+        assertThat(readTextFile(this.corpus.root().resolve(DECISION_LOG_FILE)))
                 .as("the sanction must be PUBLISHED, not merely asserted here: a gate that accepts a "
                         + "surplus on the strength of a register entry is only as honest as that entry's "
                         + "continued existence. Both operands of the identity above are checked, because "
@@ -3132,7 +3972,7 @@ class GateVerificationTest {
                 + (SANCTIONED_ADDITION_COUNT + CENSUS_EXEMPT_ADDITION_COUNT) + " files. Remediation "
                 + "performed - every addition is sanctioned in DECISION_LOG.md " + SANCTION_REGISTER_ENTRY
                 + " in four named groups (11 controller response types, the masking helper, 12 further "
-                + "package documents, 2 production types), with the one file outside every enumerated area "
+                + "package documents, 3 production types), with the one file outside every enumerated area "
                 + "sanctioned separately in " + CENSUS_EXEMPT_REGISTER_ENTRY + ", and the inventory is now "
                 + "asserted as schema floor plus registers rather than as a bare figure: here as the total "
                 + "identity " + SCHEMA_PRODUCTION_FILE_COUNT + " + " + SANCTIONED_ADDITION_COUNT + " + "
@@ -3491,8 +4331,101 @@ class GateVerificationTest {
 
         record("gate6.credentialCandidatesVerified", candidates.size());
         record("gate6.credentialsAuthenticatingAgainstTheSeed", authenticating.size());
+        // Which set the denominator was measured over, because the two readings are different claims. An
+        // index-restricted walk is a property of the repository and reproducible from a clean checkout; an
+        // unrestricted one is a property of whatever happens to be in the working tree.
+        record("gate6.credentialWalkBasis", trackedPaths().isEmpty()
+                ? NOT_AVAILABLE + " - .git/index could not be read or is version 4, so the walk covered the "
+                        + "working tree rather than the tracked set and the denominator is not reproducible "
+                        + "from a clean checkout. Needed: a checkout with readable git metadata"
+                : "restricted to the " + trackedPaths().size() + " paths git tracks, read from .git/index, "
+                        + "so an untracked or ignored file in the working tree cannot move the denominator");
+        record("gate6.credentialWalkFileCount", committedFilesOutsideTheFrozenCorpus().size());
         record("gate6.seededPlaintextSource", "app/jcl/DUSRSECJ.jcl columns 49-56 (SEC-USR-PWD PIC X(08)), "
                 + "read at scan time so no credential is named in this harness or in its evidence");
+    }
+
+    /**
+     * The candidate figure both summaries publish must be the figure this gate measured, and they must
+     * publish the same one as each other.
+     *
+     * <p>The interesting half of the Gate 6 claim is the zero: no committed literal authenticates against the
+     * shipped seed. The denominator is what makes that zero worth reading, because "0 of 0" and "0 of 83" are
+     * the same sentence and only one of them is evidence. And the denominator MOVES - it is the size of a walk
+     * over every committed file, so adding a test, a document or a configuration key can change it - which is
+     * exactly why publishing it as prose was a mistake. A reading of these two summaries carried 78 while the
+     * harness measured a different number, and nothing objected.
+     *
+     * <p>It is asserted across both documents deliberately. {@code README.md} and the ledger publish the same
+     * sentence, so a correction applied to one and not the other leaves two published figures disagreeing -
+     * a worse state than a single stale one, because a reader cannot tell which to trust. Requiring them to
+     * agree with each other AND with the measurement makes a partial correction fail.
+     *
+     * <p><strong>Two phrasings are read, and that is a finding rather than defensiveness.</strong> The figure
+     * turned out to be published three times, not twice: the two summary rows read "0 of 78 candidates
+     * authenticating" while the Gate 6 body table read "of 84 credential candidates walked" - the same walk,
+     * over the same tree, stated as two different numbers, and neither was the measured one. Both wordings are
+     * therefore matched, and every occurrence of either is held rather than only the first, because a shape
+     * left unmatched is a shape left free to drift, which is how these three came apart.
+     */
+    @Test
+    @DisplayName("Gate 6: every published candidate figure is the measured one, and they agree with each other")
+    void bothSummariesPublishTheMeasuredCredentialCandidateFigure() {
+        final int measured = credentialShapedLiterals().size();
+        assertThat(measured)
+                .as("the walk must find a substantial candidate set for the published denominator to mean "
+                        + "anything; the gate's own assertion holds the floor")
+                .isGreaterThanOrEqualTo(MINIMUM_CREDENTIAL_CANDIDATES);
+
+        // Both published phrasings, because the figure is stated three times in two documents and the two
+        // wordings drifted apart independently: the summary rows read "of 78" while the Gate 6 body read
+        // "of 84" over the very same walk. Matching only one shape would have left the other free to rot,
+        // which is how they came to disagree in the first place.
+        final List<Pattern> shapes = List.of(
+                Pattern.compile("\\*\\*0\\*\\* of (?<total>[\\d,]+) candidates authenticating"),
+                Pattern.compile("of \\*\\*(?<total>[\\d,]+)\\*\\* credential candidates walked"));
+        final Map<String, Integer> readings = new LinkedHashMap<>();
+        for (final String document : List.of(VALIDATION_GATES_FILE, "README.md")) {
+            final Path path = this.corpus.root().resolve(document);
+            assertThat(path)
+                    .as("%s publishes the Gate 6 summary, so its absence is a failure here rather than a "
+                            + "reason to check one document instead of two", document)
+                    .isRegularFile();
+            final String text = WHITESPACE_RUN.matcher(readTextFile(path)).replaceAll(" ");
+            int found = 0;
+            for (final Pattern shape : shapes) {
+                final Matcher matcher = shape.matcher(text);
+                while (matcher.find()) {
+                    found++;
+                    // EVERY occurrence is held, not merely the first: a document that states the figure
+                    // twice must state it consistently, or one of the two readings is a stale claim a reader
+                    // has no way to identify as the wrong one.
+                    readings.put(document + " occurrence " + found, Integer.parseInt(
+                            matcher.group("total").replace(",", "")));
+                }
+            }
+            assertThat(found)
+                    .as("%s must publish the candidate denominator at least once, in one of the two forms "
+                            + "this gate reads. A summary that states the zero without the denominator is "
+                            + "not making a checkable claim", document)
+                    .isPositive();
+        }
+
+        assertThat(readings.values().stream().distinct().toList())
+                .as("every published denominator must be the SAME figure: %s. Two published figures "
+                        + "disagreeing is worse than one stale figure, because a reader cannot tell which "
+                        + "is the claim", readings)
+                .hasSize(1);
+        readings.forEach((locator, reading) -> assertThat(reading)
+                .as("%s publishes %d credential candidates and this gate measured %d over the same tree. "
+                        + "The denominator moves whenever a committed file gains a credential-shaped "
+                        + "literal, so it is corrected from the measurement rather than the other way "
+                        + "round", locator, reading, measured)
+                .isEqualTo(measured));
+
+        record("gate6.publishedCandidateFigure", readings.values().iterator().next());
+        record("gate6.publishedCandidateFigurePublications", readings.size());
+        record("gate6.publishedCandidateFigureLocators", String.join("; ", readings.keySet()));
     }
 
     /**
@@ -3535,12 +4468,111 @@ class GateVerificationTest {
                 .contains(control);
 
         record("gate6.credentialWalkExclusions", 1);
+        record("gate6.credentialWalkTextExtensions", String.join(",",
+                new TreeSet<>(CREDENTIAL_WALK_TEXT_EXTENSIONS)));
         record("gate6.credentialWalkExclusionReason", FROZEN_PRIOR_RUN_DOCUMENT
                 + " is prior-run evidence marked FROZEN and REFERENCE by docs/technical-specifications.md "
                 + "0.4.1.1 and 0.3.1.7; its sign-on example at :418 carries the seeded plaintext. Severity "
                 + "Medium. Remediation, for whoever owns that document: replace the example credential with a "
                 + "placeholder. This migration may not edit it - section 0.3.1.6 enumerates its three UPDATE "
                 + "files - so the finding is disclosed rather than closed.");
+    }
+
+    /**
+     * Gate 6: the walk skips only frozen source and gitignored build output, and reads every authored language.
+     *
+     * <p>An exclusion list and an extension list fail in opposite directions and both fail silently. Widen the
+     * first and a real credential goes unseen; leave the second short and a whole language goes unread. The
+     * run is green in either case, which is why both are pinned here rather than left to review.
+     *
+     * <p><strong>The build-output roots carry a checkable justification, and the source roots do not.</strong>
+     * "This directory is out of scope" is a judgement, so those five are pinned literally and any change to
+     * them has to be argued. "This directory is build output" is a fact about {@code .gitignore}, so each of
+     * those three is required to be ignored at the repository root by an exact {@code /<root>/} line. That
+     * asymmetry is the whole point: the second list cannot be used to quieten the walk, because a root that is
+     * not ignored is authored and an authored root belongs in the scan.
+     *
+     * <p>The two extensions the walk gained are asserted through the files that motivated them rather than
+     * through the set alone, because a set membership check would still pass if the walk's predicate stopped
+     * consulting the set.
+     */
+    @Test
+    @DisplayName("Gate 6: the credential walk skips only frozen source and gitignored output, and reads all")
+    void theCredentialWalkSkipsOnlyFrozenSourceAndGitignoredBuildOutput() {
+        assertThat(UNSCANNED_SOURCE_ROOTS)
+                .as("""
+                        the frozen and out-of-scope roots are pinned, because each is a judgement about \
+                        provenance rather than a fact anything can check. Adding a root here removes it from \
+                        the credential scan silently - the run stays green - so a change must be argued on \
+                        this assertion, not made in passing.""")
+                .containsExactlyInAnyOrder("app", "samples", "diagrams", ".git", ".mvn");
+
+        assertThat(UNSCANNED_BUILD_OUTPUT_ROOTS)
+                .as("""
+                        the build-output roots are pinned too, and every one of them is additionally required \
+                        to be gitignored by the assertion below. site/ and blitzy/ were added because a bare \
+                        `mkdocs build --strict` - published in this repository as a verification step, with \
+                        no site_dir set - writes ./site/, whose rendered copy of the frozen prior-run \
+                        document carries the seeded plaintext and failed the very next verify.""")
+                .containsExactlyInAnyOrder("target", "site", "blitzy");
+
+        final List<String> ignoreRules = List.of(readTextFile(this.corpus.root().resolve(".gitignore"))
+                .split("\\R"));
+        for (final String root : new TreeSet<>(UNSCANNED_BUILD_OUTPUT_ROOTS)) {
+            assertThat(ignoreRules)
+                    .as("""
+                            %s is skipped on the ground that it is build output rather than a commit, so \
+                            .gitignore must say so with a root-anchored /%s/ rule. If it is not ignored it is \
+                            authored, and an authored root belongs in the credential scan - move it to \
+                            UNSCANNED_SOURCE_ROOTS with a reason, or stop excluding it.""", root, root)
+                    .contains("/" + root + "/");
+        }
+
+        for (final String root : new TreeSet<>(UNSCANNED_SOURCE_ROOTS)) {
+            assertThat(ignoreRules)
+                    .as("""
+                            %s is skipped as frozen or out-of-scope SOURCE, so it must not also be \
+                            gitignored: if it were, it would be build output and belong in the other list. \
+                            Keeping the two kinds distinct is what lets the build-output list carry a \
+                            checkable justification at all.""", root)
+                    .doesNotContain("/" + root + "/");
+        }
+
+        final List<Path> scanned = committedFilesOutsideTheFrozenCorpus();
+        final Set<String> excluded = new TreeSet<>(UNSCANNED_SOURCE_ROOTS);
+        excluded.addAll(UNSCANNED_BUILD_OUTPUT_ROOTS);
+        assertThat(scanned.stream()
+                        .map(path -> this.corpus.root().relativize(path).getName(0).toString())
+                        .filter(excluded::contains)
+                        .distinct()
+                        .toList())
+                .as("no scanned file may sit under an excluded root, whatever exists on this disk")
+                .isEmpty();
+
+        assertThat(CREDENTIAL_WALK_TEXT_EXTENSIONS)
+                .as("""
+                        the extensions are pinned because a walk that cannot see a file cannot clear it, and \
+                        the omission is invisible: the gate passes either way. py and css were added when the \
+                        documentation build gained a build-time hook and a stylesheet, both of which the walk \
+                        had been unable to read.""")
+                .containsExactlyInAnyOrder("java", "yml", "yaml", "xml", "sql", "json", "sh", "md",
+                        "properties", "example", "cmd", "txt", "html", "conf", "py", "css");
+
+        assertThat(scanned)
+                .as("""
+                        the two extensions the set gained are asserted through the files that motivated them, \
+                        because pinning the set alone would still pass if the walk's predicate stopped \
+                        consulting it. Both files are authored, both are committed, and neither was readable \
+                        by this gate before.""")
+                .contains(this.corpus.root().resolve("mkdocs_hooks.py"),
+                        this.corpus.root().resolve("docs/stylesheets/carddemo.css"));
+
+        record("gate6.credentialWalkUnscannedSourceRoots",
+                String.join(",", new TreeSet<>(UNSCANNED_SOURCE_ROOTS)));
+        record("gate6.credentialWalkUnscannedBuildOutputRoots",
+                String.join(",", new TreeSet<>(UNSCANNED_BUILD_OUTPUT_ROOTS))
+                        + " (each required to carry a root-anchored /<root>/ rule in .gitignore)");
+        record("gate6.credentialWalkFilesScanned", scanned.size());
     }
 
     /**
@@ -3886,7 +4918,7 @@ class GateVerificationTest {
     @DisplayName("Gate 1: the boundary oracle is the frozen program's own output and is reproducible")
     void gateOneBoundaryOracleIsLegacyDerivedAndReproducible() {
         final Gate1Oracle oracle = Gate1Oracle.load();
-        final Path oracleDirectory = this.corpus.root().resolve("src/test/resources/parity/gate1");
+        final Path oracleDirectory = this.corpus.root().resolve(GATE_ONE_LEGACY_CAPTURE_DIRECTORY);
 
         assertThat(oracleDirectory.resolve("PROVENANCE.properties"))
                 .as("the provenance record is what makes the oracle auditable rather than merely present")
@@ -4298,25 +5330,337 @@ class GateVerificationTest {
                         + "as current a position this gate has disproved")
                 .doesNotContain("model-sensitive");
 
+        final String taxonomy = reportGateOneOracleTaxonomy();
+        final String basis = reportGateOneAssertionBasis();
+
+        // The two literals below outlived the state they described. Both were written when no expected
+        // outcome existed and neither was rewritten when one was derived, committed and diffed against, so
+        // the artefact went on publishing the two withdrawn clauses named in WITHDRAWN_GATE_ONE_CLAIMS beside
+        // a report that named the oracle's directory. Nothing asserted either string, which is why the
+        // contradiction survived a green run; these assertions are that missing check. They are stated as
+        // rejections of the withdrawn wording rather than as approvals of the new, because a paraphrase of
+        // the old claim is the failure mode - and a rejection catches the paraphrase.
+        assertThat(taxonomy)
+                .as("the withdrawn no-oracle claim must not survive: %s holds five images captured from an "
+                        + "execution of the frozen program, so publishing its absence contradicts the disk, "
+                        + "the ledger and the report this same test asserts", GATE_ONE_LEGACY_CAPTURE_DIRECTORY)
+                .doesNotContain("NEITHER EXISTS")
+                .contains("THE SECOND STILL DOES NOT");
+        assertThat(taxonomy)
+                .as("the taxonomy must still distinguish the two kinds, because which kind a gate rests on "
+                        + "decides what it can prove. Losing the distinction while correcting the status "
+                        + "would trade one wrong statement for another")
+                .contains("LEGACY PARITY ORACLE")
+                .contains("JAVA-PRODUCED GOLDEN REGRESSION ORACLE");
+        assertThat(taxonomy)
+                .as("the taxonomy must name where the legacy-derived expectation lives and how it was "
+                        + "produced, so a reader can check the claim rather than take it")
+                .contains(GATE_ONE_LEGACY_CAPTURE_DIRECTORY)
+                .contains("oracle.derivedFromJava=false")
+                .contains("GnuCOBOL");
+        assertThat(taxonomy)
+                .as("the one kind that is genuinely absent must still be named as absent, and the rule about "
+                        + "adopting it must survive the correction. Matched case-insensitively on purpose: "
+                        + "the literal emphasises this clause in capitals, and an assertion that pinned the "
+                        + "casing would fail on a rewording that kept the meaning exactly")
+                .contains("MUST NOT be described as parity evidence");
+
+        assertThat(basis)
+                .as("the assertion basis must stop claiming there is no oracle. This tier diffs against two "
+                        + "committed expectations field for field and byte for byte, which is the strongest "
+                        + "claim Gate 1 makes, and describing it as property-based understated it")
+                .doesNotContain("Absent an oracle")
+                .doesNotContain("not oracle-based");
+        assertThat(basis)
+                .as("the property assertions did not go away when the oracle arrived, and they are the part "
+                        + "that holds without any expected-output file at all, so both bases must be stated")
+                .contains("ORACLE-BASED")
+                .contains("property assertions retained in addition");
+
+        assertThat(this.corpus.root().resolve(GATE_ONE_LEGACY_CAPTURE_DIRECTORY))
+                .as("the taxonomy names this directory as the legacy-derived expectation, so it must exist; "
+                        + "a literal naming a directory that does not exist is the defect this replaces, in "
+                        + "the opposite direction")
+                .isDirectory();
+
+        // were committed, and they were contradicted by gate1.oracle, gate1.oracleDirectory and
+        // gate1.oracleFileCount in the same artefact. What went wrong is worth naming precisely: the
+        // resource-shape assertion of this class WAS revised to whitelist both trees, and only the prose a
+        // reader actually reads was left behind - so the drift was invisible to every assertion. The pair
+        // below closes that: each declared tree must be on disk AND must be named by the record, so
+        // deleting a tree cannot leave the prose standing and rewriting the prose cannot orphan a tree.
+        for (final String expectationTree
+                : List.of(GATE_ONE_LEGACY_CAPTURE_DIRECTORY, GATE_ONE_ORACLE_DIRECTORY)) {
+            assertThat(this.corpus.root().resolve(expectationTree))
+                    .as("%s is recorded as an expectation this repository carries, so it must be on disk. A "
+                            + "name that no longer resolves would make the record an overclaim, which is the "
+                            + "same defect as its predecessor's underclaim in the opposite direction",
+                            expectationTree)
+                    .isDirectory();
+            assertThat(taxonomy)
+                    .as("and the record must NAME %s, so a tree cannot be deleted while the prose that "
+                            + "rests on it survives", expectationTree)
+                    .contains(expectationTree);
+        }
+        assertThat(taxonomy + " " + basis)
+                .as("the withdrawn wording must not return in either string: it denied the existence of the "
+                        + "very expectations this gate compares against, and denying delivered evidence "
+                        + "misleads a reader exactly as far as claiming absent evidence would")
+                .doesNotContain("NEITHER EXISTS" + " IN THIS REPOSITORY")
+                .doesNotContain("Absent an oracle");
+
+        // AND THE LOAD-BEARING CLAUSE IS MEASURED, not merely stated. The taxonomy's non-circularity rests
+        // on the source-derived oracle importing no production type, and until now that was asserted only as
+        // a phrase the report had to contain - a check on the wording rather than on the code, which is the
+        // same shape of gap that let the withdrawn clauses above survive. Every com.cardemo import of the
+        // oracle is resolved against the production type set derived from src/main/java, prefix by prefix so
+        // that a nested or static import cannot slip past on its trailing segment. Its test-tree fixture
+        // loader is not a production type and is correctly not reported here.
+        final Set<String> productionTypes = new LinkedHashSet<>();
+        for (final CorpusMember productionSource : this.corpus.productionSources()) {
+            productionTypes.add(productionSource.relativePath()
+                    .replaceFirst("^src/main/java/", "")
+                    .replaceAll("\\.java$", "")
+                    .replace('/', '.'));
+        }
+        final List<String> productionImportsOfTheOracle = new ArrayList<>();
+        final Matcher oracleImport = Pattern.compile("(?m)^import\\s+(?:static\\s+)?(com\\.cardemo\\.[\\w.]+)\\s*;")
+                .matcher(readTextFile(this.corpus.root()
+                        .resolve("src/test/java/com/cardemo/e2e/PostingParityOracle.java")));
+        while (oracleImport.find()) {
+            String candidate = oracleImport.group(1);
+            while (candidate.contains(".")) {
+                if (productionTypes.contains(candidate)) {
+                    productionImportsOfTheOracle.add(oracleImport.group(1));
+                    break;
+                }
+                candidate = candidate.substring(0, candidate.lastIndexOf('.'));
+            }
+        }
+        assertThat(productionImportsOfTheOracle)
+                .as("the source-derived oracle imports no production type, which is what makes the two sides "
+                        + "of the Gate 1 comparison share no code. An import from src/main/java here would "
+                        + "make the expectation a function of the implementation, and the comparison would "
+                        + "then be able to agree by construction - the exact circularity the taxonomy above "
+                        + "claims is avoided. Resolved against the %d production types this tree declares",
+                        Integer.valueOf(productionTypes.size()))
+                .isEmpty();
+        assertThat(basis)
+                .as("and the one genuinely unavailable artefact stays named inside the basis, so the "
+                        + "correction of the false clauses cannot quietly take the residual with it: the "
+                        + "basis must point at the key that carries the %s statement", NOT_AVAILABLE)
+                .contains("gate1.capturedMainframeRun");
+
+
+        // THE PUBLISHED KEYS ARE HELD TO THE SAME STANDARD AS THE REPORT, and this is where that gap was.
+        // The two keys below are what the retained artefact carries into the evidence bundle, and the guard
+        // above only ever saw the report, so both keys went on publishing a position this gate had disproved
+        // while four sibling keys in the same file contradicted them. The prohibition now covers the report,
+        // the two published values, and this class's whole source text - which is the only form of it that a
+        // future key cannot slip past, because a new key would have to introduce the phrase into this file.
+        final String sourceText = readTextFile(
+                this.corpus.root().resolve("src/test/java/com/cardemo/e2e/GateVerificationTest.java"));
+        for (final String withdrawn : WITHDRAWN_GATE_ONE_CLAIMS) {
+            assertThat(report)
+                    .as("a withdrawn Gate 1 claim must not survive in the report: [%s]", withdrawn)
+                    .doesNotContain(withdrawn);
+            assertThat(GATE_ONE_ORACLE_TAXONOMY)
+                    .as("nor in the published oracle taxonomy: [%s]", withdrawn)
+                    .doesNotContain(withdrawn);
+            assertThat(GATE_ONE_ASSERTION_BASIS)
+                    .as("nor in the published assertion basis: [%s]", withdrawn)
+                    .doesNotContain(withdrawn);
+            assertThat(sourceText)
+                    .as("nor anywhere else in this harness, in a value or in a comment: [%s]. This class "
+                            + "holds each forbidden phrase in two halves precisely so that this assertion "
+                            + "can read its own source without matching itself", withdrawn)
+                    .doesNotContain(withdrawn);
+        }
+
+        // The positive half. A prohibition alone would be satisfied by saying nothing at all, and saying
+        // nothing about a Blocker-severity gate is the failure mode this pair of keys already had once.
+        assertThat(GATE_ONE_ORACLE_TAXONOMY)
+                .as("the taxonomy must name the compiler that produced the legacy capture, both committed "
+                        + "expectation trees, and the gap that genuinely remains")
+                .contains("GnuCOBOL 3.2.0")
+                .contains(GATE_ONE_LEGACY_CAPTURE_DIRECTORY)
+                .contains(GATE_ONE_ORACLE_DIRECTORY)
+                .contains("gate1.neededEvidence");
+        assertThat(GATE_ONE_ASSERTION_BASIS)
+                .as("and the basis must state that the comparison is field for field and byte for byte "
+                        + "against both trees, with the properties retained in addition")
+                .contains("field for field and byte for byte")
+                .contains(GATE_ONE_LEGACY_CAPTURE_DIRECTORY)
+                .contains("in addition");
+        assertThat(this.corpus.root().resolve(GATE_ONE_LEGACY_CAPTURE_DIRECTORY)
+                        .resolve("PROVENANCE.properties"))
+                .as("both keys now rest on that provenance file, so it must be present rather than described")
+                .isRegularFile();
+
         record("gate1.capturedMainframeRun", NOT_AVAILABLE);
         record("gate1.neededEvidence", GATE_ONE_NEEDED_EVIDENCE);
-        record("gate1.oracleTaxonomy", "TWO KINDS OF ORACLE, and they prove different things. A LEGACY "
-                + "PARITY ORACLE is output captured from an execution of the frozen COBOL and can prove "
-                + "parity. A JAVA-PRODUCED GOLDEN REGRESSION ORACLE is output captured from this "
-                + "implementation; it can prove that behaviour has not CHANGED and cannot prove it was ever "
-                + "CORRECT, because it is derived from the thing under test. NEITHER EXISTS IN THIS "
-                + "REPOSITORY: src/test/resources holds exactly the nine frozen input fixtures, each "
-                + "byte-identical to app/data/ASCII, and that exactness is asserted so a tenth file cannot "
-                + "appear unnoticed. The circularity risk is therefore avoided rather than accepted - no "
-                + "Java-derived expected output is committed anywhere. If one is ever adopted it MUST be "
-                + "labelled a regression oracle and MUST NOT be described as parity evidence.");
-        record("gate1.assertionBasis", "PROPERTY-BASED, not oracle-based. Absent an oracle this tier asserts "
-                + "properties that hold independently of any expected-output file: the 430-byte reject "
-                + "geometry and its 350 + 4 + 76 decomposition, the sign census at column 143, which reject "
-                + "codes are reachable over these fixtures (102 only) and which are not (100, 101, 103), and "
-                + "the resulting completed-with-rejects return code. These are provable without an oracle; "
-                + "field-level parity against legacy output is not, and is not claimed.");
+        record("gate1.oracleTaxonomy", GATE_ONE_ORACLE_TAXONOMY);
+        record("gate1.assertionBasis", GATE_ONE_ASSERTION_BASIS);
         LOG.info("Gate 1 report:{}{}", System.lineSeparator(), report);
+    }
+
+    /**
+     * Gate 1: the evidence record does not contradict itself, and the position it withdrew is labelled as
+     * withdrawn rather than restated as current.
+     *
+     * <p><strong>The defect this closes.</strong> This gate used to publish two prose properties written when
+     * no oracle existed - one saying that neither kind of oracle "exists in this repository", the other that
+     * the tier was "property-based, not oracle-based" because field-level parity "is not claimed". Both were
+     * true when written and both were left in place after the oracle was produced, so a single artefact
+     * carried "no oracle exists" beside {@code gate1.oracle=legacy-derived}, its directory, its file count and
+     * a suite that compares field for field and byte for byte. The continuous-integration job derives a
+     * published document from these figures, so the contradiction would have been published. Nothing checked
+     * it, because the assertions read the composed <em>report</em> and never the recorded properties.
+     *
+     * <p><strong>How it is closed.</strong> Every prose property this gate publishes is composed in one
+     * place, {@link #gateOneNarrative()}, and this assertion reads that map. A key in the withdrawn namespace
+     * must open with the withdrawal marker and say what superseded it; a key outside it may not assert the
+     * oracle's absence at all. The absence vocabulary is checked against the artefacts on disk in the same
+     * breath, so the rule is anchored to what is actually there rather than to a remembered position - and
+     * the genuinely absent artefact, a captured z/OS run, keeps its {@value #NOT_AVAILABLE} statement, which
+     * is what distinguishes an honest disclosure from a stale one.
+     */
+    @Test
+    @DisplayName("Gate 1: no current evidence property denies an artefact the record elsewhere proves present")
+    void gateOneEvidenceCarriesNoWithdrawnClaimAsCurrent() {
+        final Path oracleDirectory = this.corpus.root().resolve(GATE_ONE_ORACLE_DIRECTORY);
+        assertThat(oracleDirectory)
+                .as("the premise of this assertion is that the oracle IS on disk; if it were not, the "
+                        + "absence claims below would be honest and this rule would have no subject")
+                .isDirectory();
+        for (final String fileName : GATE_ONE_ORACLE_FILES) {
+            assertThat(oracleDirectory.resolve(fileName))
+                    .as("every file the record names is present, so a property asserting the expectation's "
+                            + "absence is measurably wrong rather than merely out of fashion")
+                    .isRegularFile();
+        }
+
+        final Map<String, String> narrative = gateOneNarrative();
+        final List<String> contradictions = new ArrayList<>();
+        final List<String> unlabelledWithdrawals = new ArrayList<>();
+        for (final Map.Entry<String, String> claim : narrative.entrySet()) {
+            final boolean withdrawn = claim.getKey().contains(WITHDRAWN_NAMESPACE);
+            if (withdrawn) {
+                if (!claim.getValue().startsWith(WITHDRAWN_MARKER)
+                        || !claim.getValue().contains("superseded")) {
+                    unlabelledWithdrawals.add(claim.getKey());
+                }
+                continue;
+            }
+            ORACLE_ABSENCE_CLAIMS.stream()
+                    .filter(phrase -> claim.getValue().contains(phrase))
+                    .forEach(phrase -> contradictions.add(claim.getKey() + " asserts \"" + phrase
+                            + "\" while " + GATE_ONE_ORACLE_DIRECTORY + " holds "
+                            + GATE_ONE_ORACLE_FILES.size() + " files"));
+        }
+
+        assertThat(contradictions)
+                .as("no current gate-1 property denies the expectation that other gate-1 properties, and the "
+                        + "file system, both establish. A record that carries both readings at once cannot be "
+                        + "published as evidence of either")
+                .isEmpty();
+        assertThat(unlabelledWithdrawals)
+                .as("every withdrawn claim opens with \"%s\" and says what superseded it, so the reversal is "
+                        + "a reasoned correction a reader can audit rather than an unexplained deletion",
+                        WITHDRAWN_MARKER)
+                .isEmpty();
+        assertThat(narrative.keySet().stream().filter(key -> key.contains(WITHDRAWN_NAMESPACE)).toList())
+                .as("and the withdrawn position is RETAINED under its own namespace rather than erased: a "
+                        + "register that silently drops what it retires cannot be audited")
+                .isNotEmpty();
+        assertThat(narrative.get("gate1.capturedMainframeRun"))
+                .as("the one genuinely absent artefact keeps its %s statement, which is what separates this "
+                        + "rule from a blanket ban on the word", NOT_AVAILABLE)
+                .isEqualTo(NOT_AVAILABLE);
+
+        record("gate1.evidenceSelfConsistency", "CHECKED. Every prose property this gate publishes is "
+                + "composed in one place and read back here: a key outside the " + WITHDRAWN_NAMESPACE
+                + " namespace may not assert the expectation's absence, which is measured against the "
+                + GATE_ONE_ORACLE_FILES.size() + " files on disk rather than against a remembered position, "
+                + "and every withdrawn key must open with \"" + WITHDRAWN_MARKER + "\" and name what "
+                + "superseded it. The absent z/OS capture keeps its " + NOT_AVAILABLE + " statement.");
+        record("gate1.withdrawnClaimsRetained", narrative.keySet().stream()
+                .filter(key -> key.contains(WITHDRAWN_NAMESPACE))
+                .count());
+    }
+
+    /**
+     * Composes every prose property Gate 1 publishes, current and withdrawn together.
+     *
+     * <p>One composition point is what makes {@link #gateOneEvidenceCarriesNoWithdrawnClaimAsCurrent()}
+     * independent of execution order: it reads the same map the recording test writes, so the check does not
+     * depend on which gate ran first or on the accumulated evidence list.
+     *
+     * <p>Inputs: none. Output: the narrative, keyed by evidence property, in publication order - the order
+     * is load bearing, because the evidence artefact is read by eye as often as by machine. Side effects:
+     * none; the map is built fresh on every call and no field aliases it.
+     *
+     * @return the narrative, in publication order
+     */
+    private Map<String, String> gateOneNarrative() {
+        final Map<String, String> narrative = new LinkedHashMap<>();
+        narrative.put("gate1.capturedMainframeRun", NOT_AVAILABLE);
+        narrative.put("gate1.neededEvidence", GATE_ONE_NEEDED_EVIDENCE);
+        narrative.put("gate1.oracleTaxonomy", reportGateOneOracleTaxonomy());
+        narrative.put("gate1.assertionBasis", reportGateOneAssertionBasis());
+        narrative.put("gate1." + WITHDRAWN_NAMESPACE + "oracleTaxonomy", WITHDRAWN_MARKER
+                + " the earlier taxonomy closed with \"NEITHER EXISTS" + " IN THIS REPOSITORY\" and with the "
+                + "statement that no derived expected output was committed anywhere. That was true when it "
+                + "was written and is now superseded: the expectation was produced rather than the objective "
+                + "relaxed, by compiling the frozen program unmodified and executing it, and by re-deriving "
+                + "the same outcome from the same source in a class that imports no production type. The "
+                + "sentence is retained here so the reversal is auditable.");
+        narrative.put("gate1." + WITHDRAWN_NAMESPACE + "assertionBasis", WITHDRAWN_MARKER
+                + " the earlier basis read \"PROPERTY-BASED, not " + "oracle-based. Absent an oracle this tier "
+                + "asserts properties ... field-level parity against legacy output is not, and is not "
+                + "claimed.\" It is superseded by the comparison the end-to-end tier now performs on every "
+                + "field and every byte of the posted transactions, the category balances, the account "
+                + "images and the reject records. Retained because a claim that was withdrawn on evidence is "
+                + "itself evidence.");
+        return narrative;
+    }
+
+    /**
+     * Composes the oracle taxonomy, in one place so the artefact and the assertions cannot diverge.
+     *
+     * <p>The taxonomy itself is unchanged and worth keeping: which KIND of oracle a gate rests on decides
+     * what the gate can prove, and that is the single most consequential thing to know about Gate 1. What
+     * changed is the status. An earlier form of this text closed with "NEITHER EXISTS" + " IN THIS REPOSITORY",
+     * which was true when it was written and false by the time it was last published - the legacy-derived
+     * images had been committed at {@link #GATE_ONE_LEGACY_CAPTURE_DIRECTORY} in between, and the sentence was
+     * not revisited. It contradicted the ledger, the disk and the report composed a few lines above it.
+     *
+     * <p>The wording is deliberate on one point. Two expectations are committed and they are not the two rows
+     * of the table: the first is a legacy capture, the second is an independent re-derivation from the same
+     * COBOL source by a class that imports no production type. Calling that pair "both kinds" would restate
+     * the circularity the gate avoids, because the table's second kind - output captured from the
+     * implementation under test - is committed nowhere.
+     *
+     * @return the taxonomy text, never {@code null} or empty
+     */
+    private String reportGateOneOracleTaxonomy() {
+        return GATE_ONE_ORACLE_TAXONOMY;
+    }
+
+    /**
+     * Composes the assertion basis, in one place so the artefact and the assertions cannot diverge.
+     *
+     * <p>An earlier form put the basis the other way round - properties standing in for an oracle - and
+     * went stale in the same way and for the same reason as the taxonomy: it survived the arrival of the
+     * thing it said was absent. The correction is not merely to delete the denial. This tier now rests on
+     * both bases, and they are complementary rather than alternative - the oracle diff is the stronger claim,
+     * while the properties are the part that would still hold if every expectation file were deleted, which
+     * is why both are stated.
+     *
+     * @return the assertion-basis text, never {@code null} or empty
+     */
+    private String reportGateOneAssertionBasis() {
+        return GATE_ONE_ASSERTION_BASIS;
     }
 
     /**
@@ -4856,7 +6200,7 @@ class GateVerificationTest {
                         + "grown a @Test")
                 .isEmpty();
 
-        assertThat(readTextFile(this.corpus.root().resolve("DECISION_LOG.md")))
+        assertThat(readTextFile(this.corpus.root().resolve(DECISION_LOG_FILE)))
                 .as("the determination that the test contract is pattern-based, and the rejected "
                         + "alternatives, must be PUBLISHED rather than resting in this assertion's comment")
                 .contains("### DL-CR-07");
@@ -4892,7 +6236,7 @@ class GateVerificationTest {
     void theDispositionRegistersAreDerivedFromThePublishedEvidence() {
         final Path root = this.corpus.root();
         final String ledger = readTextFile(root.resolve("docs/validation-gates.md"));
-        final String decisions = readTextFile(root.resolve("DECISION_LOG.md"));
+        final String decisions = readTextFile(root.resolve(DECISION_LOG_FILE));
 
         final String deviationSection = ledgerSection(ledger, "### 12.5");
         final Pattern statedInFullRow = Pattern.compile("^\\|\\s*\\**(V-\\d+)\\**\\s*\\|.*$",
@@ -4986,21 +6330,45 @@ class GateVerificationTest {
     }
 
     /**
-     * The severity register is complete and every finding carries a locator and a remediation.
+     * The severity register is <strong>read out of the published ledger</strong>, and every finding it
+     * publishes carries a locator and a remediation.
      *
-     * <p>The register's own construction enforces the standard: a finding cannot be created without a
-     * subject, a locator and a remediation, so an under-evidenced entry throws at construction rather than
-     * appearing in a report as a bare opinion.
+     * <p><strong>Why the register is no longer a literal in this file.</strong> It used to be one, and a
+     * review showed exactly what that costs. The assertion compared a {@code List.of(...)} written here
+     * against a band census also written here - a closed loop that passed however far the published register
+     * had moved. It had moved a long way: the ledger published seven High findings, seven Medium and seven
+     * unavailable while this file asserted four, six and four, and five published findings appeared nowhere
+     * in the harness at all. One of the five was an <em>open</em> High cross-tenant exposure. A gate whose
+     * whole purpose is to hold the evidence layer to Rule 1 clause F was silently under-reporting the
+     * evidence layer.
+     *
+     * <p>So both sides now come from the document. The rows are parsed out of its two register sections, the
+     * band a row belongs to is taken from its own published identifier, and the census of each band is
+     * cross-checked against the count that band's own heading states - so adding a finding without updating
+     * its heading fails here, and so does updating a heading without adding the finding. Every parsed row is
+     * required to carry a subject, a locator and a remediation, and every row is recorded into the evidence
+     * artefact under its published identifier, which is what makes a finding's presence in the register
+     * auditable from the artefact rather than from this source.
+     *
+     * <p>The two sections are read with the same parser because their shapes agree where it matters: the
+     * identifier leads, the subject and the locator follow it, and the remediation is last. What differs is
+     * the name of the last column - "Remediation" in one and "What is needed" in the other - and that
+     * difference is asserted rather than assumed, because the unavailable band's whole claim is that it
+     * states what would close the gap.
      */
     @Test
-    @DisplayName("Rule 1 clause F: the register carries 2 Blockers, 4 High, 6 Medium, 3 Low and 4 unavailable")
+    @DisplayName("Rule 1 clause F: the severity register is parsed from the ledger, band by band, with a remediation on every row")
     void severityRegisterIsCompleteAndEveryFindingCarriesRemediation() {
+        final String ledger = readTextFile(this.corpus.root().resolve(VALIDATION_GATES_FILE));
+        final String findingsSection = ledgerSection(ledger, LEDGER_FINDINGS_SECTION);
+        final String unavailableSection = ledgerSection(ledger, LEDGER_UNAVAILABLE_SECTION);
         final List<Finding> register = severityRegister();
 
         assertThat(register)
-                .as("every finding names a subject, cites a locator and states a remediation. The record's "
-                        + "own constructor rejects a blank field, so this cannot be satisfied by an empty "
-                        + "string standing in for evidence")
+                .as("every finding names a subject, cites a locator and states a remediation. The cells are "
+                        + "the published ones and the record's own constructor rejects a blank field, so "
+                        + "this cannot be satisfied by an empty string standing in for evidence")
+                .isNotEmpty()
                 .allSatisfy(finding -> {
                     assertThat(finding.subject()).isNotBlank();
                     assertThat(finding.locator()).isNotBlank();
@@ -5015,56 +6383,87 @@ class GateVerificationTest {
                         + "not-available band, and every band that has members is represented")
                 .containsKeys(Severity.BLOCKER, Severity.HIGH, Severity.MEDIUM, Severity.LOW,
                         Severity.NOT_AVAILABLE);
-        assertThat(bySeverity.get(Severity.BLOCKER))
-                .as("two Blockers: the container-library coordinate rename, and relocating this class out of "
-                        + "the collected tree")
-                .isEqualTo(2L);
-        assertThat(bySeverity.get(Severity.HIGH))
-                .as("four High findings, all of them prior-run open defects that this work closes: the "
-                        + "hardcoded signing key, the absent production profile, the absent workflow and the "
-                        + "unexecuted scan")
-                .isEqualTo(4L);
-        assertThat(bySeverity.get(Severity.MEDIUM))
-                .as("six Medium findings: the retention conflict, the migration filename alias, the coverage "
-                        + "plugin version drift, the wrong screen-field census, the unreconcilable label "
-                        + "total, and the seeded credential shipped in cleartext by a frozen prior-run "
-                        + "document")
-                .isEqualTo(6L);
-        assertThat(bySeverity.get(Severity.LOW))
-                .as("three Low findings: the misspelled job name, the inaccurate service-catalogue type, "
-                        + "and the residual difference between a GnuCOBOL execution of the frozen program "
-                        + "and an IBM Enterprise COBOL capture from z/OS - which is a difference in the "
-                        + "oracle's provenance rather than an absence of one, which is why it sits here "
-                        + "rather than in the not-available band")
-                .isEqualTo(3L);
-        assertThat(bySeverity.get(Severity.NOT_AVAILABLE))
-                .as("FOUR items are unavailable rather than failing: the sourceless program behind CICS "
-                        + "transaction CDV1, any service-level objective for Gate 3, and the two constructs "
-                        + "this migration claims to map that have NO occurrence in the corpus at all - the "
-                        + "file-unavailable condition and the exec-interface transaction identity. Each is "
-                        + "stated with the measured occurrence count that proves the absence, not guessed "
-                        + "and not given a fabricated locator. It was five until the Gate 1 boundary oracle "
-                        + "was produced by executing the frozen program; that entry moved to Low, where it "
-                        + "records the one residual difference from a mainframe capture rather than an "
-                        + "absence")
-                .isEqualTo(4L);
 
-        assertThat(register.stream()
-                .filter(finding -> finding.severity() == Severity.NOT_AVAILABLE)
-                .map(Finding::remediation)
-                .toList())
-                .as("every unavailable entry states what would be NEEDED to make it available, which is the "
-                        + "difference between a disclosure and an excuse")
-                .allSatisfy(remediation -> assertThat(remediation).startsWith("Needed: "));
+        final Map<Severity, Integer> publishedBands = publishedBandCounts(findingsSection);
+        for (final Map.Entry<Severity, Integer> band : publishedBands.entrySet()) {
+            assertThat(bySeverity.get(band.getKey()))
+                    .as("the %s band's parsed row count equals the count its own heading publishes (%d). A "
+                            + "literal in this file could not catch either half of that drift; this does",
+                            band.getKey(), band.getValue())
+                    .isEqualTo(Long.valueOf(band.getValue().longValue()));
+        }
+        assertThat(publishedBands.keySet())
+                .as("all four Rule 1 clause F bands publish a heading with a count, so none can lose its "
+                        + "census by losing its heading")
+                .containsExactlyInAnyOrder(Severity.BLOCKER, Severity.HIGH, Severity.MEDIUM, Severity.LOW);
+
+        final Matcher recordedHere = LEDGER_UNAVAILABLE_PROSE.matcher(unavailableSection);
+        final Matcher standingGaps = LEDGER_STANDING_GAP_PROSE.matcher(unavailableSection);
+        assertThat(recordedHere.find() && standingGaps.find())
+                .as("the unavailable section states its own two counts in prose, which is what makes the "
+                        + "row count below a cross-check rather than a restatement")
+                .isTrue();
+        assertThat(bySeverity.get(Severity.NOT_AVAILABLE))
+                .as("the unavailable band's parsed rows equal the section's own prose: %s items recorded as "
+                        + "neither passing nor failing plus %s further gaps that concern the authoring host. "
+                        + "A closed or moved row is kept rather than deleted, so this total counts "
+                        + "disclosures and not open items - the standing of each is in its own row",
+                        recordedHere.group(1), standingGaps.group(1))
+                .isEqualTo(Long.valueOf(numberWordValue(recordedHere.group(1))
+                        + numberWordValue(standingGaps.group(1))));
+
+        assertThat(registerHeaderRows(unavailableSection))
+                .as("EVERY table in the unavailable band ends in the column that says what would close the "
+                        + "gap, which is the difference between a disclosure and an excuse. Asserted per "
+                        + "table rather than once over the section, because a section that carries two "
+                        + "tables can satisfy a single occurrence check while one of them has lost the "
+                        + "column - and every row's remediation is read out of that column")
+                .isNotEmpty()
+                .allSatisfy(header -> assertThat(header).endsWith("What is needed |"));
+        assertThat(registerHeaderRows(findingsSection))
+                .as("and every table in the findings band ends in Remediation, for the same reason")
+                .isNotEmpty()
+                .allSatisfy(header -> assertThat(header).endsWith("Remediation |"));
 
         assertThat(register.stream().map(Finding::locator).toList())
                 .as("no finding is evidenced by prose alone; each cites a path or a symbol")
                 .allSatisfy(locator -> assertThat(locator).matches(".*[/.].*"));
 
-        register.forEach(finding -> record("finding." + finding.severity().name().toLowerCase(Locale.ROOT)
-                + "." + Integer.toHexString(finding.subject().hashCode()),
-                finding.subject() + " | " + finding.locator() + " | " + finding.remediation()));
+        final List<String> unresolvedIdentifiers = new ArrayList<>();
+        for (final String section : List.of(findingsSection, unavailableSection)) {
+            final Set<String> rowIdentifiers = new LinkedHashSet<>(publishedRegisterRows(section).stream()
+                    .map(RegisterRow::identifier)
+                    .toList());
+            LEDGER_REGISTER_IDENTIFIER.matcher(section).results()
+                    .map(MatchResult::group)
+                    .filter(identifier -> !rowIdentifiers.contains(identifier))
+                    .forEach(identifier -> unresolvedIdentifiers.add(identifier
+                            + " is discussed in the register prose but has no row"));
+        }
+        assertThat(unresolvedIdentifiers)
+                .as("every identifier the register's prose names resolves to a row of the same section, so a "
+                        + "row cannot be deleted while the paragraph that explains it survives")
+                .isEmpty();
+
+        for (final RegisterRow row : publishedRegisterRows(findingsSection)) {
+            record("finding." + row.identifier(), row.severity() + " | " + row.subject() + " | "
+                    + row.locator() + " | " + row.remediation());
+        }
+        for (final RegisterRow row : publishedRegisterRows(unavailableSection)) {
+            record("finding." + row.identifier(), row.severity() + " | " + row.subject() + " | "
+                    + row.locator() + " | " + row.remediation());
+        }
+        bySeverity.forEach((severity, count) ->
+                record("clauseF.band." + severity.name().toLowerCase(Locale.ROOT), count));
         record("clauseF.registerSize", register.size());
+        record("clauseF.registerDerivation", "PARSED from " + VALIDATION_GATES_FILE + " sections "
+                + LEDGER_FINDINGS_SECTION.replace("### ", "") + " and "
+                + LEDGER_UNAVAILABLE_SECTION.replace("### ", "") + ", never authored in the harness. Each "
+                + "row's band comes from its own published identifier and each band's census is cross-"
+                + "checked against the count its heading states, so a published finding cannot go "
+                + "unrepresented here and a heading cannot drift from its rows. Every row is recorded above "
+                + "under its published identifier, which is how a reader confirms from this artefact alone "
+                + "that an OPEN finding was disclosed rather than dropped.");
     }
 
     /**
@@ -5278,6 +6677,256 @@ class GateVerificationTest {
     }
 
     /**
+     * Reconciles the per-tier suite and case figures published in section 2.6 against the run and the tree.
+     *
+     * <p>The reconciliation above holds the SUITE census, and that is a real guard - it catches a suite
+     * deleted without an evidence update. It says nothing about the CASE counts, and those drifted: a reading
+     * of this page published a unit total two cases below the run's own, an end-to-end total of 107 against a
+     * Failsafe total of 907 and an integration total of 799, so the two tier rows summed to 906 and the table
+     * <strong>did not add up to its own total</strong>. Two fields disagreeing inside one table is the
+     * cheapest possible thing to notice and nothing was noticing it.
+     *
+     * <p><strong>What can be measured here, and what cannot, is decided by execution order rather than by
+     * preference.</strong> Surefire binds to {@code test}, so by the time this harness runs the unit tier's
+     * reports are complete on disk and its two figures are measured exactly. Failsafe runs
+     * {@code com.cardemo.e2e.*} before {@code com.cardemo.integration.*} under alphabetical order, so when
+     * this method executes the integration tier has not run and no report of it exists - its figure cannot be
+     * measured here at all, and pretending otherwise would mean reading a stale artefact from a previous
+     * invocation, which is the exact hazard this section warns about elsewhere.
+     *
+     * <p>So the integration figure is pinned <em>transitively</em>, and that is enough. The end-to-end count
+     * is measured from the source tree - the tier declares no parameterised test, so counting its executable
+     * test annotations gives the case count exactly, which was verified against the run before being relied
+     * on - and the table's own arithmetic then determines the integration row: published integration must
+     * equal published total minus published end-to-end. Any single wrong figure in the table breaks that
+     * identity.
+     *
+     * <p>Two figures in section 2.6 remain a recorded reading rather than an assertion, and the page says so:
+     * the coverage counters and the execution-data sizes are produced by goals bound to {@code verify}, after
+     * this harness has finished, so no test in the reactor can compare them without reading an artefact its
+     * own run did not write. Their authority is the reproduce command, which is why it is published beside
+     * them.
+     */
+    @Test
+    @DisplayName("Gate 2: the published tier census sums, and matches the tiers that can be measured")
+    void publishedTierCensusIsReconciledAgainstTheRunItDescribes() {
+        final String ledgerText = readTextFile(this.corpus.root().resolve(VALIDATION_GATES_FILE));
+
+        final int[] unit = publishedTierRow(ledgerText, "Unit — Surefire");
+        final int[] integration = publishedTierRow(ledgerText, "Integration — Failsafe");
+        final int[] endToEnd = publishedTierRow(ledgerText, "End-to-end — Failsafe");
+        final int[] failsafeTotal = publishedTierRow(ledgerText, "**Failsafe total**");
+        final int[] harness = publishedTierRow(ledgerText, "of which the gate harness");
+
+        // 1. The table must add up to its own total. This is the defect, stated at its simplest.
+        assertThat(integration[1] + endToEnd[1])
+                .as("published integration cases %d plus published end-to-end cases %d must equal the "
+                        + "published Failsafe total %d. A table that does not add up to its own total is "
+                        + "wrong on its face, whichever field is the wrong one",
+                        integration[1], endToEnd[1], failsafeTotal[1])
+                .isEqualTo(failsafeTotal[1]);
+        assertThat(integration[0] + endToEnd[0])
+                .as("and the suite counts must add up too: %d plus %d against a published total of %d",
+                        integration[0], endToEnd[0], failsafeTotal[0])
+                .isEqualTo(failsafeTotal[0]);
+
+        // 2. Every tier reports a clean run, or the stamp is claiming a pass it did not get.
+        for (final int[] row : List.of(unit, integration, endToEnd, failsafeTotal, harness)) {
+            assertThat(new int[] {row[2], row[3], row[4]})
+                    .as("the stamp publishes a clean run, so every tier row's failure, error and skip "
+                            + "columns must be zero. A non-zero cell here means the page is reporting a "
+                            + "green build from a run that was not one")
+                    .containsExactly(0, 0, 0);
+        }
+
+        // 3. The unit tier is measured exactly whenever this run executed it. Surefire binds to the test
+        // phase, so on any unnarrowed verify its reports are complete before this method observes them and
+        // the reconciliation is live. A run narrowed with -Dtest executes no unit suite and leaves no report
+        // to reconcile against, and the honest reading there is that the figure was not measured rather than
+        // that it was wrong - so the basis is recorded either way and the assertion is made only when there
+        // is something to assert against. Nothing is lost by that: CI and the container build both run an
+        // unnarrowed verify, which is where a stale figure has to be caught.
+        final int[] measuredUnit = surefireTierCensus();
+        if (measuredUnit[0] > 0) {
+            assertThat(unit[0])
+                    .as("published unit suites %d against %d Surefire report files on disk. Counted from the "
+                            + "retained reports of THIS run, so a suite added or removed moves this figure",
+                            unit[0], measuredUnit[0])
+                    .isEqualTo(measuredUnit[0]);
+            assertThat(unit[1])
+                    .as("published unit cases %d against %d testcase elements in this run's Surefire "
+                            + "reports. Counted from the elements and never from a testsuite root attribute, "
+                            + "which reads zero for a suite built from @Nested classes",
+                            unit[1], measuredUnit[1])
+                    .isEqualTo(measuredUnit[1]);
+            record("gate2.unitTierCensusBasis", measuredUnit[0] + " retained Surefire reports of this run, "
+                    + measuredUnit[1] + " testcase elements within them");
+        } else {
+            record("gate2.unitTierCensusBasis", NOT_AVAILABLE + " - this run executed no unit suite, so "
+                    + "target/surefire-reports holds nothing to reconcile the published unit row against. "
+                    + "Needed: a verify with no -Dtest narrowing, which is what CI and the container build "
+                    + "run. The published row's other constraint still held: it reports a clean tier");
+        }
+
+        // 4. The end-to-end tier is measured from the source, which for THIS tier equals the run.
+        final List<CorpusMember> endToEndSuites = testSources().stream()
+                .filter(member -> member.relativePath().startsWith("src/test/java/com/cardemo/e2e/"))
+                .filter(member -> member.relativePath().endsWith("Test.java"))
+                .toList();
+        final int measuredEndToEndCases = endToEndSuites.stream()
+                .mapToInt(GateVerificationTest::executableTestCount)
+                .sum();
+        assertThat(endToEnd[0])
+                .as("published end-to-end suites %d against %d suite-named sources in that package",
+                        endToEnd[0], endToEndSuites.size())
+                .isEqualTo(endToEndSuites.size());
+        assertThat(endToEnd[1])
+                .as("published end-to-end cases %d against %d executable test annotations across that "
+                        + "tier's sources. This equality only holds because the tier declares no "
+                        + "parameterised test - the unit and integration tiers do, which is why neither is "
+                        + "counted this way", endToEnd[1], measuredEndToEndCases)
+                .isEqualTo(measuredEndToEndCases);
+
+        // 5. And the harness row is this very class, counted the same way.
+        final CorpusMember thisHarness = endToEndSuites.stream()
+                .filter(member -> member.memberName().equals("GateVerificationTest.java"))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "GateVerificationTest.java is not in the end-to-end tier, so the harness row of "
+                                + "section 2.6 cannot be reconciled against the class it describes"));
+        assertThat(harness[0])
+                .as("the harness row describes one suite")
+                .isEqualTo(1);
+        assertThat(harness[1])
+                .as("published gate-harness cases %d against %d executable test annotations in %s. Adding a "
+                        + "gate assertion moves this figure, which is exactly why it is published",
+                        harness[1], executableTestCount(thisHarness), thisHarness.relativePath())
+                .isEqualTo(executableTestCount(thisHarness));
+
+        record("gate2.publishedUnitCases", unit[1]);
+        record("gate2.publishedIntegrationCases", integration[1]);
+        record("gate2.publishedEndToEndCases", endToEnd[1]);
+        record("gate2.publishedFailsafeCases", failsafeTotal[1]);
+        record("gate2.publishedHarnessCases", harness[1]);
+        record("gate2.tierCensusBasis", "unit suites and cases are measured from this run's retained "
+                + "target/surefire-reports; the end-to-end tier and the harness row are measured from the "
+                + "source tree, which equals the run for that tier because it declares no parameterised "
+                + "test; the integration row is pinned transitively by the table's own arithmetic, because "
+                + "Failsafe runs com.cardemo.e2e.* before com.cardemo.integration.* and no report of the "
+                + "integration tier exists while this harness executes");
+    }
+
+    /**
+     * Reads one row of the tier table in section 2.6.
+     *
+     * @param ledgerText the whole ledger; must not be {@code null}
+     * @param label      the row's first cell, exactly as published, bold markers included
+     * @return the six numeric cells - suites, cases, failures, errors, skipped
+     */
+    private static int[] publishedTierRow(final String ledgerText, final String label) {
+        final List<String> rows = ledgerText.lines()
+                .map(String::strip)
+                .filter(line -> line.startsWith("| " + label + " |"))
+                .toList();
+        assertThat(rows)
+                .as("section 2.6 must publish exactly one '%s' row. A missing or duplicated row makes every "
+                        + "figure below unattributable, so its absence fails here rather than skipping",
+                        label)
+                .hasSize(1);
+        final String[] cells = rows.get(0).split("\\|");
+        // cells[0] is empty (the leading pipe) and cells[1] is the label, so the numbers start at 2.
+        assertThat(cells.length)
+                .as("the '%s' row must carry six numeric cells after its label: suites, cases, failures, "
+                        + "errors and skipped", label)
+                .isGreaterThanOrEqualTo(7);
+        final int[] figures = new int[5];
+        for (int index = 0; index < figures.length; index++) {
+            final String cell = cells[index + 2].replace("*", "").replace(",", "").strip();
+            assertThat(cell)
+                    .as("cell %d of the '%s' row must be a plain integer, optionally emboldened and "
+                            + "thousands-separated; '%s' is not", index + 1, label, cell)
+                    .matches("\\d+");
+            figures[index] = Integer.parseInt(cell);
+        }
+        return figures;
+    }
+
+    /**
+     * Counts the unit tier's retained reports and the cases inside them.
+     *
+     * <p>Cases are counted from {@code testcase} elements rather than from a {@code testsuite} root
+     * attribute, because both plugins write {@code tests="0"} on the root of a suite built from
+     * {@code @Nested} classes while the same file still carries every case beneath it. Reading the attribute
+     * renders a suite that ran everything as one that ran nothing.
+     *
+     * <p>Returns zeros rather than failing when the directory is absent or empty. Surefire binds to the
+     * {@code test} phase and Failsafe to {@code integration-test}, so on any unnarrowed {@code verify} the
+     * reports are complete before this class runs; a run narrowed with {@code -Dtest} executes no unit suite
+     * and leaves nothing to count. The caller distinguishes those two cases, because "not measured" and
+     * "measured as zero" are different claims.
+     *
+     * @return two figures - report files, then cases; both zero when this run executed no unit suite
+     */
+    private int[] surefireTierCensus() {
+        final Path reports = this.corpus.root().resolve("target").resolve("surefire-reports");
+        if (!Files.isDirectory(reports)) {
+            return new int[] {0, 0};
+        }
+        int files = 0;
+        int cases = 0;
+        try (Stream<Path> walk = Files.list(reports)) {
+            for (final Path report : walk.sorted().toList()) {
+                final String name = report.getFileName().toString();
+                if (!name.startsWith("TEST-") || !name.endsWith(".xml")) {
+                    continue;
+                }
+                files++;
+                final String text = readTextFile(report);
+                int from = text.indexOf("<testcase ");
+                while (from >= 0) {
+                    cases++;
+                    from = text.indexOf("<testcase ", from + 1);
+                }
+            }
+        } catch (final IOException unreadable) {
+            throw new IllegalStateException("Cannot list " + reports + ", so the published unit-tier "
+                    + "figures have nothing to be reconciled against", unreadable);
+        }
+        return new int[] {files, cases};
+    }
+
+    /**
+     * Counts the executable test methods a suite declares.
+     *
+     * <p>Counted on lines whose stripped form BEGINS with the annotation, so an annotation named inside a
+     * comment, a string literal or a Javadoc sentence is not counted. That distinction matters in this tree
+     * because several suites discuss {@code @Test} in prose, and one of them is this class.
+     *
+     * <p><strong>The word boundary in {@link #EXECUTABLE_TEST_ANNOTATION} is load-bearing, and getting it
+     * wrong yields a plausible wrong number rather than an error.</strong> A prefix test on the text
+     * {@code "@Test"} also matches {@code @TestConfiguration}, {@code @TestInstance} and
+     * {@code @Testcontainers}, and every suite in the end-to-end tier carries some of those: the prefix
+     * reading over-counted this tier by nine cases in total - three, four and two across the three suites -
+     * and each of those figures is close enough to the truth to look like a real count.
+     *
+     * @param member a test source; must not be {@code null}
+     * @return the number of executable test methods it declares
+     */
+    private static int executableTestCount(final CorpusMember member) {
+        int count = 0;
+        for (final String line : member.text().split("\\R")) {
+            final String stripped = line.strip();
+            if (stripped.startsWith("//") || stripped.startsWith("*") || stripped.startsWith("/*")) {
+                continue;
+            }
+            if (EXECUTABLE_TEST_ANNOTATION.matcher(stripped).lookingAt()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
      * Reports whether a test source declares its top-level type - the one whose name equals the file stem -
      * {@code abstract}.
      *
@@ -5304,128 +6953,145 @@ class GateVerificationTest {
     }
 
     /**
-     * Builds the classified register of findings.
+     * Reads the classified register of findings out of the published ledger.
+     *
+     * <p>Nothing here is authored: the rows come from the two register sections of
+     * {@value #VALIDATION_GATES_FILE}, the band comes from each row's own published identifier, and the cells
+     * come from the row. That is the point - a register the harness writes for itself can only ever agree
+     * with the harness, which is precisely the failure
+     * {@link #severityRegisterIsCompleteAndEveryFindingCarriesRemediation()} now exists to prevent.
      *
      * @return the register, never empty; every entry carries a locator and a remediation by construction
      */
     private List<Finding> severityRegister() {
-        return List.of(
-                new Finding(Severity.BLOCKER,
-                        "The container library's 2.x line renamed every module coordinate and moved its "
-                                + "packages, so the bare 1.x ids do not resolve",
-                        "pom.xml <testcontainers.version>, org.testcontainers.postgresql.PostgreSQLContainer",
-                        "Apply BOTH halves: override the managed version through the version property - "
-                                + "never a second bill-of-materials import - and use only the four prefixed "
-                                + "coordinates. Either half alone still fails."),
-                new Finding(Severity.BLOCKER,
-                        "Relocating or renaming this harness removes it from both test plugins with no error",
-                        "src/test/java/com/cardemo/e2e/GateVerificationTest.java, "
-                                + "pom.xml maven-failsafe-plugin includes",
-                        "Keep the class at that exact path in package com.cardemo.e2e with the Test suffix; "
-                                + "confirm a run from the written evidence artefact, never from a green "
-                                + "build alone."),
-                new Finding(Severity.HIGH,
-                        "The token signing key was hardcoded in a prior implementation",
-                        "src/main/resources/application.yml carddemo.security.jwt.signing-key",
-                        "Resolve it from the environment with no committed default so an unset variable "
-                                + "aborts startup. Closed by this work."),
-                new Finding(Severity.HIGH,
-                        "No production profile existed in a prior implementation",
-                        "src/main/resources/application-prod.yml",
-                        "Add the profile with every secret externalised. Closed by this work."),
-                new Finding(Severity.HIGH,
-                        "No continuous-integration workflow existed in a prior implementation",
-                        ".github/workflows/build.yml",
-                        "Add the workflow pinned to the enforced toolchain. Closed by this work."),
-                new Finding(Severity.HIGH,
-                        "The vulnerability scan was never executed in a prior implementation",
-                        "pom.xml dependency-check-maven",
-                        "Bind the scan to verify and report it honestly when skipped rather than defaulting "
-                                + "to skip. Closed by this work."),
-                new Finding(Severity.MEDIUM,
-                        "The report generation group carries two conflicting retention limits",
-                        "app/jcl/DEFGDGB.jcl LIMIT(5), app/jcl/REPTFILE.jcl:L27 LIMIT(10)",
-                        "Choose the larger value, because one object-lifecycle rule must be chosen. The "
-                                + "only legacy inconsistency this migration resolves."),
-                new Finding(Severity.MEDIUM,
-                        "Migration filenames are aliased between prose and the authored files",
-                        "src/main/resources/db/migration/V1__create_schema.sql",
-                        "Record the alias. Ordering is unaffected because the migration tool keys on the "
-                                + "version prefix rather than the descriptive name."),
-                new Finding(Severity.MEDIUM,
-                        "The coverage plugin is pinned below the version its agent runtime names",
-                        "pom.xml <jacoco-maven-plugin.version> versus <jacoco.agent.runtime.version>",
-                        "The pinned plugin version governs; record the divergence rather than advancing the "
-                                + "pin unilaterally."),
-                new Finding(Severity.MEDIUM,
-                        "The screen field census circulating in prose is wrong and internally inconsistent",
-                        "app/cpy-bms/**, app/cpy-bms/COACTVW.CPY",
-                        "Cite the derived census of " + EXPECTED_BMS_INPUT_FIELDS + " fields, with the "
-                                + "account view map at 37 rather than 36."),
-                new Finding(Severity.MEDIUM,
-                        "The circulating procedural-label total matches neither defensible expansion total",
-                        "app/cbl/**, app/cpy/CSUTLDPY.cpy, app/cpy/CSSTRPFY.cpy",
-                        "Cite the derived base of 614 and state the expansion convention beside it, rather "
-                                + "than reconciling the figures by force."),
-                new Finding(Severity.MEDIUM,
-                        "A prior-run document ships a sign-on example carrying the seeded plaintext, so the "
-                                + "credential that opens all ten demo accounts is committed in cleartext",
-                        FROZEN_PRIOR_RUN_DOCUMENT + ":L418",
-                        "Replace the example credential with a placeholder. This work cannot: the document "
-                                + "is REFERENCE and FROZEN per docs/technical-specifications.md 0.3.1.7 and "
-                                + "0.4.1.1, and 0.3.1.6 enumerates the three files it may UPDATE. The "
-                                + "credential walk of Gate 6 therefore excludes exactly this path and "
-                                + "discloses it here."),
-                new Finding(Severity.LOW,
-                        "A batch job misspells its own job name",
-                        "app/jcl/OPENFIL.jcl:L1",
-                        "Report it. The corpus is frozen, so it is preserved rather than corrected."),
-                new Finding(Severity.LOW,
-                        "The service catalogue entry declares an inaccurate service type",
-                        "catalog-info.yaml metadata",
-                        "Correct the declaration in separate work. Unrelated to this migration and "
-                                + "deliberately out of scope here."),
-                new Finding(Severity.LOW,
-                        "The end-to-end boundary oracle is a GnuCOBOL execution of the frozen program, "
-                                + "not an IBM Enterprise COBOL capture from z/OS",
-                        "src/test/resources/parity/gate1/PROVENANCE.properties",
-                        "Accepted. The program is compiled unmodified and the arithmetic is fixed-scale "
-                                + "decimal in both, so what a z/OS capture would additionally settle is "
-                                + "only the two excluded spans and the code-page assumption, both "
-                                + "recorded in the provenance file."),
-                new Finding(Severity.NOT_AVAILABLE,
-                        "The program behind one CICS transaction has no source anywhere in the repository",
-                        "app/csd/CARDDEMO.CSD:L211, app/csd/CARDDEMO.CSD:L390",
-                        "Needed: the missing program source. Until it exists, no endpoint or mapping row is "
-                                + "invented for it."),
-                new Finding(Severity.NOT_AVAILABLE,
-                        "No service-level objective exists for the performance gate",
-                        "app/cbl/** publishes no throughput or latency target",
-                        "Needed: a stated objective from the business. Until then the gate records a "
-                                + "measured baseline and applies no threshold."),
-                new Finding(Severity.NOT_AVAILABLE,
-                        "The file-unavailable condition this migration maps has NO literal occurrence in the "
-                                + "corpus: FILE STATUS '35' is compared nowhere and DFHRESP(NOTOPEN) is "
-                                + "handled nowhere, so FileUnavailableException is derived from the standard "
-                                + "convention rather than from a locator in this repository",
-                        "app/cbl/** - measured: 0 occurrences of '35' and 0 of NOTOPEN, against 88 of '00', "
-                                + "11 of '10' and 3 of '23'; the CICS conditions actually handled are "
-                                + "DFHRESP(NORMAL) 43, NOTFND 23, ENDFILE 8, DUPREC 7 and DUPKEY 3",
-                        "Needed: a program that opens a closed dataset, or a documented statement that the "
-                                + "condition is unreachable in this corpus. Until then the exception is "
-                                + "retained for completeness of the status taxonomy and is labelled as "
-                                + "convention-derived, never cited to a fabricated locator."),
-                new Finding(Severity.NOT_AVAILABLE,
-                        "The per-request identity field this migration replaces has NO occurrence in the "
-                                + "corpus: EIBTRNID appears nowhere, so CorrelationIdFilter's claim to "
-                                + "supersede it is a design statement rather than a sourced mapping",
-                        "app/** - measured: 0 occurrences of EIBTRNID; the EIB fields the corpus does read "
-                                + "are EIBCALEN 49 and EIBAID 44",
-                        "Needed: a program that reads the transaction identifier from the exec interface "
-                                + "block. Until then the correlation filter is documented as replacing the "
-                                + "exec-interface transaction identity generically, and the two EIB fields "
-                                + "the corpus genuinely reads are mapped instead - EIBCALEN to the "
-                                + "presence-of-payload test and EIBAID to the action-key mapping."));
+        final String ledger = readTextFile(this.corpus.root().resolve(VALIDATION_GATES_FILE));
+        final List<Finding> register = new ArrayList<>();
+        for (final String section : List.of(LEDGER_FINDINGS_SECTION, LEDGER_UNAVAILABLE_SECTION)) {
+            for (final RegisterRow row : publishedRegisterRows(ledgerSection(ledger, section))) {
+                register.add(new Finding(row.severity(), row.subject(), row.locator(), row.remediation()));
+            }
+        }
+        if (register.isEmpty()) {
+            throw new AssertionError("The published register sections of " + VALIDATION_GATES_FILE
+                    + " yielded no rows. A renamed section or a reshaped table would otherwise leave every "
+                    + "census below at zero while every assertion still passed.");
+        }
+        return List.copyOf(register);
+    }
+
+    /**
+     * Parses the rows of one published register section.
+     *
+     * <p>Row grammar: a table row whose first cell is a register identifier, optionally emboldened. The
+     * subject and the locator follow the identifier and the remediation is the last cell, which holds for
+     * both sections because both end in the column that says what to do. A row leaving any of the three
+     * empty fails here by name rather than being carried forward as an unevidenced entry.
+     *
+     * @param section the section text; must not be {@code null}
+     * @return its rows, in published order
+     */
+    private static List<RegisterRow> publishedRegisterRows(final String section) {
+        Objects.requireNonNull(section, "section must not be null");
+        final List<RegisterRow> rows = new ArrayList<>();
+        for (final String line : section.lines().toList()) {
+            final Matcher identifier = LEDGER_REGISTER_ROW.matcher(line);
+            if (!identifier.find()) {
+                continue;
+            }
+            final List<String> cells = splitLedgerRow(line);
+            if (cells.size() < LEDGER_REGISTER_MINIMUM_CELLS) {
+                throw new AssertionError("The published register row " + identifier.group(1) + " carries only "
+                        + cells.size() + " cells. A register row states the finding, its locator, its impact "
+                        + "and its remediation, so a shorter row has lost a column rather than shortened one.");
+            }
+            final String subject = cells.get(1);
+            final String locator = cells.get(2);
+            final String remediation = cells.get(cells.size() - 1);
+            if (subject.isBlank() || locator.isBlank() || remediation.isBlank()) {
+                throw new AssertionError("The published register row " + identifier.group(1) + " leaves a "
+                        + "required cell empty - subject, locator and remediation are all mandatory under "
+                        + "Rule 1 clause F, and an empty cell is an unevidenced finding rather than a short "
+                        + "one.");
+            }
+            rows.add(new RegisterRow(identifier.group(1), severityOfRegisterIdentifier(identifier.group(1)),
+                    subject, locator, remediation));
+        }
+        return List.copyOf(rows);
+    }
+
+    /**
+     * Collects the header rows of the register tables in one section.
+     *
+     * <p>A register table's header opens with the row-number column, which is what distinguishes it from the
+     * explanatory sub-tables a section may also carry.
+     *
+     * @param section the section text; must not be {@code null}
+     * @return the header rows, in published order
+     */
+    private static List<String> registerHeaderRows(final String section) {
+        Objects.requireNonNull(section, "section must not be null");
+        return section.lines().filter(line -> line.startsWith("| # |")).toList();
+    }
+
+    /**
+     * Reads the per-band counts a findings section publishes in its own headings.
+     *
+     * @param section the section text; must not be {@code null}
+     * @return the published count per band, in heading order
+     */
+    private static Map<Severity, Integer> publishedBandCounts(final String section) {
+        Objects.requireNonNull(section, "section must not be null");
+        final Map<Severity, Integer> counts = new LinkedHashMap<>();
+        LEDGER_BAND_HEADING.matcher(section).results().forEach(heading ->
+                counts.put(Severity.valueOf(heading.group(1).toUpperCase(Locale.ROOT)),
+                        Integer.valueOf(heading.group(2))));
+        return Map.copyOf(counts);
+    }
+
+    /**
+     * Maps a published register identifier onto its severity band.
+     *
+     * @param identifier the identifier, for example {@code H-6}; must not be {@code null}
+     * @return the band the document files it under
+     * @throws AssertionError if the prefix is not one of the five the register uses, because an unrecognised
+     *     band would otherwise be silently dropped from every census
+     */
+    private static Severity severityOfRegisterIdentifier(final String identifier) {
+        Objects.requireNonNull(identifier, "identifier must not be null");
+        return switch (identifier.charAt(0)) {
+            case 'B' -> Severity.BLOCKER;
+            case 'H' -> Severity.HIGH;
+            case 'M' -> Severity.MEDIUM;
+            case 'L' -> Severity.LOW;
+            case 'N' -> Severity.NOT_AVAILABLE;
+            default -> throw new AssertionError("The published register carries a row identified "
+                    + identifier + ", whose prefix names no severity band. Either a band was added without "
+                    + "extending this mapping, or the row identifier is malformed.");
+        };
+    }
+
+    /**
+     * Splits one Markdown table row into its cells, honouring the escaped-pipe form.
+     *
+     * <p>A cell may legitimately contain a pipe - one register row quotes a shell alternation - and Markdown
+     * spells that as an escaped pipe. Splitting on every pipe would shift every column after it, which is why
+     * the split is on unescaped pipes only and the escape is undone afterwards.
+     *
+     * @param row one table row; must not be {@code null}
+     * @return its cells, stripped, without the leading and trailing empties
+     */
+    private static List<String> splitLedgerRow(final String row) {
+        Objects.requireNonNull(row, "row must not be null");
+        String body = row.strip();
+        if (body.startsWith("|")) {
+            body = body.substring(1);
+        }
+        if (body.endsWith("|") && !body.endsWith("\\|")) {
+            body = body.substring(0, body.length() - 1);
+        }
+        return Stream.of(UNESCAPED_PIPE.split(body, -1))
+                .map(cell -> cell.replace("\\|", "|").strip())
+                .toList();
     }
 
     // Helpers. Each is a pure function of the corpus model or of the file system; none writes a field.
@@ -5486,9 +7152,20 @@ class GateVerificationTest {
      * Counts {@code COPY} call sites per member name across an arbitrary member list.
      *
      * <p>Extracted so the program-only expansion census and the repository-wide reference census share one
-     * scanner rather than two that could drift apart. Comment and continuation lines are skipped through
-     * the indicator column, and both the quoted and unquoted spellings are recognised, because a scanner
-     * that handles only one under-counts.
+     * scanner rather than two that could drift apart. Comment and continuation lines are skipped, and both
+     * the quoted and unquoted spellings are recognised, because a scanner that handles only one
+     * under-counts.
+     *
+     * <p><strong>The comment rule is chosen per member kind, and getting that wrong inflates the census
+     * rather than failing.</strong> Job control does not mark comments in the fixed indicator column at
+     * all: a JCL comment is {@code //*} at the start of the line. Applying the COBOL rule to
+     * {@code app/jcl} therefore reads eleven lines of English prose as code and yields three members that
+     * do not exist - {@code DATA} from the nine {@code copy the DATA} sentences in the IDCAMS jobs,
+     * {@code OF} from the statement job and {@code USER} from the security-file job - inflating the
+     * repository-wide census from 46 to 49. Nothing failed on it, which is exactly why it survived: a
+     * census that is only ever read as a total absorbs three phantoms silently. Selecting the rule by kind
+     * is the fix; the alternative of removing the words from the frozen corpus is not available and would
+     * not be taken if it were.
      *
      * @param members the members to scan; must not be {@code null}
      * @return an immutable map from copied member name to the number of call sites, empty when none
@@ -5498,8 +7175,7 @@ class GateVerificationTest {
         final Map<String, Integer> siteCounts = new TreeMap<>();
         for (final CorpusMember member : members) {
             for (final String line : member.lines()) {
-                if (line.length() > INDICATOR_COLUMN_INDEX
-                        && NON_CODE_INDICATORS.contains(line.charAt(INDICATOR_COLUMN_INDEX))) {
+                if (isNonCodeLine(member, line)) {
                     continue;
                 }
                 final Matcher copied = COPY_STATEMENT.matcher(line);
@@ -5510,6 +7186,48 @@ class GateVerificationTest {
             }
         }
         return Map.copyOf(siteCounts);
+    }
+
+    /**
+     * Returns a member's name without its extension, folded to upper case.
+     *
+     * <p>A {@code COPY} statement names the member and never the file, so comparing a copied name against a
+     * file name needs the extension removed - and folded, because the corpus spells four of its members with
+     * an upper-case extension while every {@code COPY} statement is upper case.
+     *
+     * @param member the member to name; must not be {@code null}
+     * @return the member name without its extension, upper case
+     */
+    private static String memberBaseName(final CorpusMember member) {
+        Objects.requireNonNull(member, "member must not be null");
+        final String name = member.memberName();
+        final int dot = name.lastIndexOf('.');
+        return (dot < 0 ? name : name.substring(0, dot)).toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Decides whether one line of a corpus member is a comment or continuation rather than code, by the
+     * convention that member's own language uses.
+     *
+     * <p>Two conventions occur in this corpus and they are not interchangeable. COBOL programs, copybooks,
+     * mapsets and symbolic maps are fixed format: an asterisk, slash or hyphen in the indicator column marks
+     * the line. Job control and procedure members mark a comment with {@code //*} at the start of the line
+     * and put nothing meaningful in column seven, so the fixed-column rule neither skips their comments nor
+     * has any reason to.
+     *
+     * @param member the member the line came from; must not be {@code null}
+     * @param line the line to classify; must not be {@code null}
+     * @return {@code true} when the line is a comment or a continuation and carries no code
+     */
+    private static boolean isNonCodeLine(final CorpusMember member, final String line) {
+        Objects.requireNonNull(member, "member must not be null");
+        Objects.requireNonNull(line, "line must not be null");
+        final String memberName = member.memberName().toLowerCase(Locale.ROOT);
+        if (memberName.endsWith(".jcl") || memberName.endsWith(".prc")) {
+            return line.stripLeading().startsWith("//*");
+        }
+        return line.length() > INDICATOR_COLUMN_INDEX
+                && NON_CODE_INDICATORS.contains(line.charAt(INDICATOR_COLUMN_INDEX));
     }
 
     /**
@@ -5958,10 +7676,12 @@ class GateVerificationTest {
     /**
      * Lists every committed text file the credential walk covers.
      *
-     * <p>{@code app/} is excluded because it is frozen: the legacy corpus is the system of record and its
-     * inline seed data is the very thing the control value is read from, so flagging it would flag the
-     * evidence. {@code samples/} and {@code diagrams/} hold z/OS build tooling and binary artefacts with no
-     * credential surface, {@code target/} is build output, and {@code .git/} is not source.
+     * <p>Two kinds of root are skipped and they are declared separately, on
+     * {@link #UNSCANNED_SOURCE_ROOTS} and {@link #UNSCANNED_BUILD_OUTPUT_ROOTS}, because the reasons differ
+     * and only one of them can be checked mechanically. The first kind is frozen or out-of-scope source; the
+     * second is gitignored build output, which this method's own name excludes by definition. The extensions
+     * read are pinned on {@link #CREDENTIAL_WALK_TEXT_EXTENSIONS}, since a walk that cannot see a file cannot
+     * clear it and reports nothing either way.
      *
      * <p><strong>One file is excluded by name, and it is excluded because this migration may not edit it
      * rather than because it is clean.</strong> {@code docs/project-guide.md:418} carries a sign-on example
@@ -5978,9 +7698,9 @@ class GateVerificationTest {
      * @return the files to scan, never empty
      */
     private List<Path> committedFilesOutsideTheFrozenCorpus() {
-        final Set<String> excludedRoots = Set.of("app", "samples", "diagrams", "target", ".git", ".mvn");
-        final Set<String> textExtensions = Set.of("java", "yml", "yaml", "xml", "sql", "json", "sh", "md",
-                "properties", "example", "cmd", "txt", "html", "conf");
+        final Set<String> excludedRoots = new TreeSet<>(UNSCANNED_SOURCE_ROOTS);
+        excludedRoots.addAll(UNSCANNED_BUILD_OUTPUT_ROOTS);
+        final Set<String> tracked = trackedPaths();
         try (Stream<Path> tree = Files.walk(this.corpus.root())) {
             return tree.filter(Files::isRegularFile)
                     .filter(candidate -> {
@@ -5991,16 +7711,96 @@ class GateVerificationTest {
                     .filter(candidate -> {
                         final String name = candidate.getFileName().toString();
                         final int dot = name.lastIndexOf('.');
-                        return "Dockerfile".equals(name) || "mvnw".equals(name)
-                                || dot >= 0 && textExtensions.contains(name.substring(dot + 1));
+                        return CREDENTIAL_WALK_NAMED_FILES.contains(name)
+                                || dot >= 0
+                                        && CREDENTIAL_WALK_TEXT_EXTENSIONS.contains(name.substring(dot + 1));
                     })
                     .filter(candidate -> !FROZEN_PRIOR_RUN_DOCUMENT.equals(
+                            this.corpus.root().relativize(candidate).toString().replace('\\', '/')))
+                    // Only what git actually tracks, when the index can be read. Without this the walk
+                    // contradicts its own name: it would read whatever untracked or ignored file happens to
+                    // sit in the working tree, so the denominator it feeds would move with a developer's
+                    // scratch directory rather than with the repository. That is not a hypothetical - a
+                    // reading of the Gate 6 figure was published at 83 because a gitignored scratch directory
+                    // contributed four candidate values, and the true figure for the committed tree was 79.
+                    .filter(candidate -> tracked.isEmpty() || tracked.contains(
                             this.corpus.root().relativize(candidate).toString().replace('\\', '/')))
                     .sorted()
                     .toList();
         } catch (final IOException walkFailure) {
             throw new UncheckedIOException("Failed to walk " + this.corpus.root(), walkFailure);
         }
+    }
+
+    /**
+     * Reads the set of repository-relative paths git tracks, from {@code .git/index}.
+     *
+     * <p>Read from the file rather than by running {@code git ls-files}, for the same two reasons
+     * {@link #resolveCommitUnderTest()} gives: spawning a process is itself one of the three patterns Gate 6
+     * asserts absent from this tree, so this class cannot spawn one without failing its own gate; and a
+     * spawned command's absence would have to be told apart from a genuinely unreadable checkout.
+     *
+     * <p>The format is stable and small. A 12-byte header carries the {@code DIRC} signature, the version and
+     * the entry count; each entry then carries 62 bytes of stat and object data, a NUL-terminated path, and
+     * NUL padding to the next 8-byte boundary. Version 3 adds a two-byte extended flag field when the
+     * extended bit is set. Version 4 compresses each path against its predecessor, which this method does not
+     * decode.
+     *
+     * <p><strong>Returns an empty set rather than throwing when the index cannot be read or is version 4,</strong>
+     * and the caller treats an empty set as "no restriction" so the walk still covers the tree. A source tree
+     * with no git metadata is a real condition - an exported archive, a vendored copy - and the harness must
+     * run there. The cost of the fallback is the looser reading this method exists to tighten, which is why
+     * the basis is recorded alongside the figure rather than left to be assumed.
+     *
+     * @return every tracked repository-relative path with {@code /} separators, or an empty set when unknown
+     */
+    private Set<String> trackedPaths() {
+        final Path index = this.corpus.root().resolve(".git").resolve("index");
+        if (!Files.isRegularFile(index)) {
+            return Set.of();
+        }
+        final byte[] raw;
+        try {
+            raw = Files.readAllBytes(index);
+        } catch (final IOException unreadable) {
+            return Set.of();
+        }
+        if (raw.length < 12 || raw[0] != 'D' || raw[1] != 'I' || raw[2] != 'R' || raw[3] != 'C') {
+            return Set.of();
+        }
+        final ByteBuffer buffer = ByteBuffer.wrap(raw).order(ByteOrder.BIG_ENDIAN);
+        buffer.position(4);
+        final int version = buffer.getInt();
+        final int entries = buffer.getInt();
+        if (version < 2 || version > 3 || entries < 0) {
+            return Set.of();
+        }
+        final Set<String> tracked = new TreeSet<>();
+        int offset = 12;
+        for (int entry = 0; entry < entries; entry++) {
+            final int entryStart = offset;
+            if (offset + 62 > raw.length) {
+                return Set.of();
+            }
+            final int flags = Short.toUnsignedInt(buffer.getShort(offset + 60));
+            offset += 62;
+            if (version >= 3 && (flags & 0x4000) != 0) {
+                offset += 2;
+            }
+            int terminator = offset;
+            while (terminator < raw.length && raw[terminator] != 0) {
+                terminator++;
+            }
+            if (terminator >= raw.length) {
+                return Set.of();
+            }
+            tracked.add(new String(raw, offset, terminator - offset, StandardCharsets.UTF_8)
+                    .replace('\\', '/'));
+            offset = terminator;
+            final int consumed = offset - entryStart;
+            offset += consumed % 8 == 0 ? 8 : 8 - consumed % 8;
+        }
+        return tracked;
     }
 
     /**
@@ -6170,6 +7970,120 @@ class GateVerificationTest {
     }
 
     /**
+     * Expands TAB characters to the eight-column stops a fixed-column editor uses.
+     *
+     * @param line the line to expand; must not be {@code null}
+     * @return the line with every TAB replaced by spaces up to the next stop
+     */
+    private static String expandTabs(final String line) {
+        Objects.requireNonNull(line, "line must not be null");
+        final StringBuilder expanded = new StringBuilder(line.length() + TAB_STOP_WIDTH);
+        for (int index = 0; index < line.length(); index++) {
+            final char character = line.charAt(index);
+            if (character == '\t') {
+                do {
+                    expanded.append(' ');
+                } while (expanded.length() % TAB_STOP_WIDTH != 0);
+            } else {
+                expanded.append(character);
+            }
+        }
+        return expanded.toString();
+    }
+
+    /**
+     * Reports whether a line would be read as carrying a label that begins inside area A.
+     *
+     * <p>Applies the parser's own three geometry rules - the indicator column, the area-A bound and the
+     * label shape - with the label pattern supplied, so the same reading can be taken with a wider pattern
+     * than the parser's own.
+     *
+     * @param line the line to classify; must not be {@code null}
+     * @param labelPattern the label shape to apply; must not be {@code null}
+     * @return {@code true} when the line carries a label-shaped token beginning in area A
+     */
+    private static boolean isAreaALabelCandidate(final String line, final Pattern labelPattern) {
+        Objects.requireNonNull(line, "line must not be null");
+        Objects.requireNonNull(labelPattern, "labelPattern must not be null");
+        if (line.length() <= INDICATOR_COLUMN_INDEX
+                || NON_CODE_INDICATORS.contains(Character.valueOf(line.charAt(INDICATOR_COLUMN_INDEX)))) {
+            return false;
+        }
+        final String codeArea = line.substring(AREA_A_START_INDEX);
+        if (codeArea.length() - codeArea.stripLeading().length() >= AREA_A_WIDTH) {
+            return false;
+        }
+        return labelPattern.matcher(codeArea.strip()).matches();
+    }
+
+    /**
+     * Reads the published traceability matrix and splits every {@code TM-} row into its cells.
+     *
+     * <p>One reader for both matrix assertions, so the two cannot disagree about what a row is. The grammar
+     * is deliberately narrow - a line opening with the row-identifier code span and closing with a pipe -
+     * because a malformed row must fall out of the paragraph set and be counted as supplemental rather than
+     * silently reshaping a column index.
+     *
+     * @return every matrix row, split into cells, in document order
+     */
+    private List<List<String>> matrixRows() {
+        return readTextFile(this.corpus.root().resolve(TRACEABILITY_MATRIX_FILE)).lines()
+                .filter(line -> line.startsWith("| `TM-") && line.endsWith("|"))
+                .map(GateVerificationTest::splitMatrixRow)
+                .toList();
+    }
+
+    /**
+     * Projects {@link #matrixRows()} onto the fourteen-column paragraph rows.
+     *
+     * @return the paragraph rows, in document order
+     */
+    private List<List<String>> matrixParagraphRows() {
+        return matrixRows().stream()
+                .filter(cells -> cells.size() == MATRIX_PARAGRAPH_COLUMNS)
+                .toList();
+    }
+
+    /**
+     * Returns the paragraph label identities parsed out of one program's {@code PROCEDURE DIVISION}.
+     *
+     * <p>These are the names {@link #censusOf(CorpusMember)} collects while counting. They were collected
+     * and never read for as long as the matrix's paragraph column carried no guard, which is exactly what
+     * let a row name a paragraph that exists nowhere.
+     *
+     * @param programName the program's file name, in any case; must not be {@code null}
+     * @return its procedure-division label names, in declaration order
+     * @throws IllegalArgumentException if the corpus holds no such program, which is a parser defect
+     */
+    private List<String> labelNamesOf(final String programName) {
+        Objects.requireNonNull(programName, "programName must not be null");
+        final LabelCensus census = this.programLabels.get(programName);
+        if (census == null) {
+            throw new IllegalArgumentException("No label census exists for " + programName
+                    + ". Either the corpus lacks the program or extensions were matched case-sensitively.");
+        }
+        return census.procedureLabelNames();
+    }
+
+    /**
+     * Collects the anchors a Markdown document declares explicitly.
+     *
+     * <p>Explicit anchors are the resolvable targets: a heading's generated slug carries the whole heading
+     * text, so {@code #dl-ms-02} resolves only because an {@code <a id="dl-ms-02"></a>} element precedes the
+     * heading. Checking a fragment against the declared set is therefore the check that distinguishes a
+     * citation a reader can follow from one that silently lands nowhere.
+     *
+     * @param document the document text; must not be {@code null}
+     * @return the declared anchor identifiers, in document order
+     */
+    private static Set<String> declaredAnchorsOf(final String document) {
+        Objects.requireNonNull(document, "document must not be null");
+        return new LinkedHashSet<>(DECLARED_ANCHOR.matcher(document).results()
+                .map(result -> result.group(1))
+                .toList());
+    }
+
+    /**
      * Strips the Markdown code-span backticks a matrix cell wraps its value in.
      * @param cell one matrix cell.
      * @return its value without the code-span backticks.
@@ -6177,6 +8091,46 @@ class GateVerificationTest {
     private static String unquote(final String cell) {
         Objects.requireNonNull(cell, "cell must not be null");
         return cell.replace("`", "").strip();
+    }
+
+    /**
+     * Returns the modifiers of every declaration of a named method in a Java source, or empty when the source
+     * declares no such method.
+     *
+     * <p>A declaration is matched at the start of a line, so a CALL to the method, a mention of it in a
+     * Javadoc sentence or an occurrence of its name inside a longer identifier cannot be mistaken for one.
+     * That distinction is the whole point: a bare {@code name(} search finds the two phantom carriers this
+     * check exists to catch, because a matrix row can name a method the tree only ever mentions in prose.
+     *
+     * <p>The leading group collects the modifiers, the optional angle-bracket group steps over a generic
+     * type parameter list, and the segment before the name is the return type - which may itself be
+     * generic, an array or a qualified name, hence the wide character class. Overloads are folded together
+     * deliberately: the matrix elides the argument list, so it names a method rather than one signature of
+     * it, and the union of the modifiers is what the row can honestly be checked against.
+     *
+     * @param source the Java source text to search; must not be {@code null}
+     * @param method the method name to locate; must not be {@code null}
+     * @return the modifiers of every matching declaration, in declaration order and without duplicates, or
+     *     empty when the source declares no method of that name
+     */
+    private static Optional<List<String>> declaredModifiersOf(final String source, final String method) {
+        Objects.requireNonNull(source, "source must not be null");
+        Objects.requireNonNull(method, "method must not be null");
+        final Matcher declaration = Pattern.compile("(?m)^[ \\t]*((?:(?:public|protected|private|static|final"
+                        + "|abstract|synchronized|native|strictfp)[ \\t]+)*)(?:<[^>\\n]+>[ \\t]+)?"
+                        + "[\\w.$<>\\[\\],?& ]+?[ \\t]+" + Pattern.quote(method) + "[ \\t]*\\(")
+                .matcher(source);
+        final List<String> modifiers = new ArrayList<>();
+        boolean declared = false;
+        while (declaration.find()) {
+            declared = true;
+            for (final String modifier : declaration.group(1).strip().split("\\s+")) {
+                if (!modifier.isEmpty() && !modifiers.contains(modifier)) {
+                    modifiers.add(modifier);
+                }
+            }
+        }
+        return declared ? Optional.of(List.copyOf(modifiers)) : Optional.empty();
     }
 
     /**
@@ -7276,19 +9230,19 @@ class GateVerificationTest {
             final Path root = locateRepositoryRoot();
             final String compose = readTextFile(root.resolve("docker-compose.yml"));
             final List<String> declaredServices = List.of("app", "postgres", "localstack", "jaeger",
-                    "prometheus", "grafana");
+                    "pushgateway", "prometheus", "grafana");
             final List<String> undeclared = declaredServices.stream()
                     .filter(service -> !Pattern.compile("^  " + service + ":\\s*$", Pattern.MULTILINE)
                             .matcher(compose).find())
                     .toList();
 
             assertThat(undeclared)
-                    .as("all SIX services of the topology are declared, not the two this test context "
-                            + "happens to start. Recording the number six while probing two is the gap this "
+                    .as("all SEVEN services of the topology are declared, not the two this test context "
+                            + "happens to start. Recording the number seven while probing two is the gap this "
                             + "closes")
                     .isEmpty();
             assertThat(declaredServices)
-                    .as("and six is the whole topology, so an added service cannot slip in unverified")
+                    .as("and seven is the whole topology, so an added service cannot slip in unverified")
                     .hasSize(EXPECTED_COMPOSE_SERVICE_COUNT);
             final int servicesStart = compose.indexOf("\nservices:") + 1;
             final Matcher nextTopLevelKey = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_-]*:", Pattern.MULTILINE)
@@ -7304,11 +9258,11 @@ class GateVerificationTest {
                     .matcher(compose.substring(servicesStart, servicesEnd))
                     .results()
                     .count())
-                    .as("the compose file declares exactly those six services and no seventh. The scan is "
+                    .as("the compose file declares exactly those seven services and no eighth. The scan is "
                             + "bounded to the services block by finding the next TOP-LEVEL key, because the "
                             + "networks, volumes and configs blocks indent their own entries by two spaces "
-                            + "too - an unbounded scan counts twelve and would have to be 'corrected' to a "
-                            + "number that means nothing")
+                            + "too - an unbounded scan counts them as well and would have to be 'corrected' "
+                            + "to a number that means nothing")
                     .isEqualTo(EXPECTED_COMPOSE_SERVICE_COUNT);
 
             assertThat(readTextFile(root.resolve("observability/prometheus.yml")))
@@ -7317,7 +9271,15 @@ class GateVerificationTest {
                             + "container that scrapes nothing would satisfy a liveness check and produce an "
                             + "empty dashboard")
                     .contains("job_name: carddemo-app")
-                    .contains("metrics_path: /actuator/prometheus");
+                    .contains("metrics_path: /actuator/prometheus")
+                    .as("and the push sink is scraped too, because three of the four named counters can "
+                            + "reach Prometheus by no other route: the process that writes them has exited "
+                            + "before any scrape of it could occur. honor_labels is part of the wiring rather "
+                            + "than a preference - without it Prometheus rewrites every pushed series' job "
+                            + "label from the producer to its own letterbox")
+                    .contains("job_name: carddemo-pushgateway")
+                    .contains("honor_labels: true")
+                    .contains("- pushgateway:9091");
             assertThat(readTextFile(
                     root.resolve("observability/grafana/provisioning/datasources/datasource.yml")))
                     .as("the dashboard service is wired to the metrics service by provisioned datasource, so "
@@ -7338,11 +9300,12 @@ class GateVerificationTest {
             record("gate8.composeServicesDeclared", String.join(",", declaredServices));
             record("gate8.serviceVerificationMethod", "EXECUTION-VERIFIED: postgres and localstack, probed "
                     + "live through the health registry (db, s3, sqs) and a real SELECT. "
-                    + "TOPOLOGY-AND-WIRING-VERIFIED: app, jaeger, prometheus and grafana - declared with "
-                    + "pinned image digests and proven wired to each other and to the application "
-                    + "(prometheus scrapes carddemo-app at /actuator/prometheus; grafana provisions the "
+                    + "TOPOLOGY-AND-WIRING-VERIFIED: app, jaeger, pushgateway, prometheus and grafana - "
+                    + "declared with pinned image digests and proven wired to each other and to the "
+                    + "application (prometheus scrapes carddemo-app at /actuator/prometheus and "
+                    + "carddemo-pushgateway at pushgateway:9091 with honor_labels; grafana provisions the "
                     + "prometheus datasource at http://prometheus:9090; the app exports OTLP to "
-                    + "jaeger:4318). This split is stated rather than blurred: four of the six are not "
+                    + "jaeger:4318). This split is stated rather than blurred: five of the seven are not "
                     + "started by this test context, and claiming otherwise would be false.");
         }
 
@@ -7425,10 +9388,19 @@ class GateVerificationTest {
                             "TransactionController", "BillingController", "ReportController",
                             "AdminController");
 
+            // SORTED BEFORE JOINING, so the artefact is byte-diffable. These three sets are populated in the
+            // handler registry's own iteration order, which is not stable across runs: three runs of the same
+            // tree - a full verify, a narrowed one and one from a different working directory - produced
+            // identical SETS in a different ORDER every time, so a reviewer diffing two evidence files saw
+            // spurious Gate 5 differences and the byte-comparison workflow the ledger depends on lost value
+            // exactly where nothing had changed. Order carries no information here: the assertions above are
+            // set assertions, and what this evidence publishes is membership. Sorting is what makes the
+            // published census a function of the tree rather than of the run.
             record("gate5.mappedOperations", operations);
-            record("gate5.controllers", String.join(",", controllers));
-            record("gate5.operationSignatures", String.join(" | ", operationSignatures));
-            record("gate5.verbsExercised", String.join(",", verbs));
+            record("gate5.controllers", String.join(",", controllers.stream().sorted().toList()));
+            record("gate5.operationSignatures",
+                    String.join(" | ", operationSignatures.stream().sorted().toList()));
+            record("gate5.verbsExercised", String.join(",", verbs.stream().sorted().toList()));
             record("gate5.operationsWithRetainedRequestEvidence", operationSignatures.size());
         }
 

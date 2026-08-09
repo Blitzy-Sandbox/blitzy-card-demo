@@ -87,8 +87,13 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * The diagnostic context lifecycle and the diagnostic privacy of {@link DailyTransactionPostingJob}.
@@ -462,6 +467,174 @@ class DailyTransactionPostingJobContextLifecycleTest {
                     DailyTransactionPostingJob.class.getDeclaredField(name);
             field.setAccessible(true);
             return (String) field.get(null);
+        }
+    }
+
+    /**
+     * The end-of-run counters count each input record exactly once, even across a chunk that does not commit.
+     *
+     * <p>Finding B-08. The counters live in the step execution context so that they survive a restart, but an
+     * execution context is not a transactional resource: a chunk that rolled back used to leave its
+     * increments behind, and the records it had read were counted a second time when the restart re-read them.
+     * A run over the 300-record fixture that failed once mid-chunk reported 301 processed for 300 inputs, and
+     * because the reject counter decides return code 4 ({@code app/cbl/CBTRN02C.cbl:L229-L231}) the same flaw
+     * could turn a clean run into one that reports rejects.
+     *
+     * <p>Exercised through the private compensation directly rather than through a job launch. A launch cannot
+     * distinguish the two implementations without killing the process mid-chunk, and the transaction
+     * completion status - committed, rolled back, or unknown - is precisely the axis that has to be covered.
+     */
+    @Nested
+    @DisplayName("4. The end-of-run counters count each input record once, across a chunk that does not commit")
+    class RestartSafeCounters {
+
+        /** The step execution the compensation is registered against; a fresh one per test. */
+        private StepExecution stepExecution;
+
+        /** Establishes a synchronization scope and a step execution carrying two prior chunks' counts. */
+        @BeforeEach
+        void openTransactionScope() {
+            this.stepExecution = new StepExecution("dailyTransactionPostingStep", new JobExecution(1L));
+            TransactionSynchronizationManager.initSynchronization();
+        }
+
+        /** Releases the synchronization scope whatever the test did, so no thread state leaks. */
+        @AfterEach
+        void closeTransactionScope() {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+        }
+
+        @Test
+        @DisplayName("a chunk that rolls back puts both counters back to their pre-chunk values")
+        void aRolledBackChunkContributesNothingToEitherCounter() throws Exception {
+            applyChunk(7L, 2L, 1L, 1L);
+
+            completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
+
+            assertThat(counter(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY))
+                    .as("the record this chunk read is re-read after the restart and counted then, so "
+                            + "app/cbl/CBTRN02C.cbl:L206 must not have counted it here as well")
+                    .isEqualTo(7L);
+            assertThat(counter(DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY))
+                    .as("and app/cbl/CBTRN02C.cbl:L214 likewise, which matters because this counter decides "
+                            + "return code 4 at :L229-:L231")
+                    .isEqualTo(2L);
+        }
+
+        @Test
+        @DisplayName("a committed chunk keeps its increments, so nothing is lost between chunks")
+        void aCommittedChunkKeepsItsIncrements() throws Exception {
+            applyChunk(7L, 2L, 1L, 1L);
+
+            completeTransaction(TransactionSynchronization.STATUS_COMMITTED);
+
+            assertThat(counter(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY))
+                    .as("the increment is applied inside the chunk transaction and persisted with it, so a "
+                            + "committed chunk must keep it - deferring the increment to after the commit "
+                            + "would leave the checkpoint a chunk behind and under-report after a crash")
+                    .isEqualTo(8L);
+            assertThat(counter(DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY))
+                    .as("and the reject increment likewise")
+                    .isEqualTo(3L);
+        }
+
+        @Test
+        @DisplayName("an unknown completion is treated as not committed, exactly as TaskletStep treats it")
+        void anUnknownCompletionIsTreatedAsNotCommitted() throws Exception {
+            applyChunk(0L, 0L, 1L, 0L);
+
+            completeTransaction(TransactionSynchronization.STATUS_UNKNOWN);
+
+            assertThat(counter(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY))
+                    .as("TaskletStep.ChunkTransactionCallback reverts the step execution on any status other "
+                            + "than committed, so the counters follow the same rule rather than a narrower one")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("the restore is idempotent, so the framework's own revert cannot be double-counted")
+        void theRestoreIsIdempotent() throws Exception {
+            applyChunk(7L, 2L, 1L, 1L);
+
+            completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
+            completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
+
+            assertThat(counter(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY))
+                    .as("an absolute restore rather than a subtraction, because TaskletStep may already have "
+                            + "reverted the context to this same value before this runs; subtracting twice "
+                            + "would under-report")
+                    .isEqualTo(7L);
+            assertThat(counter(DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY))
+                    .isEqualTo(2L);
+        }
+
+        @Test
+        @DisplayName("with no transaction active nothing is registered, so the writer stays unit-testable")
+        void noTransactionMeansNoRegistration() throws Exception {
+            TransactionSynchronizationManager.clearSynchronization();
+            stepExecution.getExecutionContext()
+                    .putLong(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY, 4L);
+
+            invokeStatic("restoreCountersIfChunkDoesNotCommit",
+                    new Class<?>[] {StepExecution.class, long.class, long.class},
+                    stepExecution, Long.valueOf(0L), Long.valueOf(0L));
+
+            assertThat(TransactionSynchronizationManager.isSynchronizationActive())
+                    .as("registering a synchronization with no active transaction throws, so the guard is "
+                            + "what lets the unit tier call the writer directly")
+                    .isFalse();
+            assertThat(counter(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY))
+                    .as("and nothing was compensated, because there was no transaction to compensate for")
+                    .isEqualTo(4L);
+        }
+
+        /**
+         * Reproduces what the composite writer does for one chunk: capture, increment, register.
+         *
+         * @param processedBefore the processed count standing before this chunk
+         * @param rejectedBefore the reject count standing before this chunk
+         * @param chunkSize how many records this chunk read
+         * @param rejectedInChunk how many of them were rejected
+         * @throws Exception if the private compensation cannot be reached
+         */
+        private void applyChunk(final long processedBefore, final long rejectedBefore,
+                final long chunkSize, final long rejectedInChunk) throws Exception {
+
+            final ExecutionContext context = stepExecution.getExecutionContext();
+            context.putLong(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY, processedBefore);
+            context.putLong(DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY, rejectedBefore);
+            context.putLong(DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY,
+                    processedBefore + chunkSize);
+            context.putLong(DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY,
+                    rejectedBefore + rejectedInChunk);
+            invokeStatic("restoreCountersIfChunkDoesNotCommit",
+                    new Class<?>[] {StepExecution.class, long.class, long.class},
+                    stepExecution, Long.valueOf(processedBefore), Long.valueOf(rejectedBefore));
+        }
+
+        /**
+         * Drives every registered synchronization to the given completion status.
+         *
+         * @param status one of the {@link TransactionSynchronization} completion constants
+         */
+        private void completeTransaction(final int status) {
+            for (final TransactionSynchronization synchronization
+                    : TransactionSynchronizationManager.getSynchronizations()) {
+                synchronization.afterCompletion(status);
+            }
+        }
+
+        /**
+         * Reads one counter out of the step execution context, treating an absent entry as zero.
+         *
+         * @param key the context key
+         * @return the counter value
+         */
+        private long counter(final String key) {
+            final ExecutionContext context = stepExecution.getExecutionContext();
+            return context.containsKey(key) ? context.getLong(key) : 0L;
         }
     }
 

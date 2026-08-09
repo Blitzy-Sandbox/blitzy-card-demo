@@ -1151,10 +1151,11 @@ public class TransactionReportProcessor
      * string and never parsed, carrying {@code WS-START-DATE}.
      * @param endDate inclusive last processing date of the report, ten characters, carrying
      * {@code WS-END-DATE}.
-     * @throws FatalProcessingException if any collaborator is {@code null}, if either date is
-     * {@code null} or blank, or if the period is inverted. Each is a condition the source could not reach
-     * - a missing DD abends at open, and an inverted period would silently produce an empty report - so
-     * each is reported here rather than allowed to yield a report that looks complete and is not.
+     * @throws FatalProcessingException if any collaborator is {@code null}, or if either date is
+     * {@code null}, blank or not exactly ten characters. Those are the conditions a failed
+     * {@code OPEN INPUT DATE-PARMS-FILE} or a failed {@code READ} of the parameter card stands for, and the
+     * source abends on both. An <em>inverted</em> period is deliberately <strong>not</strong> among them -
+     * see {@link #dateparmOpen0500()}.
      */
     public TransactionReportProcessor(
             TransactionRepository transactionRepository,
@@ -1175,7 +1176,6 @@ public class TransactionReportProcessor
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "FileStatusMapper", "IO-STATUS");
         this.startDate = requireReportingDate(startDate, "WS-START-DATE");
         this.endDate = requireReportingDate(endDate, "WS-END-DATE");
-        requireOrderedPeriod(this.startDate, this.endDate);
 
         this.lineCounter = 0L;
         this.pageTotal = BigDecimal.ZERO;
@@ -2264,20 +2264,33 @@ public class TransactionReportProcessor
      *
      * <p>{@code DATE-PARMS-FILE} is the eighty-byte parameter card of
      * {@code app/proc/TRANREPT.prc}, not a keyed relation, so there is nothing to query. Its open
-     * therefore re-asserts what the card supplied: two ten-character dates forming an ordered inclusive
-     * period. The constructor already rejects a missing or inverted period, which is why this paragraph is
-     * a second assertion rather than the first - and it is retained rather than folded into the
-     * constructor because the source opens the parameter file as its own numbered paragraph and the
-     * paragraph map records it.
+     * therefore re-asserts what the card supplied: two dates, both present. The constructor already rejects
+     * an absent or wrongly-widthed bound, which is why this paragraph is a second assertion rather than the
+     * first - and it is retained rather than folded into the constructor because the source opens the
+     * parameter file as its own numbered paragraph and the paragraph map records it.
+     *
+     * <p><strong>Presence only, and deliberately not ordering. Finding B-15, severity Major.</strong> This
+     * paragraph used to abend when the period was inverted, and the source does no such thing:
+     * {@code :L467}-{@code :L482} tests {@code DATEPARM-STATUS} - the outcome of the {@code OPEN} - and
+     * nothing else, so the only condition it can reach is "the card is not there". An inverted period is a
+     * card that <em>is</em> there, carrying bounds that cross, and the legacy behaviour for it is defined
+     * rather than undefined: {@code app/proc/TRANREPT.prc} {@code STEP05R}'s
+     * {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)} selects no
+     * record, the inclusive test at {@code app/cbl/CBTRN03C.cbl:L173}-{@code :L174} filters every record the
+     * sort might still have passed, the first-record header block at {@code :L275}-{@code :L280} never fires,
+     * and the step writes a headings-only report and completes normally. That outcome is reproduced, not
+     * refused. The guard also had a second cost: {@code com.cardemo.service.report.ReportSubmissionService}
+     * is faithful to {@code app/cbl/CORPT00C.cbl}, which has no ordering test either, so the online tier
+     * accepted a submission this tier then refused - and on a FIFO queue with one message group, a
+     * submission that can never be accepted blocks every later one.
      */
     private void dateparmOpen0500() {
         // MOVE 8 TO APPL-RESULT (:L467), OPEN INPUT DATE-PARMS-FILE (:L468).
-        if (this.startDate == null || this.endDate == null
-                || this.startDate.compareTo(this.endDate) > 0) {
+        if (this.startDate == null || this.endDate == null) {
             // :L476-L480.
             LOG.error(ERROR_OPENING_DATEPARM);
             LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
-            throw abendProgram("DATEPARM did not supply an ordered inclusive reporting period",
+            throw abendProgram("DATEPARM did not supply both bounds of the reporting period",
                     ERROR_OPENING_DATEPARM);
         }
     }
@@ -2341,14 +2354,15 @@ public class TransactionReportProcessor
      *
      * <p>The parameter card is consumed once, at {@code 0550-DATEPARM-READ}, and nothing holds a handle to
      * it afterwards, so the close has nothing to release. The paragraph is retained for the paragraph map
-     * and asserts the same period contract its open asserted, which is the only state the card left behind.
+     * and asserts the same period contract its open asserted - both bounds still present - which is the only
+     * state the card left behind. It asserts no ordering, for the reason {@link #dateparmOpen0500()} gives:
+     * {@code :L606}-{@code :L621} tests {@code DATEPARM-STATUS} and nothing else.
      */
     private void dateparmClose9500() {
-        if (this.startDate == null || this.endDate == null
-                || this.startDate.compareTo(this.endDate) > 0) {
+        if (this.startDate == null || this.endDate == null) {
             LOG.error(ERROR_CLOSING_DATEPARM);
             LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
-            throw abendProgram("DATEPARM period is no longer an ordered inclusive range at close",
+            throw abendProgram("DATEPARM no longer carries both bounds of the reporting period at close",
                     ERROR_CLOSING_DATEPARM);
         }
     }
@@ -2797,32 +2811,6 @@ public class TransactionReportProcessor
                     ERROR_READING_DATEPARM_TEXT);
         }
         return value;
-    }
-
-    /**
-     * Rejects an inverted reporting period.
-     *
-     * <p>An added guard with no counterpart in the source, which validates neither bound. An inverted period
-     * makes the inclusive test at {@code app/cbl/CBTRN03C.cbl:L173-L174} unsatisfiable, so every record is
-     * filtered, the header block driven by the first record at {@code :L275-L280} never fires, and the step
-     * writes an empty report while completing normally. Failing loudly is strictly more useful than a silent
-     * empty file, and it cannot mask a legacy behaviour because the legacy behaviour is undefined here.
-     *
-     * <p>The comparison is lexicographic for the same reason the filter is - see
-     * {@link #withinReportingPeriod(Transaction)}.
-     *
-     * @param start the validated start bound.
-     * @param end the validated end bound.
-     * @throws FatalProcessingException if {@code start} sorts after {@code end}.
-     */
-    private static void requireOrderedPeriod(String start, String end) {
-        if (start.compareTo(end) > 0) {
-            throw abendProgram(String.format(Locale.ROOT,
-                    "the reporting period '%s' to '%s' is inverted, so no record can satisfy the inclusive "
-                            + "filter and the report would be empty",
-                    logSafe(start), logSafe(end)),
-                    ERROR_READING_DATEPARM_TEXT);
-        }
     }
 
     /**

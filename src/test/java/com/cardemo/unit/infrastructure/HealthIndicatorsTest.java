@@ -37,6 +37,8 @@ import static org.mockito.Mockito.when;
 import com.cardemo.observability.HealthIndicators;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+
+import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -133,13 +135,14 @@ class HealthIndicatorsTest {
 
     @Mock private S3Client s3Client;
     @Mock private SqsAsyncClient sqsAsyncClient;
+    @Mock private DataSource dataSource;
 
     /** Builds the configuration holder with the supplied bucket and queue names. */
     private HealthIndicators indicators(final String inputBucket, final String outputBucket,
                                         final String statementsBucket, final String queue,
                                         final String logicalQueueName) {
-        return new HealthIndicators(this.s3Client, this.sqsAsyncClient, inputBucket, outputBucket,
-                statementsBucket, queue, logicalQueueName);
+        return new HealthIndicators(this.s3Client, this.sqsAsyncClient, this.dataSource, inputBucket,
+                outputBucket, statementsBucket, queue, logicalQueueName);
     }
 
     /** The fully configured holder, which every happy-path test starts from. */
@@ -456,8 +459,8 @@ class HealthIndicatorsTest {
         @DisplayName("the holder refuses to be built without an S3 client")
         void theHolderRefusesToBeBuiltWithoutAnS3Client() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new HealthIndicators(null, sqsAsyncClient, INPUT_BUCKET,
-                            OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, ""))
+                    .isThrownBy(() -> new HealthIndicators(null, sqsAsyncClient, dataSource,
+                            INPUT_BUCKET, OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, ""))
                     .withMessageContaining("s3Client");
         }
 
@@ -465,7 +468,7 @@ class HealthIndicatorsTest {
         @DisplayName("the holder refuses to be built without an SQS client")
         void theHolderRefusesToBeBuiltWithoutAnSqsClient() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new HealthIndicators(s3Client, null, INPUT_BUCKET,
+                    .isThrownBy(() -> new HealthIndicators(s3Client, null, dataSource, INPUT_BUCKET,
                             OUTPUT_BUCKET, STATEMENTS_BUCKET, QUEUE, ""))
                     .withMessageContaining("sqsAsyncClient");
         }

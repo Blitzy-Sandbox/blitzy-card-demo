@@ -66,6 +66,7 @@ import com.cardemo.batch.readers.CardReader;
 import com.cardemo.batch.readers.CustomerReader;
 import com.cardemo.config.BatchConfig;
 import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.exception.ValidationException;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Customer;
@@ -152,6 +153,7 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.batch.BatchDataSourceScriptDatabaseInitializer;
 import org.springframework.boot.autoconfigure.batch.BatchProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -323,15 +325,19 @@ class BatchConfigTest {
                     .filter(method -> method.isAnnotationPresent(Bean.class))
                     .map(Method::getReturnType))
                     .as("the bean types this class contributes are the DD binding, the framework metadata "
-                            + "initialiser, the report queue listener and the F-020 verification topology, and "
-                            + "nothing that any batch/** component already registers for itself. Findings M-01 "
-                            + "and CFG-003: JobExecutionListener is absent by design - every job registers its "
-                            + "own on its own JobBuilder, because a listener bean declared here is applied to "
-                            + "no job at all")
+                            + "initialiser, the report queue listener, the F-020 verification topology and the "
+                            + "batch span-naming post-processor, and nothing that any batch/** component "
+                            + "already registers for itself. Findings M-01 and CFG-003: JobExecutionListener "
+                            + "is absent by design - every job registers its own on its own JobBuilder, "
+                            + "because a listener bean declared here is applied to no job at all. The "
+                            + "BeanPostProcessor is the one bean type here that is NOT a batch artefact, and "
+                            + "it is here rather than in observability/** for two reasons: the package "
+                            + "inventory that AAP 0.5.1.9 fixes at three classes plus its documentation, and "
+                            + "the fact that what it configures is a job property. See BatchJobSpanNamingTest")
                     .containsOnly(FileService.Dataset.class,
                             BatchDataSourceScriptDatabaseInitializer.class,
                             BatchConfig.ReportJobQueueListener.class,
-                            Step.class, Job.class);
+                            Step.class, Job.class, BeanPostProcessor.class);
             // Findings M-01 and CFG-003: a shared JobExecutionListener bean stood among those types and has
             // been removed. It registered nowhere - neither Spring Batch nor Boot collects listener beans onto
             // jobs, and every job attaches its own job-level listener with .listener(...) - so it was dead
@@ -1352,6 +1358,15 @@ class BatchConfigTest {
         private static final String DEDUPLICATION_HEADER =
                 SqsHeaders.MessageSystemAttributes.SQS_MESSAGE_DEDUPLICATION_ID_HEADER;
 
+        /**
+         * The receive count the transport maintains, which bounds how often one delivery may be returned.
+         *
+         * <p>Finding B-15. Named from the framework's own constant rather than written as a literal, so a
+         * fixture cannot exercise a header spelling the listener does not read.
+         */
+        private static final String RECEIVE_COUNT_HEADER =
+                SqsHeaders.MessageSystemAttributes.SQS_APPROXIMATE_RECEIVE_COUNT;
+
         /** A submission body in the shape the producer publishes. */
         private static final String PAYLOAD = """
                 {"reportName":"Monthly","startDate":"2022-07-01","endDate":"2022-07-31"}""";
@@ -1564,6 +1579,75 @@ class BatchConfigTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-5"), null));
+        }
+
+        @Test
+        @DisplayName("a validation failure from the job's own validator is consumed, not returned forever")
+        void aValidationFailureIsConsumedRatherThanReturned() throws Exception {
+            // FINDING B-15, severity Major. This is the arm that was missing, and its absence stopped the
+            // whole report tier. The report job's JobParametersValidator raises this application's typed
+            // ValidationException rather than the framework's checked JobParametersInvalidException, so it fell
+            // through every catch arm and out of the listener - which left the delivery on a FIFO queue with a
+            // single message group, blocking every later submission behind a message that could never succeed,
+            // with no dead-letter target and a fifteen-minute visibility window.
+            //
+            // A validation failure is permanent by construction: the same body validated again fails again.
+            // So it is consumed, exactly as an unbindable body and an unverified envelope code are.
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class)))
+                    .thenThrow(ValidationException.invalidField("startDate", "refused by the job"));
+
+            assertThatCode(() -> listener.drainReportJobQueue(
+                    PAYLOAD, signedHeaders("submission-validation"), null))
+                    .as("nothing may escape this method for a delivery that can never succeed, because the "
+                            + "framework acknowledges the message only when it returns normally")
+                    .doesNotThrowAnyException();
+
+            verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a failing execution is returned on an early attempt and discarded once the bound is hit")
+        void redeliveryIsBoundedSoOneDeliveryCannotHoldTheGroupForever() throws Exception {
+            // FINDING B-15. Classifying failures one at a time only protects against the failures already
+            // named. A delivery whose failure LOOKS retryable but never resolves would still be returned on
+            // every attempt, and on an ordered single-group FIFO queue that stops the report tier rather than
+            // just this submission. The receive count the transport maintains bounds it: the same failing
+            // execution is returned early and consumed once the attempt count reaches the bound.
+            final JobExecution failed = execution(BatchStatus.FAILED, ExitStatus.FAILED);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(failed);
+
+            assertThatIllegalStateException()
+                    .as("a first attempt is returned, so a transient cause gets another chance")
+                    .isThrownBy(() -> listener.drainReportJobQueue(PAYLOAD, signedHeaders(Map.of(
+                            DEDUPLICATION_HEADER, "submission-attempt-1",
+                            RECEIVE_COUNT_HEADER, "1")), null))
+                    .withMessageContaining("returned to the queue");
+
+            assertThatCode(() -> listener.drainReportJobQueue(PAYLOAD, signedHeaders(Map.of(
+                    DEDUPLICATION_HEADER, "submission-attempt-3",
+                    RECEIVE_COUNT_HEADER, "3")), null))
+                    .as("the third attempt is consumed instead, so the group moves on and the operator gets "
+                            + "an ERROR naming the delivery rather than an indefinitely blocked queue")
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("an unusable receive count counts as a first attempt, which errs towards redelivery")
+        void anUnusableReceiveCountIsTreatedAsAFirstAttempt() throws Exception {
+            // The header is untrusted input arriving untyped. Every unusable form - absent, non-numeric, zero
+            // - normalises to one, because this value only ever ENDS a retry sequence: reading it too low
+            // costs an extra attempt, while reading it too high would discard a submission that deserved one.
+            final JobExecution failed = execution(BatchStatus.FAILED, ExitStatus.FAILED);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(failed);
+
+            for (final String unusable : java.util.List.of("not-a-number", "0", "-4", "")) {
+                assertThatIllegalStateException()
+                        .as("a receive count of '%s' must not be read as an exhausted attempt", unusable)
+                        .isThrownBy(() -> listener.drainReportJobQueue(PAYLOAD, signedHeaders(Map.of(
+                                DEDUPLICATION_HEADER, "submission-unusable-" + unusable.length(),
+                                RECEIVE_COUNT_HEADER, unusable)), null))
+                        .withMessageContaining("returned to the queue");
+            }
         }
 
         @Test
@@ -1794,11 +1878,52 @@ class BatchConfigTest {
         @Test
         @DisplayName("a malformed payload is consumed rather than returned, because a FIFO group is ordered")
         void aMalformedPayloadIsConsumed() throws Exception {
-            // No dead-letter queue exists in this topology, so a rethrow would redeliver this message
-            // forever and every later submission in the same message group would queue behind it.
+            // A rethrow would redeliver a message that can never bind, and every later submission in the
+            // same ordered message group would wait one visibility window per attempt. The RedrivePolicy
+            // localstack-init/init-aws.sh provisions bounds the failures the listener cannot classify; this
+            // is not one of them, so it is dropped on the first delivery rather than after four.
             listener.drainReportJobQueue("{not json", signedHeaders("submission-2"), null);
 
             verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a validation refusal escaping the launcher is acknowledged, not left to circulate")
+        void aValidationRefusalIsConsumed() throws Exception {
+            // FINDING, severity MAJOR. This is the arm the reported outage travelled through with no arm to
+            // catch it. TransactionReportParametersValidator implements JobParametersValidator, whose validate
+            // declares JobParametersInvalidException - but it let a runtime ValidationException out, so the
+            // refusal escaped JobLauncher.run unchanged, passed straight through this listener, and the SQS
+            // container acknowledged nothing. One FIFO group carries every submission, so the message sat at
+            // the head of an ordered group and was redelivered every visibility window for the queue's whole
+            // four-day retention while every valid submission behind it was starved.
+            //
+            // The validator now honours its declared type, so the arm above catches the known path. This case
+            // pins the belt-and-braces arm for a refusal raised anywhere else on the launch path, and what it
+            // asserts is the only thing that matters to the queue: drainReportJobQueue must RETURN, because
+            // the framework acknowledges on a normal return and rethrows are what strand the group.
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class)))
+                    .thenThrow(ValidationException.invalidField("startDate",
+                            "startDate must not be after endDate"));
+
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-2v"), null);
+
+            verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("the refusal arm is typed on the application's own validation failure, not on RuntimeException")
+        void theRefusalArmIsNarrow() throws Exception {
+            // The narrowness IS the contract. A validation refusal is known to be permanent, so consuming it
+            // costs nothing; an arbitrary runtime fault is not - a store briefly unreachable succeeds on the
+            // next attempt - so a catch widened to RuntimeException would silently convert every transient
+            // fault into a discarded submission. Everything not named must still be returned to the queue.
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class)))
+                    .thenThrow(new IllegalArgumentException("a transient fault that is not a refusal"));
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() ->
+                            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-2w"), null));
         }
 
         @Test

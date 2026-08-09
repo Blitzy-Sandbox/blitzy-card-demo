@@ -503,7 +503,7 @@ the host where the results in [Validation gates](#validation-gates) were produce
 - **JDK 25.0.3 (Temurin-25.0.3+9, Eclipse Adoptium) and Apache Maven 3.9.11 are present and
   working.** `./mvnw -B -ntp -Ddependency-check.skip=true clean verify` completes with exit code 0.
 - **Docker Engine 29.7.0 and `docker compose` are present and working.**
-  `docker compose up -d --build --wait` brings all six services up healthy.
+  `docker compose up -d --build --wait` brings all seven services up healthy.
 - The AWS and LocalStack command-line tools are installed, though neither is required for any
   workflow documented here: the compose stack supplies LocalStack, and the application reaches it
   through the AWS SDK rather than through a CLI.
@@ -538,9 +538,34 @@ missing-JDK condition is closed.** Measured by invoking each tool:
 
 The consequence is worth stating plainly: **the containerised build path is a convenience rather than
 a remediation**, and the full gate runs directly on the host with `./mvnw clean verify`. That command
-was executed on the host at this commit and exited **0**, with **14,914 unit test cases** and **906
-integration and end-to-end test cases** passing and **0** `[WARNING]` lines, against the 0.80 coverage
-floor. Those figures are reproducible rather than retrievable: the reports live under `target/`, which
+was executed on the host at this commit and exited **0**, with **15,092 unit test cases** and **919
+integration and end-to-end test cases** passing and **0 compiler warnings**, against the 0.80 coverage
+floor. **That warning figure is stated as compiler warnings deliberately, because the two available
+readings differ and the looser one was published here before 9 August 2026.** `[WARNING]` lines in the
+log are **0** when the vulnerability scan is skipped and **1 or 2** when it is not — measured at both
+values on 9 August 2026, because the blank continuation line the scan plugin emits is always there while
+its no-NVD-API-key advisory appears only when the plugin attempts a feed refresh — and every one of them
+belongs to the scan plugin rather than to the build. Compiler warnings are **0** either way and cannot be otherwise, because
+`maven-compiler-plugin` runs `-Xlint:all -Werror` with `failOnWarning`, so a compiler warning fails the
+build instead of appearing in it. The earlier wording attributed "0 `[WARNING]` lines" to the full
+`clean verify`, which is the one command for which it is not true. The Failsafe total decomposes as **804** integration plus **115** end-to-end, of which the gate
+harness is **64** — and it decomposes exactly, which the figures published here before 9 August 2026
+did not: they were 14,914 and 906, both understated, against a ledger table that itself published
+799 + 107 = 907. The unit figure then moved four times more inside this one checkpoint —
+**14,917 → 14,925 → 14,929 → 14,931 → 14,932 → 15,092** — and every move has the same cause: a claim that had been
+maintained by hand was converted into one a build measures. The eight at 14,925 hold the published
+batch-launch command against the job names the code registers; the four at 14,929 hold this
+documentation set's published structural counts against the files they describe; the two at 14,931
+hold every published page against a Markdown defect that renders as literal asterisks; and the one at
+14,932 holds every pipe table against a missing separator row, which renders a whole table as a wall of
+pipe characters; and the 160 at 15,092 are the field-width unit contract, the two batch span-naming
+suites and the assertions added to suites that already existed. None of these four defect classes is reported by a strict build, because in every case
+the Markdown is valid. Expect this figure to keep moving for that reason, and read it as the count
+belonging to the run named here rather than as a constant. All of them are restamped from one green
+run, and
+[`docs/validation-gates.md`](docs/validation-gates.md) §2.6 carries the reconciliation.
+
+Those figures are reproducible rather than retrievable: the reports live under `target/`, which
 is build output and is not committed, so re-run the command at this commit rather than looking for a
 stored file. `docs/validation-gates.md` is the authoritative ledger for anything gate-shaped.
 
@@ -687,7 +712,7 @@ warning under `-o`. To measure the scan on its own, online:
 ./mvnw -B -ntp org.owasp:dependency-check-maven:12.1.0:check
 ```
 
-**As last measured that scan exits 0**, reporting **166** dependencies, **167** suppressed
+**As last measured that scan exits 0**, reporting **168** dependencies, **166** suppressed
 matches and **one** active finding — `CVE-2026-40977` against `spring-boot-3.5.11.jar` at CVSS
 **6.7**, below the `owasp.failBuildOnCVSS` threshold of 7. `CVE-2026-66299` against
 `tomcat-embed-core-10.1.57.jar` at CVSS v3 **7.5** is at or above that threshold and still has no
@@ -722,7 +747,16 @@ stat -c '%a %n' .env                   # MUST print: 600 .env
 ```
 
 Only once `stat` prints `600` should you fill in the empty values. `.env` is git-ignored and must
-never be committed; `.env.example` is the tracked template and ships every value blank.
+never be committed; `.env.example` is the tracked template and **ships every credential blank**. Two
+values in it are not blank and are not credentials: the LocalStack access key and secret, both the
+literal `test`, which the emulator does not validate and which `AwsConfig` refuses to point at a real
+account. Thirty-one further values are populated and none is a secret either — profile name, ports,
+host names, bucket and queue names, region, time zone, token issuer and expiry, and the **two
+least-privilege database role names** `carddemo_app` and `carddemo_migrator`, which the provisioning
+step creates and which are identifiers rather than credentials; their two passwords ship blank, and
+remain yours to generate. `EnvironmentTemplateContractTest` is the authority for that split - it asserts
+that every name carrying credential material ships empty, with exactly those two documented exemptions -
+so the rule is machine-checked rather than described.
 
 ```shell
 docker compose up --build
@@ -743,9 +777,19 @@ docker compose logs -f app
 ```
 
 Only `health`, `info` and `prometheus` are exposed on Actuator, so any other endpoint answering
-`404` is the intended configuration rather than a fault. The readiness group covers the
-application state plus the database, object storage and queue; the liveness group covers the
-application state alone.
+**`401`** is the intended configuration rather than a fault. `401` rather than `404` because the
+security chain ends in `anyRequest().denyAll()` and refuses the request before routing decides whether
+an endpoint exists — which is the stronger posture, since a `404` would confirm which endpoints are
+absent. Measured on the running stack: `env`, `beans`, `metrics`, `configprops`, `loggers`, `heapdump`,
+`threaddump`, `mappings`, `shutdown` and a nonexistent path all answer `401`, and none has ever answered
+`200`. `prometheus` also answers `401` until the scrape credential is supplied.
+
+Two further details of that posture are worth knowing before you write a probe against it. The
+readiness group covers the application state plus the database, object storage and queue, and the
+liveness group covers the application state alone. And the health matchers are declared for `GET`
+specifically, so **`HEAD /actuator/health` answers `401` while `GET` answers `200`** — the image's
+`HEALTHCHECK` and Prometheus both use `GET`, so the topology is unaffected, but a `HEAD`-based external
+probe would report the application down while it is serving.
 
 **Tear down, including volumes**
 
@@ -764,32 +808,47 @@ exported value is inherited by *every* subsequent child process of that shell �
 `/proc/<pid>/environ` to anything running as your user. So `read -rsp ... && export JWT_SIGNING_KEY`
 does **not** let *"only the JVM"* see the key — the export is precisely what makes it not so.
 
-Prefer a per-command assignment, which the shell places in that one process's environment and
-nowhere else:
-
-```shell
-read -rsp 'JWT_SIGNING_KEY: ' key && printf '\n'
-JWT_SIGNING_KEY="$key" \
-SPRING_PROFILES_ACTIVE=local \
-POSTGRES_HOST=localhost \
-AWS_ENDPOINT_URL=http://localhost:4566 \
-java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar
-unset key
-```
-
-If you need several variables at once, load them **in a subshell** so the parent shell never holds
-them, and load them only from a `.env` you have already verified at mode `0600` above — `set -a`
-exports whatever the file contains, so an untrusted or world-readable file is exactly the wrong
-input for it:
+The shortest recipe that works is the **subshell** form, because this profile needs five secrets and
+three coordinates and a `.env` you have already verified at mode `0600` above holds all of them. Load
+it in a subshell so the parent shell never holds them — `set -a` exports whatever the file contains,
+so an untrusted or world-readable file is exactly the wrong input for it:
 
 ```shell
 ( set -a; . ./.env; set +a; \
   java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar )
 ```
 
-The parentheses are load-bearing: the exports die with the subshell. Where a wrapper genuinely
-forces an export into the current shell, `unset` every name the moment the command returns rather
-than at the end of the session.
+The parentheses are load-bearing: the exports die with the subshell.
+
+If you would rather not load a file at all, use per-command assignments, which the shell places in that
+one process's environment and nowhere else. **All four `CARDDEMO_DB_*` values are required** — they are
+bound bare, with no default and deliberately no fallback to `POSTGRES_USER`, because falling back would
+reconnect the application as the cluster superuser. Omitting them does not degrade to a working default;
+start-up aborts naming the variable:
+
+```shell
+read -rsp 'JWT_SIGNING_KEY: ' key && printf '\n'
+read -rsp 'CARDDEMO_DB_APP_PASSWORD: ' app_pw && printf '\n'
+read -rsp 'CARDDEMO_DB_MIGRATION_PASSWORD: ' mig_pw && printf '\n'
+JWT_SIGNING_KEY="$key" \
+CARDDEMO_DB_APP_USER=carddemo_app \
+CARDDEMO_DB_APP_PASSWORD="$app_pw" \
+CARDDEMO_DB_MIGRATION_USER=carddemo_migrator \
+CARDDEMO_DB_MIGRATION_PASSWORD="$mig_pw" \
+SPRING_PROFILES_ACTIVE=local \
+POSTGRES_HOST=localhost \
+AWS_ENDPOINT_URL=http://localhost:4566 \
+java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar
+unset key app_pw mig_pw
+```
+
+The two role names are the ones `docker compose` provisions and `.env.example` documents; the two
+passwords are whatever you put in `.env` when you created it. Under `docker compose` none of this
+arises: the compose file guards all four with Compose's `${VAR:?}`, so a container is never created
+with one missing.
+
+Where a wrapper genuinely forces an export into the current shell, `unset` every name the moment the
+command returns rather than at the end of the session.
 
 Never pass a secret as a command-line **argument**, which the process table and the shell history
 both record — a leading `NAME=value` assignment is not an argument and is not recorded. Never
@@ -819,7 +878,7 @@ artifacts without overriding the version resolves the wrong one.
 
 ### Runtime topology and tests
 
-`docker compose up` starts six services. Every image is pinned to a tag **and** a digest; a
+`docker compose up` starts seven services. Every image is pinned to a tag **and** a digest; a
 floating or unpinned image reference must never be introduced, because it would make the stack
 depend on when it was started.
 
@@ -829,8 +888,25 @@ depend on when it was started.
 | `postgres` | `postgres:16.14-alpine` | 5432 | The VSAM replacement. Flyway applies `V1`, `V2` and `V3` on start-up |
 | `localstack` | `localstack/localstack:4.14.0` | 4566 | S3, SQS FIFO and SNS. `localstack-init/init-aws.sh` provisions the buckets, the FIFO queue and the topic |
 | `jaeger` | `jaegertracing/jaeger:2.20.0` | 16686 UI, 4318 OTLP/HTTP | Trace collection and search |
-| `prometheus` | `prom/prometheus:v3.13.2` | 9090 | Scrapes `/actuator/prometheus` |
+| `pushgateway` | `prom/pushgateway:v1.11.1` | 9091 | Holds the end-of-run counter totals the batch submission process publishes as it exits |
+| `prometheus` | `prom/prometheus:v3.13.2` | 9090 | Scrapes `/actuator/prometheus` on `app` and `/metrics` on `pushgateway` |
 | `grafana` | `grafana/grafana:12.4.6` | 3000 | Dashboards, provisioned from `observability/grafana/` |
+
+**Why the Pushgateway is part of the topology.** Three of the four named counters —
+`carddemo.batch.records.processed`, `carddemo.batch.records.rejected` and
+`carddemo.transaction.amount.total` — are written by `POSTTRAN` and `COMBTRAN`, and those run in
+the operator submission process documented on `BatchPipelineOrchestrator`: a `java -jar` launch with
+`--spring.main.web-application-type=none`, which ends when its job ends. A scrape cannot reach a
+process that has already exited, and the consequence was measured rather than theorised — a real
+`POSTTRAN` run printed `TRANSACTIONS PROCESSED :000000300` and `TRANSACTIONS REJECTED :000000038`
+while every corresponding series still read `0.0`. The batch process now pushes its final values as
+it exits and Prometheus reads them back, which is the same shape the legacy job had: publish the
+totals once at end of run, to somewhere that keeps them. The push is **off by default** in every
+profile, because the web application is already scraped and a process that both pushed and was
+scraped would be counted twice; it is enabled per launch with
+`--management.prometheus.metrics.export.pushgateway.enabled=true`. A `MeterFilter` in
+`ObservabilityConfig` restricts what a pushing process publishes to the `carddemo.*` namespace, so a
+dead batch JVM's own heap gauge cannot be retained and inflate a live measurement.
 
 Published ports bind to `127.0.0.1` by default rather than to every interface. Parallel checkouts
 that need their own stack should export `CLONE_INDEX` together with the per-port overrides
@@ -886,8 +962,27 @@ plaintext value in the JCL is never persisted.
 | `CARDDEMO-PIPELINE` | The orchestrator: `POSTTRAN` then `INTCALC` then `COMBTRAN`, then `CREASTMT` and `TRANREPT` as parallel branches of a split |
 
 Jobs **do not auto-launch on start-up** — `spring.batch.job.enabled` is `false` deliberately,
-because the framework default would run every job on every boot. Launching is explicit, through
-the orchestrator.
+because the framework default would run every job on every boot. Launching is explicit, and the
+name in the left-hand column above is exactly what an operator submits:
+
+```shell
+java --sun-misc-unsafe-memory-access=allow -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=POSTTRAN
+```
+
+That is the framework's own `JobLauncherApplicationRunner`, switched on for one process and
+matching `spring.batch.job.name` against `Job.getName()` — so the value is **a job name from the
+table above, never a Spring bean name**. `INTCALC` additionally needs `parmDate=2022071800`,
+`TRANREPT` needs `startDate=` and `endDate=`, and `CARDDEMO-PIPELINE` needs **all three** —
+passed as **bare arguments rather than `--` options**, because job parameters are not
+configuration properties.
+No in-process runner exists and none may be added: a bean that launches from inside
+`SpringApplication.run` is a boot-time launch however narrowly it is gated. Every failure mode of
+that command — a bean name, a `--`-prefixed parameter, and a second submission that either
+quietly does nothing or refuses outright depending on whether the job takes parameters — is
+measured in `docs/onboarding-guide.md` under *Running a batch job*.
 
 `POST /api/reports` publishes a report-job message to the FIFO queue, which is the direct
 replacement for `EXEC CICS WRITEQ TD QUEUE('JOBS')` in `CORPT00C`. **The consumer side is wired
@@ -898,15 +993,19 @@ exactly one consumer — `BatchConfig.ReportJobQueueListener.drainReportJobQueue
 `carddemoReportJobsListener`. Re-derive it with `grep -rnE '^\s*@SqsListener' src/main/java`, which
 returns exactly that one line. Anchoring the pattern matters: a plain
 `grep -rn "@SqsListener" src/main/java` also returns the prose in `BatchConfig` and `AwsConfig` that
-documents the ownership boundary, so it reports eight lines for one declaration.
+documents the ownership boundary, so it reports **ten** lines for one declaration. Ten rather than the
+eight an earlier revision of this sentence claimed - the figure is whatever the current commentary
+happens to contain, which is exactly why the anchored form is the one to use and why no count of the
+unanchored form should be relied on.
 
 Three properties of that consumer are worth knowing before you rely on it, and each is stated in
 full under [Troubleshooting and the contribution boundary](#troubleshooting-and-the-contribution-boundary):
 it is **idempotent**, so a redelivery does not run the report twice; it **never returns a message it
-cannot use**, because this topology has no dead-letter queue; and it **logs no part of the payload**.
+cannot use**, because a FIFO group is ordered and a message that can never run would make every later
+submission wait behind it; and it **logs no part of the payload**.
 
 The listener also **withdraws itself rather than competing**, under exactly three conditions:
-`carddemo.aws.sqs.report-queue` is unset, so there is no queue to bind; `carddemo.batch.launch`
+`carddemo.aws.sqs.report-queue` is unset, so there is no queue to bind; `spring.batch.job.name`
 names a job, because a submitted batch process must not become a second reader of the queue that fed
 it; or `carddemo.batch.report-queue-listener.enabled` is `false`, which is what `application-test.yml`
 sets so the integration harness can be the only reader.
@@ -949,25 +1048,39 @@ disagree with itself, and a README contradicting the ledger it summarises is wor
 stays silent. When the two differ, the ledger is right and this table is stale; fix it here rather
 than there.
 
-**All eight gates have been executed**, at the exact-HEAD run the ledger records in its
-§2.6: the commit this change publishes, `./mvnw -B -ntp clean verify` with **no skips**, exit code 0. A gate never
+**All eight gates have been executed**, at the run the ledger records in its §2.6:
+`./mvnw -B -ntp clean verify` with **no skips**, exit code 0. A gate never
 carries a status asserted from intent; each result below traces to a command, a UTC timestamp and an
-exit code recorded there. **One result is deliberately not "Pass", and it is not rounded up:**
+exit code recorded there.
+
+**On which commit that run belongs to, stated precisely rather than as "exact-HEAD".** A published
+gate figure necessarily comes from a run made *before* the commit that publishes it, because a
+document cannot cite the name of the commit containing it. The ledger therefore names the **parent**
+deliberately and designates `gate.harness.commit` in
+`target/gate-verification/gate-verification-evidence.properties` as the **enforceable** identity: the
+harness reads the working tree's own git metadata at the instant it writes that file, so a consumer
+can require it to equal the commit it asked to be tested, and a stale artefact from an earlier commit
+is detectable where a timestamp alone would not reveal it. **This paragraph said "the exact-HEAD run"
+for a commit**, which described the intent rather than the mechanism and invited a reader to compare
+a published parent SHA against `HEAD` and conclude the evidence was misattributed. Read the marker,
+not the prose. **One result is deliberately not "Pass", and it is not rounded up:**
 Gate 3 reports a *measured baseline* rather than a verdict, because the corpus states no objective to
-compare against. Gate 8, which previously reported *Partly*, is now a pass: the six-service compose
-topology was brought up as a unit in this working tree at the commit above, and a second `up`
-converged in one second having recreated nothing.
+compare against. Gate 8, which previously reported *Partly*, is now a pass, and its figures were **re-taken**
+rather than carried forward: the **seven**-service compose topology was brought up as a unit in this working
+tree over a freshly emptied volume set, and a second `up` converged in about a second having recreated
+nothing. The re-take was necessary, not cosmetic - the previous reading named a `--build` command at a commit
+whose image build could not exit 0, and that build stage now exits 0.
 
 | Gate | What it asserts | Evidence artifact | Status |
 | ---: | :-------------- | :---------------- | :----- |
 | 1 | End-to-end boundary parity: the 300-record `app/data/ASCII/dailytran.txt` fixture driven through `POSTTRAN`, compared field by field against the legacy baseline | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — the run matches **two independent expectations** on every field and every byte: the frozen program's own captured output under `src/test/resources/parity/gate1` (38 rejects, 262 postings, 50 account images, 100 category balances, return code 4), derived by compiling `app/cbl/CBTRN02C.cbl` unmodified with GnuCOBOL and executing it against the frozen fixtures; and a source-derived expectation under `src/test/resources/expected/posttran` (300 processed, 262 posted, 38 rejected, return code 4). A captured **z/OS** run remains `Not available` and would corroborate rather than replace either |
-| 2 | Zero-warning build: a clean `verify` with warnings escalated to errors, exiting zero, plus a vulnerability scan reporting nothing at or above CVSS 7 — the range CVSS labels High and Critical | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — exit code **0**, **0** compiler warnings under `-Xlint:all -Werror`, 0 doclint errors, line coverage **0.9164** against the enforced 0.80 floor, and a scan that **ran rather than being skipped**, reporting **0** findings at or above CVSS 7 |
+| 2 | Zero-warning build: a clean `verify` with warnings escalated to errors, exiting zero, plus a vulnerability scan reporting nothing at or above CVSS 7 — the range CVSS labels High and Critical | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — exit code **0**, **0** compiler warnings under `-Xlint:all -Werror`, 0 doclint errors, line coverage **0.9181** against the enforced 0.80 floor, and a scan that **ran rather than being skipped**, reporting **0** findings at or above CVSS 7 |
 | 3 | Performance **baseline**: throughput in records per second, per-endpoint p95 latency, and peak heap | [`docs/validation-gates.md`](docs/validation-gates.md) | **Baselines measured and published** — **1,538** records/second, per-endpoint p95 from **21.5 ms** to **105.1 ms**, peak heap **252 MB** as a JVM-wide envelope. **No threshold is applied to any of them**: the corpus publishes no service-level objective, so none may be invented |
 | 4 | Named fixture validation: all nine ASCII fixtures loaded through `V3__seed_data.sql` and driven through the pipeline, including zoned-decimal overpunch decode assertions and the ten seeded users | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — 300 daily-transaction rows seeded, **50** of them carrying negative overpunch amounts, 50 account rows compared field by field, and all **10** inline user records present as BCrypt digests |
 | 5 | API contract verification: every one of the **17** operations exercised by integration tests against a real application context | [`docs/api-contracts.md`](docs/api-contracts.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **17** mapped operations across the **8** named controllers, exercised over real HTTP against a running container, with role enforcement, statelessness and failure mapping asserted |
-| 6 | Security audit: no floating-point type in any financial field, every password stored only as a BCrypt hash, no literal secret anywhere | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 78 candidates authenticating, **0** committed secrets, and a scan over 166 dependencies with one active finding at CVSS 6.7 and **zero at or above 7** |
-| 7 | Scope coverage: all **28** COBOL programs mapped, with the traceability matrix demonstrating complete paragraph coverage | [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **Assertions hold** — **58** gate assertions, exit code **0**; 528 procedure paragraphs mapped across all **28** programs, with **537** matrix rows each naming a Java target method and an executable test method |
-| 8 | Integration sign-off: the full compose stack up with health reporting `UP`, and all three Flyway migrations applying cleanly | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — the application stood up against a real containerised PostgreSQL 16 and LocalStack with all **three** Flyway migrations applied, **11** domain tables, **3** alternate-key indexes and **8** health contributors reporting; **and** the six-service compose topology was brought up as a unit in this working tree — `docker compose up -d --build --wait`, exit code 0, all six containers `healthy` — with a second `up` converging in one second |
+| 6 | Security audit: no floating-point type in any financial field, every password stored only as a BCrypt hash, no literal secret anywhere | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — **0** floating-point types in any financial field, **10** seeded credentials stored only as BCrypt cost-10 digests with **0** of 83 candidates authenticating, **0** committed secrets, and a scan over 166 dependencies with one active finding at CVSS 6.7 and **zero at or above 7** |
+| 7 | Scope coverage: all **28** COBOL programs mapped, with the traceability matrix demonstrating complete paragraph coverage | [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md), [`docs/validation-gates.md`](docs/validation-gates.md) | **Assertions hold** — **59** gate assertions, exit code **0**; 528 procedure paragraphs mapped across all **28** programs, with **537** matrix rows each naming a Java target method and an executable test method |
+| 8 | Integration sign-off: the full compose stack up with health reporting `UP`, and all three Flyway migrations applying cleanly | [`docs/validation-gates.md`](docs/validation-gates.md) | **Pass** — the application stood up against a real containerised PostgreSQL 16 and LocalStack with all **three** Flyway migrations applied, **11** domain tables, **3** alternate-key indexes and **8** health contributors reporting; **and** the **seven**-service compose topology was brought up as a unit in this working tree — `docker compose up -d --build --wait`, exit code 0, all **seven** containers `healthy` — with a second `up` converging in about a second |
 
 > **Only one gate table is published here, deliberately.** An earlier revision of this file
 > carried a second table immediately below the one above, headed *Status, 6 August 2026*, which
@@ -983,8 +1096,10 @@ converged in one second having recreated nothing.
   both are present and the build passes.
 - **Gates 1, 3, 4, 5 and 8 needed a container runtime, and it was available, so they ran.** All five
   were executed against a real PostgreSQL 16 and LocalStack, and Gate 8 additionally had the
-  six-service compose topology brought up as a unit in this working tree — exit code 0, all six
-  containers healthy — with a second `up` converging in one second and recreating nothing.
+  **seven**-service compose topology brought up as a unit in this working tree - exit code 0, all
+  **seven** containers healthy - with a second `up` converging in about a second and recreating
+  nothing. Those figures were re-taken after the fix that lets the image build stage exit 0; the earlier
+  pair is withdrawn.
 - **What remains open cannot be closed from inside this repository, and is stated rather than
   qualified away.** Gate 1 already diffs against two independent expectations; what it still lacks is
   a capture from the *real runtime* — the frozen COBOL executed on z/OS or a licensed emulator — which
@@ -995,9 +1110,22 @@ converged in one second having recreated nothing.
   reviewer would open does not exist, so no verdict may be entered.
 
 **One prerequisite for these results is worth knowing about.** The image build stage runs the unit
-tier, and unit guards read `DECISION_LOG.md` and `TRACEABILITY_MATRIX.md` — so a `Dockerfile` copying
-a selected file list that omits either breaks `docker compose up --build` while the identical suite
-passes on the host. Both are copied, and the in-container unit tier matches the host exactly.
+tier, so every repository file a unit guard reads has to reach the build context — and a `Dockerfile`
+copying a selected file list that omits one breaks `docker compose up --build` while the identical
+suite passes on the host. That has now happened three times: for `DECISION_LOG.md` and
+`TRACEABILITY_MATRIX.md`, for `docs/` and `observability/`, and most recently for the four root
+convention files `.gitignore`, `.gitattributes`, `.editorconfig` and `.dockerignore`. All of them are
+copied, and the property is no longer left to the next image build to discover:
+`SourceCitationResolutionTest.everyCitedTargetIsCarriedIntoTheImageBuild` reads the citation table
+and the `Dockerfile` together, and fails in milliseconds when a row names a file the build stage
+would not have — including, on the build that introduced it, itself.
+
+The in-container tier is the host tier with two differences, both stated rather than rounded off.
+`.dockerignore` prunes the out-of-scope `app/data/EBCDIC` datasets, so the two gates that resolve
+citations into that subtree pass them over when — and only when — the whole directory is absent; a
+clone and CI resolve them strictly. And the Maven build image ships no `python3`, so the single
+executable proof needing an interpreter is assumed rather than run, which is the one skip the image
+reports. Otherwise the two runs are equal: **14969** tests, **0** failures, **0** errors in each.
 
 <br/>
 
@@ -1116,7 +1244,7 @@ order:
    A running application with no start-up failure means the binding is live. Confirm the queue exists
    with `docker compose exec localstack awslocal sqs list-queues`.
    If there is no listener at all, it withdrew on purpose: `carddemo.aws.sqs.report-queue` is unset,
-   `carddemo.batch.launch` names a job, or `carddemo.batch.report-queue-listener.enabled` is `false`
+   `spring.batch.job.name` names a job, or `carddemo.batch.report-queue-listener.enabled` is `false`
    (which is what `application-test.yml` sets, so the integration harness is the only reader).
 2. **Was the message rejected as out of contract?** Look for a `discarded` record naming a
    `reason`. The submission record admits only the three report periods the legacy screen offers and
@@ -1131,9 +1259,13 @@ order:
    processed to completion* or *still running* is the mechanism working, not a fault.
 
 **Safe failure modes, stated because they are deliberate.** A message that cannot be bound is
-**consumed and discarded, never returned to the queue.** That looks wrong until you notice there is
-no dead-letter target in this topology and a FIFO group is ordered: returning one unusable message
-would stall every later submission in the same group indefinitely. The bytes stay on the queue's own
+**consumed and discarded, never returned to the queue.** That looks wrong until you notice a FIFO
+group is ordered: returning one unusable message makes every later submission in the group wait a
+visibility window per redelivery, for no possibility of a different outcome. `localstack-init/init-aws.sh`
+does provision a dead-letter target with a `RedrivePolicy` of `maxReceiveCount` 4, and it bounds the
+failures this consumer *cannot* classify - a job that fails deterministically is returned to the queue
+here, because a failure might be transient. A body that can never bind is not one of those, so it is
+dropped on the first delivery rather than left to exhaust the count. The bytes stay on the queue's own
 retention rather than in a log stream. Every delivery is named in the log by a short one-way digest
 of its transport identifier rather than by the identifier itself, so records for one delivery are
 still joinable while the publisher-controlled value is never republished. The identifier itself keeps
@@ -1159,7 +1291,20 @@ because it stopped looking is worse than a red one.
 publishes strictly from its `nav` block and `catalog-info.yaml` renders from that same
 configuration, so a document that is not listed in `nav` never appears — and this failure mode
 produces **no error and no output**, which is what makes it easy to miss. Remediation: add the
-document to `mkdocs.yml`'s `nav`, then confirm with a local `mkdocs build`.
+document to `mkdocs.yml`'s `nav`, then confirm with a local build — writing the site **outside**
+the repository, which every documentation build in this project does for the reason below:
+
+```bash
+mkdocs build --strict --site-dir /tmp/carddemo-site
+```
+
+`mkdocs.yml` sets no `site_dir`, so a bare `mkdocs build` writes `./site/` into the working tree.
+That output contains the *rendered* form of `docs/project-guide.md`, whose sign-on example carries
+the seeded plaintext, and Gate 6's credential walk excluded that document only by its exact source
+path — so the very next `./mvnw verify` failed on `site/project-guide/index.html`. Two documented
+commands, each correct on its own, were mutually exclusive in sequence. The walk now also skips the
+gitignored build-output roots, so the collision is closed from both ends; `--site-dir` is the half
+that keeps the working tree clean.
 
 **Medium — LocalStack resources appear to be missing after a restart.** `localstack-init/init-aws.sh`
 is written to be idempotent, so repeated `docker compose up` cycles converge rather than failing on
@@ -1177,11 +1322,15 @@ landed: there, run the `ls -1` check in that section to see which are present, a
 description as the document's contract until the file itself lands. Nothing in the build depends on
 any of them.
 
-**Low — an Actuator endpoint returns `404`.** Only `health`, `info` and `prometheus` are exposed.
+**Low — an Actuator endpoint returns `401`.** Only `health`, `info` and `prometheus` are exposed.
 That is the configured least-privilege surface, not a fault: `env`, `beans`, `configprops`,
 `loggers`, `heapdump` and `threaddump` each disclose configuration or memory contents, and
 `configprops` in particular would echo resolved property values including the signing key.
-Remediation: none is needed. If you genuinely need another endpoint, add it explicitly to
+An earlier revision of this entry said `404`, which was wrong about the status while right about the
+posture: the security chain ends in `anyRequest().denyAll()`, so an unexposed path is refused before
+routing decides whether it exists, and a nonexistent path under `/actuator` answers `401` for the same
+reason. Measured on the running stack rather than inferred. Remediation: none is needed. If you
+genuinely need another endpoint, add it explicitly to
 `management.endpoints.web.exposure.include` and review the disclosure that creates — never widen the
 list to a wildcard.
 

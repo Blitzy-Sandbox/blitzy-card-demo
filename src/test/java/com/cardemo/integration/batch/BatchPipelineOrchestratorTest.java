@@ -1647,14 +1647,30 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
 
         final Map<String, Long> images = objectsUnder(batchOutputBucket, transactionImageKeyPrefix);
         assertThat(images)
-                .as("stage 1 emits one fixed-width image per posted transaction")
+                .as("stage 1 emits its posted transactions as fixed-width images")
                 .isNotEmpty();
+        assertThat(images)
+                .as("and as ONE generation object per run rather than one per record: app/jcl/POSTTRAN.jcl:28 "
+                        + "names a single dataset, so a later (0) reference resolves the whole run. One object "
+                        + "per chunk - which at the posting job's commit interval of one is one per record - "
+                        + "made the greatest key under the prefix the LAST RECORD of the run, and a consumer "
+                        + "read 350 bytes as the entire day's postings")
+                .hasSize(1);
         for (final Map.Entry<String, Long> image : images.entrySet()) {
+            assertThat(image.getValue().longValue() % transactionRecordLength)
+                    .as("the transaction generation %s is a whole number of the 350 byte records of "
+                            + "app/cpy/CVTRA05Y.cpy, neither padded nor truncated - app/jcl/POSTTRAN.jcl "
+                            + "declares RECFM=FB, so a consumer finds boundaries by counting and by nothing "
+                            + "else", image.getKey())
+                    .isZero();
             assertThat(image.getValue())
-                    .as("the per-record transaction image %s is exactly the 350 bytes of "
-                            + "app/cpy/CVTRA05Y.cpy, neither padded nor truncated", image.getKey())
-                    .isEqualTo(Long.valueOf(transactionRecordLength));
+                    .as("and it holds at least one record, because this run posted some", image.getKey())
+                    .isGreaterThanOrEqualTo(Long.valueOf(transactionRecordLength));
         }
+        assertThat(objectsUnder(batchOutputBucket, transactionImageKeyPrefix).keySet())
+                .as("no transient chunk part survives the step: they are removed once the generation is "
+                        + "committed, so nothing under the prefix can be mistaken for the generation")
+                .noneMatch(key -> key.contains("/parts/"));
 
         final Map<String, Long> statements = objectsUnder(statementsBucket, "");
         assertThat(statements)
