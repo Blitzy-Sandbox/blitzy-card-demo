@@ -495,15 +495,17 @@
     <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
     <!--
       The HTTP transport dependency-check-maven 12.1.0 uses to refresh the
-      advisory feed. Overridden at plugin scope because 12.1.0 resolves
-      httpclient5 5.4.2, which carries CVE-2025-27820 (CVSS 8.1) in hostname and
-      domain verification, fixed in 5.4.3. These are the exact versions
-      spring-boot-maven-plugin already resolves in this same build, so the trio
-      is proven compatible here and needs no new artefact downloaded. See the
-      full justification at the plugin declaration itself.
+      advisory feed. BOTH halves are overridden at plugin scope, and BOTH for
+      security rather than for tidiness. 12.1.0 resolves httpclient5 5.4.2, which
+      carries CVE-2025-27820 (CVSS 8.1) in hostname and domain verification,
+      fixed in 5.4.3. It resolves httpcore5 and httpcore5-h2 below 5.4.3, which
+      carry CVE-2026-54399 and CVE-2026-54428 (CVSS 7.5 each), fixed in 5.4.3.
+      An earlier revision of this comment described the httpcore5 pair as
+      declared "for consistency"; that reading is withdrawn. See the full
+      justification at the plugin declaration itself.
     -->
     <dependency-check.httpclient5.version>5.5.2</dependency-check.httpclient5.version>
-    <dependency-check.httpcore5.version>5.3.6</dependency-check.httpcore5.version>
+    <dependency-check.httpcore5.version>5.4.3</dependency-check.httpcore5.version>
     <spring-boot-maven-plugin.version>3.5.11</spring-boot-maven-plugin.version>
     <!--
       maven-site-plugin is the one lifecycle plugin that Maven 3.9.11 binds
@@ -682,6 +684,75 @@
     -->
     <micrometer.version>1.15.12</micrometer.version>
     <micrometer-tracing.version>1.5.12</micrometer-tracing.version>
+
+    <!--
+      LOGBACK, RAISED FOR ADVISORIES THE CONFIGURED SCAN DOES NOT REPORT. This is
+      a THIRD category and is deliberately not folded into either group above.
+      Every override there closes a finding the Dependency-Check run reports,
+      which is what makes that scan the standing check that the pin is still
+      needed. This one does not: measured 9 August 2026, the report at
+      target/dependency-check/dependency-check-report.json scanned 168
+      dependencies and raised NOTHING at all - neither active nor suppressed -
+      against logback-core-1.5.32.jar. The scan therefore cannot be cited as its
+      justification, so the evidence is recorded here instead, and the override
+      is hardening rather than the remedy for a finding a gate is failing on.
+
+      WHAT IS OPEN AGAINST 1.5.32, each with its source named rather than pooled:
+
+        CVE-2026-9828   OSV GHSA-p47f-322f-whfh. Deserialization of untrusted
+                        data in logback-core. FIXED IN 1.5.33.
+        CVE-2026-10532  OSV GHSA-jhq6-gfmj-v8fx. HardenedObjectInputStream
+                        accepted Proxy classes during deserialization, bypassing
+                        its own whitelist. FIXED IN 1.5.34.
+        CVE-2026-13006  CVSS 7.0. Arbitrary code execution through the
+                        Janino-evaluated condition attribute of <if> elements:
+                        the denylist blocked the literal new operator only, and
+                        was evadable both through references it did not cover and
+                        through Unicode escapes that reconstruct the blocked
+                        operator. NOT CARRIED BY OSV FOR THIS COORDINATE -
+                        queried 9 August 2026, the identifier itself returns 404
+                        and logback-core 1.5.32, 1.5.36, 1.5.37 and 1.5.38 each
+                        return zero vulnerabilities - so it is sourced from the
+                        upstream release notes and the CVE record, which name
+                        1.5.37 as the DEFINITIVE fix after earlier releases
+                        narrowed the denylist without closing it.
+
+      WHY 1.5.38 RATHER THAN 1.5.37. It is the highest release of the 1.5 line
+      the parent already selected, measured 9 August 2026 from Central's
+      maven-metadata.xml, and it REMOVES Janino-based conditional expressions
+      outright instead of filtering inside the evaluator the two arbitrary-code
+      advisories live in. An absent feature is a stronger remedy than a narrower
+      denylist, and this project uses no conditional configuration, so the
+      removal costs it nothing. NOT 1.6.x: two releases of that line exist, but
+      it is a fresh minor the parent has never selected, and this mechanism only
+      re-points a version spring-boot-dependencies already manages.
+
+      EXPLOITABILITY OF THE ARBITRARY-CODE PATH IS ABSENT HERE, stated as such
+      rather than overclaimed. Measured: org.codehaus.janino and
+      org.codehaus.commons-compiler appear nowhere in the resolved dependency
+      graph, so the evaluator CVE-2026-13006 requires is not on the classpath;
+      and src/main/resources/logback-spring.xml contains zero <if elements and
+      zero condition= attributes, so the feature is unused as well as
+      unavailable. The advisory's other precondition, write access to the logging
+      configuration, is additionally denied by the delivered image, which runs
+      with a read-only root filesystem. The two deserialization records carry no
+      such argument and are closed outright by the move.
+
+      COMPATIBILITY, MEASURED RATHER THAN ASSUMED. logback-parent 1.5.38 declares
+      slf4j 2.0.17, which is exactly the version this build already resolves, so
+      nothing moves alongside it; and net.logstash.logback:logstash-logback-encoder
+      8.0 - the JSON encoder logback-spring.xml is built on - declares
+      logback-classic and logback-core 1.5.6 as floors, far below this value.
+
+      WHY THIS IS NOT A FORBIDDEN VERSION ADVANCE. The same reasoning as the block
+      above: AAP section 0.6.1.2 records logback-classic as a PARENT MANAGED
+      resolved version rather than a pinned coordinate, spring-boot-starter-parent
+      stays at the pinned 3.5.11, the value here is exact with no range, and the
+      property is one the parent itself declares. No suppression entry exists or
+      is added for any of the three records, so the standing invariant that a
+      forward pin and a suppression are never both in place for one record holds.
+    -->
+    <logback.version>1.5.38</logback.version>
 
     <!--
       RESIDUAL VULNERABILITIES - four CVEs are reported against this pinned stack
@@ -1908,10 +1979,93 @@
           collapses the two httpclient5 versions previously present in the plugin
           graph into ONE, which reduces the surface instead of merely patching it.
 
-          The httpcore5 pair is declared alongside for consistency, NOT because
-          either version is vulnerable - 5.3.3 and 5.3.6 both report clean on OSV.
-          It is declared so the transport trio is the exact set that is known to
-          work together, rather than whichever combination nearest-wins produces.
+          THE httpcore5 PAIR IS PINNED FOR ITS OWN TWO ADVISORIES, at 5.4.3.
+          AN EARLIER REVISION OF THIS BLOCK READ "declared alongside for
+          consistency, NOT because either version is vulnerable - 5.3.3 and 5.3.6
+          both report clean on OSV", AND THAT READING IS WITHDRAWN. It was a
+          single-source claim, and the source that carried the attribution was
+          never consulted:
+
+            CVE-2026-54399  CVSS 7.5, org.apache.httpcomponents.core5:httpcore5.
+                            The HTTP/1.1 message parser bounded neither the
+                            number of headers nor their length, so a peer could
+                            exhaust memory. FIXED IN 5.4.3, which introduces the
+                            maxHeaderCount and maxLineLength bounds.
+            CVE-2026-54428  CVSS 7.5, httpcore5-h2. The same class of unbounded
+                            growth in the HPACK decoder, on the HTTP/2 path.
+                            FIXED IN 5.4.3.
+
+          PROVENANCE, AND WHY THE TWO SOURCES DISAGREE. This repository's own
+          scanner reports the attribution: in
+          target/dependency-check/dependency-check-report.json, generated
+          2026-08-09T10:45:58Z over 168 dependencies, BOTH records appear against
+          "httpcore5:5.3.6" - carried there as suppressed rows because the
+          occurrence the scan can see is a copy of httpcore5 5.3.6 SHADED inside
+          the test-scope com.github.docker-java:docker-java-transport-zerodep, a
+          separate artefact dispositioned in owasp-suppressions.xml on the ground
+          that a test-scope transport is not the delivered one. OSV, queried
+          9 August 2026, still returns ZERO for httpcore5 and httpcore5-h2 at both
+          5.3.6 and 5.4.3, so the feed the withdrawn sentence relied on has not
+          yet attributed these identifiers to the coordinate. Two feeds, one
+          attribution: the pin follows the feed that HAS it, because a scanner
+          whose own database reports a record against a version it is itself
+          running on is the least defensible place to leave that version.
+
+          WHY THIS MATTERS AT PLUGIN SCOPE AT ALL. It is the same argument as for
+          httpclient5 above: httpcore5 is the parser underneath the transport this
+          plugin refreshes the advisory feed over, so it is the component every
+          other dependency verdict in this build rests on. Unbounded growth in
+          that parser is reachable from whatever the plugin is induced to talk to.
+          The exposure is low - the peer is the NVD service over TLS - which is
+          why this is corrected quietly rather than escalated, and it is corrected
+          rather than disclosed because a one-property change closes it.
+
+          A LATENT GATE FAILURE IS CLOSED WITH IT. The plugin-graph scan fails on
+          any High or Critical without a written, expiring disposition, and no
+          disposition covers these two records on the plugin realm; the shaded
+          test-scope entry in owasp-suppressions.xml binds a different artefact
+          and cannot absorb them. The scan is green today only because OSV lacks
+          the attribution, so it would have turned red on a feed update rather
+          than on a change to this repository.
+
+          COMPATIBILITY, STATED HONESTLY BECAUSE IT CHANGED. With httpcore5 at
+          5.3.6 this trio was exactly what spring-boot-maven-plugin resolves in
+          this same build, and that "proven here" argument no longer holds: at
+          5.4.3 the pairing is httpclient5 5.5.2 with the httpcore5 5.4 line,
+          which upstream ships as the pairing for httpclient5 5.6.x rather than
+          for 5.5.2. Two things make it sound, and neither is an assumption.
+          First, 5.4 is a minor advance within one API family, and upstream's own
+          move of httpclient5 onto the 5.4 core line is evidence of the forward
+          direction of that pairing. Second, and decisively, IT IS MEASURED, not
+          assumed: with this trio in the realm the online scan was executed with no
+          skip on 9 August 2026 and refreshed the feed over that transport - the
+          log reads "NVD API has 25 records in this update" then "Downloaded 25/25
+          (100%)" then "Check for updates complete (7482 ms)" - and then completed
+          analysis of 168 dependencies with ONE active finding at CVSS 6.7,
+          BUILD SUCCESS, which is the same result the previous trio produced. A
+          transport that could not talk to the feed would have failed the update
+          rather than returning a clean report, which is the failure mode this
+          whole block exists to protect. Raising
+          httpclient5 to 5.6.x to obtain an upstream-shipped pairing was
+          considered and rejected - it introduces a new minor line inside a pinned
+          plugin's realm, is not needed to close either record, and is not already
+          in the local repository, so it would cost an offline build a download it
+          does not need today.
+
+          ONE COORDINATE, THREE OCCURRENCES, NEVER CONFLATED. The httpcore5 pinned
+          here is the one inside THIS plugin's realm. The httpcore5 5.3.6 named in
+          owasp-suppressions.xml is a DIFFERENT occurrence - shaded inside a
+          test-scope artefact this build does not ship - and that entry stays
+          exactly as it is, because a plugin-realm pin cannot remediate a version
+          relocated into someone else's jar; that file now carries the pointer back
+          to here so neither reads as the only disposition. The third occurrence is
+          httpcore5 5.3.6 in the realm of spring-boot-maven-plugin, which is left
+          alone deliberately: that plugin runs only repackage in this build and
+          opens no connection, so its transport is never exercised. All three are
+          enumerated in .github/plugin-graph/dispositions.json. The standing
+          invariant that a forward pin and a suppression are never both in place for
+          one record is therefore not breached: these are three artefacts, and
+          remediability is what separates them.
 
           THE AAP PIN IS PRESERVED. AAP section 0.6.1.1 pins
           org.owasp:dependency-check-maven to 12.1.0 and section 0.8.4 requires

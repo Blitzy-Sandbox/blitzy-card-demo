@@ -254,6 +254,60 @@ class ProblemJsonErrorBoundaryTest {
         }
 
         /**
+         * The boundary-header finding on the container path.
+         *
+         * <p>This valve sits outside the servlet filter stack, so the security chain's
+         * {@code HeaderWriterFilter} never runs for a request the connector refused - a percent-encoded NUL
+         * is rejected while the request line is still being parsed, and {@code TRACE} is refused by the
+         * connector itself. Measured against the running application, both came back with
+         * {@code Content-Type} and nothing else while every response produced from inside the chain carried
+         * the full hardening set. The values asserted here are the ones measured on that chain's 401.
+         *
+         * <p>{@code Strict-Transport-Security} is deliberately not asserted present: it is in the writer set
+         * and its default matcher requires a secure request, and this container serves plaintext. Its
+         * absence here is therefore correct, and its presence under TLS is asserted on the firewall path in
+         * {@code RequestBoundaryHardeningTest} where a request's transport can be set directly.
+         *
+         * @param requestLine the raw request line that provokes a container-level refusal
+         * @throws IOException if the exchange fails
+         */
+        @ParameterizedTest(name = "a container refusal of [{0}] carries the hardening headers")
+        @ValueSource(strings = {
+            "TRACE /api/accounts HTTP/1.1",
+            "GET /api/accounts/000000000%00 HTTP/1.1",
+            "GET /api/cards/..%2f..%2fetc%2fpasswd HTTP/1.1"})
+        @DisplayName("a container-level refusal carries the same hardening headers as the application's own")
+        void aContainerLevelRefusalCarriesTheHardeningHeaders(final String requestLine) throws IOException {
+            final String response = exchange(requestLine);
+            final String lowered = response.toLowerCase(Locale.ROOT);
+
+            assertThat(response).startsWith("HTTP/1.1 4");
+            assertThat(lowered)
+                    .as("without it a browser may sniff the refusal body as something other than the "
+                            + "problem+json it declares")
+                    .contains("x-content-type-options: nosniff");
+            assertThat(lowered)
+                    .as("the framework's own default value, and part of the set measured on every response "
+                            + "the chain produces")
+                    .contains("x-xss-protection: 0");
+            assertThat(lowered)
+                    .as("a refusal carrying a correlation identifier must not be cached and handed to a "
+                            + "second caller as though it were their own")
+                    .contains("cache-control: no-cache, no-store, max-age=0, must-revalidate")
+                    .contains("pragma: no-cache")
+                    .contains("expires: 0");
+            assertThat(lowered)
+                    .as("the chain writes DENY, so this boundary writes DENY; absence would be a weaker "
+                            + "policy reachable by malforming a request target")
+                    .contains("x-frame-options: deny");
+            assertThat(lowered)
+                    .as("and the refusal itself is unchanged - same media type, same envelope")
+                    .contains("content-type: " + PROBLEM_JSON);
+            assertThat(response).contains("\"type\":\"about:blank\"", "\"errorCode\":\"CARDDEMO-");
+            assertDisclosesNothing(response);
+        }
+
+        /**
          * The one detail of the envelope that is not a constant: a pre-servlet refusal has no correlation
          * identifier, because the filter that mints one never ran. The valve mints one rather than publishing
          * nothing, so the identifier in the client's hands resolves to a log entry - and it must never be the

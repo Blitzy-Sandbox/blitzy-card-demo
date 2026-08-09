@@ -51,10 +51,61 @@
         "org.owasp:dependency-check-maven:12.1.0 because that goal reads the",
         "plugin's own descriptor and is blind to project-level plugin",
         "<dependencies> overrides. The plugin's REAL class realm, read from a",
-        "Maven -X run, loads httpclient5:jar:5.5.2 and httpcore5:jar:5.3.6, and",
-        "5.4.2 appears nowhere in it. This entry exists so that the scan measures",
-        "what executes; the scanner verifies the claim against the realm listing",
-        "and FAILS if the override is ever removed from pom.xml."
+        "Maven -X run on 9 August 2026, loads httpclient5:jar:5.5.2,",
+        "httpcore5:jar:5.4.3 and httpcore5-h2:jar:5.4.3, and 5.4.2 appears",
+        "nowhere in it. An earlier revision of this entry read httpcore5:jar:5.3.6",
+        "and is withdrawn: the pair was raised to 5.4.3 for two advisories of its",
+        "own, recorded in the two entries below. This entry exists so that the",
+        "scan measures what executes; the scanner verifies the claim against the",
+        "realm listing and FAILS if the override is ever removed from pom.xml."
+      ]
+    },
+    {
+      "group": "org.apache.httpcomponents.core5",
+      "artifact": "httpcore5",
+      "declaredVersion": "5.3.3",
+      "effectiveVersion": "5.4.3",
+      "declaredIn": "pom.xml (dependency-check-maven plugin <dependencies>)",
+      "advisoryClosed": "CVE-2026-54399, CVSS 7.5, unbounded header count and length in the HTTP/1.1 message parser, fixed in 5.4.3",
+      "evidence": [
+        "dependency:resolve-plugins reports httpcore5:5.3.3 for",
+        "org.owasp:dependency-check-maven:12.1.0, which is the version the",
+        "plugin's own descriptor carries; the goal cannot see a project-level",
+        "plugin <dependencies> override. The plugin's REAL class realm, read from",
+        "a Maven -X run on 9 August 2026, loads httpcore5:jar:5.4.3 and neither",
+        "5.3.3 nor 5.3.6 appears in it. Provenance of the advisory is split and",
+        "is stated rather than smoothed over: this repository's own scan report,",
+        "target/dependency-check/dependency-check-report.json of",
+        "2026-08-09T10:45:58Z, attributes the record to httpcore5 5.3.6, while OSV",
+        "queried the same day returns zero for 5.3.6 and for 5.4.3 alike. The",
+        "override therefore closes a record this scanner would begin reporting on",
+        "a feed update rather than on any change to this repository - which is why",
+        "it is a pin and not a disposition.",
+        "A SEPARATE occurrence of httpcore5 5.3.6 remains in the declared graph",
+        "through org.springframework.boot:spring-boot-maven-plugin:3.5.11, whose",
+        "realm is NOT overridden. It is left alone deliberately: that plugin runs",
+        "only repackage in this build and opens no connection, so its transport is",
+        "never exercised, and overriding a second pinned plugin's realm to close a",
+        "record no feed currently reports would be change without evidence. No",
+        "disposition is written for it either, because a disposition that matches",
+        "nothing fails this gate."
+      ]
+    },
+    {
+      "group": "org.apache.httpcomponents.core5",
+      "artifact": "httpcore5-h2",
+      "declaredVersion": "5.3.3",
+      "effectiveVersion": "5.4.3",
+      "declaredIn": "pom.xml (dependency-check-maven plugin <dependencies>)",
+      "advisoryClosed": "CVE-2026-54428, CVSS 7.5, unbounded growth in the HPACK decoder on the HTTP/2 path, fixed in 5.4.3",
+      "evidence": [
+        "The HTTP/2 half of the same transport, moved with httpcore5 by one",
+        "property so the pair can never split. dependency:resolve-plugins reports",
+        "httpcore5-h2:5.3.3 from the plugin descriptor; the Maven -X realm listing",
+        "of 9 August 2026 loads httpcore5-h2:jar:5.4.3 and no earlier version.",
+        "Same split provenance as its sibling above - carried by this",
+        "repository's own scan report against 5.3.6, absent from OSV at every",
+        "version queried - and same reason for a pin rather than a disposition."
       ]
     }
   ],

@@ -94,6 +94,12 @@ import org.springframework.security.config.annotation.web.configuration.WebSecur
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.firewall.RequestRejectedException;
 import org.springframework.security.web.firewall.RequestRejectedHandler;
+import org.springframework.security.web.header.HeaderWriter;
+import org.springframework.security.web.header.writers.CacheControlHeadersWriter;
+import org.springframework.security.web.header.writers.HstsHeaderWriter;
+import org.springframework.security.web.header.writers.XContentTypeOptionsHeaderWriter;
+import org.springframework.security.web.header.writers.XXssProtectionHeaderWriter;
+import org.springframework.security.web.header.writers.frameoptions.XFrameOptionsHeaderWriter;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -1901,6 +1907,77 @@ public class WebConfig implements WebMvcConfigurer {
     }
 
     /**
+     * The hardening headers a refusal written <em>outside</em> the security filter chain must still carry.
+     *
+     * <p><strong>Why this exists at all.</strong> Every response the application produces from inside the
+     * chain - 200, 401, 403, 405, 413, 415 and every envelope the two resolvers in this class render -
+     * carries {@code X-Content-Type-Options}, {@code X-Frame-Options}, {@code X-XSS-Protection} and the
+     * no-store cache triple, because {@code SecurityConfig}'s {@code HeaderWriterFilter} writes them and is
+     * configured to write them eagerly. Two refusal paths run <em>before</em> that filter ever executes and
+     * so inherited none of them: a {@code StrictHttpFirewall} rejection is raised inside
+     * {@code FilterChainProxy} before the chain's filters run, and a connector-level refusal is answered by
+     * a Tomcat valve that sits outside the servlet filter stack entirely. Both were measured answering with
+     * only {@code Content-Type} and, on the firewall path, a correlation identifier. Closing that is the
+     * remediation of the boundary-header finding, and it is defence in depth rather than a fix for an
+     * exploitable defect: the bodies these paths emit are constants of this class with no markup and no
+     * caller-supplied text, so nothing here was sniffable, framable or cacheable in a way that leaked. The
+     * point is that a caller cannot tell which boundary refused it from the headers it gets back, and that a
+     * proxy or browser applies one policy to every response rather than one policy with two holes in it.
+     *
+     * <p><strong>Why writers and not literals.</strong> These are Spring Security's own
+     * {@link HeaderWriter} implementations - the same classes {@code HeaderWriterFilter} is configured with
+     * by {@code HeadersConfigurer}'s defaults - instantiated with their default values. Copying the six
+     * header strings into this class would have created a second source of truth that drifts silently the
+     * first time the chain's configuration changes; reusing the writers means the two sets cannot disagree
+     * by construction - including where a writer's behaviour is not the obvious one.
+     *
+     * <p><strong>How they treat a header that is already present, measured rather than assumed.</strong>
+     * Four of the five leave it exactly as found: {@link XContentTypeOptionsHeaderWriter} (through
+     * {@code StaticHeadersWriter}, which tests {@code containsHeader} first),
+     * {@link XXssProtectionHeaderWriter}, {@link CacheControlHeadersWriter} - which skips all three of its
+     * headers when any one of them is present - and {@link HstsHeaderWriter}.
+     * {@link XFrameOptionsHeaderWriter} is the exception and <em>replaces</em> the value with {@code DENY},
+     * measured by driving all five over a response with each header pre-set. That is deliberately not
+     * worked around here: it is precisely what {@code HeaderWriterFilter} does to a response inside the
+     * chain, so reproducing it is what keeps the two boundaries identical, and {@code DENY} is the stricter
+     * of the two framing policies rather than a relaxation. It replaces rather than appends, so no response
+     * ever carries two conflicting values.
+     *
+     * <p>{@link HstsHeaderWriter} is included for the same reason and writes nothing on this topology: its
+     * default request matcher requires a secure request, and this application terminates no TLS - the
+     * limitation {@code SecurityConfig} discloses under "No transport security here". Including it is what
+     * keeps the two sets identical under a transport that does carry TLS, rather than reopening the same
+     * inconsistency one layer up.
+     *
+     * <p>Immutable and stateless: each writer holds only its own configuration, so the single shared list is
+     * safe for concurrent dispatch from both boundaries.
+     */
+    private static final List<HeaderWriter> BOUNDARY_REFUSAL_HEADER_WRITERS = List.of(
+            new XContentTypeOptionsHeaderWriter(),
+            new XXssProtectionHeaderWriter(),
+            new CacheControlHeadersWriter(),
+            new HstsHeaderWriter(),
+            new XFrameOptionsHeaderWriter());
+
+    /**
+     * Applies {@link #BOUNDARY_REFUSAL_HEADER_WRITERS} to a response that is about to carry a refusal.
+     *
+     * <p>Side effects: sets the hardening headers named above on the response, leaving any that are already
+     * present untouched. Must be called before the response is committed; both callers guard on that.
+     *
+     * @param request  the refused request, which the writers read to decide whether their header applies;
+     *                 never null
+     * @param response the response the refusal will be written onto; never null
+     */
+    private static void writeBoundaryRefusalHeaders(final HttpServletRequest request,
+            final HttpServletResponse response) {
+
+        for (final HeaderWriter writer : BOUNDARY_REFUSAL_HEADER_WRITERS) {
+            writer.writeHeaders(request, response);
+        }
+    }
+
+    /**
      * Writes a refusal envelope onto a raw servlet response, or records why it could not be written.
      *
      * <p>Both {@link HandlerExceptionResolver} implementations in this class render the same bytes in the
@@ -2404,7 +2481,8 @@ public class WebConfig implements WebMvcConfigurer {
         /**
          * Writes the refusal envelope for a container-level error, or leaves the response alone.
          *
-         * <p>Side effects: sets the {@code Content-Type} and writes the body when all three guards pass.
+         * <p>Side effects: sets the hardening headers of {@link #BOUNDARY_REFUSAL_HEADER_WRITERS} and the
+         * {@code Content-Type}, and writes the body, when all three guards pass.
          *
          * @param request   the connector request; never null
          * @param response  the connector response; never null
@@ -2446,6 +2524,15 @@ public class WebConfig implements WebMvcConfigurer {
             }
 
             try {
+                // This valve sits outside the servlet filter stack, so the chain's HeaderWriterFilter never
+                // runs for a request the connector refused - a percent-encoded NUL in the request target is
+                // rejected while the request line is still being parsed, and TRACE is refused by the
+                // connector itself. The hardening headers are written here for the same reason they are
+                // written on the firewall path, from the same writers. Inside the try because a container
+                // that cannot accept a header cannot accept a body either, and that condition is already
+                // reported below rather than swallowed.
+                writeBoundaryRefusalHeaders(request, response);
+
                 // Character encoding is left alone for the reason given in the resolver: the document is
                 // ASCII by construction, so every encoding the container can choose produces identical
                 // bytes, and declaring a charset parameter would make this refusal's Content-Type differ
@@ -2494,9 +2581,10 @@ public class WebConfig implements WebMvcConfigurer {
         /**
          * Writes the refusal envelope for a firewall rejection.
          *
-         * <p>Side effects: sets the status, the {@code Content-Type} and the body, then flushes. Any
-         * {@code Allow} header an earlier layer added is left in place, so a rejected method keeps the one
-         * piece of advice that makes the refusal actionable.
+         * <p>Side effects: sets the hardening headers of {@link #BOUNDARY_REFUSAL_HEADER_WRITERS}, then the
+         * status, the {@code Content-Type} and the body, then flushes. Any {@code Allow} header an earlier
+         * layer added is left in place, so a rejected method keeps the one piece of advice that makes the
+         * refusal actionable, and any hardening header already present is left as it was found.
          *
          * @param request   the rejected request; never null
          * @param response  the response to render onto; never null
@@ -2532,6 +2620,14 @@ public class WebConfig implements WebMvcConfigurer {
             final byte[] body = renderProblemEnvelope(HttpStatus.BAD_REQUEST.value(), TITLE_REQUEST_REJECTED,
                     DETAIL_REQUEST_REJECTED, ERROR_CODE_REQUEST_REJECTED, correlationId)
                     .getBytes(StandardCharsets.UTF_8);
+
+            // The firewall rejects inside FilterChainProxy, BEFORE the chain's HeaderWriterFilter runs, so
+            // this refusal inherits none of the hardening headers every other response carries - not even
+            // with shouldWriteHeadersEagerly(true), which advances the write to the start of the chain and
+            // still never reaches a request the chain declined to enter. They are written here instead, from
+            // the same writers that filter uses. See BOUNDARY_REFUSAL_HEADER_WRITERS for why the writers are
+            // reused rather than the strings copied.
+            writeBoundaryRefusalHeaders(request, response);
 
             response.setStatus(HttpStatus.BAD_REQUEST.value());
             response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);

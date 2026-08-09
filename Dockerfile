@@ -714,12 +714,31 @@ RUN set -eu; \
 # * platforms. Verified 2026-08-02 with `docker buildx imagetools
 # * inspect`.
 # *
+# * DIGEST REFRESHED 2026-08-09, AND WHAT THE REFRESH DID IS STATED
+# * PRECISELY BECAUSE IT IS EASY TO OVERSTATE. The pin below had gone
+# * stale in the one way a digest pin always can: it stayed immutable
+# * while the tag was re-pointed. The previous digest,
+# * sha256:2f1da100788559b397bcf48c736169ea5b070bde84e55f203bbee8e83d87a175,
+# * was built 2026-07-02; the same tag then resolved to a 2026-08-04
+# * rebuild, a 33-day gap that nothing in a build reports, because a
+# * pinned digest cannot tell you it is no longer what its tag means.
+# * The refresh RE-ALIGNS THE PIN WITH THE TAG. It closes no advisory,
+# * and the two images were compared rather than assumed: both are
+# * Ubuntu 24.04.4, both report Temurin-25.0.3+9, and dpkg-query returns
+# * 108 packages with IDENTICAL versions in both - an empty diff - while
+# * four of five layers differ, so the newer image is a rebuild and not
+# * a package update. The JDK stage's pin was checked in the same pass
+# * and is already the 2026-08-04 image, so it needed no change. The
+# * standing obligation to re-measure every digest here against its tag,
+# * with a date, is recorded as the digest-currency field of DL-RR-12 in
+# * DECISION_LOG.md alongside R-10 in docs/validation-gates.md.
+# *
 # * Nothing is installed here. Every tool this stage uses - bash for the
 # * health probe, groupadd and useradd for the fixed identity - is
 # * already in the base, so there is no apt-get against a floating
 # * archive and no network access at runtime image assembly time.
 # ******************************************************************
-FROM eclipse-temurin:25.0.3_9-jre-noble@sha256:2f1da100788559b397bcf48c736169ea5b070bde84e55f203bbee8e83d87a175 AS runtime
+FROM eclipse-temurin:25.0.3_9-jre-noble@sha256:fbcf915c585659b30eb766ada4d6d7cfc9ec1040bf521e95bf61b10a25af73db AS runtime
 
 # OCI annotations. Project identity, licence and provenance only.
 #
@@ -748,7 +767,7 @@ LABEL org.opencontainers.image.title="CardDemo" \
       org.opencontainers.image.source="https://github.com/Blitzy-Sandbox/blitzy-card-demo" \
       org.opencontainers.image.vendor="Amazon.com, Inc. or its affiliates" \
       org.opencontainers.image.base.name="docker.io/library/eclipse-temurin:25.0.3_9-jre-noble" \
-      org.opencontainers.image.base.digest="sha256:2f1da100788559b397bcf48c736169ea5b070bde84e55f203bbee8e83d87a175"
+      org.opencontainers.image.base.digest="sha256:fbcf915c585659b30eb766ada4d6d7cfc9ec1040bf521e95bf61b10a25af73db"
 
 # Assert the runtime, rather than trusting the tag. The digest above
 # fixes the content, but a rebase or a manual FROM edit must not be able

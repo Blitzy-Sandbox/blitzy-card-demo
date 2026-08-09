@@ -713,6 +713,23 @@
                              state at all: the legacy pseudo-conversational
                              COMMAREA collapses into JWT claims and request
                              parameters, so there is no session to persist.
+                             THIS IDENTIFIER IS ALSO CARRIED, UNSUPPRESSED, BY A
+                             SECOND GATE, and the two dispositions are opposite
+                             only until the gate each governs is named. The entry
+                             here binds the DEPENDENCY scan, which offers a
+                             suppression path and to which the Tier 3 argument
+                             above applies. The container IMAGE scan reports the
+                             same record against the delivered jar and is defined
+                             to fail on High and Critical with NO suppression path,
+                             so there it is neither suppressed nor suppressible:
+                             DL-RR-11 in DECISION_LOG.md rejects suppression as its
+                             alternative (c) and lets the gate fail by design until
+                             the pinned parent moves, and H-7 in
+                             docs/validation-gates.md records the same. Neither
+                             disposition is the only one, and the difference is the
+                             gate rather than the evidence - which is why this
+                             cross-reference exists rather than one of the two
+                             being changed to match the other.
         CVE-2026-40975  7.5  values produced by ${random.value} are unfit for use
                              as secrets. No property placeholder of that form
                              exists anywhere in this repository. The one secret in
@@ -770,9 +787,22 @@
       relocated inside the zerodep jar and is therefore not reachable by Maven
       dependency management, and the parent artifact arrives through
       Testcontainers 2.0.3, which the requirements pin exactly.
-      RESIDUAL RISK, DISCLOSED: fixed in Apache HttpComponents Core later than
-      5.4.2. Remediation is a future Testcontainers release that shades a newer
-      core.
+      RESIDUAL RISK, DISCLOSED: fixed in Apache HttpComponents Core 5.4.3.
+      Remediation is a future Testcontainers release that shades a newer core.
+      A DIFFERENT OCCURRENCE OF THE SAME TWO RECORDS IS PINNED, NOT SUPPRESSED,
+      AND THE TWO MUST NOT BE READ AS ONE. httpcore5 also sits inside the class
+      realm of the dependency-check plugin itself, where it IS reachable by Maven
+      dependency management, so pom.xml pins it and httpcore5-h2 forward to 5.4.3
+      through dependency-check.httpcore5.version rather than suppressing them
+      there; the realm listing and the advisory evidence are recorded in
+      .github/plugin-graph/dispositions.json under overrides. This entry is
+      therefore not an exception to the standing invariant that a forward pin and
+      a suppression are never both in place for one record - there are TWO
+      artifacts here, and remediability is exactly what separates them: a version
+      relocated into someone else's jar cannot be pinned, and a version a plugin
+      loads from the local repository can. A third occurrence, in the realm of
+      spring-boot-maven-plugin, is deliberately left alone for the reasons that
+      same overrides entry records.
     ]]></notes>
     <packageUrl regex="true">^pkg:maven/org\.apache\.httpcomponents\.core5/httpcore5(-h2)?@.*$</packageUrl>
     <cve>CVE-2026-54399</cve>

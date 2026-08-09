@@ -1116,6 +1116,137 @@ class RequestBoundaryHardeningTest {
                     .doesNotContain(probe);
         }
 
+        /**
+         * The boundary-header finding, held as a test.
+         *
+         * <p>A firewall rejection is raised inside {@code FilterChainProxy} before the chain's
+         * {@code HeaderWriterFilter} runs, so it inherited none of the hardening headers every other
+         * response carries - and eager header writing cannot help, because it advances the write to the
+         * start of a chain this request never enters. Measured against the running application, a rejected
+         * request came back with {@code Content-Type} and a correlation identifier and nothing else, while
+         * 200, 401, 405, 413 and 415 all carried the full set. The values below are the ones measured on
+         * that 401, so this assertion is what stops the two boundaries drifting apart again.
+         *
+         * @throws Exception if the handler cannot write
+         */
+        @Test
+        @DisplayName("a firewall rejection carries the hardening headers the chain would have written")
+        void aFirewallRejectionCarriesTheHardeningHeaders() throws Exception {
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            new WebConfig.ProblemJsonRequestRejectedHandler().handle(
+                    new MockHttpServletRequest(HttpMethod.GET.name(), "/api/admin//users"), response,
+                    new RequestRejectedException("The request was rejected because the URL was not normalized"));
+
+            assertThat(response.getHeader("X-Content-Type-Options"))
+                    .as("without it a browser may sniff the refusal body as something other than the "
+                            + "problem+json it declares")
+                    .isEqualTo("nosniff");
+            assertThat(response.getHeader("X-XSS-Protection"))
+                    .as("the framework's own default value, and part of the measured set - omitting it "
+                            + "here would leave one response shape answering differently from every other")
+                    .isEqualTo("0");
+            assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL))
+                    .as("a refusal carrying a correlation identifier must not be cached and handed to a "
+                            + "second caller as though it were their own")
+                    .isEqualTo("no-cache, no-store, max-age=0, must-revalidate");
+            assertThat(response.getHeader(HttpHeaders.PRAGMA)).isEqualTo("no-cache");
+            assertThat(response.getHeader(HttpHeaders.EXPIRES)).isEqualTo("0");
+            assertThat(response.getHeader("X-Frame-Options"))
+                    .as("the chain writes DENY, so this boundary writes DENY; SAMEORIGIN or absence would "
+                            + "be a second, weaker policy reachable by malforming a request target")
+                    .isEqualTo("DENY");
+            assertThat(response.getStatus())
+                    .as("and none of this may change the refusal itself")
+                    .isEqualTo(HttpStatus.BAD_REQUEST.value());
+            assertThat(response.getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            assertIsEnvelope(response.getContentAsString());
+        }
+
+        /**
+         * What the writers do to a header that is already present, asserted as measured rather than as
+         * assumed. Four of the five leave the existing value alone; {@code XFrameOptionsHeaderWriter}
+         * replaces it with {@code DENY}, which is exactly what {@code HeaderWriterFilter} does to a response
+         * inside the chain - so reproducing it is what keeps the two boundaries identical, and {@code DENY}
+         * is the stricter of the two framing policies. The {@code Allow} advice a rejected method depends on
+         * is touched by no writer at all.
+         *
+         * <p>The distinction is worth a test of its own because the tempting assertion - "nothing already
+         * present is ever changed" - is false, and a test asserting it would have been weakened later
+         * instead of the documentation being corrected.
+         *
+         * @throws Exception if the handler cannot write
+         */
+        @Test
+        @DisplayName("an existing header is left as found, except the framing policy the chain also replaces")
+        void anExistingHeaderIsTreatedTheWayTheChainTreatsIt() throws Exception {
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+            response.setHeader("X-Frame-Options", "SAMEORIGIN");
+            response.setHeader(HttpHeaders.CACHE_CONTROL, "public, max-age=60");
+            response.setHeader("X-XSS-Protection", "1; mode=block");
+            response.setHeader(HttpHeaders.ALLOW, "GET, POST");
+
+            new WebConfig.ProblemJsonRequestRejectedHandler().handle(
+                    new MockHttpServletRequest(HttpMethod.GET.name(), "/api/accounts;jsessionid=x"), response,
+                    new RequestRejectedException("The request was rejected because the URL contained a "
+                            + "potentially malicious String"));
+
+            assertThat(response.getHeaders("X-Frame-Options"))
+                    .as("replaced, not appended and not left: one value, and the strict one. Two values "
+                            + "would be two conflicting policies in one response")
+                    .containsExactly("DENY");
+            assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL))
+                    .as("the cache writer declines to touch a response that already states a cache policy, "
+                            + "so an earlier layer's decision stands")
+                    .isEqualTo("public, max-age=60");
+            assertThat(response.getHeader("X-XSS-Protection"))
+                    .as("likewise left as found")
+                    .isEqualTo("1; mode=block");
+            assertThat(response.getHeader(HttpHeaders.ALLOW))
+                    .as("the Allow advice a rejected method depends on survives, exactly as before")
+                    .isEqualTo("GET, POST");
+            assertThat(response.getHeader("X-Content-Type-Options"))
+                    .as("and the headers that were absent are still written")
+                    .isEqualTo("nosniff");
+        }
+
+        /**
+         * {@code Strict-Transport-Security} is in the writer set and is deliberately transport-dependent.
+         * Asserting both halves is what proves it was included rather than forgotten: on the plaintext hop
+         * this topology uses it must write nothing, and on a secure request it must write the same header
+         * the chain would.
+         *
+         * @throws Exception if the handler cannot write
+         */
+        @Test
+        @DisplayName("the transport-security header follows the transport, absent on plaintext and present"
+                + " on a secure request")
+        void theTransportSecurityHeaderFollowsTheTransport() throws Exception {
+            final MockHttpServletResponse plaintext = new MockHttpServletResponse();
+            new WebConfig.ProblemJsonRequestRejectedHandler().handle(
+                    new MockHttpServletRequest(HttpMethod.GET.name(), "/api/accounts%00"), plaintext,
+                    new RequestRejectedException("rejected"));
+
+            assertThat(plaintext.getHeader("Strict-Transport-Security"))
+                    .as("this application terminates no TLS, and a max-age instruction sent over "
+                            + "plaintext is advice the caller cannot trust")
+                    .isNull();
+
+            final MockHttpServletRequest secureRequest =
+                    new MockHttpServletRequest(HttpMethod.GET.name(), "/api/accounts%00");
+            secureRequest.setSecure(true);
+            final MockHttpServletResponse secure = new MockHttpServletResponse();
+            new WebConfig.ProblemJsonRequestRejectedHandler()
+                    .handle(secureRequest, secure, new RequestRejectedException("rejected"));
+
+            assertThat(secure.getHeader("Strict-Transport-Security"))
+                    .as("under TLS the two boundaries must still agree, which is the whole point of "
+                            + "reusing the chain's writers rather than copying its header strings")
+                    .isNotNull()
+                    .contains("max-age=")
+                    .contains("includeSubDomains");
+        }
+
         @Test
         @DisplayName("the envelope declares no charset, so it matches the controllers character for character")
         void theEnvelopeDeclaresNoCharset() {

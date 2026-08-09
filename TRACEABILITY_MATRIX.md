@@ -2995,9 +2995,9 @@ replaces the pair. It is the same run [section 16.3](#verify) reports on.
 | | Exact-HEAD whole-module run |
 |---|---|
 | Command | `./mvnw -B -ntp clean verify` &mdash; **no skips of any kind** |
-| Commit under test | `faf8dc78` — the parent of the revision that publishes this row, whose tree the run was launched from |
-| Executed | Sunday, 09 August 2026, 09:38:43 to 09:50:02 UTC, total 11:19 min. *Superseding* Saturday, 08 August 2026 finishing 23:35:09 UTC, and Friday, 07 August 2026, 11:32:25 to 11:41:17 UTC |
-| Unit tier | **15,092** run, 0 failures, 0 errors, 0 skipped, across 212 suites |
+| Commit under test | `c752d4e5` — the parent of the revision that publishes this row, whose tree the run was launched from; it read `faf8dc78` while that commit held the position |
+| Executed | Sunday, 09 August 2026, 16:31:37 to 16:42:50 UTC, total 11:13 min. *Superseding* the same-day run of 09:38:43 to 09:50:02 UTC, total 11:19 min, Saturday, 08 August 2026 finishing 23:35:09 UTC, and Friday, 07 August 2026, 11:32:25 to 11:41:17 UTC |
+| Unit tier | **15,098** run, 0 failures, 0 errors, 0 skipped, across 212 suites. *Superseding* the same-day 15,092, across the same 212 suites: this revision added six cases to two existing suites and no suite |
 | Integration tier | **804** run, 0 failures, 0 errors, 0 skipped, across 35 suites |
 | End-to-end tier | **115** run, 0 failures, 0 errors, 0 skipped, across 3 suites &mdash; of which the gate harness is **64**, the online transaction suite 26 and the batch pipeline suite 25. This row read 107 until 8 August and was one short, and 108 until the gate assertions added since |
 | Suite reconciliation | **250** concrete suites in `src/test/java`, **250** reports collected &mdash; 212 Surefire plus 38 Failsafe &mdash; so no suite silently failed to run. The run and the tree agree here, which they have not always done: an earlier reading collected 246 against a tree holding 247, the difference being `unit/config/ProblemJsonErrorBoundaryTest.java`, authored afterwards to close a review finding that the container-level error-report valve had no direct test. A delta is stated rather than reconciled by editing either figure; the live census is asserted against the tree by `GateVerificationTest`, and `docs/validation-gates.md` [&sect;2.6](docs/validation-gates.md#env-run) carries it |

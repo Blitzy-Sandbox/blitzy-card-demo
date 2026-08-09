@@ -538,7 +538,7 @@ missing-JDK condition is closed.** Measured by invoking each tool:
 
 The consequence is worth stating plainly: **the containerised build path is a convenience rather than
 a remediation**, and the full gate runs directly on the host with `./mvnw clean verify`. That command
-was executed on the host at this commit and exited **0**, with **15,092 unit test cases** and **919
+was executed on the host at this commit and exited **0**, with **15,098 unit test cases** and **919
 integration and end-to-end test cases** passing and **0 compiler warnings**, against the 0.80 coverage
 floor. **That warning figure is stated as compiler warnings deliberately, because the two available
 readings differ and the looser one was published here before 9 August 2026.** `[WARNING]` lines in the
@@ -551,15 +551,19 @@ build instead of appearing in it. The earlier wording attributed "0 `[WARNING]` 
 `clean verify`, which is the one command for which it is not true. The Failsafe total decomposes as **804** integration plus **115** end-to-end, of which the gate
 harness is **64** — and it decomposes exactly, which the figures published here before 9 August 2026
 did not: they were 14,914 and 906, both understated, against a ledger table that itself published
-799 + 107 = 907. The unit figure then moved four times more inside this one checkpoint —
-**14,917 → 14,925 → 14,929 → 14,931 → 14,932 → 15,092** — and every move has the same cause: a claim that had been
+799 + 107 = 907. The unit figure then moved five times more inside this one checkpoint —
+**14,917 → 14,925 → 14,929 → 14,931 → 14,932 → 15,092 → 15,098** — and every move has the same cause: a claim that had been
 maintained by hand was converted into one a build measures. The eight at 14,925 hold the published
 batch-launch command against the job names the code registers; the four at 14,929 hold this
 documentation set's published structural counts against the files they describe; the two at 14,931
 hold every published page against a Markdown defect that renders as literal asterisks; and the one at
 14,932 holds every pipe table against a missing separator row, which renders a whole table as a wall of
-pipe characters; and the 160 at 15,092 are the field-width unit contract, the two batch span-naming
-suites and the assertions added to suites that already existed. None of these four defect classes is reported by a strict build, because in every case
+pipe characters; the 160 at 15,092 are the field-width unit contract, the two batch span-naming
+suites and the assertions added to suites that already existed; and the six at 15,098 hold the security
+headers on a boundary refusal, being three cases added to `RequestBoundaryHardeningTest` and one
+`@ParameterizedTest` over three request targets added to `ProblemJsonErrorBoundaryTest` - the only
+move in the series that closes a runtime gap rather than a documentation one, and the only one a
+full `verify` had to catch, since no documentation gate can see a test case appear. None of those four documentation defect classes is reported by a strict build, because in every case
 the Markdown is valid. Expect this figure to keep moving for that reason, and read it as the count
 belonging to the run named here rather than as a constant. All of them are restamped from one green
 run, and

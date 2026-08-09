@@ -491,10 +491,10 @@ skips**, so the vulnerability scan is a result rather than an omission.
 
 | Item | Value |
 |---|---|
-| Commit under test | `faf8dc78be8309cb6a972772624934086d9cecaa` (`faf8dc78`) — **the parent of the revision that publishes this row.** A document cannot cite the name of the commit that contains it: writing the stamp changes the tree, so a self-citation is unsatisfiable by any commit, which is why the parent is named and the child is described. The figures in this table were measured on the publishing revision's own tree — that parent plus the changes this revision records — with the working tree clean at launch and still clean when the run finished. **What pins the identity of the tree actually measured is the runtime marker rather than this cell:** `target/gate-verification/gate-verification-evidence.properties` records `gate.harness.commit`, read from git at the instant the harness writes it, and `.github/workflows/build.yml` reports a Blocker when it differs from the commit the job checked out. That is where commit identity is genuinely enforceable, and it is why no short internal object name is quoted here — two earlier revisions did quote one, `4a4ad1c9` and then `fbe63a90`, and neither resolves in this repository's published history, which is the defect this ledger records as `R-003`. Reproduce with `./mvnw -B -ntp clean verify` from the repository root, then compare `git rev-parse HEAD` against that marker |
+| Commit under test | `c752d4e52ad52268e6c9b2b17e840aa026eea38d` (`c752d4e5`) — **the parent of the revision that publishes this row**, superseding `faf8dc78be8309cb6a972772624934086d9cecaa` which was the parent when the previous revision published it. A document cannot cite the name of the commit that contains it: writing the stamp changes the tree, so a self-citation is unsatisfiable by any commit, which is why the parent is named and the child is described. The figures in this table were measured on the publishing revision's own tree — that parent plus the changes this revision records — with the working tree clean at launch and still clean when the run finished. **What pins the identity of the tree actually measured is the runtime marker rather than this cell:** `target/gate-verification/gate-verification-evidence.properties` records `gate.harness.commit`, read from git at the instant the harness writes it, and `.github/workflows/build.yml` reports a Blocker when it differs from the commit the job checked out. That is where commit identity is genuinely enforceable, and it is why no short internal object name is quoted here — two earlier revisions did quote one, `4a4ad1c9` and then `fbe63a90`, and neither resolves in this repository's published history, which is the defect this ledger records as `R-003`. Reproduce with `./mvnw -B -ntp clean verify` from the repository root, then compare `git rev-parse HEAD` against that marker |
 | Command | `./mvnw -B -ntp clean verify` |
 | Skips applied | **None.** No `-Ddependency-check.skip`, no `-Dtest` or `-Dit.test` narrowing, no coverage override |
-| Started, finished | **2026-08-09T09:38:43Z**, **2026-08-09T09:50:02Z** — Maven's own `Finished at: 2026-08-09T09:50:02Z`, total **11:19 min** |
+| Started, finished | **2026-08-09T16:31:37Z**, **2026-08-09T16:42:50Z** — Maven's own `Finished at: 2026-08-09T16:42:50Z`, total **11:13 min**. *Superseding the same-day run of `2026-08-09T09:38:43Z` to `09:50:02Z`, total 11:19 min, which was exact for its own tree and is superseded rather than wrong: this revision added six unit cases, so its unit row could not be that run's* |
 | Exit code | **0**, `BUILD SUCCESS` |
 | Toolchain | JDK 25.0.3 (Temurin-25.0.3+9), Maven 3.9.11, PostgreSQL 16 by digest, LocalStack 4.14.0 |
 | Compiler warnings | **0** under `-Xlint:all -Werror`. **No `[WARNING]` line in a fifteen-minute log comes from the compiler.** The run named above emitted exactly **one**, from the vulnerability-scan plugin: the banner line that opens its findings summary for the sub-threshold advisory below. The line count varies between runs — a plugin that refreshes its feed adds a second, advising that no NVD API key was supplied, and this run did not refresh — while the compiler count does not — which is why the figure asserted here is the compiler count, not the line count |
@@ -508,7 +508,7 @@ everything as one that ran nothing.
 
 | Tier | Suites | Cases | Failures | Errors | Skipped |
 |---|---:|---:|---:|---:|---:|
-| Unit — Surefire | 212 | **15,092** | 0 | 0 | 0 |
+| Unit — Surefire | 212 | **15,098** | 0 | 0 | 0 |
 | Integration — Failsafe | 35 | 804 | 0 | 0 | 0 |
 | End-to-end — Failsafe | 3 | 115 | 0 | 0 | 0 |
 | **Failsafe total** | **38** | **919** | **0** | **0** | **0** |
@@ -560,8 +560,23 @@ case total is the number of `<testcase>` elements in its retained report, **not*
 `tests=` attribute of the parent `<testsuite>` — for the reason given immediately above, a
 suite whose cases live in `@Nested` classes reports `tests="0"` on that attribute while
 carrying every case beneath it. Counted that way the per-suite sums reproduce Maven's own two
-summary lines exactly, `15,092` and `919`, which is what makes the method verifiable rather
+summary lines exactly, `15,098` and `919`, which is what makes the method verifiable rather
 than merely asserted.
+
+**The unit figure moved from `15,092` to `15,098` in this revision, and the assertion above is
+what made the move compulsory rather than optional.** The six cases are this checkpoint's
+boundary-hardening work, counted from their own retained reports: **three** plain cases added to
+`src/test/java/com/cardemo/unit/config/RequestBoundaryHardeningTest.java`, taking that suite
+from 43 to 46, and **one `@ParameterizedTest` over three request targets** added to
+`src/test/java/com/cardemo/unit/config/ProblemJsonErrorBoundaryTest.java`, taking that suite
+from 9 cases to 12. No suite was added, which is why the suite column is unchanged at 212 while
+the case column moved — the two deltas are independent, as the paragraphs below insist. **The
+`15,092` reading is withdrawn as present state** on the ordinary ground: it was exact for the
+tree of the run that produced it and is not this tree. It is worth naming what caught this,
+because nothing else would have: a documentation gate cannot notice six new test cases, and the
+suite census could not either since no suite appeared. `publishedTierCensusIsReconciledAgainstTheRunItDescribes`
+failed the build on the discrepancy during a full unnarrowed `verify`, which is the only place
+the count is observable at all.
 
 *Historical, the run of 7 August 2026 timed 17:29:14Z to 17:39:14Z:* the same tiers stood at
 **209** surefire suites carrying **14,914** unit cases and **38** failsafe suites carrying
@@ -1302,8 +1317,8 @@ published, and the one that names its commit is the primary reading**, because a
 names no commit cannot be checked against anything.
 
 **Execution date, tool versions, exit code.** The exact-HEAD run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, JDK
-25.0.3 (Temurin-25.0.3+9) and Maven 3.9.11, **exit code 0**, total 11:19 min.
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T16:31:37Z to 16:42:50Z, JDK
+25.0.3 (Temurin-25.0.3+9) and Maven 3.9.11, **exit code 0**, total 11:13 min.
 
 Corroborating run of the same date, finishing `2026-08-07T03:43:04Z` after **06:52**: one
 invocation of `./mvnw -B -ntp clean verify`, **with no `-Ddependency-check.skip=true`**, so all
@@ -1337,9 +1352,9 @@ The same run read against the seven clauses this gate enumerates:
 | Clause | Reading |
 |---|---|
 | 1–2 — zero-warning compile and enforced floors | **0 `[ERROR]`** lines and **no compiler warning** under `-Xlint:all -Werror` with `-Werror` in force; the single `[WARNING]` line in the log is the scan plugin's own advisory banner, not a compiler diagnostic |
-| 3 — both test tiers | **15,092 unit tests** under Surefire and **919 integration and end-to-end tests** under Failsafe: **0 failures, 0 errors, 0 skips** in both, as re-measured 9 August 2026. *This clause read 14,477 and 850 when it was first written, which were correct for the run behind it and are superseded rather than wrong.* |
+| 3 — both test tiers | **15,098 unit tests** under Surefire and **919 integration and end-to-end tests** under Failsafe: **0 failures, 0 errors, 0 skips** in both, as re-measured 9 August 2026. *This clause read 14,477 and 850 when it was first written, and 15,092 before this revision's six boundary-hardening cases landed; both were correct for the run behind them and are superseded rather than wrong.* |
 | 4 — coverage floor | `All coverage checks have been met`. Merged **LINE missed=2,112 covered=22,617 total=24,729**, ratio **0.914594** against the **0.80** floor, `haltOnFailure` true |
-| 5 — vulnerability scan | **168 dependencies**, **166 suppressed matches** each carrying its evidence, **one active finding** at **CVSS 6.7 MEDIUM** (`CVE-2026-40977`, `spring-boot-3.5.11.jar`) and therefore **zero at or above the `failBuildOnCVSS` 7 threshold**. Report timestamp `2026-08-09T09:49:54Z`, engine 12.1.0, from a no-skip `./mvnw -B -ntp clean verify` that exited 0. The suppressed figure read **167** at the `2026-08-07T03:42:57Z` timestamp and is counted as the `suppressedVulnerabilities` entries in `target/dependency-check/dependency-check-report.json`; **it moves as the advisory feed does, so it is a dated reading rather than a property of this repository**. What does not move is the register behind it — 17 `<suppress>` entries declaring 18 `<cve>` identifiers, 2 of them time-boxed — and the clause this gate turns on, which is the count at or above the threshold |
+| 5 — vulnerability scan | **168 dependencies**, **166 suppressed matches** each carrying its evidence, **one active finding** at **CVSS 6.7 MEDIUM** (`CVE-2026-40977`, `spring-boot-3.5.11.jar`) and therefore **zero at or above the `failBuildOnCVSS` 7 threshold**. Report timestamp `2026-08-09T16:42:42Z`, engine 12.1.0, from a no-skip `./mvnw -B -ntp clean verify` that exited 0 — superseding the same-day `2026-08-09T09:49:54Z` reading, which reported the identical 168/166/one-finding shape on the tree before this revision. The suppressed figure read **167** at the `2026-08-07T03:42:57Z` timestamp and is counted as the `suppressedVulnerabilities` entries in `target/dependency-check/dependency-check-report.json`; **it moves as the advisory feed does, so it is a dated reading rather than a property of this repository**. What does not move is the register behind it — 17 `<suppress>` entries declaring 18 `<cve>` identifiers, 2 of them time-boxed — and the clause this gate turns on, which is the count at or above the threshold |
 | 6 — exact pinning | Every plugin and non-BOM dependency at an exact version |
 
 The runs differ only as their trees differ: the current reading of 9 August 2026 reports
@@ -1735,7 +1750,7 @@ produces plausible wrong answers rather than an error.
   source has, not as a silent skip.
 
 **Execution date, tool versions, exit code.** The exact-HEAD run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T16:31:37Z to 16:42:50Z, exit
 code 0, against a containerised PostgreSQL 16 raised by the integration tier.
 
 **Result.** **Pass.** Five clauses have to be measured rather than expected, and each is
@@ -1895,7 +1910,7 @@ or that collapses distinct outcomes is a contract break visible to every caller.
   component and carry it compact.
 
 **Execution date, tool versions, exit code.** The run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T16:31:37Z to 16:42:50Z, exit
 code 0. The Failsafe tier retained at `target/failsafe-reports/` carries **38** suites and
 **919** cases, 0 failures and 0 errors, run against a real application context with
 containerised dependencies. *An equivalent run of 2026-08-07T17:29:14Z reported 907 cases across the
@@ -2051,7 +2066,7 @@ whole of `src/test/**` including test resources.
 * **An unpinned dependency** is pinned to an exact version. Ranges are not permitted.
 
 **Execution date, tool versions, exit code.** The exact-HEAD run in [§2.6](#env-run):
-the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit
+the commit this change publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T16:31:37Z to 16:42:50Z, exit
 code 0, with `target/failsafe-reports/` and
 `target/dependency-check/dependency-check-report.html` both preserved. A corroborating run of
 the same date — also **without** `-Ddependency-check.skip=true`, so the scan clause was
@@ -2350,9 +2365,9 @@ behaviour — it breaks the ability to *know* what was delivered.
 
 **Execution date, tool versions, exit code.** From the run in
 [§2.6](#env-run): the commit this change publishes, `./mvnw -B -ntp clean verify` with **no skips**,
-started 2026-08-09T09:38:43Z and finished 09:50:02Z on JDK 25.0.3 (Temurin-25.0.3+9) with
+started 2026-08-09T16:31:37Z and finished 16:42:50Z on JDK 25.0.3 (Temurin-25.0.3+9) with
 Maven 3.9.11. **Exit code 0**; the gate harness ran **64** cases with 0 failures and 0
-errors, alongside **15,092** unit cases and **919** Failsafe cases, all green. *That supersedes an
+errors, alongside **15,098** unit cases and **919** Failsafe cases, all green. *That supersedes an
 equivalent no-skip run of 2026-08-07T17:29:14Z which reported 58 harness cases alongside
 14,914 unit and 907 Failsafe cases; the two differ only by test additions made in between, and the
 older reading is retained here because the register entries were written against it.* Reports at
@@ -2380,13 +2395,13 @@ first is about age. It **predated later commits to the tests and the workflow**,
 described a tree that no longer existed. It named **no commit at all**, so nothing about it
 could be checked. And it **skipped the vulnerability scan**, so the half of Gate 2 that
 scan satisfies was unevidenced while the stamp still read "exit code 0". The figures moved
-because the harness grew — 41 assertions to 64, and 14,461 unit cases to 15,092 — not
+because the harness grew — 41 assertions to 64, and 14,461 unit cases to 15,098 — not
 because either reading was mistaken at the time it was taken.
 
 | Figure | Value | How it was counted |
 |---|---|---|
 | Gate test cases in this class | **64**, 0 failures, 0 errors | `<testcase>` elements in `target/failsafe-reports/TEST-com.cardemo.e2e.GateVerificationTest.xml` |
-| Unit **test cases** across the whole run | **15,092**, 0 failures, 0 errors, 0 skips &mdash; it read 14,914 on 7 August | `<testcase>` elements across 212 files in `target/surefire-reports/` |
+| Unit **test cases** across the whole run | **15,098**, 0 failures, 0 errors, 0 skips &mdash; it read 15,092 before this revision's six boundary-hardening cases and 14,914 on 7 August | `<testcase>` elements across 212 files in `target/surefire-reports/` |
 | Integration and end-to-end **test cases** across the whole run | **919**, 0 failures, 0 errors, 0 skips — 804 across the 35 concrete `integration/` classes and 115 across the 3 under `e2e/`; it read 907 with a 107 end-to-end split on 7 August | `<testcase>` elements across 38 files in `target/failsafe-reports/` |
 
 **Three properties a stamp must have to be evidence at all, stated because a stamp missing any
@@ -2621,7 +2636,7 @@ application computes anything incorrectly — which is what separates it from a 
 **Execution date, tool versions, exit code.** From **two** executions in this working tree,
 and — stated plainly because an earlier reading of this paragraph claimed otherwise — **at two
 different commits**. First, the exact-HEAD run in [§2.6](#env-run): the commit this change
-publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T09:38:43Z to 09:50:02Z, exit code 0, which
+publishes, `./mvnw -B -ntp clean verify`, 2026-08-09T16:31:37Z to 16:42:50Z, exit code 0, which
 stood the application up against a **containerised** PostgreSQL 16 and LocalStack 4.14.0 raised
 by the integration tier itself. Second, and separately, `docker compose up -d --build --wait`,
 2026-08-07T17:44:59Z to 17:47:56Z, **exit code 0** on Docker Engine 29.7.0 — the six-service
@@ -2731,6 +2746,35 @@ rather than reasoning about it is
 that those cases read the repository **as data** from inside the image: a documentation edit is
 exactly the kind of change that can be green on the host and broken in a curated build context,
 which is the failure this row has now been through three times.
+
+**A seventh reading was taken by this revision, and it is recorded separately rather than folded into
+the sixth, because two of its properties differ.** Brought up on Sunday, 9 August 2026 at **16:55:46
+UTC** with the same documented command, **exit code 0**, **all seven** services `Healthy` by **16:58:44
+UTC**, two minutes fifty-eight seconds end to end, on the same ports and the same compose project. The
+in-image unit tier ran **15,098 tests, 0 failures, 0 errors, 1 skipped** — the host figure of this
+revision exactly, with the one skip unchanged and still `python3`'s absence in the builder image. The
+same command issued immediately afterwards exited **0** in 12 s with nothing to rebuild.
+
+The two differences are stated because omitting either would overstate the reading. First, **the
+working tree was not clean at launch**: `git status --porcelain` listed thirteen modified paths, being
+this revision's own uncommitted changes, so unlike the sixth reading this one measures a working tree
+rather than a committed one and the tree it measures is reconstructible only from those changes. Second,
+**this bring-up did produce a new image**, which the sixth reading's companion observation explains
+cannot happen for a test-only or documentation-only change: this revision moves the runtime stage's own
+base-image digest and changes packaged `main` sources, so the final layers are genuinely different and
+Compose recreated the container. That is the expected behaviour of the same mechanism, not a departure
+from it — **and it is the seventh reading that carries the fixes into the shipped artefact**, which the
+sixth reading's image, built before them, does not.
+
+**The reading also demonstrates the very hazard this row exists for, one more time and for real.** A
+first attempt at this bring-up **failed**, exit 1, in the Maven stage: `ImportHygieneTest` refused
+`README.md` because a scripted edit had rewritten all 1,370 of its lines from CRLF to LF, against
+`.editorconfig`'s `end_of_line = crlf` and `.gitattributes`'s `-text !eol` for that one path. The host
+had not re-run that suite after the edit, so nothing on the host had reported it. The endings were
+restored, `git diff` and `git diff -w` were confirmed to report the same insertion and deletion counts —
+the proof the assertion's own message prescribes, and the one that distinguishes a restored file from a
+file with whitespace churn left in it — and the suite was re-run green on the host before the bring-up
+was repeated. Four gates read that file; the fix was to the file, not to any of them.
 
 **One observation from the third run is worth recording, because it looks like a defect and is
 the opposite of one.** `docker compose ps` after that run reported the application container as
@@ -2942,7 +2986,7 @@ different actions:
 | B-1 | The container library's 2.x line renamed every module coordinate, so the bare 1.x identifiers do not resolve, and the framework parent already manages a 1.x version | `pom.xml` `<testcontainers.version>`; the `org.testcontainers` module coordinates | The build does not resolve, or resolves the wrong version silently | Already in scope; it is a precondition of every container-dependent gate | Apply **both** halves: override through the version property — never a second bill-of-materials import — **and** use only the four prefixed coordinates. Either half alone still fails. See [Gate 2](#gate-2) |
 | B-2 | Relocating or renaming the gate harness removes it from both test plugins **with no error** | `src/test/java/com/cardemo/e2e/GateVerificationTest.java`; the `maven-failsafe-plugin` includes in `pom.xml` | Every gate silently stops being verified while the build still reports success | Any refactor that moves test packages | Keep the class at that exact path, in that package, with the `Test` suffix. Confirm a run from the written evidence artefact, **never** from a green build alone |
 
-**High — 9.** `H-1` through `H-4` are prior-run open defects that this work closes. `H-5`
+**High — 10.** `H-1` through `H-4` are prior-run open defects that this work closes. `H-5`
 is a fifth of a different kind — a silent-failure path in documentation publication,
 discovered and measured during this work rather than inherited — and it is closed too. Each
 is listed here so the closure is auditable rather than assumed. **An earlier revision of
@@ -2970,6 +3014,16 @@ inherited defects reads as though this work introduced none, and that reading wo
 its own subject: the first instance of a shape is never the last.** An earlier revision of this
 line published only `H-8`; that reading is withdrawn.
 
+**`H-10` is a fifth kind, and it is the one this table is least able to surface on its own: an
+advisory that NO gate in this build reports.** Every other row was raised by something — a
+prior-run review, a scan, a bring-up, a publication check. This one was raised by reading the
+advisory data for a coordinate directly, because the dependency scan's feed does not attribute
+it to that coordinate and the plugin-graph scan does not look at the application graph at all.
+Its severity is Medium rather than High, and it sits in this table anyway for the reason the
+severity heading above is a *classification* and not a filter: a reader auditing what is open
+must meet it, and there is no scanner report it will ever appear in. **The count in the heading
+above moved from nine to ten with it, and the nine is withdrawn.**
+
 | # | Finding | Locator | Impact if unaddressed | Trigger | Remediation |
 |---|---|---|---|---|---|
 | H-1 | The token signing key was hardcoded in a prior implementation | [`docs/project-guide.md:L52`], [`:L215`]; the signing-key property in `application.yml` | Anyone with repository access can mint valid tokens | Closed by this work | Resolve from the environment with **no** committed default, so an unset variable aborts startup |
@@ -2979,8 +3033,10 @@ line published only `H-8`; that reading is withdrawn.
 | H-5 | A page omitted from the `mkdocs.yml` `nav` silently never publishes — and, as measured, **a strict build did not catch it either**, because the omission is reported at INFO level by default | `mkdocs.yml` `nav` and its formerly absent `validation` block; [`catalog-info.yaml:L22`] | Documentation exists in the repository and is unreachable in the published site; **no error and no warning** signals it | Every new document, including this one | **CLOSED, 7 August 2026, by applying both halves of this remediation.** All five entries are in the `nav`, and `validation.nav.omitted_files: warn` is set, so the omission is now a **warning** that `--strict` promotes to a failure. Proved by mutation, not by inspection: removing one `nav` entry with the setting present aborts the build with 1 warning, and removing the setting as well returns it to exit 0 with the omission reported only at INFO. See [§2.4](#env-nav) and the measured runs in [§2.5](#env-mkdocs) |
 | H-6 | **Authorization is role-based only. Ten of the seventeen operations scope nothing to the caller**, so any authenticated standard user may read or modify any account, card or transaction, and may pay a bill or run a report against an account unrelated to them, by naming its identifier | `src/main/java/com/cardemo/config/SecurityConfig.java` — the ten matchers granting `hasAnyAuthority(ADMIN_AUTHORITY, USER_AUTHORITY)`. A reader counting that call in the file finds **eleven**; the eleventh is `GET` on the main-menu path, which carries no resource identifier and so has nothing to over-reach with. The ten are `GET /api/accounts/{accountId}`, `PUT /api/accounts`, `GET /api/cards`, `GET /api/cards/detail`, `PUT /api/cards`, `GET /api/transactions`, `GET /api/transactions/detail`, `POST /api/transactions`, `POST /api/billing/payments`, `POST /api/reports` | Every authenticated principal is effectively trusted with the entire data set. In a population where one user must not see another's data this is a **cross-tenant read and write** | **Any deployment reachable by more than one trust domain**, and in particular any exposure to end customers | **OPEN — and not implementable from the source.** [`app/cpy/CSUSR01Y.cpy`] is six fields — identifier, names, password, type, filler — and carries **no reference to an account, card or customer**, so no ownership relation exists to enforce; [`app/cbl/COACTVWC.cbl`] never consults `CDEMO-USER-ID` either, so the absence is faithful and [§0.8.3](technical-specifications.md) forbids supplying a guard the source lacks. **What a human must decide** is set out in full at [DL-RR-10] in `DECISION_LOG.md`: the authoritative user-to-resource relation, whether an administrator keeps unrestricted scope, whether an out-of-scope identifier answers `403` or `404`, and how the report and payment operations are scoped. The enforcement point is small once those are answered; it cannot be written before. **Until then the risk is pinned rather than merely described**: `src/test/java/com/cardemo/unit/config/SecurityConfigTest.java` at `thePublishedUnscopedOperationFigureAgreesWithTheCensus` reads both figures out of this row, compares them against a census measured through the running filter chain, and dispatches every one of the ten operations above with a standard user's token. The row therefore fails the build in either direction — if a matcher widens or narrows, or if an ownership guard is added and this disclosure should have been withdrawn |
 | H-7 | **Two published High advisories on the delivered image whose only remedy is to advance a pinned version**, surfaced by a container scan the dependency scan cannot substitute for. A third High sits on the **build plugin graph only** and is a different kind of finding, so it is named here rather than counted with them | `carddemo.jar` inside the delivered image: `spring-boot:3.5.11` **CVE-2026-40973** (fixed 3.5.14) and `spring-data-commons:3.5.9` **CVE-2026-41695** (fixed 3.5.12). Plugin graph only, through `spring-boot-maven-plugin:3.5.11`: `spring-expression:6.2.16` **CVE-2026-41850** (fixed 6.2.19), already carrying a written Tier 3 disposition expiring `2027-02-01` in `.github/plugin-graph/dispositions.json`. **The application graph resolves the fixed `spring-expression:6.2.19`**, because `pom.xml` sets `spring-framework.version` to `6.2.19` as a forward override of the bill-of-materials `6.2.16`; measured with `./mvnw -B -ntp -o dependency:list -DincludeGroupIds=org.springframework` | The delivered image carries **two** disclosed High exposures, and **the image-scan gate fails the build on both** by design, since that gate offers no suppression path. The plugin-graph finding fails nothing, and there is no application-side occurrence to fail on. **An earlier reading of this row is withdrawn**: it published *three* High advisories and placed `spring-expression:6.2.16` *"on the application graph"*, which the resolved graph contradicts | Already in scope; the gate is failing now rather than at some future trigger | **OPEN by decision.** [§0.6.1](technical-specifications.md) pins Spring Boot 3.5.11 and [§0.8.4](technical-specifications.md) requires pinned versions be honoured with divergence recorded, not resolved unilaterally. Advancing the parent to the latest 3.5.x closes both image findings and is the recommended first step — **the same move [DL-RR-01] already recommends, so one decision closes both entries**. Overriding the two modules out from under their bill of materials was rejected as trading a disclosed risk for an undisclosed version skew. Full analysis at [DL-RR-11] in `DECISION_LOG.md`. These findings are **newly visible rather than newly true**: the image scan that surfaces them is itself new work delivered here |
-| H-8 | **REGRESSION introduced by this work: the documented `docker compose up -d --build --wait` began exiting 1 while [Gate 8](#gate-8) continued to publish exit 0.** Two gates that read this repository as data met a Docker build context that is a *curated subset* of it, so the in-image unit tier failed on defects existing only in that context while the identical suite passed on the host | `.dockerignore`'s `app/data/EBCDIC` prune against row V-1 of `DECISION_LOG.md` §12.1, checked by `InventoryCountGateTest.theRemainingStructuralCountsMatchTheDocument`; and five root dotfiles absent from the `Dockerfile` `COPY` set, three of them read unconditionally by `SourceCitationResolutionTest.everyCitedSymbolResolves`. Observed as `Expecting empty but was: ["app/data/EBCDIC/"]` and `UncheckedIOException: Cannot read /workspace/.gitignore` | A **Required** gate's documented command fails on first attempt, so nobody can bring up the topology by following the documentation — and because the `app` service cannot build, Prometheus's `app:8080` target never resolves, which removes the documented scrape path from execution verification altogether. The ledger asserting exit 0 throughout is the worse half: a reader had no signal at all | Closed by this work; the trigger for the **next** instance is any new unit assertion that reads a repository file, or any change to `.dockerignore` or the `COPY` set | **CLOSED, 9 August 2026, and held by controlled experiment rather than by inspection.** The pruned subtree gets the same directory-keyed exemption the citation gate already carried, plus a self-limiting companion assertion: with the subtree **present** a mistyped path under it still fails, and with it **absent** a mistyped path outside it still fails while the count stays at 61 — both measured in a pruned copy. The dotfiles are **COPYed**, not tolerated as absent, because a scan that skips an absent target covers strictly less than the host run without failing. Two of the three were found by **enumerating** every unconditionally-read path against the `COPY` set rather than by building again, which is why this is one round and not three. Verified end to end, and re-verified after every subsequent test addition in this checkpoint: `up -d --build --wait --wait-timeout 900` exit **0**, in-image **15,092 tests / 0 failures / 0 errors / 1 skipped**, all seven containers `healthy`; see [the restamped bring-up](#gate-8-bringup-restamped) and [the build-context analysis](#gate-8-build-context) |
+| H-8 | **REGRESSION introduced by this work: the documented `docker compose up -d --build --wait` began exiting 1 while [Gate 8](#gate-8) continued to publish exit 0.** Two gates that read this repository as data met a Docker build context that is a *curated subset* of it, so the in-image unit tier failed on defects existing only in that context while the identical suite passed on the host | `.dockerignore`'s `app/data/EBCDIC` prune against row V-1 of `DECISION_LOG.md` §12.1, checked by `InventoryCountGateTest.theRemainingStructuralCountsMatchTheDocument`; and five root dotfiles absent from the `Dockerfile` `COPY` set, three of them read unconditionally by `SourceCitationResolutionTest.everyCitedSymbolResolves`. Observed as `Expecting empty but was: ["app/data/EBCDIC/"]` and `UncheckedIOException: Cannot read /workspace/.gitignore` | A **Required** gate's documented command fails on first attempt, so nobody can bring up the topology by following the documentation — and because the `app` service cannot build, Prometheus's `app:8080` target never resolves, which removes the documented scrape path from execution verification altogether. The ledger asserting exit 0 throughout is the worse half: a reader had no signal at all | Closed by this work; the trigger for the **next** instance is any new unit assertion that reads a repository file, or any change to `.dockerignore` or the `COPY` set | **CLOSED, 9 August 2026, and held by controlled experiment rather than by inspection.** The pruned subtree gets the same directory-keyed exemption the citation gate already carried, plus a self-limiting companion assertion: with the subtree **present** a mistyped path under it still fails, and with it **absent** a mistyped path outside it still fails while the count stays at 61 — both measured in a pruned copy. The dotfiles are **COPYed**, not tolerated as absent, because a scan that skips an absent target covers strictly less than the host run without failing. Two of the three were found by **enumerating** every unconditionally-read path against the `COPY` set rather than by building again, which is why this is one round and not three. Verified end to end, and re-verified after every subsequent test addition in this checkpoint: `up -d --build --wait --wait-timeout 900` exit **0**, in-image **15,098 tests / 0 failures / 0 errors / 1 skipped**, all seven containers `healthy` — re-measured again by this revision, which added six unit cases and changed the runtime base-image digest, and which therefore had to rebuild rather than reuse. **The trigger fired and the class did not recur, which is worth separating.** That rebuild failed on its first attempt, exit 1 in the Maven stage, but on a genuine file defect rather than a build-context one: `README.md` had been rewritten LF where `.editorconfig` and `.gitattributes` pin it CRLF, which fails identically on the host and had simply not been re-run there yet. No file was missing from the context and no gate needed an exemption; the endings were restored and the bring-up repeated green. See [the restamped bring-up](#gate-8-bringup-restamped) and [the build-context analysis](#gate-8-build-context) |
 | H-9 | **REGRESSION introduced by this work: the notification topic was provisioned with NO subscriber and that emptiness was asserted as the contract**, reasoned from least privilege. A topic with no subscriber **accepts every publish and silently discards it**, so the notification capability reported success while delivering nothing — and no publisher can detect the difference, because acceptance is not delivery. `localstack-init/init-aws.sh` was corrected to require **at least one** subscriber and to exit **7** without one, and `docs/onboarding-guide.md` was corrected with it, **but this ledger went on publishing the withdrawn figure** — `SNS subscriptions 0 — deliberately none` — so the authoritative register described the script's *fatal* state as its intended one, and contradicted both the script it describes and its own sibling document | `localstack-init/init-aws.sh` notification-subscription verification; [Gate 8 clause 4](#gate-8); `docs/onboarding-guide.md` provisioned-resource table | Every operator notice is accepted and thrown away, invisibly, while the ledger asserts that is correct. A reader auditing the topology against this ledger would have *restored* the defect | Any change to the provisioned resource set, and any reading of a count published beside a guard's fatal threshold | **Closed by this work.** The row now publishes **2** queues and **1** subscription and states that zero is fatal, re-measured against the running stack, with the withdrawn figure recorded rather than overwritten. The general lesson is that a corrected mechanism and a corrected claim are **two** changes: least privilege constrains what a provisioned resource may *reach* and never licenses a delivery surface whose every message is discarded |
+| H-10 | **An advisory on a delivered, pinned coordinate that NO gate in this build reports, whose only fix is a generation away.** `io.awspring.cloud:spring-cloud-aws-sns:3.3.0` carries **CVE-2026-44308** — SNS notifications delivered to an HTTP or HTTPS endpoint subscription are not signature-verified, so a party able to reach that endpoint can spoof one. Severity **Medium**, and classified here rather than under Medium because the row's subject is the *absence of a gate*, which is what a reader auditing open items has to meet. **The whole 3.x line is affected**: measured per version on 9 August 2026, 3.3.1, 3.4.0 and 3.4.2 all still carry it and **4.0.2 is the only fixed release** | OSV `GHSA-r4w4-wv68-qv85`, matching `spring-cloud-aws-sns:3.3.0` only — `spring-cloud-aws-core:3.3.0` and `-autoconfigure:3.3.0` each return zero. Neither scanner sees it: the dependency-check report of `2026-08-09T15:30:31Z` lists **no** finding, active or suppressed, against any `spring-cloud-aws-*-3.3.0.jar` among its 168 dependencies, and `.github/plugin-graph/scan_plugin_graph.py` reads the **build plugin** graph, which this library is not on. Full analysis at [DL-RR-14] in `DECISION_LOG.md` | **Nothing in the delivered topology.** The advisory's precondition is an HTTP or HTTPS endpoint subscription whose notifications this application receives, and there is none: `NotificationMessage`, `SnsMessageManager`, `NotificationStatus`, `confirmSubscription` and `@NotificationSubscriptionMapping` return **zero** occurrences across `src/main`; SNS is publish-and-health-check only, in `AwsConfig`, `ObservabilityConfig`, `HealthIndicators` and `ReportSubmissionService`; and the topic's only subscriber is the in-network SQS queue `localstack-init/init-aws.sh` provisions. The exposure becomes real the moment a future change subscribes an endpoint and acts on what arrives | Either a 3.x release that carries the fix, which would make this a patch move and therefore actionable at once, or the generation decision [R-9] already needs. A feed update can also turn this into a *reported* finding with nothing in the repository having changed | **OPEN by decision.** [§0.6.1.1](technical-specifications.md) pins `spring-cloud-aws-dependencies` at 3.3.0 and [§0.8.4](technical-specifications.md) requires pinned versions be honoured with divergence recorded. The fix is **cross-generation, not a patch**: `spring-cloud-aws:4.0.2` builds on `spring-cloud-build:5.0.1`, whose `spring-boot.version` is **4.0.2**, while this application's parent is Spring Boot **3.5.11**. Overriding the `-sns` module alone was rejected — the family shares internals through `-core`, so a 4.0.2 module against a 3.3.0 core is an undetected skew — and a suppression was rejected as an entry with nothing to suppress. The route census in `InventoryCountGateTest` (**eight controllers, seventeen routes**, derived not remembered) is what fails the build if a notification-callback endpoint is ever added without this row being revisited |
+
 
 **Medium — 7.** `M-1` through `M-5` and `M-7` are closed by measurement. **`M-6` is the one entry in this register that implementation cannot close**: a checkpoint checklist requires a seed total the frozen corpus does not support, so it names what a human must decide and is reported as **Not available** rather than passed. `M-7` was registered alongside it as the same kind of problem and turned out not to be one &mdash; a fuller census found the figure satisfiable and satisfied &mdash; which is why the row now reads as closed and says what the earlier census missed.
 

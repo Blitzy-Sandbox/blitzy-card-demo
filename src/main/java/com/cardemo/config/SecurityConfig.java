@@ -581,10 +581,30 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <dt>A path that plainly exists returns 401 or 403 for everyone</dt>
  *   <dd>No rule names it, so deny-by-default refused it. Add the rule; do not relax the final rule.</dd>
  *   <dt>The container health probe or the metrics scrape starts failing with 401</dt>
- *   <dd>Both are anonymous by necessity - the image's health check issues a bare request with no
- *       {@code Authorization} header, and the scrape configuration carries no credential - so the five
- *       management paths permitted below, being the three exposed endpoints plus the two paths the health
- *       group definitions create, must stay anonymous unless both callers are changed with them.</dd>
+ *   <dd>The two callers are governed by different chains, so a 401 means a different thing on each and the
+ *       remedies are not interchangeable. <strong>The health probe is anonymous by necessity.</strong> The
+ *       image's {@code HEALTHCHECK} issues a bare {@code GET /actuator/health/readiness} with no
+ *       {@code Authorization} header, so the four management paths permitted below - the two anonymously
+ *       exposed endpoints, {@value #PATH_HEALTH} and {@value #PATH_INFO}, plus the two paths the health
+ *       group definitions create - must stay anonymous <em>for {@code GET}</em>, and a 401 on any of them
+ *       means a rule was added or narrowed above them. The method qualifier is not pedantry: those four
+ *       permits are declared with a {@code GET} matcher, so a probe rewritten to use {@code HEAD} - which
+ *       looks equivalent and is what {@code curl -I} sends - matches no permit, falls through to the bearer
+ *       chain and is refused 401 with a {@code WWW-Authenticate: Bearer} challenge. Measured on the shipped
+ *       image: {@code GET /actuator/health} 200, {@code HEAD /actuator/health} 401. A probe that started
+ *       failing after being "simplified" to {@code HEAD} is this, not a policy change. <strong>The metrics scrape is not anonymous, and is not in that list.</strong>
+ *       {@value #PATH_PROMETHEUS} is governed by {@code metricsScrapeFilterChain}, which requires HTTP Basic
+ *       credentials carrying {@value #SCRAPE_AUTHORITY}, so a 401 there is the designed answer to a caller
+ *       that presented no usable credential rather than a defect - {@code curl} without {@code -u} is
+ *       expected to receive one, together with a {@code WWW-Authenticate: Basic realm="carddemo-metrics-scrape"}
+ *       challenge. Fix it on the caller side: {@code observability/prometheus.yml} configures
+ *       {@code basic_auth} with a username and a {@code password_file} that {@code docker-compose.yml}
+ *       materialises from the deployment's scrape password, so a 401 to Prometheus itself means that file
+ *       and this application's {@value #KEY_SCRAPE_PASSWORD} disagree, or that
+ *       {@value #KEY_SCRAPE_USERNAME} and {@value #KEY_SCRAPE_PASSWORD} are unset and the endpoint is
+ *       therefore refusing every caller. The warning {@code ScrapeAuthenticationEntryPoint} logs separates
+ *       exactly those two cases in words, because credentials that do not match and a deployment with no
+ *       scrape principal at all call for opposite actions.</dd>
  *   <dt>A session cookie appears in a response</dt>
  *   <dd>Something reintroduced a session-backed request cache or a stateful configurer. The null request
  *       cache configured here is what prevents it; see the statelessness section for why removing it is not
@@ -604,10 +624,31 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       brute-forceable; BCrypt's cost is the only throttle present.</li>
  *   <li><strong>No token revocation.</strong> A change to a user's type takes effect only when their current
  *       token expires, for the reason given under the COMMAREA section above.</li>
- *   <li><strong>Anonymous management endpoints.</strong> The metrics endpoint discloses the exact runtime
- *       build through its JVM meters. The health bodies are status-only and the info body is empty, so
- *       nothing else leaks. Authenticating the scrape would require both the scrape configuration and the
- *       image health check to carry a credential, which is a larger change than the disclosure warrants.</li>
+ *   <li><strong>Four anonymous management paths, and a scrape that is not one of them.</strong>
+ *       {@value #PATH_HEALTH}, {@value #PATH_HEALTH_LIVENESS}, {@value #PATH_HEALTH_READINESS} and
+ *       {@value #PATH_INFO} answer an anonymous {@code GET} without a credential, because the image's
+ *       {@code HEALTHCHECK} probes readiness with no {@code Authorization} header and a rule requiring one
+ *       would report a permanently unhealthy container. The permit is <strong>method-scoped to
+ *       {@code GET}</strong>, so the anonymous surface is four path-and-method pairs rather than four whole
+ *       paths: {@code HEAD} and every other method on the same four paths match no permit and are refused by
+ *       the bearer chain, measured 401. Their bodies are status-only and the info body is empty, so what they
+ *       disclose is that the application exists and whether it is up - an unauthenticated liveness oracle,
+ *       which is the residual accepted here. <strong>{@value #PATH_PROMETHEUS} is authenticated:</strong> it is
+ *       governed by {@code metricsScrapeFilterChain}, which is ordered ahead of the business chain, declares
+ *       a security matcher for that one path, requires HTTP Basic credentials carrying
+ *       {@value #SCRAPE_AUTHORITY} and denies every other request; measured, it answers 401 anonymously and
+ *       200 to the scrape credential. The residual that survives is narrower than an open endpoint and is
+ *       stated as what it is: the scrape body renders business series and discloses the exact runtime build
+ *       through its JVM meters <em>to whoever holds that one credential</em>, which is a single shared
+ *       static secret with no per-scraper identity and no rotation mechanism in this class, so the
+ *       disclosure boundary is exactly one credential wide. <strong>An earlier revision of this entry read
+ *       "Anonymous management endpoints ... Authenticating the scrape would require both the scrape
+ *       configuration and the image health check to carry a credential", and that reading is withdrawn as
+ *       measurably false in both halves:</strong> the scrape has been authenticated since
+ *       {@code metricsScrapeFilterChain} was introduced, and {@code observability/prometheus.yml} already
+ *       carries {@code basic_auth}, so neither change is outstanding. The already-correct statements under
+ *       "No actuator exposure list" above and in the verify-by-hand paragraph are what this entry now
+ *       agrees with.</li>
  *   <li><strong>No user-enumeration difference, deliberately.</strong> The legacy screen distinguished
  *       {@code 'User not found. Try again ...'} at {@code app/cbl/COSGN00C.cbl:L247-L251} from
  *       {@code 'Wrong Password. Try again ...'} at {@code :L241-L246}. The REST surface does not differentiate
