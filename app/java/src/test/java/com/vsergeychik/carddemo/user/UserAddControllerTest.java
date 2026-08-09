@@ -807,7 +807,7 @@ class UserAddControllerTest {
         @DisplayName("addUser delegates and projects, producing the same response as mainPara")
         void adapterDelegates() {
             ScreenResponse<UserAddResponse> answer = controller.addUser(populatedRequest(), 0x7D,
-                    NavigationContext.COMMAREA_LENGTH);
+                    NavigationContext.COMMAREA_LENGTH, null);
 
             UserAddResponse viaAdapter = answer.screen();
             assertThat(viaAdapter.errMsg()).contains("has been added");
@@ -823,19 +823,55 @@ class UserAddControllerTest {
         @Test
         @DisplayName("addUser tolerates a null body, which is how EIBCALEN = 0 is reached over HTTP")
         void adapterToleratesNullBody() {
-            UserAddResponse response = controller.addUser(null, null, null).screen();
+            UserAddResponse response = controller.addUser(null, null, null, null).screen();
 
             assertThat(response.nextProgram()).isEqualTo(UserAddController.SIGNON_PROGRAM);
         }
 
         @Test
+        @DisplayName("either accepted spelling of the AID parameter reaches the key, and a contradiction "
+                + "between them is refused")
+        void eitherAidSpellingReachesTheKey() {
+            int pf4 = Byte.toUnsignedInt(CicsAid.DFHPF4);
+
+            // This route declared only the alternate spelling while GET /api/users - the same path,
+            // a different verb - declared only the canonical one, so a client that used one name for both
+            // calls had its key discarded by Spring on one of them and the request executed as ENTER.
+            UserAddResponse throughAlternate = controller
+                    .addUser(populatedRequest(), pf4, NavigationContext.COMMAREA_LENGTH, null).screen();
+            UserAddResponse throughCanonical = controller
+                    .addUser(populatedRequest(), null, NavigationContext.COMMAREA_LENGTH, pf4).screen();
+            UserAddResponse throughBoth = controller
+                    .addUser(populatedRequest(), pf4, NavigationContext.COMMAREA_LENGTH, pf4).screen();
+            UserAddResponse throughEnter = controller
+                    .addUser(populatedRequest(), null, NavigationContext.COMMAREA_LENGTH, null).screen();
+
+            assertThat(throughCanonical).isEqualTo(throughAlternate);
+            assertThat(throughBoth).isEqualTo(throughAlternate);
+            // PF4 clears the screen (COUSR01C:96-98) while an absent key is ENTER, which adds the user -
+            // so the two answers genuinely differ and the equality above is meaningful.
+            assertThat(throughEnter).isNotEqualTo(throughAlternate);
+
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), pf4,
+                    NavigationContext.COMMAREA_LENGTH, Byte.toUnsignedInt(CicsAid.DFHPF3)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(UserAddController.EIBAID_PARAM)
+                    .hasMessageContaining(UserAddController.EIBAID_PARAM_ALIAS);
+            // The range guard applies to whichever spelling carried the value.
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), null,
+                    NavigationContext.COMMAREA_LENGTH, 300))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(UserAddController.EIBAID_PARAM);
+        }
+
+        @Test
         @DisplayName("an EIBCALEN that contradicts the carrier is refused, in either direction")
         void aContradictingEibcalenIsRefused() {
-            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, 0))
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, 0, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("a communication area");
             assertThatThrownBy(() -> controller.addUser(null, null,
-                    NavigationContext.COMMAREA_LENGTH))
+                    NavigationContext.COMMAREA_LENGTH, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("no communication area");
         }
@@ -844,7 +880,7 @@ class UserAddControllerTest {
         @ValueSource(ints = {-1, 1, 159, 161, 194, 2000})
         @DisplayName("EIBCALEN can only be one of the two lengths CICS could have set")
         void anImpossibleEibcalenIsRefused(int stated) {
-            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, stated))
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, stated, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining(UserAddController.EIBCALEN_PARAM);
         }
@@ -940,7 +976,7 @@ class UserAddControllerTest {
 
             assertThat(UserAddController.DEFAULT_WORKING_STORAGE_CHARSET)
                     .isEqualTo(StandardCharsets.US_ASCII);
-            assertThat(bean.addUser(populatedRequest(), 0x7D, NavigationContext.COMMAREA_LENGTH)
+            assertThat(bean.addUser(populatedRequest(), 0x7D, NavigationContext.COMMAREA_LENGTH, null)
                     .screen().errMsg()).contains("has been added");
         }
 
@@ -1103,7 +1139,7 @@ class UserAddControllerTest {
             // and was telling the truth about the statement it executed.
             withTransactionalContext(true, (controller, verifier) -> {
                 ScreenResponse<UserAddResponse> response = controller.addUser(populatedRequest(),
-                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH);
+                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH, null);
 
                 assertThat(response.screen().errMsg())
                         .as("the screen the operator is shown")
@@ -1125,7 +1161,7 @@ class UserAddControllerTest {
             // identical; the dataset is empty.
             withTransactionalContext(false, (controller, verifier) -> {
                 ScreenResponse<UserAddResponse> response = controller.addUser(populatedRequest(),
-                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH);
+                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH, null);
 
                 assertThat(response.screen().errMsg())
                         .as("the operator is told the same thing either way")
@@ -1151,7 +1187,7 @@ class UserAddControllerTest {
 
                 ScreenResponse<UserAddResponse> response = abandoned.execute(status -> {
                     ScreenResponse<UserAddResponse> answer = controller.addUser(populatedRequest(),
-                            (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH);
+                            (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH, null);
                     status.setRollbackOnly();
                     return answer;
                 });
@@ -1174,7 +1210,7 @@ class UserAddControllerTest {
             // instance and advise nothing at all - and it would also put a transaction in the path of
             // every parity test, which drive mainPara directly against a stubbed repository.
             assertThat(UserAddController.class
-                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class)
+                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class, Integer.class)
                     .isAnnotationPresent(Transactional.class))
                     .isTrue();
             assertThat(UserAddController.class
@@ -1185,7 +1221,7 @@ class UserAddControllerTest {
                     .as("a final class cannot be proxied by CGLIB, so the annotation would be inert")
                     .isFalse();
             assertThat(Modifier.isFinal(UserAddController.class
-                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class)
+                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class, Integer.class)
                     .getModifiers()))
                     .as("nor can a final method be overridden by the proxy")
                     .isFalse();

@@ -90,7 +90,17 @@ class TestProfileIsNotPackagedTest {
             assertThat(roots)
                     .as("two copies of one profile document would leave Spring resolving "
                             + "classpath:/%s to whichever root came first and silently ignoring the "
-                            + "other; found: %s", TEST_PROFILE_RESOURCE, roots)
+                            + "other. A copy under target/test-classes is a STALE BUILD ARTIFACT, not a "
+                            + "source file: this document lived in src/test/resources until it was moved "
+                            + "to src/main/resources, and a target/ directory produced before that move "
+                            + "still holds the orphan because `test` alone never deletes it. It wins the "
+                            + "classpath because Surefire puts target/test-classes ahead of "
+                            + "target/classes, and because the orphan predates the "
+                            + "carddemo-test-fixtures.yml split it imports no datasource - which fails "
+                            + "every configuration-bound test in the suite at once. RUN `mvn -f "
+                            + "app/java/pom.xml clean test` (or clean verify); this failure is the "
+                            + "explanation for the others. Found: %s",
+                            TEST_PROFILE_RESOURCE, roots)
                     .hasSize(1);
             assertThat(roots.get(0).toString())
                     .as("AAP 0.2.5, 0.3.1 and 0.4.2 place it under src/main/resources and gate G5 "

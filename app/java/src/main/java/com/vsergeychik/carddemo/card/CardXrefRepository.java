@@ -107,11 +107,24 @@ import org.springframework.stereotype.Repository;
  * copybook; the copybook is never narrowed <em>down</em> to the fixture, and
  * {@code carddemo.datasets.CCXREF.record-length} stays 50 in every profile.
  *
- * <p>So <strong>this class decodes against the declared 50-byte width and rejects anything else.</strong>
- * A row of any other width means the driver is not presenting the record this repository is
- * configured for, which is a contract violation rather than an I/O outcome, and it is thrown rather
- * than disguised as a file status. Quietly accepting 36 bytes in a production path would let the
- * exact defect gate G16 exists to catch pass for a clean read.
+ * <p>So <strong>this class decodes against the declared 50-byte width and refuses anything else.</strong>
+ * Quietly accepting 36 bytes in a production path would let the exact defect gate G16 exists to catch
+ * pass for a clean read.
+ *
+ * <p><strong>The refusal is reported as a file status, not raised as an exception</strong> - status
+ * {@code '04'}, {@link FileStatus#RECORD_LENGTH_CONFLICT}, with a {@code RESP} of
+ * {@link FileStatus#LENGERR}. It was an exception once, on the reasoning that a driver presenting the
+ * wrong layout is a contract violation rather than an I/O outcome. That reasoning was wrong about who
+ * has to cope with it. Every caller of this class is a COBOL program, and no COBOL program has an arm
+ * for an exception: {@code app/cbl/CBACT03C.cbl:94} and {@code :98} test {@code XREFFILE-STATUS} and,
+ * for anything but {@code '00'} or {@code '10'}, move {@code 12} into {@code APPL-RESULT} and reach
+ * {@code DISPLAY 'ERROR READING XREFFILE'} ({@code :110}), {@code 9910-DISPLAY-IO-STATUS} ({@code :112})
+ * and {@code 9999-ABEND-PROGRAM} ({@code :113}). An escaping {@link IllegalArgumentException} reached
+ * none of the three, so a malformed row failed the run with no message, no {@code FILE STATUS} line and
+ * no {@code RETURN-CODE} of 12 - a strictly less diagnosable failure than the one COBOL already knew how
+ * to report. A row of the declared width whose content is not a readable record reports
+ * {@link #PERMANENT_ERROR_STATUS} for the same reason. Neither arm carries a record, so nothing that
+ * cannot be read is ever handed to a caller as though it could.
  *
  * <h2>One repository, one dataset, a second finder - gate G45</h2>
  * <p>{@code CCXREF} and {@code CXACAIX} are <strong>two access paths over one VSAM cluster</strong>,
@@ -544,8 +557,20 @@ public class CardXrefRepository {
      * <p>Lazily, because the record-image column's name is discovered from the backend and a repository
      * must be constructible in a context that has not reached its backend. {@code null} means "not yet
      * resolved"; the value it holds is immutable.
+     *
+     * <p><strong>What is memoised is the statement TEXT, never the proof that the dataset is there.</strong>
+     * {@link #openBrowse()} composes afresh through {@link #composeStatements()} on every call, precisely
+     * because it stands for {@code OPEN INPUT}: a memoised existence proof made the open's outcome depend
+     * on whether some earlier operation had already populated this field, so a dataset that had gone away
+     * since the last successful read reported {@code 'ERROR READING XREFFILE'} one line later instead of
+     * {@code 'ERROR OPENING XREFFILE'} at {@code app/cbl/CBACT03C.cbl:129}. Two paragraphs, two messages -
+     * and the open's message is the true one when it is the open that cannot be satisfied.
+     *
+     * <p>{@code volatile}, because a repository is a singleton reached from several threads and
+     * {@link Statements} is a deeply immutable record: a volatile write publishes it safely, and a
+     * volatile read never sees a half-built one.
      */
-    private Statements statements;
+    private volatile Statements statements;
 
     /**
      * Assembles the repository from the module's shared {@link JdbcTemplate}, the DD-name-keyed
@@ -909,18 +934,20 @@ public class CardXrefRepository {
      *       so this can only arise if the backing presentation of the dataset has lost that
      *       uniqueness; reporting it routes the caller to its {@code WHEN OTHER} arm, which is where
      *       an unexpected condition belongs;</li>
+     *   <li><strong>{@link Outcome#OTHER}</strong>, status {@link FileStatus#RECORD_LENGTH_CONFLICT} -
+     *       {@code '04'}, carrying no record - when the matched row is not {@value #RECORD_LENGTH} bytes
+     *       wide. See {@link #readRow(String, byte[], String)} for why a malformed <em>stored</em> row is
+     *       reported as a file status rather than raised as an exception;</li>
      *   <li><strong>{@link Outcome#OTHER}</strong>, status {@link #PERMANENT_ERROR_STATUS} - the
-     *       {@code WHEN OTHER} arm, for an I/O failure.</li>
+     *       {@code WHEN OTHER} arm, for an I/O failure, and for a row of the right width whose content is
+     *       not a readable {@code CARD-XREF-RECORD}.</li>
      * </ul>
      *
      * @param cardNumber the card number to look up; never {@code null}, and may be shorter or longer
      *                   than {@value #CARD_NUMBER_KEY_LENGTH} because the {@code PIC X} move reshapes
      *                   it. Pass an empty string to look up a key of all spaces
      * @return the discriminated outcome; never {@code null}
-     * @throws NullPointerException     if {@code cardNumber} is {@code null}
-     * @throws IllegalArgumentException if a stored row is not exactly {@value #RECORD_LENGTH} bytes,
-     *                                  which means the driver is not presenting the record this
-     *                                  repository is configured for
+     * @throws NullPointerException if {@code cardNumber} is {@code null}
      */
     public ReadResult readByCardNumber(String cardNumber) {
         Objects.requireNonNull(cardNumber, "A card number is required to read the "
@@ -973,11 +1000,19 @@ public class CardXrefRepository {
      * the only one. "First" is well defined because the statement orders by the record image, hence by
      * base key, so duplicates come back in card-number order.
      *
+     * <p><strong>A malformed stored row is an outcome, not an exception.</strong> A matched row that is
+     * not {@value #RECORD_LENGTH} bytes wide reports {@link FileStatus#RECORD_LENGTH_CONFLICT}
+     * ({@code '04'}) and one of the declared width that is not a readable record reports
+     * {@link #PERMANENT_ERROR_STATUS}; both carry no record and both route the caller to its
+     * {@code WHEN OTHER} arm. See {@link #readRow(String, byte[], String)} for why stored data is
+     * reported through the file status rather than through the exception a defective <em>argument</em>
+     * earns.
+     *
      * @param accountId the account id to look up; never negative, because {@code PIC 9(11)} is
      *                  unsigned, and never wider than {@value #ACCOUNT_ID_KEY_LENGTH} digits
      * @return the discriminated outcome; never {@code null}
-     * @throws IllegalArgumentException if {@code accountId} is negative, or if a stored row is not
-     *                                  exactly {@value #RECORD_LENGTH} bytes
+     * @throws IllegalArgumentException if {@code accountId} is negative, which no {@code PIC 9(11)}
+     *                                  value can be
      */
     public ReadResult readByAccountIdViaAltIndex(long accountId) {
         String keyImage = codec.movePic9(accountId, ACCOUNT_ID_KEY_LENGTH);
@@ -1009,13 +1044,19 @@ public class CardXrefRepository {
      * performs; treating it as a lookup that simply misses would hide the defect at the one place it is
      * still cheap to see.
      *
+     * <p>A malformed <em>stored</em> row is the other side of that line and is reported rather than
+     * raised: not {@value #RECORD_LENGTH} bytes wide reports
+     * {@link FileStatus#RECORD_LENGTH_CONFLICT} ({@code '04'}) and the declared width but unreadable
+     * content reports {@link #PERMANENT_ERROR_STATUS}. A defective argument is the caller's defect and
+     * earns an exception; a defective row is an I/O condition and earns a file status. See
+     * {@link #readRow(String, byte[], String)}.
+     *
      * @param accountIdKeyImage the eleven-byte key image, all digits; a shorter image is left-zero
      *                          filled and a longer one keeps its low-order
      *                          {@value #ACCOUNT_ID_KEY_LENGTH} digits
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException     if {@code accountIdKeyImage} is {@code null}
-     * @throws IllegalArgumentException if {@code accountIdKeyImage} is empty or holds a non-digit, or
-     *                                  if a stored row is not exactly {@value #RECORD_LENGTH} bytes
+     * @throws IllegalArgumentException if {@code accountIdKeyImage} is empty or holds a non-digit
      */
     public ReadResult readByAccountIdViaAltIndex(String accountIdKeyImage) {
         Objects.requireNonNull(accountIdKeyImage, "An account id key image is required to read the "
@@ -1109,7 +1150,17 @@ public class CardXrefRepository {
             // the declared width. That is the point of pushing the predicate down: a malformed row
             // elsewhere in the dataset is not this read's business, and failing this read because of one
             // would report a defect against a key that has nothing to do with it.
-            matches.add(decodeRow(rowImage));
+            //
+            // A matched row that cannot be decoded is reported as a status rather than thrown, through the
+            // same seam the browse uses: a width conflict is '04' and unreadable content is the
+            // permanent-error status. The decode used to run bare here, so a 49-byte or non-digit row left
+            // an IllegalArgumentException escaping to a COBOL caller that has no arm for one - no message,
+            // no file status, no RETURN-CODE.
+            ReadResult row = readRow(ddName, rowImage, "by key");
+            if (!row.isFound()) {
+                return row;
+            }
+            matches.add(new DecodedRow(row.record().orElseThrow(), row.requireStoredImage()));
         }
         if (matches.isEmpty()) {
             // WHEN DFHRESP(NOTFND) / INVALID KEY. A normal branch in every consumer, never an
@@ -1221,7 +1272,16 @@ public class CardXrefRepository {
      * dataset still fails here - which is what {@code OPEN INPUT} would report - and is reported as
      * {@link BrowseCursor#openStatus()} of {@link #PERMANENT_ERROR_STATUS}, the status
      * {@code CBACT03C} tests at {@code :121} before moving {@code 12} into {@code APPL-RESULT} and
-     * abending. Nothing is thrown: the open reports, and the caller's guard chain decides.
+     * abending. Nothing is thrown: the open reports, and the caller's guard chain decides. A relation that
+     * answers the describe but presents no record-image column reports the same status, because that too
+     * is an open-time fact about the dataset rather than a condition COBOL could express any other way.
+     *
+     * <p><strong>The probe runs on every call, never on the strength of an earlier one.</strong> It used to
+     * go through the memoising statement accessor, which skipped the describe entirely once any operation
+     * had resolved the statements - so after one successful pass this method reported {@link FileStatus#OK}
+     * over a dataset that had since been dropped, and the failure appeared one line later wearing the read
+     * paragraph's message, {@code 'ERROR READING XREFFILE'}. The open's outcome must not depend on what
+     * ran before it: the statement <em>text</em> is memoised, the proof that the dataset is there is not.
      *
      * <p><strong>All browse state lives on the returned cursor</strong>, and after this change that state
      * is one record image rather than the whole dataset - so two callers browsing at once hold two
@@ -1242,7 +1302,14 @@ public class CardXrefRepository {
             // The dataset is described, not read: the probe's predicate is false on every row, so this
             // establishes that the relation exists and presents a record-image column without any of it
             // crossing the wire. That is what an OPEN INPUT establishes too.
-            resolveStatements();
+            //
+            // composeStatements() rather than resolveStatements(), and the difference is the defect this
+            // guards: the memoising accessor skips the describe once any earlier operation has populated
+            // the statements, so an OPEN of a dataset that had gone away since reported '00' and the
+            // failure surfaced one line later under 'ERROR READING XREFFILE'. An OPEN proves the dataset
+            // is there on every call, exactly as OPEN INPUT does, and never on the strength of an earlier
+            // operation's success.
+            composeStatements();
         } catch (DataAccessException translated) {
             // ERROR OPENING XREFFILE. app/cbl/CBACT03C.cbl:121-127 moves 12 into APPL-RESULT for any
             // status but '00', then displays and abends - all of which is the caller's, not ours. What
@@ -1250,6 +1317,17 @@ public class CardXrefRepository {
             BackendDiagnostic diagnostic = BackendDiagnostic.of(translated);
             LOG.error("Could not open a browse of the " + BASE_DD_NAME + " base cluster - "
                     + diagnostic.describe() + "; reporting file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
+            return new BrowseCursor(this, PERMANENT_ERROR_STATUS);
+        } catch (IllegalStateException unusable) {
+            // The relation answered the describe but presents nothing at the record-image position, so
+            // there is no record to read and no statement that could be composed over it. That is a fact
+            // about the dataset, discovered at open time, and it belongs on the same arm as an unreachable
+            // dataset rather than escaping as an exception the COBOL has no equivalent for: OPEN INPUT
+            // reports a FILE STATUS and CBACT03C:121 branches on it. The message is this module's own text
+            // and carries no value the driver supplied, so it is safe to log verbatim.
+            LOG.error("Could not open a browse of the " + BASE_DD_NAME + " base cluster: "
+                    + unusable.getMessage() + "; reporting file status "
                     + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
             return new BrowseCursor(this, PERMANENT_ERROR_STATUS);
         }
@@ -1360,6 +1438,10 @@ public class CardXrefRepository {
      * through {@link FixedWidthCodec#padToDeclaredWidth(byte[], int)}. Accepting 36 bytes here would
      * make risk R-F invisible in exactly the code path gate G16 protects.
      *
+     * <p>The refusal is an exception <em>here</em> and a file status by the time a caller sees it:
+     * {@link #readRow(String, String, String)} is the only route to this method and translates it. So the
+     * strictness stays where the width is known and the reporting stays where the caller's guard chain is.
+     *
      * @param rowImage the stored record image; never {@code null} by the time it reaches here
      * @return the record span
      * @throws IllegalArgumentException if the image does not encode to exactly
@@ -1403,6 +1485,152 @@ public class CardXrefRepository {
      */
     private DecodedRow decodeRow(byte[] rowImage) {
         return decodeArea(codec.wrap(rowImage, CardXrefRecord.LAYOUT));
+    }
+
+    /**
+     * Decodes one stored row and reports it, turning a row that <strong>cannot be decoded</strong> into
+     * the file status the COBOL would have seen instead of letting an exception escape.
+     *
+     * <h2>Why the decode's refusal has to be translated here</h2>
+     * <p>{@link FixedWidthCodec#wrap(byte[], FixedWidthRecord.RecordLayout)} requires exactly
+     * {@value #RECORD_LENGTH} bytes and {@link CardXrefRecord#decodeSpan(FixedWidthRecord,
+     * FixedWidthCodec)} requires digits in both numeric spans; each refuses with an
+     * {@link IllegalArgumentException}, which is right for a defect in a <em>caller</em> and wrong for a
+     * defect in <em>stored data</em>. A malformed row is an I/O condition: {@code CBACT03C} tests
+     * {@code XREFFILE-STATUS} at {@code :94} and {@code :98} and, for anything but {@code '00'} or
+     * {@code '10'}, moves {@code 12} into {@code APPL-RESULT} and reaches
+     * {@code DISPLAY 'ERROR READING XREFFILE'} ({@code :110}), the {@code FILE STATUS} display
+     * ({@code :112}) and the abend ({@code :113}). An escaping exception skipped all three: the run failed
+     * with no COBOL-visible diagnostic, no file status and no {@code RETURN-CODE} of 12.
+     *
+     * <p>The condition is <strong>reported as two distinct statuses</strong>, because they are two
+     * distinct conditions:
+     * <ul>
+     *   <li>a row that is not {@value #RECORD_LENGTH} bytes wide reports
+     *       {@link FileStatus#RECORD_LENGTH_CONFLICT} - {@code '04'}, which is precisely COBOL's status
+     *       for a record whose length does not conform to the file's fixed attributes, paired with a
+     *       {@code RESP} of {@link FileStatus#LENGERR} for the online callers that put the response on a
+     *       screen - the same condition the sibling {@link CardRepository} reports for the identical
+     *       malformation of {@code CARD-RECORD}, so one defect does not answer with two different
+     *       responses depending on which cluster carried it.
+     *       {@code app/data/ASCII/cardxref.txt} makes this the likeliest malformation in this estate: its
+     *       rows are 36 bytes where {@code app/cpy/CVACT03Y.cpy} declares 50, and widening them is the
+     *       parity harness's job (gate G16), not this class's;</li>
+     *   <li>a row of the right width whose numeric span holds a non-digit - or whose bytes are not data in
+     *       the configured code page - reports {@link #PERMANENT_ERROR_STATUS}. The record is present and
+     *       cannot be read, which is the same class of defect as a row with no image at all.</li>
+     * </ul>
+     *
+     * <p>No record travels on either arm, and that is the {@link ReadResult} invariant rather than a
+     * choice: a record is carried exactly for {@code OK} and {@code DUPLICATE}. Nor does {@code CBACT03C}
+     * want one - it tests {@code '00'} before it displays anything, so a status of {@code '04'} reaches
+     * its abend without the record area being written.
+     *
+     * <p>The observed width travels in the log line, not in the outcome: this repository reports a
+     * two-character status and a CICS response, and a measurement of a stored row is neither. The status
+     * tells the caller what to do; the log tells an operator what was wrong.
+     *
+     * @param ddName   the access path that was read, for the outcome and the diagnostic
+     * @param rowImage the stored bytes, exactly as the configured representation presented them
+     * @param attempt  what was being read, phrased to complete "... of the ... access path {attempt}"
+     * @return the record, or the status the malformation reports; never {@code null}
+     */
+    private ReadResult readRow(String ddName, byte[] rowImage, String attempt) {
+        if (rowImage.length != RECORD_LENGTH) {
+            return lengthConflict(ddName, rowImage.length, attempt);
+        }
+        try {
+            DecodedRow decoded = decodeRow(rowImage);
+            return ReadResult.found(ddName, decoded.record(), decoded.storedImage());
+        } catch (IllegalArgumentException undecodable) {
+            return undecodableRow(ddName, undecodable, attempt);
+        }
+    }
+
+    /**
+     * The character form of {@link #readRow(String, byte[], String)}, for the keyed reads.
+     *
+     * <p>The keyed path reads its rows as characters and decodes through
+     * {@link #decodeRow(String)}, which re-encodes them in the dataset code page with
+     * {@link FixedWidthCodec#encodeImage(String, String)} - a step that <em>refuses</em> a character the
+     * code page cannot represent rather than substituting one. The guard here therefore measures
+     * characters, and the encode is left on the path rather than gone around.
+     *
+     * <p><strong>The byte-exact width guard is not weakened by measuring characters.</strong> Under both
+     * configured code pages - {@code IBM037} and {@code US-ASCII} - each character occupies exactly one
+     * byte, so the two measurements agree. Where they could not, the check inside
+     * {@link FixedWidthCodec#wrap(byte[], FixedWidthRecord.RecordLayout)} still holds the encoded image to
+     * exactly {@value #RECORD_LENGTH} <em>bytes</em>, and its refusal is caught below - so a row that
+     * counted fifty characters and encoded to some other number of bytes is still reported rather than
+     * decoded, as {@link #PERMANENT_ERROR_STATUS} instead of {@code '04'}. Nothing of the wrong width
+     * reaches a caller either way.
+     *
+     * @param ddName   the access path that was read
+     * @param rowImage the stored row, as the configured representation presented it
+     * @param attempt  what was being read
+     * @return the record, or the status the malformation reports; never {@code null}
+     */
+    private ReadResult readRow(String ddName, String rowImage, String attempt) {
+        if (rowImage.length() != RECORD_LENGTH) {
+            return lengthConflict(ddName, rowImage.length(), attempt);
+        }
+        try {
+            DecodedRow decoded = decodeRow(rowImage);
+            return ReadResult.found(ddName, decoded.record(), decoded.storedImage());
+        } catch (IllegalArgumentException undecodable) {
+            return undecodableRow(ddName, undecodable, attempt);
+        }
+    }
+
+    /**
+     * Reports a row whose width disagrees with the copybook as {@code FILE STATUS '04'} with a
+     * {@code RESP} of {@link FileStatus#LENGERR}.
+     *
+     * <p>The observed width travels in the log line and not in the outcome. This repository reports a
+     * two-character status and a CICS response; a measurement of a stored row is neither, and a
+     * {@code RESP2} that carried one would put a number on a screen - {@code app/cbl/COACTVWC.cbl}
+     * renders {@code ERROR-RESP2} verbatim - that looks like a CICS reason code and is not one.
+     *
+     * @param ddName the access path that was read
+     * @param width  the width the row actually was
+     * @param attempt what was being read
+     * @return the record-length-conflict outcome
+     */
+    private static ReadResult lengthConflict(String ddName, int width, String attempt) {
+        // The row is there and its length disagrees with the file's fixed attributes, which is a condition
+        // COBOL names rather than an exception it has no word for.
+        LOG.error("A row of the " + ddName + " access path read " + attempt + " is " + width
+                + " byte(s) wide, but CARD-XREF-RECORD is declared " + RECORD_LENGTH
+                + " bytes by app/cpy/CVACT03Y.cpy; reporting file status "
+                + FileStatus.toStatusImage(FileStatus.RECORD_LENGTH_CONFLICT)
+                + " rather than decoding fields from offsets that would not be theirs. A row that omits "
+                + "the trailing FILLER X(" + CardXrefRecord.FILLER_LENGTH + ") must be widened with "
+                + "FixedWidthCodec.padToDeclaredWidth first");
+        return ReadResult.lengthError(ddName);
+    }
+
+    /**
+     * Reports a row of the declared width whose content is not a readable record.
+     *
+     * <p>Only this module's own text is logged, and the refusal's <em>type</em> rather than its message: a
+     * codec message is composed around the span it refused, and a cross-reference row carries a card
+     * number and an account identifier (CWE-532), one of whose bytes could split a log line in two
+     * (CWE-117).
+     *
+     * @param ddName      the access path that was read
+     * @param undecodable the refusal the codec raised
+     * @param attempt     what was being read
+     * @return the permanent-error outcome
+     */
+    private static ReadResult undecodableRow(String ddName, IllegalArgumentException undecodable,
+                                             String attempt) {
+        LOG.error("A row of the " + ddName + " access path read " + attempt + " is " + RECORD_LENGTH
+                + " bytes but is not a readable CARD-XREF-RECORD - a numeric span holds something other "
+                + "than digits, or a stored byte is not a character in the configured dataset code page ("
+                + undecodable.getClass().getName() + "); reporting file status "
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                + " rather than reporting a record that is present as absent");
+        return ReadResult.other(ddName, PERMANENT_ERROR_STATUS);
     }
 
     /**
@@ -1457,21 +1685,48 @@ public class CardXrefRepository {
     private Statements resolveStatements() {
         Statements resolved = this.statements;
         if (resolved == null) {
-            ResultSetExtractor<String> columnNameExtractor =
-                    CardXrefRepository::extractRecordImageColumn;
-            String baseColumn = baseRelation.rememberRecordImageColumn(
-                    jdbcTemplate.query(baseRelation.describeStatement(), columnNameExtractor));
-            String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(
-                    jdbcTemplate.query(alternateIndexRelation.describeStatement(),
-                            columnNameExtractor));
-            resolved = new Statements(
-                    baseRelation.selectByKey(baseColumn),
-                    alternateIndexRelation.selectByKey(alternateColumn),
-                    baseRelation.selectAllAscending(baseColumn),
-                    baseRelation.selectAfterAscending(baseColumn));
-            this.statements = resolved;
+            resolved = composeStatements();
         }
         return resolved;
+    }
+
+    /**
+     * Describes both relations and composes the statements <strong>unconditionally</strong>, republishing
+     * the memo {@link #resolveStatements()} reads.
+     *
+     * <p>This is the method {@link #openBrowse()} calls, and the distinction between the two is the whole
+     * of {@code OPEN INPUT}. {@code app/cbl/CBACT03C.cbl:118-134} opens the file and tests the status
+     * before it reads anything, so the open has to be able to fail on its own account. Going through the
+     * memoising accessor there meant that once any operation had resolved the statements, the describe was
+     * skipped and the open reported {@link FileStatus#OK} over a dataset that was no longer reachable -
+     * the failure then surfaced on the first read, under the read paragraph's message. The open now issues
+     * the same dataset-scoped describe every time, so an absent, dropped or unreachable dataset is
+     * reported by the paragraph that could not be satisfied.
+     *
+     * <p>The cost is one metadata round trip per {@code OPEN}, which is the correct place to pay it: the
+     * COBOL opens once per run and then reads, and every read after the open reuses the text this composed.
+     *
+     * @return the freshly composed statements; never {@code null}
+     * @throws DataAccessException   if either relation cannot be described
+     * @throws IllegalStateException if either relation presents no usable record-image column
+     */
+    private Statements composeStatements() {
+        ResultSetExtractor<String> columnNameExtractor =
+                CardXrefRepository::extractRecordImageColumn;
+        String baseColumn = baseRelation.rememberRecordImageColumn(
+                jdbcTemplate.query(baseRelation.describeStatement(), columnNameExtractor));
+        String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(
+                jdbcTemplate.query(alternateIndexRelation.describeStatement(),
+                        columnNameExtractor));
+        Statements composed = new Statements(
+                baseRelation.selectByKey(baseColumn),
+                alternateIndexRelation.selectByKey(alternateColumn),
+                baseRelation.selectAllAscending(baseColumn),
+                baseRelation.selectAfterAscending(baseColumn));
+        // Published after it is fully built, through a volatile write, so a concurrent reader sees either
+        // the previous complete value or this one and never a partially initialised record.
+        this.statements = composed;
+        return composed;
     }
 
     /**
@@ -1779,6 +2034,39 @@ public class CardXrefRepository {
         }
 
         /**
+         * A row whose width disagrees with the copybook: status
+         * {@link FileStatus#RECORD_LENGTH_CONFLICT}, {@code RESP} of {@link FileStatus#LENGERR}.
+         *
+         * <p><strong>Why this needs its own factory rather than {@link #other(String, String)}.</strong>
+         * That one reports {@link FileStatus#NOTOPEN} as the response, which is right for the failure it
+         * was written for - a dataset that could not be reached - and wrong for this one. The four online
+         * consumers of the keyed reads all move the response onto the screen:
+         * {@code app/cbl/COACTVWC.cbl} renders {@code ERROR-RESP} verbatim, and {@code COTRN02C},
+         * {@code COBIL00C} and {@code COACTUPC} display it on their {@code WHEN OTHER} arms. Reporting
+         * {@code NOTOPEN} for a record that was read and was the wrong length would put a number in front
+         * of an operator that names a condition which did not occur.
+         *
+         * <p>{@code LENGERR} is what CICS raises when a {@code READ} delivers a record longer than the
+         * {@code INTO} area, so it is the condition this actually is - and it is what the sibling
+         * {@link CardRepository} already reports for the identical malformation of {@code CARD-RECORD},
+         * which means one width defect no longer answers with two different responses depending on which
+         * cluster carried it.
+         *
+         * <p>The status stays {@code '04'} because that is the batch quantity the guard chains test, and
+         * the two are the same fact in two vocabularies: {@code app/cbl/CBACT03C.cbl:94} compares
+         * {@code XREFFILE-STATUS} and the online programs compare {@code WS-RESP-CD}, so both have to be
+         * populated with the same event and neither may be populated with a different one.
+         *
+         * @param ddName the access path that was read
+         * @return the outcome
+         */
+        public static ReadResult lengthError(String ddName) {
+            return new ReadResult(ddName, FileStatus.RECORD_LENGTH_CONFLICT, Outcome.OTHER,
+                    Optional.empty(), Optional.empty(), FileStatus.LENGERR, CICS_RESP2_NOT_APPLICABLE,
+                    Optional.empty());
+        }
+
+        /**
          * The {@code WHEN OTHER} arm, carrying what the backend actually said about the refusal.
          *
          * <p>The status and the {@code RESP} are what the caller branches on, because those are the
@@ -2078,7 +2366,19 @@ public class CardXrefRepository {
          *   <li><strong>{@link Outcome#OTHER}</strong>, status
          *       {@link CardXrefRepository#PERMANENT_ERROR_STATUS}, when a row's record image is absent.
          *       There is a record and it cannot be read, which is an I/O defect and not an end of
-         *       file.</li>
+         *       file. The same status reports a row of the declared width whose content is not a
+         *       readable record - a non-digit in a numeric span, or a byte that is not a character in the
+         *       configured code page;</li>
+         *   <li><strong>{@link Outcome#OTHER}</strong>, status
+         *       {@link FileStatus#RECORD_LENGTH_CONFLICT} - {@code '04'} - when the row is not
+         *       {@value CardXrefRepository#RECORD_LENGTH} bytes wide. COBOL's own status for a record
+         *       whose length does not conform to the file's fixed attributes, and reported rather than
+         *       thrown for the reason set out on
+         *       {@link CardXrefRepository#readRow(String, byte[], String)}: an escaping
+         *       {@code IllegalArgumentException} reached none of {@code app/cbl/CBACT03C.cbl:110-113}, so
+         *       a malformed row failed the run with no message, no file status and no
+         *       {@code RETURN-CODE} of 12. The 36-byte form of {@code app/data/ASCII/cardxref.txt} is the
+         *       likeliest way to meet it.</li>
          * </ul>
          *
          * <p>Reading a closed cursor is a <strong>programming error, not an I/O outcome</strong>, and
@@ -2089,10 +2389,7 @@ public class CardXrefRepository {
          * have produced.
          *
          * @return the discriminated outcome; never {@code null}
-         * @throws IllegalStateException    if this cursor has been closed
-         * @throws IllegalArgumentException if the row is not exactly
-         *                                  {@value CardXrefRepository#RECORD_LENGTH} bytes, or holds a
-         *                                  non-digit in a numeric span
+         * @throws IllegalStateException if this cursor has been closed
          */
         public ReadResult readNext() {
             if (closed) {
@@ -2150,8 +2447,7 @@ public class CardXrefRepository {
             // advances past the record it reported an error on.
             position = rowImage.clone();
             returned++;
-            DecodedRow decoded = repository.decodeRow(rowImage);
-            return ReadResult.found(BASE_DD_NAME, decoded.record(), decoded.storedImage());
+            return repository.readRow(BASE_DD_NAME, rowImage, "during a browse");
         }
 
         /**

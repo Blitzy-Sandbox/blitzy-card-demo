@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.user;
 
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
@@ -221,8 +222,23 @@ public class UserAddController {
      * {@link CicsAid#DFHENTER} - a CICS terminal always presents some attention identifier, and
      * {@code ENTER} is the only default that cannot reach a branch the operator could not have
      * reached.
+     *
+     * <p>The name is {@link AidRequestParameter#CANONICAL_NAME}, shared with every other online route
+     * rather than spelled here. This route is one of the two that used to declare
+     * {@link AidRequestParameter#ALTERNATE_NAME} instead, which meant {@code GET /api/users} and
+     * {@code POST /api/users} - one path, two verbs - understood different names for the same byte, and
+     * the unrecognised one was discarded by Spring with the key silently becoming {@code ENTER}. Both
+     * spellings are now bound; see {@link #EIBAID_PARAM_ALIAS}.
      */
-    public static final String EIBAID_PARAM = "eibAid";
+    public static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /**
+     * The alternate spelling of {@link #EIBAID_PARAM}, and the name this route originally declared.
+     *
+     * <p>Still accepted, here and on every other online route, so that no call which already used it
+     * becomes a silently ignored key.
+     */
+    public static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
 
     /**
      * Query parameter carrying {@code EIBCALEN}, the length of the communication area passed in.
@@ -489,23 +505,33 @@ public class UserAddController {
      * infrastructure in the path of the program's own tests.
      *
      * @param request  the {@code xxxI} projection of the received map; may be {@code null}
-     * @param eibAid   the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value; optional
+     * @param eibAid   the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value under the
+     *                 alternate spelling this route originally declared; optional
      * @param eibcalen the communication-area length; optional, derived from the payload when absent
+     * @param eibaid   the same AID value under {@link AidRequestParameter#CANONICAL_NAME}, the spelling
+     *                 every online route shares. At most one of the two need be sent; sending both with
+     *                 different values is refused
      * @return the {@code xxxO} projection of the map the program painted, or of the screen it
      *         transferred to
-     * @throws IllegalArgumentException if {@code eibAid} is outside {@code 0}-{@code 255}, or if
-     *                                  {@code eibcalen} is neither {@code 0} nor
-     *                                  {@value NavigationContext#COMMAREA_LENGTH} or disagrees with what
-     *                                  the payload carried
+     * @throws IllegalArgumentException if the AID is outside {@code 0}-{@code 255}, if the two AID
+     *                                  spellings disagree, or if {@code eibcalen} is neither {@code 0}
+     *                                  nor {@value NavigationContext#COMMAREA_LENGTH} or disagrees with
+     *                                  what the payload carried
      */
+    // The canonical AID spelling is appended last rather than placed beside its alternate: Spring binds
+    // a query parameter by the name in its annotation and never by position, so appending leaves the
+    // three parameters this method already had meaning exactly what they meant to every direct caller
+    // instead of quietly turning a commarea length into an attention identifier.
     @PostMapping(path = USERS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Transactional
     public ScreenResponse<UserAddResponse> addUser(
             @Valid @RequestBody(required = false) UserAddRequest request,
-            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibAid,
-            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen) {
-        ProgramState state =
-                mainPara(request, resolveEibAid(eibAid, request), resolveEibcalen(eibcalen, request));
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid,
+            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen,
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
+        ProgramState state = mainPara(request,
+                resolveEibAid(AidRequestParameter.resolve(eibaid, eibAid), request),
+                resolveEibcalen(eibcalen, request));
         return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 

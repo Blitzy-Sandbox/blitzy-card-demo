@@ -1102,9 +1102,12 @@ class AccountRepositoryTest {
             String keyed = " WHERE " + column + " LIKE ? ESCAPE '\\'";
             assertThat(statements.selectFirst())
                     .isEqualTo("SELECT * FROM " + dataset + " ORDER BY " + column + " ASC");
+            // The advancing read also qualifies a row whose record image is absent - "OR <column> IS
+            // NULL" - because a comparison against a null is UNKNOWN and such a row would otherwise be
+            // invisible to the predicate, letting the browse skip a record it must fail on instead.
             assertThat(statements.selectNext())
-                    .isEqualTo("SELECT * FROM " + dataset + " WHERE " + column + " > ? ORDER BY "
-                            + column + " ASC");
+                    .isEqualTo("SELECT * FROM " + dataset + " WHERE (" + column + " > ? OR " + column
+                            + " IS NULL) ORDER BY " + column + " ASC");
             assertThat(statements.selectByKey())
                     .isEqualTo("SELECT * FROM " + dataset + " WHERE " + column
                             + " LIKE ? ESCAPE '\\' ORDER BY " + column + " ASC");

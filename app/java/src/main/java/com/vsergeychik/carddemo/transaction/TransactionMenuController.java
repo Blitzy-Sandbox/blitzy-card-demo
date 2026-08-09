@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.transaction;
 
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DateHeader;
@@ -370,8 +371,18 @@ public class TransactionMenuController {
     /** {@code GET /api/transactions} - the REST projection of CSD transaction {@code CT00}, AAP 0.3.9. */
     public static final String TRANSACTIONS_PATH = "/api/transactions";
 
-    /** The optional query parameter carrying the raw {@code EIBAID} byte as {@code 0..255}. */
-    static final String EIBAID_PARAM = "eibaid";
+    /**
+     * The optional query parameter carrying the raw {@code EIBAID} byte as {@code 0..255}.
+     *
+     * <p>{@link AidRequestParameter#CANONICAL_NAME}, shared with every other online route rather than
+     * spelled here, so no screen accepts a name another screen rejects. A spelling that reaches no
+     * handler is discarded by Spring, and the request then runs as {@link CicsAid#DFHENTER} with nothing
+     * saying the key was not understood.
+     */
+    static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /** The alternate spelling of {@link #EIBAID_PARAM}, accepted on every online route. */
+    static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
 
     /** The lowest value an unsigned {@code EIBAID} byte can carry. */
     private static final int AID_MIN = 0;
@@ -669,23 +680,34 @@ public class TransactionMenuController {
      * browse cursor and the screen the operator was looking at - never a server-side session (gate
      * G37).
      *
+     * <p><strong>Both accepted spellings of the AID parameter are bound</strong> and folded by
+     * {@link AidRequestParameter#resolve(Integer, Integer)}, so this route understands the same name as
+     * every other online route rather than one of two.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start
-     * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255}, or
-     *                {@code null} to take it from the payload's {@code EIBAID} token
+     * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255} under the
+     *                canonical parameter name, or {@code null} to take it from the payload's
+     *                {@code EIBAID} token
+     * @param eibAid  the same value under the alternate spelling; at most one of the two need be sent
      * @return the {@code COTRN0AO} projection, or - on a transfer of control - the navigation triple
      *         naming where the client goes next
-     * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
+     * @throws IllegalArgumentException if the AID is outside {@code 0..255}, or if both spellings are
+     *                                  present and disagree
      */
+    // The alternate spelling is appended last: Spring binds by the name in the annotation and never by
+    // position, so the two parameters this method already had keep their meaning for every direct caller.
     @GetMapping(path = TRANSACTIONS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     public ScreenResponse<TransactionListResponse> getTransactions(
             @Valid @RequestBody(required = false) TransactionListRequest request,
-            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
         // The work area is created here rather than inside the two-argument overload so that the two
         // values COTRN00C sets which are presentation metadata - the MOVE -1 cursor request and
         // WS-SEND-ERASE-FLG - are still reachable when the envelope is built. Neither is a payload
         // member and neither ever becomes one, which is exactly why they need the envelope to travel.
         WorkArea ws = new WorkArea();
-        TransactionListResponse painted = listTransactions(request, resolveEibAid(request, eibaid), ws);
+        TransactionListResponse painted = listTransactions(
+                request, resolveEibAid(request, AidRequestParameter.resolve(eibaid, eibAid)), ws);
         return ScreenResponse.of(painted, ws.screenMetadata(painted));
     }
 

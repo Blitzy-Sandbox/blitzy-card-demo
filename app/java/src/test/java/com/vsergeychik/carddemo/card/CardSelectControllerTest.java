@@ -22,6 +22,7 @@ import com.vsergeychik.carddemo.card.dto.CardSelectRequest.ThisProgCommarea;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse;
 import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.AbendException;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
@@ -1863,7 +1864,7 @@ class CardSelectControllerTest {
         @DisplayName("a cold start with no body answers 200 and prompts for input")
         void coldStart() {
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
-                    controller.viewCardDetail(CARD_NUMBER, null, null, null);
+                    controller.viewCardDetail(CARD_NUMBER, null, null, null, null);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
             CardSelectResponse body = screenOf(answer);
@@ -1886,7 +1887,7 @@ class CardSelectControllerTest {
             sent.setThisProgCommarea(new ThisProgCommarea("COCRDLIC", "CCLI"));
 
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
-                    controller.viewCardDetail(CARD_NUMBER, sent, (int) CicsAid.DFHENTER, null);
+                    controller.viewCardDetail(CARD_NUMBER, sent, (int) CicsAid.DFHENTER, null, null);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
             CardSelectResponse body = screenOf(answer);
@@ -1908,7 +1909,7 @@ class CardSelectControllerTest {
         @DisplayName("a bodiless call with eibcalen = 0 is the cold start, stated explicitly")
         void anExplicitZeroEibcalenIsTheColdStart() {
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
-                    CARD_NUMBER, null, null, CardSelectController.NO_COMMAREA_LENGTH);
+                    CARD_NUMBER, null, null, CardSelectController.NO_COMMAREA_LENGTH, null);
 
             CardSelectResponse body = screenOf(answer);
             assertThat(body.getInfomsgo()).isEqualTo(CardSelectController.WS_PROMPT_FOR_INPUT);
@@ -1921,7 +1922,7 @@ class CardSelectControllerTest {
             // 243, not -13: EIBAID travels as the UNSIGNED value of the byte, which is what the
             // 0..255 guard requires and what a query string can carry.
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
-                    CARD_NUMBER, null, Byte.toUnsignedInt(CicsAid.DFHPF3), null);
+                    CARD_NUMBER, null, Byte.toUnsignedInt(CicsAid.DFHPF3), null, null);
 
             CardSelectResponse body = screenOf(answer);
             assertThat(body.getNextProgram().strip()).isEqualTo("COMEN01C");
@@ -1932,7 +1933,7 @@ class CardSelectControllerTest {
         @DisplayName("an over-wide card number in the path is REFUSED, never truncated into another card")
         void anOverWideCardNumberIsRefused() {
             assertThatThrownBy(() -> controller.viewCardDetail(
-                    CARD_NUMBER + "9999", null, null, null))
+                    CARD_NUMBER + "9999", null, null, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("CARDSID");
 
@@ -1945,7 +1946,7 @@ class CardSelectControllerTest {
         void anOverWideAccountFilterIsRefused() {
             CardSelectRequest sent = request(CARD_NUMBER, "123456789012", null);
 
-            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, sent, null, null))
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, sent, null, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("ACCTSID");
             verifyNoInteractions(repository);
@@ -1973,7 +1974,7 @@ class CardSelectControllerTest {
             NavigationContext otherCard = fromCardList().withCardNum(4_000_000_000_000_002L);
 
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
-                    CARD_NUMBER, request("  ", ACCOUNT_ID, otherCard), null, null);
+                    CARD_NUMBER, request("  ", ACCOUNT_ID, otherCard), null, null, null);
 
             verify(repository).readByCardNumber(CARD_NUMBER);
             verify(repository, never()).readByCardNumber("4000000000000002");
@@ -2015,7 +2016,7 @@ class CardSelectControllerTest {
             // A continuing conversation, because a cold start paints an initialised map and echoes no
             // filter at all - :268's EIBCALEN = 0 arm discards what was typed.
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
-                    CARD_NUMBER, request(stated, ACCOUNT_ID, fromCardList()), null, null);
+                    CARD_NUMBER, request(stated, ACCOUNT_ID, fromCardList()), null, null, null);
 
             assertThat(screenOf(answer).getCardsido()).isEqualTo(CARD_NUMBER);
         }
@@ -2048,13 +2049,23 @@ class CardSelectControllerTest {
         }
 
         @Test
-        @DisplayName("an EIBAID outside 0..255 is refused rather than narrowed to another key")
+        @DisplayName("an EIBAID outside 0..255 is refused rather than narrowed to another key, through "
+                + "either accepted spelling")
         void anOutOfRangeAidIsRefused() {
-            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, 499, null))
+            // The message names the canonical parameter rather than a literal, because the two accepted
+            // spellings are one parameter and the canonical one is what a caller is pointed at.
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, 499, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("eibAid");
-            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, -14, null))
+                    .hasMessageContaining(CardSelectController.EIBAID_PARAM);
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, -14, null, null))
                     .isInstanceOf(IllegalArgumentException.class);
+
+            // And through the canonical spelling, which is the parameter this route did not bind before:
+            // an out-of-range value sent that way used to be discarded by Spring and the request executed
+            // as ENTER.
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, null, null, 499))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(CardSelectController.EIBAID_PARAM);
             verifyNoInteractions(repository);
         }
 
@@ -2062,10 +2073,10 @@ class CardSelectControllerTest {
         @DisplayName("an eibcalen the carrier does not support is refused")
         void aContradictingEibcalenIsRefused() {
             assertThatThrownBy(() -> controller.viewCardDetail(
-                    CARD_NUMBER, null, null, CardSelectController.PASSED_COMMAREA_LENGTH))
+                    CARD_NUMBER, null, null, CardSelectController.PASSED_COMMAREA_LENGTH, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("eibcalen");
-            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, null, 99))
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, null, 99, null))
                     .isInstanceOf(IllegalArgumentException.class);
             verifyNoInteractions(repository);
         }
@@ -2074,7 +2085,7 @@ class CardSelectControllerTest {
         @DisplayName("the reply carries the fifteen attribute quads under screenMetadata, not beside the fields")
         void theMetadataTravelsInTheEnvelope() {
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
-                    controller.viewCardDetail(CARD_NUMBER, null, null, null);
+                    controller.viewCardDetail(CARD_NUMBER, null, null, null, null);
 
             ScreenResponse<CardSelectResponse> envelope = answer.getBody();
             assertThat(envelope).isNotNull();
@@ -2088,7 +2099,7 @@ class CardSelectControllerTest {
         @DisplayName("every response member traces to an xxxO item of COCRDSL.CPY (gate G9)")
         void thePayloadIsTheSymbolicMap() {
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
-                    controller.viewCardDetail(CARD_NUMBER, null, null, null);
+                    controller.viewCardDetail(CARD_NUMBER, null, null, null, null);
             CardSelectResponse body = screenOf(answer);
 
             assertThat(CardSelectResponse.ScreenField.values()).hasSize(15);
@@ -2339,6 +2350,53 @@ class CardSelectControllerTest {
                     // Gate G40: the response names the next target and the client makes the call.
                     .andExpect(jsonPath("$.nextProgram").exists())
                     .andExpect(jsonPath("$.navigationContext").exists());
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("either accepted spelling of the AID parameter carries PF3, and a paint is not what "
+                + "a caller gets for using the sibling screen's name")
+        void eitherAidSpellingCarriesTheKey() throws Exception {
+            String pf3 = String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF3));
+
+            // This route declared only the alternate spelling, so a caller that had learned the name on
+            // GET /api/cards sent the canonical one - Spring discarded it, the request ran as ENTER, and
+            // the operator's exit came back as a validation screen. Both spellings now reach the key.
+            String throughAlternate = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param(AidRequestParameter.ALTERNATE_NAME, pf3))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            String throughCanonical = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param(AidRequestParameter.CANONICAL_NAME, pf3))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            String throughBoth = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param(AidRequestParameter.CANONICAL_NAME, pf3)
+                            .param(AidRequestParameter.ALTERNATE_NAME, pf3))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            String noKeyNamed = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+
+            // Byte-identical to each other: one key, stated three ways.
+            assertThat(throughCanonical).isEqualTo(throughAlternate);
+            assertThat(throughBoth).isEqualTo(throughAlternate);
+            // And genuinely different from the ENTER default, which is what the discarded spelling
+            // silently produced. Asserting the difference is what makes the three above meaningful.
+            assertThat(noKeyNamed).isNotEqualTo(throughAlternate);
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("the two AID spellings carrying different keys is refused, not resolved by guessing")
+        void contradictoryAidSpellingsAreRefused() throws Exception {
+            mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param(AidRequestParameter.CANONICAL_NAME,
+                                    String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF3)))
+                            .param(AidRequestParameter.ALTERNATE_NAME,
+                                    String.valueOf((int) CicsAid.DFHENTER)))
+                    .andExpect(status().isBadRequest());
             verifyNoInteractions(repository);
         }
 

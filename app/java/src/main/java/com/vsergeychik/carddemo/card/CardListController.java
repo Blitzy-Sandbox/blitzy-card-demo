@@ -14,6 +14,7 @@ import com.vsergeychik.carddemo.card.dto.CardScreenState;
 import com.vsergeychik.carddemo.card.dto.CardSelectRequest;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse;
 import com.vsergeychik.carddemo.card.model.CardRecord;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
@@ -525,8 +526,21 @@ public class CardListController {
      * request is treated as an {@link CicsAid#DFHENTER}: a CICS terminal always presents some AID, and
      * every AID other than {@code ENTER}, {@code PF3}, {@code PF7} and {@code PF8} is forced to
      * {@code ENTER} anyway by the program's own guard at {@code :378-380}.
+     *
+     * <p>The name is {@link AidRequestParameter#CANONICAL_NAME} and is not spelled again here, so this
+     * route cannot drift from its siblings: a caller that learned the name on one screen uses it on
+     * every screen, and a spelling that reached no handler used to be discarded by Spring with the key
+     * silently becoming {@code ENTER}.
      */
-    static final String EIBAID_PARAM = "eibaid";
+    static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /**
+     * The alternate spelling of {@link #EIBAID_PARAM}, accepted on every online route.
+     *
+     * <p>Bound so that {@link AidRequestParameter#ALTERNATE_NAME} names the same key here as it does on
+     * {@code GET /api/cards/{cardNum}}, where it was the original declared name.
+     */
+    static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
 
     /** The lowest value an unsigned AID byte can take. */
     private static final int AID_MIN = 0;
@@ -821,18 +835,29 @@ public class CardListController {
      * program turned red or place the cursor where it was asked for - so they are published in the one
      * envelope every online screen in this module uses rather than being dropped.
      *
+     * <p><strong>The attention identifier is named the same way on every route.</strong> Both accepted
+     * spellings are bound - {@link AidRequestParameter#CANONICAL_NAME} and
+     * {@link AidRequestParameter#ALTERNATE_NAME} - and folded by
+     * {@link AidRequestParameter#resolve(Integer, Integer)} before anything looks at the value. Binding
+     * only one of them is what let a caller's {@code PF3} be discarded by Spring and executed as
+     * {@code ENTER}, with nothing in the response saying the key had not been understood.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start
-     * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255}, or
-     *                {@code null} for {@link CicsAid#DFHENTER}
+     * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255} under the
+     *                canonical parameter name, or {@code null} for {@link CicsAid#DFHENTER}
+     * @param eibAid  the same value under the alternate spelling; at most one of the two need be sent
      * @return the {@code CCRDLIAO} projection - or, on a transfer of control, the navigation triple naming
      *         where the client goes next - together with this screen's presentation metadata
-     * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
+     * @throws IllegalArgumentException if the AID is outside {@code 0..255}, or if both spellings are
+     *                                  present and disagree
      */
     @GetMapping(path = CARD_LIST_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     public ScreenResponse<CardListResponse> getCards(
             @Valid @RequestBody(required = false) CardListRequest request,
-            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
-        CardListResponse painted = listCards(request, resolveEibAid(eibaid));
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
+        CardListResponse painted =
+                listCards(request, resolveEibAid(AidRequestParameter.resolve(eibaid, eibAid)));
         return ScreenResponse.of(painted, painted.screenMetadata());
     }
 

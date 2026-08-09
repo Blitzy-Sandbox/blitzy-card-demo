@@ -13,6 +13,7 @@ import com.vsergeychik.carddemo.common.DatasetRelation.KeySpan;
 
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -322,19 +323,60 @@ class DatasetRelationTest {
             DatasetRelation relation = described();
 
             assertThat(relation.selectAfterAscending(COLUMN))
-                    .isEqualTo("SELECT * FROM " + RELATION + " WHERE " + IMAGE + " > ? ORDER BY " + IMAGE
-                            + " ASC");
+                    .isEqualTo("SELECT * FROM " + RELATION + " WHERE (" + IMAGE + " > ? OR " + IMAGE
+                            + " IS NULL) ORDER BY " + IMAGE + " ASC");
             assertThat(relation.selectBeforeDescending(COLUMN))
-                    .isEqualTo("SELECT * FROM " + RELATION + " WHERE " + IMAGE + " < ? ORDER BY " + IMAGE
-                            + " DESC");
+                    .isEqualTo("SELECT * FROM " + RELATION + " WHERE (" + IMAGE + " < ? OR " + IMAGE
+                            + " IS NULL) ORDER BY " + IMAGE + " DESC");
         }
 
         @Test
         @DisplayName("a STARTBR positions at or after a key, ascending")
         void theAnchorIncludesItsKey() {
             assertThat(described().selectFromKeyAscending(COLUMN))
-                    .isEqualTo("SELECT * FROM " + RELATION + " WHERE " + IMAGE + " >= ? ORDER BY "
-                            + IMAGE + " ASC");
+                    .isEqualTo("SELECT * FROM " + RELATION + " WHERE (" + IMAGE + " >= ? OR " + IMAGE
+                            + " IS NULL) ORDER BY " + IMAGE + " ASC");
+        }
+
+        @Test
+        @DisplayName("every positioning read keeps an UNREADABLE row in its candidate set")
+        void thePositioningReadsSeeUnreadableRows() {
+            DatasetRelation relation = described();
+
+            // A comparison against a null is UNKNOWN, so a row whose record-image column holds nothing
+            // satisfies neither >, >= nor <. Without the disjunct the row is invisible to the predicate and
+            // a browse walks straight past it - silently, which is the one outcome a COBOL sequential read
+            // cannot produce: app/cbl/CBACT02C.cbl:101 moves 12 into APPL-RESULT and :110 displays
+            // ERROR READING CARDFILE for a record that is present and unreadable.
+            assertThat(List.of(relation.selectAfterAscending(COLUMN),
+                            relation.selectBeforeDescending(COLUMN),
+                            relation.selectFromKeyAscending(COLUMN)))
+                    .allSatisfy(statement -> assertThat(statement)
+                            .contains("OR " + IMAGE + " IS NULL")
+                            // Parenthesised, so the disjunct cannot escape the comparison it belongs to and
+                            // start qualifying the whole statement.
+                            .contains(" WHERE (")
+                            .contains(") ORDER BY "));
+        }
+
+        @Test
+        @DisplayName("a keyed read and a rewrite are deliberately NOT widened to unreadable rows")
+        void theKeyedOperationsAreNotWidened() {
+            DatasetRelation relation = described();
+
+            // A keyed operation names ONE record. Widening its predicate would fail every read of a
+            // relation holding one unreadable row - which VSAM does not do - and widening the REWRITE
+            // would let an UPDATE overwrite the row whose contents nothing can establish.
+            assertThat(List.of(relation.selectByKey(COLUMN), relation.selectByKeyForUpdate(COLUMN),
+                            relation.rewriteByKey(COLUMN)))
+                    .allSatisfy(statement -> assertThat(statement).doesNotContain("IS NULL"));
+        }
+
+        @Test
+        @DisplayName("the unreadable-row probe names only the rows whose image is absent")
+        void theUnreadableRowProbeSelectsOnlyThoseRows() {
+            assertThat(described().selectUnreadableRows(COLUMN))
+                    .isEqualTo("SELECT * FROM " + RELATION + " WHERE " + IMAGE + " IS NULL");
         }
 
         @Test

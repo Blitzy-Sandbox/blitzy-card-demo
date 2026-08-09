@@ -62,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -458,6 +459,30 @@ class CardRepositoryTest {
     }
 
     /**
+     * The statements the repository prepared, in the order it prepared them.
+     *
+     * @param expectedCalls how many reads to expect
+     * @return the statement texts
+     * @throws SQLException never; declared because the JDBC API declares it
+     */
+    private List<String> preparedStatements(int expectedCalls) throws SQLException {
+        ArgumentCaptor<PreparedStatementCreator> captor =
+                ArgumentCaptor.forClass(PreparedStatementCreator.class);
+        verify(jdbcTemplate, times(expectedCalls)).query(captor.capture(),
+                CardRepositoryTest.<FetchedRows>anyExtractor());
+        List<String> statements = new ArrayList<>();
+        for (PreparedStatementCreator creator : captor.getAllValues()) {
+            Connection connection = mock(Connection.class);
+            when(connection.prepareStatement(anyString())).thenReturn(mock(PreparedStatement.class));
+            creator.createPreparedStatement(connection);
+            ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+            verify(connection).prepareStatement(text.capture());
+            statements.add(text.getValue());
+        }
+        return statements;
+    }
+
+    /**
      * What a read found: one record image, as a card record encoded with the test code page.
      *
      * @param record the record the row carries
@@ -468,19 +493,26 @@ class CardRepositoryTest {
     }
 
     /**
-     * Captures the statement creator the repository sent, and drives it against a stubbed connection.
+     * Captures the statement creator the repository sent <em>first</em>, and drives it against a stubbed
+     * connection.
      *
-     * @return the statement the creator prepared
+     * <p>The first, not the only one: a keyed read that matches no row is followed by the unreadable-row
+     * probe, because {@code CARD-NUM} lives inside the record image and an absence therefore has to be
+     * proved rather than assumed. Every caller of this helper is asserting the read's own statement or its
+     * own bound operand, so the read's creator is the one it wants.
+     *
+     * @return the statement the read's creator prepared
      * @throws SQLException never; declared because the JDBC API declares it
      */
     private PreparedStatement capturePreparedStatement() throws SQLException {
         ArgumentCaptor<PreparedStatementCreator> captor =
                 ArgumentCaptor.forClass(PreparedStatementCreator.class);
-        verify(jdbcTemplate).query(captor.capture(), CardRepositoryTest.<FetchedRows>anyExtractor());
+        verify(jdbcTemplate, atLeastOnce()).query(captor.capture(),
+                CardRepositoryTest.<FetchedRows>anyExtractor());
         Connection connection = mock(Connection.class);
         PreparedStatement prepared = mock(PreparedStatement.class);
         when(connection.prepareStatement(anyString())).thenReturn(prepared);
-        assertThat(captor.getValue().createPreparedStatement(connection)).isSameAs(prepared);
+        assertThat(captor.getAllValues().get(0).createPreparedStatement(connection)).isSameAs(prepared);
         return prepared;
     }
 
@@ -539,15 +571,22 @@ class CardRepositoryTest {
             assertThat(sql.selectByAccountId())
                     .isEqualTo("SELECT * FROM " + path + " WHERE " + image
                             + " LIKE ? ESCAPE '\\' ORDER BY " + image + " ASC");
+            // Each positioning read carries "OR <image> IS NULL" as well, because a comparison against a
+            // null is UNKNOWN: without it a row whose record image is absent qualifies for no browse step
+            // and the pass walks silently past a record it should have failed on (QA finding B).
             assertThat(sql.browseAnchor())
-                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " >= ? ORDER BY " + image
-                            + " ASC");
+                    .isEqualTo("SELECT * FROM " + base + " WHERE (" + image + " >= ? OR " + image
+                            + " IS NULL) ORDER BY " + image + " ASC");
             assertThat(sql.browseForward())
-                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " > ? ORDER BY " + image
-                            + " ASC");
+                    .isEqualTo("SELECT * FROM " + base + " WHERE (" + image + " > ? OR " + image
+                            + " IS NULL) ORDER BY " + image + " ASC");
             assertThat(sql.browseBackward())
-                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " < ? ORDER BY " + image
-                            + " DESC");
+                    .isEqualTo("SELECT * FROM " + base + " WHERE (" + image + " < ? OR " + image
+                            + " IS NULL) ORDER BY " + image + " DESC");
+            assertThat(sql.probeUnreadableBaseRows())
+                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " IS NULL");
+            assertThat(sql.probeUnreadableAlternateRows())
+                    .isEqualTo("SELECT * FROM " + path + " WHERE " + image + " IS NULL");
             assertThat(sql.rewrite())
                     .isEqualTo("UPDATE " + base + " SET " + image + " = ? WHERE " + image
                             + " LIKE ? ESCAPE '\\'");
@@ -563,7 +602,8 @@ class CardRepositoryTest {
             // reads the whole record image out of column one, so both cannot be true of one backend.
             assertThat(List.of(sql.selectByCardNumber(), sql.selectForUpdateByCardNumber(),
                             sql.selectByAccountId(), sql.browseAnchor(), sql.browseForward(),
-                            sql.browseBackward(), sql.rewrite()))
+                            sql.browseBackward(), sql.rewrite(), sql.probeUnreadableBaseRows(),
+                            sql.probeUnreadableAlternateRows()))
                     .allSatisfy(statement -> assertThat(statement)
                             .doesNotContain("CARD-NUM")
                             .doesNotContain("CARD-ACCT-ID")
@@ -855,6 +895,55 @@ class CardRepositoryTest {
             assertThat(result.isNotFound()).isFalse();
             assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
             assertThat(result.batchStatus()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a NOTFND is PROVED: an unreadable row in the relation makes it WHEN OTHER instead")
+        void aNotFoundIsProvedAgainstUnreadableRows() throws SQLException {
+            // CARD-NUM lives inside the record image, so a row with no image has no knowable key: the
+            // keyed predicate cannot match it, and answering NOTFND would report as absent a record that
+            // may well be the one asked for. COCRDSLC:755-761 takes NOTFND as "there is no such card" and
+            // says so on the screen, which is why the claim has to be established rather than assumed.
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor()))
+                    .thenReturn(FetchedRows.empty(), new FetchedRows(null, 1));
+
+            CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
+            assertThat(result.record()).isEmpty();
+            assertThat(result.batchStatus()).isEmpty();
+            assertThat(preparedStatements(2).get(1))
+                    .as("the second read is the unreadable-row probe over the base cluster")
+                    .isEqualTo(repository.resolvedStatements().probeUnreadableBaseRows());
+        }
+
+        @Test
+        @DisplayName("a NOTFND stands when every row of the relation is readable")
+        void aNotFoundStandsWhenEveryRowIsReadable() throws SQLException {
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor()))
+                    .thenReturn(FetchedRows.empty(), FetchedRows.empty());
+
+            CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(result.isNotFound()).isTrue();
+            assertThat(result.resp()).isEqualTo(FileStatus.NOTFND);
+            assertThat(preparedStatements(2)).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("a read that found its record is never second-guessed by the probe")
+        void aFoundRecordIsNotSecondGuessed() {
+            stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
+
+            assertThat(repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).isNormal()).isTrue();
+
+            // Exactly one read. A corrupt row elsewhere in the dataset is none of this read's business:
+            // a VSAM READ of a key that resolves does not fail because another record is damaged.
+            verify(jdbcTemplate, times(1)).query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor());
         }
 
         @ParameterizedTest(name = "a {0}-byte row is a length error, not a record")
@@ -1251,11 +1340,13 @@ class CardRepositoryTest {
 
             ArgumentCaptor<PreparedStatementCreator> captor =
                     ArgumentCaptor.forClass(PreparedStatementCreator.class);
-            verify(jdbcTemplate).query(captor.capture(),
+            // atLeastOnce, because a read that matched no row goes on to prove the absence with the
+            // unreadable-row probe over the same path. The read's own creator is the first one.
+            verify(jdbcTemplate, atLeastOnce()).query(captor.capture(),
                     CardRepositoryTest.<FetchedRows>anyExtractor());
             Connection connection = mock(Connection.class);
             when(connection.prepareStatement(anyString())).thenReturn(mock(PreparedStatement.class));
-            captor.getValue().createPreparedStatement(connection);
+            captor.getAllValues().get(0).createPreparedStatement(connection);
             String pathStatement = repository.resolvedStatements().selectByAccountId();
             verify(connection).prepareStatement(pathStatement);
             assertThat(pathStatement)
@@ -1291,6 +1382,24 @@ class CardRepositoryTest {
                     CardRecord.CARD_ACCT_ID_OFFSET + CardRecord.CARD_ACCT_ID_LENGTH))
                     .as("eleven digits, zero-filled on the left as PIC 9(11) requires")
                     .isEqualTo("00000000050").hasSize(11);
+        }
+
+        @Test
+        @DisplayName("a NOTFND through the path is proved against the PATH's own unreadable rows")
+        void aNotFoundThroughThePathIsProvedAgainstThePath() throws SQLException {
+            // CARD-ACCT-ID lives inside the record image too, so a row with no image has no knowable
+            // alternate key either, and an unreadable row leaves "no card for this account" unprovable.
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor()))
+                    .thenReturn(FetchedRows.empty(), new FetchedRows(null, 1));
+
+            CardReadResult result = repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID);
+
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
+            assertThat(preparedStatements(2).get(1))
+                    .as("the probe addresses the path that was read, not the base cluster")
+                    .isEqualTo(repository.resolvedStatements().probeUnreadableAlternateRows());
         }
 
         @Test
@@ -1857,6 +1966,64 @@ class CardRepositoryTest {
 
             assertThat(browse.openResp()).isEqualTo(FileStatus.NOTOPEN);
             assertThat(browse.isOpen()).isFalse();
+        }
+
+        @Test
+        @DisplayName("openBrowse probes on EVERY call, so its outcome never depends on what ran before it")
+        void openBrowseProbesOnEveryCall() {
+            repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+            repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+            repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.BACKWARD);
+
+            // Three opens, three describes. app/cbl/CBACT02C.cbl:120-132 establishes the file and tests
+            // the status on its own account, so an OPEN that reused an earlier one's proof could not fail
+            // after the first success.
+            verify(jdbcTemplate, times(3)).query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor());
+        }
+
+        @Test
+        @DisplayName("an OPEN after the statements are memoised still detects a dataset that has gone away")
+        void openBrowseDetectsAnAbsentDatasetAfterTheStatementsAreMemoised() {
+            // The QA reproduction, at the seam: a successful pass first, which memoises the statements,
+            // then the dataset goes away, then the same singleton is asked to open again.
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(FetchedRows.empty());
+            repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            assertThat(repository.resolvedStatements())
+                    .as("the read has resolved and memoised the statement text")
+                    .isNotNull();
+
+            when(jdbcTemplate.query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor()))
+                    .thenThrow(new DataAccessResourceFailureException("the dataset is no longer there"));
+
+            CardBrowse browse = repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            // NOTOPEN is the arm that displays ERROR OPENING CARDFILE (app/cbl/CBACT02C.cbl:129) and
+            // abends. Before the fix this reported NORMAL and the failure surfaced one line later on the
+            // first READNEXT, under ERROR READING CARDFILE (:110) - the same abend, the wrong paragraph.
+            assertThat(browse.openResp()).isEqualTo(FileStatus.NOTOPEN);
+            assertThat(browse.isOpen()).isFalse();
+        }
+
+        @Test
+        @DisplayName("an OPEN republishes the memo, so a read after it uses freshly composed text")
+        void openBrowseRepublishesTheMemoisedStatements() {
+            when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(FetchedRows.empty());
+            repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            CardRepository.Statements beforeTheOpen = repository.resolvedStatements();
+
+            repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            CardRepository.Statements afterTheOpen = repository.resolvedStatements();
+            assertThat(afterTheOpen)
+                    .as("the open composed afresh rather than trusting the memo")
+                    .isNotSameAs(beforeTheOpen);
+            assertThat(afterTheOpen.selectByCardNumber())
+                    .as("and composed the same text, because the described column has not changed")
+                    .isEqualTo(beforeTheOpen.selectByCardNumber());
         }
 
         @Test

@@ -5,6 +5,7 @@ import com.vsergeychik.carddemo.card.dto.CardSelectRequest;
 import com.vsergeychik.carddemo.card.dto.CardSelectRequest.ThisProgCommarea;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse;
 import com.vsergeychik.carddemo.card.model.CardRecord;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
@@ -1194,8 +1195,27 @@ public class CardSelectController {
     /** The highest value an unsigned {@code EIBAID} byte can carry. */
     private static final int AID_MAX = 255;
 
-    /** The name of the query parameter carrying the raw {@code EIBAID} byte. */
-    static final String EIBAID_PARAM = "eibAid";
+    /**
+     * The name of the query parameter carrying the raw {@code EIBAID} byte.
+     *
+     * <p>{@link AidRequestParameter#CANONICAL_NAME}, shared with every other online route rather than
+     * spelled here. <strong>This route is the one the sharing matters most on:</strong>
+     * {@link CardSelectRequest} declares no {@code CCARD-AID} member, so the query parameter is the only
+     * channel a caller has for the key. While this screen accepted one spelling and its sibling card
+     * list accepted the other, a {@code PF3} sent with the sibling's spelling was discarded by Spring
+     * and the request ran as {@link CicsAid#DFHENTER} - the operator's exit silently became a validation
+     * screen. Both spellings are now bound here and everywhere; see {@link #EIBAID_PARAM_ALIAS}.
+     */
+    static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /**
+     * The alternate spelling of {@link #EIBAID_PARAM}, and the name this route originally declared.
+     *
+     * <p>It keeps working, on this route and on all the others: withdrawing it would have turned every
+     * call that already used it into a silently ignored key, which is the defect being closed rather
+     * than a fix for it.
+     */
+    static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
 
     /** The name of the query parameter carrying {@code EIBCALEN}. */
     static final String EIBCALEN_PARAM = "eibcalen";
@@ -1227,10 +1247,15 @@ public class CardSelectController {
      *                 widths, together with the 160-byte {@code CARDDEMO-COMMAREA} and the 12-byte
      *                 {@code WS-THIS-PROGCOMMAREA} trailer {@code :274-278} restores from.
      *                 {@code null} when no body was sent, which is the {@code EIBCALEN = 0} cold start
-     * @param eibAid   {@code EIBAID} - the raw attention identifier byte, {@code 0}-{@code 255}. Absent
-     *                 means {@link CicsAid#DFHENTER}. It is resolved by {@link PfKeyResolver}, so an
+     * @param eibAid   {@code EIBAID} - the raw attention identifier byte, {@code 0}-{@code 255}, under
+     *                 the alternate spelling this route originally declared. Absent means
+     *                 {@link CicsAid#DFHENTER}. It is resolved by {@link PfKeyResolver}, so an
      *                 unrecognised byte reaches the same no-match arm the COBOL's {@code EVALUATE}
-     *                 leaves unhandled
+     *                 leaves unhandled - it is coerced to {@code ENTER} at {@code :299-308}, never
+     *                 refused
+     * @param eibaid   the same value under {@link AidRequestParameter#CANONICAL_NAME}, the spelling
+     *                 every online route shares. At most one of the two need be sent; sending both with
+     *                 different values is refused, because a terminal presents one attention identifier
      * @param eibcalen {@code EIBCALEN} - the length of the passed commarea, and therefore either
      *                 {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH} and nothing else.
      *                 Absent is derived from the carrier, and a stated value that contradicts the
@@ -1240,25 +1265,32 @@ public class CardSelectController {
      *         commarea, the 12-byte trailer and the attribute quads, all in the body so nothing is
      *         retained server-side
      * @throws IllegalArgumentException if {@code cardNum} or a bound field is wider than its
-     *                                  {@code PICTURE}, if {@code eibAid} is outside
-     *                                  {@code 0}-{@code 255}, or if {@code eibcalen} is neither of the
-     *                                  two lengths or disagrees with the carrier - each answered
+     *                                  {@code PICTURE}, if the AID is outside {@code 0}-{@code 255}, if
+     *                                  the two AID spellings disagree, or if {@code eibcalen} is neither
+     *                                  of the two lengths or disagrees with the carrier - each answered
      *                                  {@code 400} by {@code WebConfig.CobolErrorHandler} with no value
      *                                  echoed
      */
+    // The canonical AID spelling is the LAST parameter rather than sitting beside its alternate, and
+    // deliberately: Spring binds a query parameter by the name in its annotation and never by position,
+    // while the four parameters this method already had are positional to every direct caller - the
+    // parity tests call it with no HTTP in the path. Appending leaves each of those four meaning exactly
+    // what it meant, instead of quietly turning a commarea length into an attention identifier.
     @GetMapping(path = "/api/cards/{cardNum}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<ScreenResponse<CardSelectResponse>> viewCardDetail(
             @PathVariable("cardNum") String cardNum,
             @Valid @RequestBody(required = false) CardSelectRequest request,
-            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibAid,
-            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen) {
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid,
+            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen,
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
 
         Objects.requireNonNull(cardNum, "A card number is required in the path: it is the RIDFLD of the "
                 + "READ at app/cbl/COCRDSLC.cbl:806-813");
 
         CardSelectRequest received = bind(cardNum, request);
         int commareaLength = resolveEibcalen(eibcalen, received);
-        byte attentionIdentifier = resolveAttentionIdentifier(eibAid);
+        byte attentionIdentifier =
+                resolveAttentionIdentifier(AidRequestParameter.resolve(eibaid, eibAid));
 
         CardSelectResponse painted = handle(received, commareaLength, attentionIdentifier);
         return ResponseEntity.ok(ScreenResponse.of(painted, painted.screenMetadata()));

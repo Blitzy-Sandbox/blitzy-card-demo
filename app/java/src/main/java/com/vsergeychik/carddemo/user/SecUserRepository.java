@@ -779,6 +779,23 @@ public class SecUserRepository {
      * translated to {@link FileStatus#DUPREC} if one arrives, so a constrained relation and an
      * unconstrained one behave identically.
      *
+     * <p><strong>What the probe cannot be is atomic, and that is a deployment requirement rather than
+     * something this method can close.</strong> Two concurrent adds of one user id can both find the key
+     * absent and both insert, so the uniqueness of the <em>stored data</em> rests on the backing relation
+     * enforcing uniqueness over {@code SEC-USR-ID}'s byte span - which is exactly what the KSDS this
+     * replaces does natively, and which {@code application.yml} states as a deployment contract alongside
+     * the driver it also cannot supply. Closing the window here would need either a transaction the COBOL
+     * has no equivalent of or a constraint that gate <strong>G44</strong> forbids this module from
+     * creating, so it is stated rather than absorbed (practice B12).
+     *
+     * <p>The consequence of a missing constraint is bounded, and deliberately so: a duplicate that does
+     * get stored is <em>detected</em>, not resolved. Every keyed read, rewrite and delete on this class
+     * refuses a key that selects more than one row rather than picking one of them - see
+     * {@link #read(String)}, {@link #readForUpdate(String)}, {@link #rewrite(SecUserRecord)} and
+     * {@link #deleteHeld(HeldRecord)} - so the caller reaches its {@code WHEN OTHER} arm and the
+     * diagnostic names the missing constraint. A wrong answer that looked right would be far worse than a
+     * reported failure, and no path here produces one.
+     *
      * @param record the record to add, complete and already assembled by the caller
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}

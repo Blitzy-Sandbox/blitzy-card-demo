@@ -160,7 +160,8 @@ public class WebConfig implements WebMvcConfigurer {
     }
 
     /**
-     * Applies the two Jackson settings that protect the migration's numeric parity.
+     * Applies the Jackson settings that protect the migration's numeric parity and keep a request body
+     * from being read as something other than what was sent.
      *
      * <p>Customising the builder rather than replacing the {@code ObjectMapper} bean is deliberate:
      * it leaves Spring Boot's other message converters and its own {@code spring.jackson.*} handling
@@ -190,6 +191,18 @@ public class WebConfig implements WebMvcConfigurer {
      * feature is disabled explicitly instead of being left to a default. For the same reason no
      * trimming deserializer and no string converter is registered anywhere in this module.
      *
+     * <h4>{@code FAIL_ON_TRAILING_TOKENS} - a body is one screen, not a screen and then something else</h4>
+     * Jackson stops reading at the end of the root value by default and discards whatever follows, so
+     * {@code {"fName":"AA"} DROP TABLE} and {@code {} {"userId":"USER0009"}} were both accepted: the
+     * first document bound, the remainder vanished, and the caller was told {@code 200}. Nothing in the
+     * response distinguished that from a body the server had read in full, which is the same silent-loss
+     * shape this module refuses everywhere else - a member that traces to no {@code DFHMDF} field is
+     * refused rather than ignored ({@code spring.jackson.deserialization.fail-on-unknown-properties}),
+     * and a value wider than its {@code PICTURE} is refused rather than truncated. Enabling this feature
+     * makes trailing content a {@code 400} through {@link CobolErrorHandler}, so a request either bound
+     * whole or was refused. It is enabled here rather than in {@code application.yml} so that every
+     * production-equivalent mapper a test builds from this customizer inherits it.
+     *
      * <p>No date module and no date pattern is registered either: COBOL dates in this estate are
      * {@code PIC X(n)} character fields, and reformatting them through a {@code java.time}
      * serializer would change observable output.
@@ -201,6 +214,7 @@ public class WebConfig implements WebMvcConfigurer {
         return builder -> builder
                 .featuresToEnable(
                         DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS,
+                        DeserializationFeature.FAIL_ON_TRAILING_TOKENS,
                         JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN)
                 .featuresToDisable(
                         DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT);

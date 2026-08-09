@@ -21,6 +21,7 @@ import com.vsergeychik.carddemo.card.dto.CardScreenState;
 import com.vsergeychik.carddemo.card.dto.CardSelectRequest;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse;
 import com.vsergeychik.carddemo.card.model.CardRecord;
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
@@ -40,6 +41,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -260,16 +262,28 @@ final class CardListControllerTest {
         }
 
         @Test
-        @DisplayName("the handler takes exactly two parameters and neither names a page size")
+        @DisplayName("every query parameter this handler binds is an EIBAID spelling, so none names a "
+                + "page size")
         void noRequestParameterCanChangeThePageSize() throws ReflectiveOperationException {
             Method handler = CardListController.class.getDeclaredMethod("getCards",
-                    CardListRequest.class, Integer.class);
-            assertThat(handler.getParameterCount()).isEqualTo(2);
-            RequestParam param = handler.getParameters()[1].getAnnotation(RequestParam.class);
-            assertThat(param).isNotNull();
-            assertThat(param.name())
-                    .as("the only query parameter is the EIBAID byte")
-                    .isEqualTo(CardListController.EIBAID_PARAM);
+                    CardListRequest.class, Integer.class, Integer.class);
+
+            // Named exhaustively rather than counted. The count moved once already, when the second
+            // accepted spelling of the EIBAID parameter was bound, and a count assertion would have
+            // failed for that without saying anything about the page size - which is what gate G39 is
+            // actually about. Every bound query parameter is enumerated instead, and the set may contain
+            // only the two AID names.
+            assertThat(handler.getParameterCount()).isEqualTo(3);
+            List<String> bound = Arrays.stream(handler.getParameters())
+                    .map(parameter -> parameter.getAnnotation(RequestParam.class))
+                    .filter(java.util.Objects::nonNull)
+                    .map(RequestParam::name)
+                    .toList();
+
+            assertThat(bound)
+                    .as("the only query parameters are the two accepted spellings of the EIBAID byte")
+                    .containsExactlyElementsOf(AidRequestParameter.ACCEPTED_NAMES);
+            assertThat(bound).contains(CardListController.EIBAID_PARAM);
         }
 
         @Test
@@ -2971,10 +2985,51 @@ final class CardListControllerTest {
         }
 
         @Test
-        @DisplayName("an out-of-range eibaid is rejected with 400 and echoes no value back")
+        @DisplayName("the alternate spelling of the AID parameter names the same key, so a caller coming "
+                + "from the card-detail screen is not silently given ENTER")
+        void theAlternateAidSpellingSelectsTheSameKey() throws Exception {
+            String body = json.writeValueAsString(showing(0, " "));
+            String pf3 = String.valueOf(CicsAid.DFHPF3 & 0xFF);
+
+            // GET /api/cards/{cardNum} declared the alternate spelling, so a client that learned the name
+            // there and then listed cards had its PF3 discarded by Spring and the list repainted instead.
+            mockMvc.perform(get(CardListController.CARD_LIST_PATH)
+                            .param(AidRequestParameter.ALTERNATE_NAME, pf3)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.nextProgram").value("COMEN01C"));
+
+            // Both together, agreeing, are one statement made twice.
+            mockMvc.perform(get(CardListController.CARD_LIST_PATH)
+                            .param(AidRequestParameter.CANONICAL_NAME, pf3)
+                            .param(AidRequestParameter.ALTERNATE_NAME, pf3)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.nextProgram").value("COMEN01C"));
+        }
+
+        @Test
+        @DisplayName("the two AID spellings carrying different keys is refused with 400")
+        void contradictoryAidSpellingsAreRejected() throws Exception {
+            mockMvc.perform(get(CardListController.CARD_LIST_PATH)
+                            .param(AidRequestParameter.CANONICAL_NAME,
+                                    String.valueOf(CicsAid.DFHPF3 & 0xFF))
+                            .param(AidRequestParameter.ALTERNATE_NAME,
+                                    String.valueOf(CicsAid.DFHPF8 & 0xFF)))
+                    .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        @DisplayName("an out-of-range eibaid is rejected with 400 and echoes no value back, through "
+                + "either spelling")
         void outOfRangeEibaidIsRejected() throws Exception {
             mockMvc.perform(get(CardListController.CARD_LIST_PATH)
                             .param(CardListController.EIBAID_PARAM, "300"))
+                    .andExpect(status().isBadRequest());
+            mockMvc.perform(get(CardListController.CARD_LIST_PATH)
+                            .param(CardListController.EIBAID_PARAM_ALIAS, "300"))
                     .andExpect(status().isBadRequest());
         }
 
@@ -3014,11 +3069,11 @@ final class CardListControllerTest {
             forward(1);
 
             Method handler = CardListController.class.getDeclaredMethod("getCards",
-                    CardListRequest.class, Integer.class);
+                    CardListRequest.class, Integer.class, Integer.class);
             assertThat(handler.getReturnType()).isEqualTo(ScreenResponse.class);
 
             ScreenResponse<CardListResponse> envelope =
-                    controller.getCards(null, Byte.toUnsignedInt(CicsAid.DFHENTER));
+                    controller.getCards(null, Byte.toUnsignedInt(CicsAid.DFHENTER), null);
             assertThat(envelope.screen()).isNotNull();
             assertThat(envelope.screenMetadata().fields())
                     .hasSize(CardListResponse.PAYLOAD_FIELD_COUNT);

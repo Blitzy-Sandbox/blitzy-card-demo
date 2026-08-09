@@ -1104,7 +1104,10 @@ class CustomerRepositoryTest {
 
             assertThat(statements.selectFirst()).contains("ORDER BY").contains("ASC")
                     .doesNotContain("WHERE");
-            assertThat(statements.selectNext()).contains("ORDER BY").contains("ASC").contains(" > ?");
+            assertThat(statements.selectNext()).contains("ORDER BY").contains("ASC").contains(" > ?")
+                    // And a row whose record image is absent stays visible to the advancing read, so a
+                    // present-but-unreadable record is reported rather than skipped.
+                    .contains("IS NULL");
             assertThat(statements.selectFirst() + statements.selectNext())
                     .doesNotContainIgnoringCase("fetch first")
                     .doesNotContainIgnoringCase("limit")

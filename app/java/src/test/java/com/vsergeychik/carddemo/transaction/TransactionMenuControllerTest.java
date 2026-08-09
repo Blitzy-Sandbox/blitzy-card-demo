@@ -50,6 +50,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -1747,6 +1748,46 @@ final class TransactionMenuControllerTest {
         }
 
         @Test
+        @DisplayName("either accepted spelling of the AID parameter names the same key, and a "
+                + "contradiction between them is refused")
+        void eitherAidSpellingNamesTheSameKey() throws Exception {
+            String body = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(request(true));
+            String enter = String.valueOf(ENTER_PARAM);
+
+            // The alternate spelling was declared by two sibling routes and by none of the three that
+            // declared the canonical one, so a client that used it here had its key discarded by Spring
+            // and the request executed as ENTER with nothing saying so.
+            for (String name : com.vsergeychik.carddemo.common.AidRequestParameter.ACCEPTED_NAMES) {
+                // Re-stubbed per request: the browse a page reads is consumed by the request that reads
+                // it, so a second request against the same stub would paint an empty page and prove
+                // nothing about the parameter name.
+                forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+
+                mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
+                                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                                .content(body)
+                                .param(name, enter))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.trnid01O").value(idOf(1)));
+            }
+
+            // The refusals are asserted at the method seam rather than over this harness, which registers
+            // no controller advice: in the running application CobolErrorHandler turns each of these into
+            // a 400, and WebConfigErrorContractTest owns that mapping.
+            //
+            // An out-of-range value now reaches the guard through either spelling. Through the spelling
+            // this route did not bind it used to be discarded, and the request ran as ENTER.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controller.getTransactions(request(true), 300, null));
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controller.getTransactions(request(true), null, 300));
+            // And two spellings naming different keys is a contradiction rather than a preference.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controller.getTransactions(request(true), ENTER_PARAM, 243));
+        }
+
+        @Test
         @DisplayName("the route is exactly the one the AAP assigns this transaction")
         void theRouteIsTheAssignedOne() {
             assertThat(TransactionMenuController.TRANSACTIONS_PATH).isEqualTo("/api/transactions");
@@ -1760,7 +1801,7 @@ final class TransactionMenuControllerTest {
             forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
 
             ScreenResponse<TransactionListResponse> answer =
-                    controller.getTransactions(request(true), ENTER_PARAM);
+                    controller.getTransactions(request(true), ENTER_PARAM, null);
 
             ScreenMetadata metadata = answer.screenMetadata();
             assertThat(metadata.cursorField())
@@ -1813,10 +1854,16 @@ final class TransactionMenuControllerTest {
 
             String code = controllerCode();
             assertThat(code).doesNotContain("@Value", "@ConfigurationProperties", "Environment");
-            // The one request parameter this endpoint accepts is the attention identifier - never a
+            // The only request parameter this endpoint accepts is the attention identifier - never a
             // page number, a page size or an offset. app/cbl/COTRN00C.cbl paints ten rows always.
-            assertThat(code.split("@RequestParam", -1)).hasSize(2);
+            //
+            // It is accepted under both of its two spellings, which is why there are two @RequestParam
+            // sites rather than one: binding a single spelling let Spring discard the other and run the
+            // request as ENTER without saying so. Both are named here, so a third parameter of any kind
+            // still fails this assertion.
+            assertThat(code.split("@RequestParam", -1)).hasSize(3);
             assertThat(code).contains("@RequestParam(name = EIBAID_PARAM, required = false)");
+            assertThat(code).contains("@RequestParam(name = EIBAID_PARAM_ALIAS, required = false)");
 
             assertThat(configurationSource()).doesNotContain("page-size", "pageSize", "page_size",
                     "PAGE_SIZE");

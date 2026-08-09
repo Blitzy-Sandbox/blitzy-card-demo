@@ -41,7 +41,7 @@
 #  and B12 (environmental limits documented, not absorbed).
 #
 #  HOW A PROFILE OVERRIDES A DATASET
-#  (read this before editing src/test/resources/application-test.yml)
+#  (read this before editing src/main/resources/application-test.yml)
 #  ----------------------------------
 #  A profile-specific document overrides ONLY the "dsname" of an entry, e.g.
 #
@@ -105,6 +105,39 @@
 #  supplied at deployment time through the environment variables below. Production connectivity
 #  cannot be exercised in this environment; that limitation is recorded here rather than papered
 #  over with an invented driver class, which would breach B1 as well as B12.
+#
+#  DEPLOYMENT CONTRACT - EVERY RELATION MUST ENFORCE UNIQUENESS OVER ITS KEY SPAN
+#  ------------------------------------------------------------------------------
+#  A VSAM KSDS enforces primary-key uniqueness natively: a WRITE whose key is already present
+#  raises DUPREC, and a READ can never match two records by one key. Every repository in this
+#  module is written to that contract, so the relation each dataset below is bound to MUST
+#  enforce the same uniqueness over the byte span its "key-length" names (offset 0 for a base
+#  cluster; the alternate key's own offset for an "aix-path" entry, where the CSD asserts no
+#  uniqueness and the repositories correctly expect none).
+#
+#  THIS MODULE CANNOT CREATE THAT CONSTRAINT, AND DELIBERATELY DOES NOT TRY. AAP gate G44 forbids
+#  DDL of any kind - no CREATE, no ALTER, no index, no migration - because the datasets already
+#  exist and this migration changes no schema (AAP 0.2.6). So the guarantee is the deployment's to
+#  make, exactly as the driver above is the deployment's to supply, and it belongs in the same
+#  place: whatever DDL or dataset definition provisions these relations at the site.
+#
+#  WHAT THE REPOSITORIES DO WITHOUT IT. Nothing silently wrong, and that is by construction:
+#
+#    * an ADD probes the key first and reports the duplicate rather than relying on an integrity
+#      violation, so a duplicate is caught on an unconstrained relation too. What the probe cannot
+#      be is ATOMIC - two concurrent adds of one key can both find it absent and both insert -
+#      so on an unconstrained relation the uniqueness of the stored data is the deployment's
+#      guarantee and not this module's;
+#    * a keyed READ that matches more than one row REFUSES rather than resolving. It does not pick
+#      the first, because "which of these two is the record" has no answer a KSDS could have
+#      produced, and answering it anyway would turn a broken relation into a plausible wrong
+#      value. The caller reaches its WHEN OTHER arm and the diagnostic names the missing
+#      constraint;
+#    * a REWRITE or DELETE that would affect more than one row is refused on the same reasoning.
+#
+#  So the failure mode of a missing constraint is a DETECTED failure, never a wrong answer that
+#  looks right - which is the standard the collation contract further down holds itself to as
+#  well. It is still a failure: provision the constraint.
 # =============================================================================================
 
 spring:
@@ -124,9 +157,12 @@ spring:
   # are placeholders for deployment-supplied values, not secrets.
   #
   # Tests do not use this block: they run under the "test" profile, whose
-  # src/test/resources/application-test.yml
-  # supplies the in-memory H2 DataSource that also backs the Spring Batch JobRepository. H2 is a
-  # TEST-scope dependency in app/java/pom.xml and is never promoted (AAP 0.5.5).
+  # src/main/resources/application-test.yml (AAP 0.2.5, 0.3.1, 0.4.2 place it there, and gate G5
+  # pins the change set to that path) imports src/test/resources/carddemo-test-fixtures.yml, which
+  # supplies the in-memory H2 DataSource that also backs the Spring Batch JobRepository. The split
+  # is what keeps the H2 URL and its "sa" account out of the packaged artifact (CWE-798) while the
+  # profile document itself stays where the plan puts it. H2 is a TEST-scope dependency in
+  # app/java/pom.xml and is never promoted (AAP 0.5.5).
   # -------------------------------------------------------------------------------------------
   datasource:
     url: "${CARDDEMO_DATASOURCE_URL:}"
@@ -161,7 +197,7 @@ spring:
   # columns and new indexes, and the prompt forbids any database migration at all. So schema
   # creation is "never" in this, the default profile: nothing in this module may issue DDL
   # against the existing backend. The metadata tables are created ONLY inside the test-scope
-  # in-memory H2 instance, by src/test/resources/application-test.yml. Do not set this to
+  # in-memory H2 instance, by src/test/resources/carddemo-test-fixtures.yml. Do not set this to
   # "always" or "embedded"
   # here.
   # -------------------------------------------------------------------------------------------

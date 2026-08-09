@@ -476,22 +476,30 @@ public final class DatasetRelation {
      * The rows strictly after a given record image, in ascending order - {@code READNEXT} from a
      * position.
      *
+     * <p>An <strong>unreadable</strong> row - one whose record-image column holds nothing - qualifies as
+     * well, for the reason set out on {@link #unreadableRowsVisible(String)}: a browse that cannot see it
+     * skips it silently, and a skipped record is the one outcome a sequential read must never produce.
+     *
      * @param recordImageColumnName the discovered column name
      * @return the forward-browse statement, taking the previous whole image as its parameter
      */
     public String selectAfterAscending(String recordImageColumnName) {
-        return "SELECT * FROM " + identifier + " WHERE " + delimit(recordImageColumnName) + " > ?"
+        return "SELECT * FROM " + identifier + " WHERE (" + delimit(recordImageColumnName) + " > ?"
+                + unreadableRowsVisible(recordImageColumnName) + ")"
                 + orderBy(recordImageColumnName, true);
     }
 
     /**
      * The rows strictly before a given record image, in descending order - {@code READPREV}.
      *
+     * <p>An unreadable row qualifies here too - see {@link #unreadableRowsVisible(String)}.
+     *
      * @param recordImageColumnName the discovered column name
      * @return the backward-browse statement, taking the previous whole image as its parameter
      */
     public String selectBeforeDescending(String recordImageColumnName) {
-        return "SELECT * FROM " + identifier + " WHERE " + delimit(recordImageColumnName) + " < ?"
+        return "SELECT * FROM " + identifier + " WHERE (" + delimit(recordImageColumnName) + " < ?"
+                + unreadableRowsVisible(recordImageColumnName) + ")"
                 + orderBy(recordImageColumnName, false);
     }
 
@@ -502,12 +510,36 @@ public final class DatasetRelation {
      * "at or after" precisely because the key is a prefix: a record whose key equals the supplied key
      * compares greater than or equal to it, and one whose key is greater compares greater.
      *
+     * <p>An unreadable row qualifies as well - see {@link #unreadableRowsVisible(String)}. It has no key
+     * to compare, so "at or after" cannot decide about it, and a positioning read that excluded it would
+     * begin a pass that walks straight past a record.
+     *
      * @param recordImageColumnName the discovered column name
      * @return the positioning statement, taking the key image as its parameter
      */
     public String selectFromKeyAscending(String recordImageColumnName) {
-        return "SELECT * FROM " + identifier + " WHERE " + delimit(recordImageColumnName) + " >= ?"
+        return "SELECT * FROM " + identifier + " WHERE (" + delimit(recordImageColumnName) + " >= ?"
+                + unreadableRowsVisible(recordImageColumnName) + ")"
                 + orderBy(recordImageColumnName, true);
+    }
+
+    /**
+     * The rows whose record-image column holds nothing: the rows a browse cannot decode and must not
+     * skip.
+     *
+     * <p>Used where an absence has to be <em>proved</em> rather than assumed. A keyed read whose predicate
+     * matched no row can only report {@code NOTFND} if no row of the relation is unreadable: the key of
+     * every record in this module lives <em>inside</em> the record image, so a row with no image has no
+     * knowable key, and reporting "no such record" while one is sitting there unreadable states something
+     * the data does not support. That is the condition {@code app/cbl/CBACT02C.cbl:101} lands on -
+     * {@code MOVE 12 TO APPL-RESULT}, then {@code 'ERROR READING CARDFILE'} - and it is emphatically not
+     * {@code NOTFND}.
+     *
+     * @param recordImageColumnName the discovered column name
+     * @return the statement selecting only the unreadable rows
+     */
+    public String selectUnreadableRows(String recordImageColumnName) {
+        return "SELECT * FROM " + identifier + " WHERE " + delimit(recordImageColumnName) + " IS NULL";
     }
 
     /**
@@ -653,6 +685,49 @@ public final class DatasetRelation {
      */
     public String deleteAll() {
         return "DELETE FROM " + identifier;
+    }
+
+    /**
+     * The disjunct that keeps an <strong>unreadable</strong> row inside a positioning or advancing read's
+     * candidate set.
+     *
+     * <h2>Why a comparison alone is not enough</h2>
+     * <p>Every browse in this module orders and positions on the record-image column, because the key is a
+     * prefix of the image. SQL evaluates every comparison against a null as {@code UNKNOWN}, so a row whose
+     * record-image column holds nothing satisfies neither {@code >}, {@code >=} nor {@code <}: it is
+     * <em>invisible to the predicate</em>. A browse composed of comparisons alone therefore walks straight
+     * past it and reports the records either side, and the caller cannot tell that anything is missing.
+     *
+     * <p>That is silent data loss, and it is the one outcome a COBOL sequential read cannot produce. A row
+     * that exists and cannot be read is an I/O failure: {@code app/cbl/CBACT02C.cbl:94-101} tests
+     * {@code '00'} then {@code '10'} and moves {@code 12} into {@code APPL-RESULT} for anything else,
+     * reaching {@code DISPLAY 'ERROR READING CARDFILE'} at {@code :110} and abending at {@code :113}. Every
+     * repository in this module already classifies a row with no image onto exactly that arm - the arm was
+     * simply unreachable while the predicate hid the row.
+     *
+     * <p>Spelled as {@code OR <column> IS NULL}: core SQL, understood identically by every backend, and
+     * deliberately not a {@code SUBSTRING} over the key span, whose spelling differs by dialect and whose
+     * result would be null for the same rows anyway.
+     *
+     * <h2>Where this is deliberately NOT applied</h2>
+     * <ul>
+     *   <li>{@link #keyedPredicate(String)}, and therefore {@link #selectByKey(String)},
+     *       {@link #selectByKeyForUpdate(String)} and {@link #rewriteByKey(String)}. A keyed operation
+     *       names one record. Widening its predicate would make every read of a relation that holds one
+     *       unreadable row fail, which VSAM does not do - a corrupt record does not break reads of other
+     *       keys - and widening the {@code REWRITE} would let an {@code UPDATE} overwrite the very row
+     *       whose contents nothing could establish. A keyed read proves an absence instead through
+     *       {@link #selectUnreadableRows(String)}, which changes the answer only where {@code NOTFND}
+     *       would otherwise be a claim the data cannot support.</li>
+     *   <li>{@link #selectAll()} and {@link #selectAllAscending(String)}, which carry no predicate and so
+     *       already see every row, unreadable ones included.</li>
+     * </ul>
+     *
+     * @param recordImageColumnName the discovered column name
+     * @return the {@code OR ... IS NULL} disjunct, ready to close inside the caller's parentheses
+     */
+    private String unreadableRowsVisible(String recordImageColumnName) {
+        return " OR " + delimit(recordImageColumnName) + " IS NULL";
     }
 
     /** The keyed predicate: an escaped {@code LIKE} over the record image. */

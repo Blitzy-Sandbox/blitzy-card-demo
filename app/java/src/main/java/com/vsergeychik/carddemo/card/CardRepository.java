@@ -621,8 +621,21 @@ public class CardRepository {
      * - which is also what lets every geometry check in the constructor fail fast at context refresh
      * rather than mid-transaction. {@code null} means "not yet resolved"; the value is deeply immutable,
      * so publishing it hands out nothing alterable.
+     *
+     * <p><strong>What is memoised is the statement TEXT, never the proof that the dataset is there.</strong>
+     * {@link #openBrowse(String, BrowseDirection)} composes afresh through {@link #composeStatements()} on
+     * every call, because it stands for the {@code STARTBR} that {@code app/cbl/CBACT02C.cbl:120} performs
+     * as {@code OPEN INPUT} and tests at {@code :121}. Reaching the open through this memo made its outcome
+     * depend on whether an earlier operation had populated the field: a dataset dropped since the last
+     * successful pass was reported as opened, and the failure appeared one line later under the read
+     * paragraph's message, {@code 'ERROR READING CARDFILE'} instead of {@code 'ERROR OPENING CARDFILE'}
+     * ({@code :129}).
+     *
+     * <p>{@code volatile}, because a repository is a singleton reached from several threads and
+     * {@link Statements} is a deeply immutable record: a volatile write publishes it safely and a volatile
+     * read never sees a partially initialised one.
      */
-    private Statements statements;
+    private volatile Statements statements;
 
 
     /**
@@ -1197,6 +1210,14 @@ public class CardRepository {
      * {@code OPEN INPUT} establishes too. It cannot pass where a read would fail, because a read composes
      * its statement from the same describe.
      *
+     * <p><strong>The probe runs on every call, never on the strength of an earlier one.</strong> It used to
+     * go through the memoising statement accessor, so once any operation had resolved the statements the
+     * describe was skipped and this method reported success over a dataset that had since been dropped -
+     * with the failure appearing on the first read, wearing {@code 'ERROR READING CARDFILE'}
+     * ({@code :110}) instead of {@code 'ERROR OPENING CARDFILE'} ({@code :129}). Whether an open succeeds
+     * cannot depend on what ran before it, so the statement <em>text</em> is memoised and the proof that
+     * the dataset is there is not.
+     *
      * <p>The response is reported, never thrown, because {@code OPEN} has a {@code FILE STATUS} clause
      * and no exception, and the caller's own guard chain decides what a bad status means. What the backend
      * said is logged rather than discarded with it, so the abend that follows is diagnosable.
@@ -1213,7 +1234,12 @@ public class CardRepository {
                 + "browse is never direction-less");
         String key = baseKeyOf(cardNumber);
         try {
-            resolveStatements();
+            // composeStatements() rather than resolveStatements(), and the difference is what makes the
+            // open able to fail. The memoising accessor skips the describe once any earlier operation has
+            // resolved the statements, so a dataset dropped since the last successful pass was reported as
+            // opened and the failure surfaced on the first read under 'ERROR READING CARDFILE'. An open
+            // proves the dataset is there every time it is asked to.
+            composeStatements();
         } catch (DataAccessException translated) {
             LOG.error("Could not open a sequential pass over the " + BASE_DD_NAME + " base cluster - "
                     + BackendDiagnostic.of(translated).describe() + "; reporting CICS response "
@@ -1255,7 +1281,8 @@ public class CardRepository {
             // the backing relation is detected here rather than silently resolved by taking whichever row
             // the backend ordered first. See classifyRead's fan-out arm.
             FetchedRows rows = fetch(statement, pattern, DUPLICATE_DETECTION_ROW_LIMIT);
-            return classifyRead(rows, false);
+            return provenAbsence(classifyRead(rows, false), sql.probeUnreadableBaseRows(),
+                    BASE_CICS_FILE_NAME);
         } catch (DataAccessException rejected) {
             return failedRead(READ_OPERATION_NAME, BASE_CICS_FILE_NAME,
                     locking ? "with the UPDATE option" : "without the UPDATE option", rejected);
@@ -1272,13 +1299,97 @@ public class CardRepository {
     private CardReadResult readOnAlternateIndex(String alternateKey) {
         String pattern = ALTERNATE_KEY_SPAN.pattern(alternateKey);
         try {
-            FetchedRows rows = fetch(resolveStatements().selectByAccountId(), pattern,
-                    DUPLICATE_DETECTION_ROW_LIMIT);
-            return classifyRead(rows, true);
+            Statements sql = resolveStatements();
+            FetchedRows rows = fetch(sql.selectByAccountId(), pattern, DUPLICATE_DETECTION_ROW_LIMIT);
+            return provenAbsence(classifyRead(rows, true), sql.probeUnreadableAlternateRows(),
+                    ALTERNATE_INDEX_CICS_FILE_NAME);
         } catch (DataAccessException rejected) {
             return failedRead(READ_OPERATION_NAME, ALTERNATE_INDEX_CICS_FILE_NAME,
                     "through the alternate-index path", rejected);
         }
+    }
+
+    /**
+     * Turns a keyed read's {@code NOTFND} into the invalid-request response when the relation holds a row
+     * that <strong>cannot be read</strong>, and leaves every other outcome exactly as it was.
+     *
+     * <h2>Why an absence has to be proved</h2>
+     * <p>{@code CARD-NUM} lives <em>inside</em> the record image - it is its leading sixteen bytes - so a
+     * row whose record-image column holds nothing has no knowable key. The keyed predicate cannot match
+     * it, which leaves the read with no matching row and, on the face of it, {@code NOTFND}. But
+     * {@code NOTFND} is a positive claim: {@code app/cbl/COCRDSLC.cbl:755-761} takes it as "there is no
+     * such card" and sets a screen message saying so, and {@code COCRDUPC} takes it as licence to carry
+     * on. Making that claim while an unreadable row is sitting in the relation reports a record that is
+     * present as absent - which is precisely what the sibling arm in {@link #classifyRead(FetchedRows,
+     * boolean)} refuses to do for a row it can see.
+     *
+     * <p>So a not-found answer is confirmed with one further row-limited read before it is returned. It
+     * costs one round trip, on the not-found path only, and it is the only place this class's answer
+     * changes: a read that found its record is untouched, because a corrupt row elsewhere in the dataset is
+     * none of that read's business - a VSAM {@code READ} of a key that resolves does not fail because
+     * another record is damaged.
+     *
+     * <p>The response is {@link FileStatus#INVREQ}, the same {@code WHEN OTHER} response the visible form
+     * of this condition already reports, so the caller's guard chain is unchanged and the batch caller
+     * lands on {@code MOVE 12 TO APPL-RESULT} ({@code app/cbl/CBACT02C.cbl:101}) exactly as it would for
+     * any other unreadable record.
+     *
+     * @param classified          the outcome the read classified to
+     * @param unreadableRowsProbe the probe over the access path that was read - the base cluster's for a
+     *                            keyed read, the alternate-index path's for a read through the path, so
+     *                            the relation that answered "nothing matched" is the one asked to prove
+     *                            it. In a deployment both names address one dataset (gate G45), which
+     *                            makes the two probes the same statement there
+     * @param fileName            the CICS file name for the diagnostic
+     * @return {@code classified} unless it was {@code NOTFND} and the relation holds an unreadable row, in
+     *         which case the invalid-request outcome; never {@code null}
+     * @throws DataAccessException if the backend refuses the probe, which the caller reports as it reports
+     *                             a refusal of the read itself
+     */
+    private CardReadResult provenAbsence(CardReadResult classified, String unreadableRowsProbe,
+                                         String fileName) {
+        if (!classified.isNotFound()) {
+            return classified;
+        }
+        FetchedRows unreadable = fetchUnparameterised(unreadableRowsProbe, SINGLE_ROW);
+        if (unreadable.rowCount() == 0) {
+            // A genuine WHEN DFHRESP(NOTFND): no row matched the key and no row of the relation is
+            // unreadable, so the absence is established rather than assumed.
+            return classified;
+        }
+        LOG.error("A keyed read of " + fileName.trim() + " matched no row, but the relation holds a row "
+                + "with no record image at position " + RECORD_IMAGE_COLUMN_INDEX + " - and CARD-NUM is "
+                + "part of that image, so that row's key cannot be known; reporting the invalid-request "
+                + "response rather than reporting as absent a record that may well be the one asked for");
+        return CardReadResult.failed(FileStatus.INVREQ);
+    }
+
+    /**
+     * Sends a statement that takes no parameter and brings back at most {@code rowLimit} rows' worth of
+     * answer.
+     *
+     * <p>The same extractor and the same row-limit discipline as {@link #fetch(String, String, int)}: one
+     * shape for reading rows, so the unreadable-row probe cannot drift from the reads it qualifies.
+     *
+     * @param statement the statement to send
+     * @param rowLimit  the most rows worth fetching
+     * @return what came back; never {@code null}
+     * @throws DataAccessException if the backend rejected the request
+     */
+    private FetchedRows fetchUnparameterised(String statement, int rowLimit) {
+        PreparedStatementCreator creator = connection -> {
+            PreparedStatement prepared = connection.prepareStatement(statement);
+            // Both limits, as everywhere else: one bounds what the backend hands over, the other what it
+            // carries across the round trip. One row settles the question this probe asks.
+            prepared.setMaxRows(rowLimit);
+            prepared.setFetchSize(rowLimit);
+            return prepared;
+        };
+        ResultSetExtractor<FetchedRows> extractor = resultSet -> extractRows(resultSet, rowLimit);
+        FetchedRows rows = jdbcTemplate.query(creator, extractor);
+        // A template that answered with nothing has told us nothing. Reported as no rows, which leaves the
+        // not-found answer standing rather than converting it on the strength of an absent answer.
+        return rows == null ? FetchedRows.empty() : rows;
     }
 
     /**
@@ -1802,23 +1913,50 @@ public class CardRepository {
     private Statements resolveStatements() {
         Statements resolved = this.statements;
         if (resolved == null) {
-            ResultSetExtractor<String> columnNameExtractor = CardRepository::extractRecordImageColumn;
-            String baseColumn = baseRelation.rememberRecordImageColumn(
-                    jdbcTemplate.query(baseRelation.describeStatement(), columnNameExtractor));
-            String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(
-                    jdbcTemplate.query(alternateIndexRelation.describeStatement(),
-                            columnNameExtractor));
-            resolved = new Statements(
-                    baseRelation.selectByKey(baseColumn),
-                    baseRelation.selectByKeyForUpdate(baseColumn),
-                    alternateIndexRelation.selectByKey(alternateColumn),
-                    baseRelation.selectFromKeyAscending(baseColumn),
-                    baseRelation.selectAfterAscending(baseColumn),
-                    baseRelation.selectBeforeDescending(baseColumn),
-                    baseRelation.rewriteByKey(baseColumn));
-            this.statements = resolved;
+            resolved = composeStatements();
         }
         return resolved;
+    }
+
+    /**
+     * Describes both relations and composes the statements <strong>unconditionally</strong>, republishing
+     * the memo {@link #resolveStatements()} reads.
+     *
+     * <p>This is what {@link #openBrowse(String, BrowseDirection)} calls, and the difference between the two
+     * methods is the whole of an {@code OPEN}. A sequential pass is established before anything is read, and
+     * {@code app/cbl/CBACT02C.cbl:121-132} tests that establishment on its own account, with its own message
+     * and its own abend. Reaching it through the memoising accessor meant the describe was skipped once any
+     * earlier operation had resolved the statements, so the open could not fail after the first success and
+     * a dropped dataset was reported by the read that followed instead.
+     *
+     * <p>The cost is one metadata round trip per open, paid where the COBOL pays it - once per pass - while
+     * every read within the pass reuses the text this composed.
+     *
+     * @return the freshly composed statements; never {@code null}
+     * @throws DataAccessException   if either relation cannot be described
+     * @throws IllegalStateException if either relation presents no usable record-image column
+     */
+    private Statements composeStatements() {
+        ResultSetExtractor<String> columnNameExtractor = CardRepository::extractRecordImageColumn;
+        String baseColumn = baseRelation.rememberRecordImageColumn(
+                jdbcTemplate.query(baseRelation.describeStatement(), columnNameExtractor));
+        String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(
+                jdbcTemplate.query(alternateIndexRelation.describeStatement(),
+                        columnNameExtractor));
+        Statements composed = new Statements(
+                baseRelation.selectByKey(baseColumn),
+                baseRelation.selectByKeyForUpdate(baseColumn),
+                alternateIndexRelation.selectByKey(alternateColumn),
+                baseRelation.selectFromKeyAscending(baseColumn),
+                baseRelation.selectAfterAscending(baseColumn),
+                baseRelation.selectBeforeDescending(baseColumn),
+                baseRelation.rewriteByKey(baseColumn),
+                baseRelation.selectUnreadableRows(baseColumn),
+                alternateIndexRelation.selectUnreadableRows(alternateColumn));
+        // Published after it is fully built, through a volatile write, so a concurrent reader sees either
+        // the previous complete value or this one and never a partially initialised record.
+        this.statements = composed;
+        return composed;
     }
 
     /**
@@ -1861,6 +1999,16 @@ public class CardRepository {
      *                                    descending, on the previous whole image for the same reason
      * @param rewrite                     {@code REWRITE}: the whole record image, keyed on the record's
      *                                    own card number
+     * @param probeUnreadableBaseRows     the rows of the base cluster whose record image is absent. Not a
+     *                                    COBOL operation: it is what lets a keyed read <em>prove</em> an
+     *                                    absence before reporting {@code NOTFND}, since {@code CARD-NUM}
+     *                                    lives inside the record image and a row with no image therefore
+     *                                    has no knowable key. See
+     *                                    {@link #provenAbsence(CardReadResult, String, String)}
+     * @param probeUnreadableAlternateRows the same probe over the alternate-index path, so a read through
+     *                                    the path proves its absence against the path it read.
+     *                                    {@code CARD-ACCT-ID} lives inside the image too, so an unreadable
+     *                                    row has no knowable alternate key either
      */
     record Statements(String selectByCardNumber,
                       String selectForUpdateByCardNumber,
@@ -1868,7 +2016,9 @@ public class CardRepository {
                       String browseAnchor,
                       String browseForward,
                       String browseBackward,
-                      String rewrite) {
+                      String rewrite,
+                      String probeUnreadableBaseRows,
+                      String probeUnreadableAlternateRows) {
     }
 
     /**

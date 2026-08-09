@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.user;
 
+import com.vsergeychik.carddemo.common.AidRequestParameter;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
@@ -234,7 +235,17 @@ public final class UserMenuController {
      * string, so it arrives as its unsigned integer value and is narrowed by
      * {@link #resolveEibAid(Integer, UserListRequest)}.
      */
-    static final String EIBAID_PARAM = "eibaid";
+    static final String EIBAID_PARAM = AidRequestParameter.CANONICAL_NAME;
+
+    /**
+     * The alternate spelling of {@link #EIBAID_PARAM}, accepted on every online route.
+     *
+     * <p>Bound here so that this route and {@code POST /api/users} - the same path, a different verb,
+     * and until now a different accepted spelling - understand the same name. A caller that reached the
+     * add screen with {@link AidRequestParameter#ALTERNATE_NAME} and then listed users with it used to
+     * have the key discarded silently on the second call.
+     */
+    static final String EIBAID_PARAM_ALIAS = AidRequestParameter.ALTERNATE_NAME;
 
     /**
      * The {@code PIC X} move rule, applied to the inbound {@code CCARD-AID} token so that an unpadded
@@ -705,23 +716,36 @@ public final class UserMenuController {
      * it is the more precise statement; the token is decoded when it is not; and
      * {@link CicsAid#DFHENTER} is the default only when neither names a key.
      *
+     * <p><strong>The parameter has one name across the whole surface.</strong> Both accepted spellings
+     * are bound and folded by {@link AidRequestParameter#resolve(Integer, Integer)}; binding only one of
+     * them let Spring discard the other and run the request as {@link CicsAid#DFHENTER} without saying
+     * so.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start
-     * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255}, or
-     *                {@code null} to take the key from {@link UserListRequest#aid()}
+     * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255} under the
+     *                canonical parameter name, or {@code null} to take the key from
+     *                {@link UserListRequest#aid()}
+     * @param eibAid  the same value under the alternate spelling; at most one of the two need be sent
      * @return the {@code COUSR0AO} projection, or - on a transfer of control - the same payload with
      *         {@code nextProgram} naming where the client goes next
-     * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
+     * @throws IllegalArgumentException if the AID is outside {@code 0..255}, or if both spellings are
+     *                                  present and disagree
      */
+    // The alternate spelling is appended last rather than placed beside the canonical one: Spring binds
+    // by the name in the annotation and never by position, and appending leaves the two parameters this
+    // method already had meaning exactly what they meant to every direct caller.
     @GetMapping(path = USER_LIST_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     public ScreenResponse<UserListResponse> getUsers(
             @Valid @RequestBody(required = false) UserListRequest request,
-            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid,
+            @RequestParam(name = EIBAID_PARAM_ALIAS, required = false) Integer eibAid) {
         // The work area is created here rather than inside the two-argument overload so that the two
         // values COUSR00C sets which are presentation metadata - the cursor request and the ERASE choice -
         // are still reachable when the envelope is built. They are not payload members and never become
         // any, which is exactly why they need the envelope to travel at all.
         WorkArea ws = new WorkArea();
-        UserListResponse painted = listUsers(request, resolveEibAid(eibaid, request), ws);
+        UserListResponse painted = listUsers(
+                request, resolveEibAid(AidRequestParameter.resolve(eibaid, eibAid), request), ws);
         return ScreenResponse.of(painted, screenMetadataOf(ws));
     }
 

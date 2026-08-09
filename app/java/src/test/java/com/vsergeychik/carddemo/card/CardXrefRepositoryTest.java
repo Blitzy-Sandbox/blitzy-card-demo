@@ -48,6 +48,8 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.invocation.InvocationOnMock;
@@ -254,7 +256,7 @@ class CardXrefRepositoryTest {
 
     /** The advancing browse read: the lowest key strictly above the record already returned. */
     private static final String BASE_BROWSE_AFTER_SQL = "SELECT * FROM \"" + BASE_DS + "\" WHERE "
-            + IMAGE + " > ? ORDER BY " + IMAGE + " ASC";
+            + "(" + IMAGE + " > ? OR " + IMAGE + " IS NULL) ORDER BY " + IMAGE + " ASC";
 
     /** The first row of {@code app/data/ASCII/cardxref.txt}: card 0500024453765740, customer and account 50. */
     private static final String CARD_1 = "0500024453765740";
@@ -342,6 +344,44 @@ class CardXrefRepositoryTest {
      */
     private static String image(String cardNumber, int customerId, long accountId) {
         return new String(new CardXrefRecord(cardNumber, customerId, accountId).encode(ASCII), ASCII);
+    }
+
+    /**
+     * Renders a row of a chosen width whose base key still occupies {@code [0, 16)}.
+     *
+     * <p>The key has to survive the reshaping, because the keyed statement's {@code LIKE} pattern confines
+     * the match to the key's own bytes at the key's own offset: a row the predicate never matched would
+     * prove nothing about what happens to one it did. A width below
+     * {@value CardXrefRecord#XREF_CARD_NUM_LENGTH} therefore only arises for the browse, which supplies no
+     * key at all.
+     *
+     * @param cardNumber the base key the row carries
+     * @param width      the width to render, in characters
+     * @return a row of exactly {@code width} characters
+     */
+    private static String rowOfWidth(String cardNumber, int width) {
+        String declared = image(cardNumber, 50, 50L);
+        if (width <= declared.length()) {
+            return declared.substring(0, width);
+        }
+        return declared + " ".repeat(width - declared.length());
+    }
+
+    /**
+     * Replaces the first digit of the {@code XREF-CUST-ID} span with a letter.
+     *
+     * <p>The width is untouched, so the width guard passes and the row reaches
+     * {@link CardXrefRecord#decodeSpan}, which refuses a non-digit in a span declared
+     * {@code PIC 9(09)}. That is the second, distinct way a stored row can be unreadable, and it reports a
+     * different status from a width conflict because it is a different condition.
+     *
+     * @param declaredWidthImage a fifty-character image
+     * @return the same image with one non-digit in a numeric span
+     */
+    private static String withNonDigitCustomerId(String declaredWidthImage) {
+        int custIdOffset = CardXrefRecord.XREF_CARD_NUM_LENGTH;
+        return declaredWidthImage.substring(0, custIdOffset) + "X"
+                + declaredWidthImage.substring(custIdOffset + 1);
     }
 
     /**
@@ -1004,25 +1044,94 @@ class CardXrefRepositoryTest {
         }
 
         @Test
-        @DisplayName("Gate G19 / risk R-F: a 36-byte row is rejected, not quietly accepted")
+        @DisplayName("Gate G19 / risk R-F: a 36-byte row is reported as '04', not quietly accepted")
         void aShortRowIsRejected() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             // Exactly what app/data/ASCII/cardxref.txt holds: the three fields and no trailing FILLER.
             stubRows(jdbc, BASE_DS, List.of(CARD_1 + "000000050" + "00000000050"));
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> repository(jdbc).readByCardNumber(CARD_1))
-                    .withMessageContaining("padToDeclaredWidth");
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            // Not accepted, and not thrown either. '04' is COBOL's own status for a record whose length
+            // does not conform to the file's fixed attributes, and it is what lets a caller take the arm
+            // it already has: CBACT03C:94 tests '00', so :101 moves 12 into APPL-RESULT and :110 displays
+            // ERROR READING XREFFILE. An IllegalArgumentException escaping instead skipped the message,
+            // the FILE STATUS line and the RETURN-CODE of 12 altogether.
+            assertThat(result.status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            // The response an online consumer puts on the screen names the condition that occurred:
+            // LENGERR, which is what CICS raises for a record longer than the INTO area, and what the
+            // sibling CardRepository already reports for the identical malformation of CARD-RECORD.
+            // NOT NOTOPEN, which would name a dataset that could not be reached.
+            assertThat(result.cicsResp()).isEqualTo(FileStatus.LENGERR);
+            assertThat(result.isFound()).isFalse();
+            assertThat(result.isNotFound())
+                    .as("a record that is present and unreadable is not a missing record")
+                    .isFalse();
+            assertThat(result.record()).isEmpty();
         }
 
         @Test
-        @DisplayName("A row wider than the copybook is rejected as well")
+        @DisplayName("A row wider than the copybook is reported as '04' as well")
         void anOverWideRowIsRejected() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L) + " "));
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> repository(jdbc).readByCardNumber(CARD_1));
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(result.status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+            assertThat(result.isFound()).isFalse();
+            assertThat(result.record()).isEmpty();
+        }
+
+        @ParameterizedTest(name = "a {0}-byte row is reported as ''04'', never thrown")
+        @ValueSource(ints = {16, 35, 36, 49, 51, 100})
+        @DisplayName("Every width but fifty is reported as '04', on the read that met it")
+        void everyWidthButFiftyIsReported(int width) {
+            // WHY A RANGE RATHER THAN ONE CASE. The defect this pins was a bare decode: the width guard
+            // lived inside FixedWidthCodec.wrap and its refusal was an IllegalArgumentException, so EVERY
+            // width but fifty escaped, not just the 36-byte fixture form. One case would have proved the
+            // seam exists; the range proves nothing gets past it, in either direction, at either boundary.
+            //
+            // The narrowest case is sixteen because that is the base key's own width: below it the keyed
+            // predicate could not have matched the row in the first place, and a row the read never saw
+            // proves nothing about what the read does with one it did. The browse, which supplies no key,
+            // covers the narrower widths.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(rowOfWidth(CARD_1, width)));
+
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(result.status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.cicsResp()).isEqualTo(FileStatus.LENGERR);
+            assertThat(result.applResult()).isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
+            assertThat(result.isFound()).isFalse();
+            assertThat(result.isNotFound())
+                    .as("a record that is present and unreadable is not a missing record")
+                    .isFalse();
+            assertThat(result.record()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("A row of the declared width whose numeric span holds a non-digit is reported, "
+                + "not thrown")
+        void anUndecodableRowOfTheDeclaredWidthIsReported() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            // Fifty bytes, so the width guard passes, and a letter where XREF-CUST-ID declares PIC 9(09),
+            // so CardXrefRecord.decodeSpan refuses. That refusal is the SECOND way FixedWidthCodec can say
+            // no, and it used to escape by the same route the width refusal did.
+            stubRows(jdbc, BASE_DS, List.of(withNonDigitCustomerId(image(CARD_1, 50, 50L))));
+
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            // Not '04': the length conforms. The record is present and cannot be read, which is the same
+            // class of defect as a row with no image at all and is reported with the same status.
+            assertThat(result.status()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.applResult()).isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
+            assertThat(result.isNotFound()).isFalse();
+            assertThat(result.record()).isEmpty();
         }
     }
 
@@ -1209,6 +1318,45 @@ class CardXrefRepositoryTest {
             assertThat(result.isFound()).isTrue();
             assertThat(result.record().orElseThrow().xrefAcctId()).isEqualTo(widest);
         }
+
+        @ParameterizedTest(name = "a {0}-byte row is reported as ''04'' through the path too")
+        @ValueSource(ints = {36, 49, 51, 100})
+        @DisplayName("A malformed row is reported as '04' on the path read as well, not thrown")
+        void aMalformedRowIsReportedThroughThePath(int width) {
+            // The path read shares one implementation with the base read (gate G45), but it is reached
+            // through two public overloads and by a different key at a different offset, so the seam is
+            // asserted here rather than assumed from the base read. The narrowest case is 36: below it the
+            // XREF-ACCT-ID span at offset 25 is no longer intact and the path predicate could not match.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, ALT_DS, List.of(rowOfWidth(CARD_1, width)));
+
+            ReadResult numericView = repository(jdbc).readByAccountIdViaAltIndex(50L);
+            ReadResult alphanumericView = repository(jdbc).readByAccountIdViaAltIndex("00000000050");
+
+            // Both COBOL views of the same eleven-byte span must report the same thing, including here.
+            for (ReadResult result : List.of(numericView, alphanumericView)) {
+                assertThat(result.status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+                assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+                assertThat(result.cicsResp()).isEqualTo(FileStatus.LENGERR);
+                assertThat(result.ddName()).isEqualTo(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+                assertThat(result.isNotFound()).isFalse();
+                assertThat(result.record()).isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("An undecodable row of the declared width is reported through the path too")
+        void anUndecodableRowIsReportedThroughThePath() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, ALT_DS, List.of(withNonDigitCustomerId(image(CARD_1, 50, 50L))));
+
+            ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
+
+            assertThat(result.status()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.ddName()).isEqualTo(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+            assertThat(result.record()).isEmpty();
+        }
     }
 
     // =================================================================================================
@@ -1272,6 +1420,57 @@ class CardXrefRepositoryTest {
                 assertThat(first.applResult()).isEqualTo(FileStatus.APPL_EOF);
                 assertThat(first.record()).isEmpty();
                 assertThat(second).isEqualTo(first);
+            }
+        }
+
+        @Test
+        @DisplayName("The OPEN probes on every call, so its outcome never depends on what ran before it")
+        void theOpenProbesOnEveryCall() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, List.of(image(CARD_1, 50, 50L)));
+            CardXrefRepository repository = repository(jdbc);
+
+            repository.openBrowse().closeBrowse();
+            repository.openBrowse().closeBrowse();
+
+            // Two opens, two describes of the base cluster. app/cbl/CBACT03C.cbl:118-134 establishes the
+            // file and tests its status on its own account, so an OPEN that leaned on an earlier one's
+            // proof could not fail after the first success.
+            assertThat(backend.statementsSent())
+                    .filteredOn(statement -> statement.equals(repository.describeBaseStatement()))
+                    .hasSize(2);
+        }
+
+        @Test
+        @DisplayName("An OPEN after a successful pass still detects a dataset that has gone away")
+        void theOpenDetectsAnAbsentDatasetAfterASuccessfulPass() {
+            // The QA reproduction, at the seam: a complete pass first, which memoises the statements,
+            // then the dataset goes away, then the same singleton is asked to open again.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L)));
+            CardXrefRepository repository = repository(jdbc);
+
+            try (BrowseCursor warm = repository.openBrowse()) {
+                assertThat(warm.openStatus()).isEqualTo(FileStatus.OK);
+                assertThat(warm.readNext().isFound()).isTrue();
+                assertThat(warm.readNext().isEndOfFile()).isTrue();
+            }
+            assertThat(repository.resolvedStatements())
+                    .as("the pass has resolved and memoised the statement text")
+                    .isNotNull();
+
+            stubFailure(jdbc, BASE_DS);
+
+            try (BrowseCursor cold = repository.openBrowse()) {
+                // This is the arm that displays ERROR OPENING XREFFILE (app/cbl/CBACT03C.cbl:129) and
+                // abends. Before the fix the open reported '00' and the failure surfaced one line later on
+                // the first READ, under ERROR READING XREFFILE (:110) - the same abend, the wrong
+                // paragraph, and an outcome that depended on prior traffic through the same bean.
+                assertThat(cold.openStatus()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
+                assertThat(cold.openOutcome()).isEqualTo(Outcome.OTHER);
+                assertThat(cold.openApplResult()).isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
+                assertThat(cold.isOpen()).isFalse();
             }
         }
 
@@ -1486,7 +1685,7 @@ class CardXrefRepositoryTest {
         }
 
         @Test
-        @DisplayName("Gate G19: a malformed row is raised by the readNext that reaches it, not by the open")
+        @DisplayName("Gate G19: a malformed row is reported by the readNext that reaches it, not by the open")
         void aMalformedRowIsRaisedWhenItIsReached() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             stubRows(jdbc, BASE_DS,
@@ -1497,9 +1696,88 @@ class CardXrefRepositoryTest {
                 assertThat(cursor.openStatus()).isEqualTo(FileStatus.OK);
                 assertThat(cursor.readNext().isFound()).isTrue();
 
-                assertThatExceptionOfType(IllegalArgumentException.class)
-                        .isThrownBy(cursor::readNext)
-                        .withMessageContaining("padToDeclaredWidth");
+                // The read that reaches the malformed row reports it as a file status, on its own
+                // paragraph. It used to let an IllegalArgumentException escape from
+                // FixedWidthCodec.wrap through this cursor to the job, which reached none of
+                // app/cbl/CBACT03C.cbl:110-113 - no ERROR READING XREFFILE, no FILE STATUS line, no
+                // ABENDING PROGRAM and no RETURN-CODE of 12.
+                ReadResult malformed = cursor.readNext();
+                assertThat(malformed.status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+                assertThat(malformed.outcome()).isEqualTo(Outcome.OTHER);
+                assertThat(malformed.applResult()).isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
+                assertThat(malformed.isEndOfFile())
+                        .as("a record that cannot be read is emphatically not an end of file")
+                        .isFalse();
+                assertThat(malformed.record()).isEmpty();
+            }
+        }
+
+        @ParameterizedTest(name = "a {0}-byte row is reported by the browse as ''04''")
+        @ValueSource(ints = {1, 16, 36, 49, 51, 100})
+        @DisplayName("The browse reports every width but fifty as '04', at either boundary")
+        void theBrowseReportsEveryWidthButFifty(int width) {
+            // The browse supplies no key, so unlike the keyed read it meets rows of ANY width - including
+            // ones narrower than the base key. Every one of them used to escape as an
+            // IllegalArgumentException from FixedWidthCodec.wrap, through BrowseCursor.readNext, to
+            // AccountBalanceUpdateJob, reaching none of app/cbl/CBACT03C.cbl:110-113.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(rowOfWidth(CARD_1, width)));
+
+            try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
+                ReadResult malformed = cursor.readNext();
+
+                assertThat(malformed.status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+                assertThat(malformed.outcome()).isEqualTo(Outcome.OTHER);
+                assertThat(malformed.cicsResp()).isEqualTo(FileStatus.LENGERR);
+                assertThat(malformed.applResult()).isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
+                assertThat(malformed.isEndOfFile()).isFalse();
+                assertThat(malformed.record()).isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("The browse reports an undecodable row of the declared width, and does not re-read it")
+        void theBrowseReportsAnUndecodableRow() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(withNonDigitCustomerId(image(CARD_1, 50, 50L)),
+                    image(CARD_2, 27, 27L)));
+
+            try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
+                ReadResult undecodable = cursor.readNext();
+
+                // Fifty bytes, so this is not a length conflict; the content is not a readable record.
+                assertThat(undecodable.status()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
+                assertThat(undecodable.outcome()).isEqualTo(Outcome.OTHER);
+                assertThat(undecodable.applResult()).isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
+                assertThat(undecodable.record()).isEmpty();
+
+                // The position advanced past the row it could not read, exactly as a COBOL READ advances
+                // past the record it reported an error on. Without that, a caller that ignored the status
+                // and read again would re-read the same row for ever; here it moves on. CBACT03C itself
+                // abends at :113 and never gets this far, and that is the point - the loop cannot spin.
+                assertThat(cursor.position()).isEqualTo(1);
+                assertThat(cursor.readNext().record().orElseThrow().xrefCardNum()).isEqualTo(CARD_2);
+            }
+        }
+
+        @Test
+        @DisplayName("A malformed row does not stop the browse from reaching the records after it")
+        void aMalformedRowDoesNotStopThePass() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            // In key order: CARD_1 ("05..."), the malformed CARD_2 row ("06..."), then "07...". The browse
+            // advances by the stored image, so the three have to ascend for the third to be reachable.
+            String afterTheMalformedRow = "0700000000000000";
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L), rowOfWidth(CARD_2, 49),
+                    image(afterTheMalformedRow, 27, 27L)));
+
+            try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
+                assertThat(cursor.readNext().record().orElseThrow().xrefCardNum()).isEqualTo(CARD_1);
+                assertThat(cursor.readNext().status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+                // Reported, position advanced, pass continues. The third row is still reachable, so the
+                // malformation is confined to the record that carried it rather than truncating the file -
+                // and the record count CBACT03C would have displayed is not silently short by one.
+                assertThat(cursor.readNext().record().orElseThrow().xrefCustId()).isEqualTo(27);
+                assertThat(cursor.readNext().isEndOfFile()).isTrue();
             }
         }
 
@@ -1962,14 +2240,19 @@ class CardXrefRepositoryTest {
         }
 
         @Test
-        @DisplayName("An unpadded fixture row is rejected: production never absorbs the 36-byte form")
+        @DisplayName("An unpadded fixture row is refused: production never absorbs the 36-byte form")
         void anUnpaddedFixtureRowIsRejected() throws IOException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             stubRows(jdbc, BASE_DS, fixtureRows());
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> repository(jdbc).readByCardNumber(CARD_1))
-                    .withMessageContaining("padToDeclaredWidth");
+            ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
+
+            // Still refused - the 36-byte form is the parity harness's to widen (gate G16), never this
+            // class's to absorb - and refused as the condition COBOL names, so the caller's guard chain
+            // runs. app/data/ASCII/cardxref.txt makes this the likeliest malformation in the estate.
+            assertThat(result.status()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+            assertThat(result.isFound()).isFalse();
+            assertThat(result.record()).isEmpty();
         }
     }
 
@@ -2308,11 +2591,18 @@ class CardXrefRepositoryTest {
             repository.readByAccountIdViaAltIndex(50L);
             // The open describes and transfers nothing (finding BD-06), so the browse statement appears
             // when the first READ is issued - which is the point: the open opens and the reads read.
+            //
+            // The open's own pair of describes is in this sequence deliberately. An OPEN INPUT proves the
+            // dataset is there on every call rather than on the strength of an earlier operation's success
+            // (QA finding A): when it reused the memoised statements, an open of a dataset that had gone
+            // away since reported '00' and the failure surfaced one line later under
+            // 'ERROR READING XREFFILE'. Two describes per open is the cost of the open's own message being
+            // the true one, and the COBOL opens once per run.
             repository.openBrowse().readNext();
 
             assertThat(backend.statementsSent()).containsExactly(
                     BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL, BASE_KEYED_SQL, ALT_KEYED_SQL,
-                    BASE_BROWSE_SQL);
+                    BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL, BASE_BROWSE_SQL);
             assertThat(backend.statementsSent()).allSatisfy(sql -> assertThat(sql)
                     // The dataset name is a delimited identifier, because a mainframe name carries
                     // periods and would otherwise be parsed as a qualified name.

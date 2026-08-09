@@ -1627,7 +1627,7 @@ class UserMenuControllerTest {
             // MOVE -1 TO USRIDINL is a request to place the cursor, carried in the SEND's CURSOR
             // option. It cannot travel as a field length, because UserListRequest.FieldMetadata refuses
             // a negative one, so the envelope is where it becomes observable.
-            ScreenMetadata painted = controllerOver(PAGE_SIZE).getUsers(entering(), null)
+            ScreenMetadata painted = controllerOver(PAGE_SIZE).getUsers(entering(), null, null)
                     .screenMetadata();
 
             assertThat(painted.cursorField()).isEqualTo(UserListResponse.USRIDIN_FIELD);
@@ -1640,7 +1640,7 @@ class UserMenuControllerTest {
             // Every path through the program reports the same cursor request, because :108 moves -1
             // before the EIBCALEN test at :110 - so even the cold start that transfers away has made it.
             assertThat(controllerOver(PAGE_SIZE)
-                    .getUsers(UserListRequest.empty().withoutNavigationContext(), null)
+                    .getUsers(UserListRequest.empty().withoutNavigationContext(), null, null)
                     .screenMetadata().cursorField())
                     .isEqualTo(UserListResponse.USRIDIN_FIELD);
 
@@ -1656,7 +1656,7 @@ class UserMenuControllerTest {
             // A PF8 with NEXT-PAGE-NO is the one presentation choice that differs between paths: :275
             // turns ERASE off so the "already at the bottom" message lands on the page still displayed.
             ScreenMetadata atTheBottom = controllerOver(PAGE_SIZE)
-                    .getUsers(reentering(), Byte.toUnsignedInt(CicsAid.DFHPF8))
+                    .getUsers(reentering(), Byte.toUnsignedInt(CicsAid.DFHPF8), null)
                     .screenMetadata();
             assertThat(atTheBottom.resetAllOutputFields()).isFalse();
         }
@@ -1680,7 +1680,7 @@ class UserMenuControllerTest {
         @DisplayName("GET /api/users is the mapped route and the AID arrives as a query parameter")
         void theRouteIsTheOneTheCsdTransactionProjectsTo() throws NoSuchMethodException {
             Method mapped = UserMenuController.class.getMethod("getUsers", UserListRequest.class,
-                    Integer.class);
+                    Integer.class, Integer.class);
 
             assertThat(UserMenuController.USER_LIST_PATH).isEqualTo("/api/users");
             // The handler answers the shared online envelope, whose payload member is this screen.
@@ -1710,6 +1710,37 @@ class UserMenuControllerTest {
                     .isThrownBy(() -> UserMenuController.resolveEibAid(-1, null));
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> UserMenuController.resolveEibAid(256, null));
+        }
+
+        @Test
+        @DisplayName("either accepted spelling of the AID parameter reaches the key, and a contradiction "
+                + "between them is refused")
+        void eitherAidSpellingReachesTheKey() {
+            int pf7 = 0xF7;
+
+            // The handler binds both names, so the alternate spelling - the one POST /api/users on this
+            // very path declared, and which this route used to leave unbound and therefore silently
+            // discarded - selects the same key as the canonical one.
+            ScreenResponse<UserListResponse> throughCanonical =
+                    controllerOver(PAGE_SIZE).getUsers(reentering(), pf7, null);
+            ScreenResponse<UserListResponse> throughAlternate =
+                    controllerOver(PAGE_SIZE).getUsers(reentering(), null, pf7);
+            ScreenResponse<UserListResponse> throughBoth =
+                    controllerOver(PAGE_SIZE).getUsers(reentering(), pf7, pf7);
+            ScreenResponse<UserListResponse> noKeyNamed =
+                    controllerOver(PAGE_SIZE).getUsers(reentering(), null, null);
+
+            assertThat(throughAlternate.screen()).isEqualTo(throughCanonical.screen());
+            assertThat(throughBoth.screen()).isEqualTo(throughCanonical.screen());
+            // PF7 is a real branch here (COUSR00C:122-127), so it answers differently from the ENTER
+            // default the discarded spelling used to produce. Without this the three above prove nothing.
+            assertThat(noKeyNamed.screen()).isNotEqualTo(throughCanonical.screen());
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controllerOver(PAGE_SIZE).getUsers(reentering(), pf7, 0xF8));
+            // And the range guard still applies to whichever spelling carried the value.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controllerOver(PAGE_SIZE).getUsers(reentering(), null, 300));
         }
 
         @Test
@@ -1786,9 +1817,9 @@ class UserMenuControllerTest {
             UserMenuController controller = controllerOver(PAGE_SIZE);
 
             UserListResponse forward = controller
-                    .getUsers(reentering().withAid("PFK08"), null).screen();
+                    .getUsers(reentering().withAid("PFK08"), null, null).screen();
             UserListResponse backward = controller
-                    .getUsers(reentering().withAid("PFK07"), null).screen();
+                    .getUsers(reentering().withAid("PFK07"), null, null).screen();
 
             assertThat(forward.errMsg().strip())
                     .as("PF8 from page one either pages or says it cannot; either way it is not ENTER")
@@ -1801,7 +1832,7 @@ class UserMenuControllerTest {
         @DisplayName("the request mapping delegates without deciding anything itself")
         void theRequestMappingDelegates() {
             ScreenResponse<UserListResponse> answer =
-                    controllerOver(PAGE_SIZE).getUsers(entering(), null);
+                    controllerOver(PAGE_SIZE).getUsers(entering(), null, null);
 
             UserListResponse throughHttp = answer.screen();
             assertThat(rowUserId(throughHttp, 1)).isEqualTo("ADMIN001");
