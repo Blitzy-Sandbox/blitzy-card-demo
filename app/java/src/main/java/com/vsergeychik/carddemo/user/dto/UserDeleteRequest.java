@@ -1,8 +1,14 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * The inbound payload of {@code DELETE /api/users/{userId}} - the REST projection of the
@@ -292,7 +298,28 @@ public record UserDeleteRequest(
         NavigationContext navigationContext,
 
         // Not a DFHMDF field: the resolved EIBAID token, CCARD-AID PIC X(5).
-        @Size(max = AID_LENGTH) String aid) {
+        @Size(max = AID_LENGTH) String aid,
+
+        // Not a DFHMDF field: the 34-byte 05 CDEMO-CU03-INFO group app/cbl/COUSR03C.cbl:50-58 appends
+        // to CARDDEMO-COMMAREA, restored from DFHCOMMAREA at line 94 along with the 160 bytes in front
+        // of it. Carried as a member of its own because COCOM01Y is exactly 160 bytes and shared by all
+        // seventeen controllers while this group belongs to this program alone. Null is normalised to
+        // Cu03Info.initial(), the state a cold start sees.
+        Cu03Info cu03Info) {
+
+    /**
+     * Normalises the extension carrier, which has no absent state.
+     *
+     * <p>{@code 05 CDEMO-CU03-INFO} is storage inside {@code 01 CARDDEMO-COMMAREA}: a cold start sees it
+     * as its {@code VALUE} clauses left it - spaces, zero and {@code 'N'} - and every other entry sees
+     * whatever line 94 restored. There is no third state, so a payload naming nothing is given
+     * {@link Cu03Info#initial()} and no reader has to defend against {@code null}. Every other component
+     * is left exactly as the caller sent it, trailing spaces included.
+     */
+    public UserDeleteRequest {
+        cu03Info = cu03Info == null ? Cu03Info.initial() : cu03Info;
+    }
+
 
     // =================================================================================================
     // The screen this payload projects. Every value below was measured from the sources named beside
@@ -556,7 +583,8 @@ public record UserDeleteRequest(
                 spaces(USRTYPE_LENGTH),
                 spaces(ERRMSG_LENGTH),
                 NavigationContext.empty(),
-                spaces(AID_LENGTH));
+                spaces(AID_LENGTH),
+                Cu03Info.initial());
     }
 
     /**
@@ -570,6 +598,21 @@ public record UserDeleteRequest(
     private static String spaces(int width) {
         return " ".repeat(width);
     }
+
+    /** One space, for the {@code PIC X} items of {@link Cu03Info} that a cold start leaves blank. */
+    private static final String SPACE = " ";
+
+    /**
+     * The alphanumeric and numeric {@code MOVE} rules {@link Cu03Info} renders its six items through.
+     *
+     * <p>The code page is named rather than defaulted (practice B8) and is the same {@code US-ASCII} the
+     * controller's codec carries. Neither rule actually consults it - the alphanumeric {@code MOVE} pads
+     * and truncates characters and the numeric one zero-fills digits - but the codec requires one, and
+     * leaving it to the platform default is the pitfall the AAP names explicitly. Immutable, so this is a
+     * constant and not static mutable state.
+     */
+    private static final FixedWidthCodec PICTURE_RULES =
+            new FixedWidthCodec(StandardCharsets.US_ASCII);
 
     // =================================================================================================
     // The enter-versus-re-enter context, READ THROUGH the navigation context rather than duplicated.
@@ -669,4 +712,182 @@ public record UserDeleteRequest(
                 + ']';
     }
 
+
+    // =================================================================================================
+    // CDEMO-CU03-INFO - app/cbl/COUSR03C.cbl:50-58. This program's own 34-byte commarea extension,
+    // declared here rather than on the controller because it is payload: it arrives in the request
+    // body and leaves in the response body, and a DTO must not depend on a controller to name its own
+    // members. The same shape as UserUpdateRequest.Cu02Info, which is the same shape under the CU02 item names.
+    // =================================================================================================
+
+    /**
+     * {@code 05 CDEMO-CU03-INFO} - the thirty-four bytes this program appends to
+     * {@code CARDDEMO-COMMAREA}, declared in its own working storage at lines 50-58:
+     *
+     * <pre>
+     * 05 CDEMO-CU03-INFO.
+     *    10 CDEMO-CU03-USRID-FIRST     PIC X(08).
+     *    10 CDEMO-CU03-USRID-LAST      PIC X(08).
+     *    10 CDEMO-CU03-PAGE-NUM        PIC 9(08).
+     *    10 CDEMO-CU03-NEXT-PAGE-FLG   PIC X(01) VALUE 'N'.
+     *    10 CDEMO-CU03-USR-SEL-FLG     PIC X(01).
+     *    10 CDEMO-CU03-USR-SELECTED    PIC X(08).
+     * </pre>
+     *
+     * <p>These six items are <strong>not</strong> in {@code app/cpy/COCOM01Y.cpy}. They belong to this
+     * program's local area, which is why they are here and not on {@link NavigationContext}: that type
+     * is exactly {@value NavigationContext#COMMAREA_LENGTH} bytes and is shared by all seventeen
+     * controllers, so widening it for one program's private extension would change the area every other
+     * program receives.
+     *
+     * <p><strong>The program reads exactly one of them and writes none.</strong>
+     * {@link #usrSelected()} is tested at lines 99-100 and consumed at 101-102; the other five are
+     * restored from {@code DFHCOMMAREA} at line 94 and handed back unchanged at lines 133-136. That
+     * pass-through is behaviour: dropping the group would shorten the returned area from
+     * 194 bytes to
+     * {@value NavigationContext#COMMAREA_LENGTH} and change what the next program in a chain receives -
+     * {@code COUSR00C}, the user list, is what fills that span before transferring here: it declares its
+     * own {@code 05 CDEMO-CU00-INFO} over the same thirty-four bytes [{@code app/cbl/COUSR00C.cbl:67-75}]
+     * and moves the marked row's id into {@code CDEMO-CU00-USR-SELECTED} at its lines 154 to 181. The two
+     * groups are separate declarations of one span, which is why the names differ program by program and
+     * why each program models its own.
+     *
+     * <p>A record, so it is immutable and can be shared safely.
+     *
+     * @param usridFirst   {@code CDEMO-CU03-USRID-FIRST PIC X(08)}, line 51 - carried, never read here
+     * @param usridLast    {@code CDEMO-CU03-USRID-LAST PIC X(08)}, line 52 - carried, never read here
+     * @param pageNum      {@code CDEMO-CU03-PAGE-NUM PIC 9(08)}, line 53 - carried, never read here
+     * @param nextPageFlg  {@code CDEMO-CU03-NEXT-PAGE-FLG PIC X(01)}, line 54, whose {@code 88}-levels
+     *                     at 55-56 are {@code NEXT-PAGE-YES 'Y'} and {@code NEXT-PAGE-NO 'N'} - carried,
+     *                     never read here
+     * @param usrSelFlg    {@code CDEMO-CU03-USR-SEL-FLG PIC X(01)}, line 57 - carried, never read here
+     * @param usrSelected  {@code CDEMO-CU03-USR-SELECTED PIC X(08)}, line 58 - <strong>the one item
+     *                     this program reads</strong>, at lines 99-102
+     */
+    public record Cu03Info(@JsonProperty("usridFirst") String usridFirst,
+                           @JsonProperty("usridLast") String usridLast,
+                           @JsonProperty("pageNum") int pageNum,
+                           @JsonProperty("nextPageFlg") String nextPageFlg,
+                           @JsonProperty("usrSelFlg") String usrSelFlg,
+                           @JsonProperty("usrSelected") String usrSelected) {
+
+        /** Declared width of {@code CDEMO-CU03-USRID-FIRST}: {@code PIC X(08)}. */
+        public static final int USRID_FIRST_LENGTH = 8;
+
+        /** Declared width of {@code CDEMO-CU03-USRID-LAST}: {@code PIC X(08)}. */
+        public static final int USRID_LAST_LENGTH = 8;
+
+        /** Declared digits of {@code CDEMO-CU03-PAGE-NUM}: {@code PIC 9(08)}, unsigned. */
+        public static final int PAGE_NUM_DIGITS = 8;
+
+        /** Declared width of {@code CDEMO-CU03-NEXT-PAGE-FLG}: {@code PIC X(01)}. */
+        public static final int NEXT_PAGE_FLG_LENGTH = 1;
+
+        /** Declared width of {@code CDEMO-CU03-USR-SEL-FLG}: {@code PIC X(01)}. */
+        public static final int USR_SEL_FLG_LENGTH = 1;
+
+        /** Declared width of {@code CDEMO-CU03-USR-SELECTED}: {@code PIC X(08)}. */
+        public static final int USR_SELECTED_LENGTH = 8;
+
+        /**
+         * The group's total width: 8 + 8 + 8 + 1 + 1 + 8 = <strong>34</strong> bytes.
+         *
+         * <p>Added to {@value NavigationContext#COMMAREA_LENGTH} this gives the
+         * 194-byte area line 94 restores - 160 plus these 34.
+         */
+        public static final int LENGTH = USRID_FIRST_LENGTH + USRID_LAST_LENGTH + PAGE_NUM_DIGITS
+                + NEXT_PAGE_FLG_LENGTH + USR_SEL_FLG_LENGTH + USR_SELECTED_LENGTH;
+
+        /** {@code 88 NEXT-PAGE-YES VALUE 'Y'} - line 55. */
+        public static final String NEXT_PAGE_YES = "Y";
+
+        /** {@code 88 NEXT-PAGE-NO VALUE 'N'} - line 56, and the field's own {@code VALUE} at line 54. */
+        public static final String NEXT_PAGE_NO = "N";
+
+        /**
+         * Renders every character item at its declared width and rejects a negative page number.
+         *
+         * <p>A {@code null} becomes that item's run of spaces, because a COBOL {@code PIC X} item has no
+         * absent state, and a value of any other length is put through the alphanumeric {@code MOVE}
+         * rule so the direction of any truncation is the one COBOL uses. {@code CDEMO-CU03-PAGE-NUM} is
+         * {@code PIC 9(08)} - an unsigned picture with no sign position - so a negative value has no
+         * representation in it and is refused rather than silently stored.
+         *
+         * @throws IllegalArgumentException if {@code pageNum} is negative or needs more than
+         *                                  {@value #PAGE_NUM_DIGITS} digits
+         */
+        public Cu03Info {
+            usridFirst = image(usridFirst, USRID_FIRST_LENGTH);
+            usridLast = image(usridLast, USRID_LAST_LENGTH);
+            nextPageFlg = image(nextPageFlg, NEXT_PAGE_FLG_LENGTH);
+            usrSelFlg = image(usrSelFlg, USR_SEL_FLG_LENGTH);
+            usrSelected = image(usrSelected, USR_SELECTED_LENGTH);
+            if (pageNum < 0) {
+                throw new IllegalArgumentException("CDEMO-CU03-PAGE-NUM is PIC 9(" + PAGE_NUM_DIGITS
+                        + "), an unsigned picture with no sign position, so " + pageNum
+                        + " has no representation in it");
+            }
+            if (pageNum >= (int) Math.pow(10, PAGE_NUM_DIGITS)) {
+                throw new IllegalArgumentException("CDEMO-CU03-PAGE-NUM is PIC 9(" + PAGE_NUM_DIGITS
+                        + ") and cannot hold " + pageNum + "; a numeric MOVE would drop its high-order "
+                        + "digits and the result would still look plausible");
+            }
+        }
+
+        /**
+         * The group as a freshly initialised area: spaces in the five character items, zero in the page
+         * number, and {@code 'N'} in {@code CDEMO-CU03-NEXT-PAGE-FLG}.
+         *
+         * <p>The {@code 'N'} is not a convention chosen here - it is the {@code VALUE 'N'} clause on
+         * line 54, which is what a cold start sees before line 94 overwrites the area. The other five
+         * items declare no {@code VALUE} and so begin as spaces and zero.
+         *
+         * @return the initial extension group, never {@code null}
+         */
+        public static Cu03Info initial() {
+            return new Cu03Info(SPACE.repeat(USRID_FIRST_LENGTH),
+                    SPACE.repeat(USRID_LAST_LENGTH),
+                    0,
+                    NEXT_PAGE_NO,
+                    SPACE.repeat(USR_SEL_FLG_LENGTH),
+                    SPACE.repeat(USR_SELECTED_LENGTH));
+        }
+
+        /**
+         * The six items keyed by the name {@code app/cbl/COUSR03C.cbl:51-58} spells, in declaration
+         * order.
+         *
+         * <p>The group is not in {@code app/cpy/COCOM01Y.cpy}, so it has no fixed-width layout of its own
+         * to deserialise and these six names are reachable no other way. A field-by-field comparison of
+         * the returned communication area needs them - the area this program hands back is
+         * 194 bytes and 34 of them are these - so they
+         * are projected here rather than left to be reassembled from six separate accessors.
+         *
+         * <p>{@code CDEMO-CU03-PAGE-NUM} is rendered as its {@code PIC 9(08)} image - zero-filled to eight
+         * digits - because that is the form it occupies in the area, not as a decimal string.
+         *
+         * @return an unmodifiable, declaration-ordered map of the six item names to their images
+         */
+        public Map<String, String> fieldImages() {
+            Map<String, String> images = new LinkedHashMap<>();
+            images.put("CDEMO-CU03-USRID-FIRST", usridFirst);
+            images.put("CDEMO-CU03-USRID-LAST", usridLast);
+            images.put("CDEMO-CU03-PAGE-NUM", PICTURE_RULES.movePic9(pageNum, PAGE_NUM_DIGITS));
+            images.put("CDEMO-CU03-NEXT-PAGE-FLG", nextPageFlg);
+            images.put("CDEMO-CU03-USR-SEL-FLG", usrSelFlg);
+            images.put("CDEMO-CU03-USR-SELECTED", usrSelected);
+            return Collections.unmodifiableMap(images);
+        }
+
+        /**
+         * Applies the alphanumeric {@code MOVE} rule, treating {@code null} as the item's spaces.
+         *
+         * @param value  the supplied value, or {@code null} for an item that was not supplied
+         * @param length the item's declared width
+         * @return an image of exactly {@code length} characters
+         */
+        private static String image(String value, int length) {
+            return PICTURE_RULES.movePicX(value == null ? "" : value, length);
+        }
+    }
 }

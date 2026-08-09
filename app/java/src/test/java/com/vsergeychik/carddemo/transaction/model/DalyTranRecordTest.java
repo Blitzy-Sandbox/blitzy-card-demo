@@ -1850,30 +1850,90 @@ class DalyTranRecordTest {
         }
 
         @Test
-        @DisplayName("the rendering names every field at its stored width and stays on one line")
-        void theRenderingNamesEveryFieldAtItsStoredWidth() {
+        @DisplayName("the rendering names every field, describes the sensitive ones, and stays on one "
+                + "line")
+        void theRenderingNamesEveryFieldWithoutDisclosingTheActivity() {
             String rendered = DalyTranRecord.decode(ROW_1, ASCII).toString();
 
+            // Every field is still NAMED, so the rendering still says what the record's shape is - which
+            // is what a width or padding investigation needs from it.
             assertThat(rendered)
-                    .contains("DALYTRAN-ID='0000000000683580'")
-                    .contains("DALYTRAN-TYPE-CD='01'")
-                    .contains("DALYTRAN-CAT-CD='0001'")
-                    .contains("DALYTRAN-SOURCE='POS TERM  '")
-                    .contains("DALYTRAN-MERCHANT-ID='800000000'")
-                    .contains("DALYTRAN-MERCHANT-NAME='Abshire-Lowe")
-                    .contains("DALYTRAN-MERCHANT-CITY='North Enoshaven")
-                    .contains("DALYTRAN-MERCHANT-ZIP='72112     '")
-                    .contains("DALYTRAN-ORIG-TS='2022-06-10 19:27:53.000000'")
+                    .contains("DALYTRAN-ID=")
+                    .contains("DALYTRAN-TYPE-CD=")
+                    .contains("DALYTRAN-CAT-CD=")
+                    .contains("DALYTRAN-SOURCE=")
+                    .contains("DALYTRAN-DESC=")
+                    .contains("DALYTRAN-AMT=")
+                    .contains("DALYTRAN-MERCHANT-ID=")
+                    .contains("DALYTRAN-MERCHANT-NAME=")
+                    .contains("DALYTRAN-MERCHANT-CITY=")
+                    .contains("DALYTRAN-MERCHANT-ZIP=")
+                    .contains("DALYTRAN-ORIG-TS=")
+                    .contains("DALYTRAN-PROC-TS=")
                     .contains("charset=US-ASCII");
 
-            // The amount is reported BOTH as its raw zoned image and as its decoded value, because those
-            // two can differ in the one way that matters.
-            assertThat(rendered).contains("DALYTRAN-AMT='0000005047G'=504.77");
+            // The fields that carry no personal data are retained in full.
+            assertThat(rendered)
+                    .contains("01")
+                    .contains("0001")
+                    .contains("POS TERM")
+                    .contains("2022-06-10 19:27:53.000000");
+
+            // The identifiers are masked to their last four characters: one record is still
+            // distinguishable from another, and neither is quotable in full.
+            assertThat(rendered)
+                    .contains("3580")
+                    .doesNotContain("0000000000683580")
+                    .doesNotContain("800000000");
+
+            // The merchant's name and city and the description are described by length only - together
+            // with the amount they said who spent what and where (CWE-532).
+            assertThat(rendered)
+                    .doesNotContain("Abshire-Lowe")
+                    .doesNotContain("North Enoshaven");
+
+            // The amount is withheld in BOTH forms. The decoded value was the more revealing of the two
+            // and previously had no protection at all.
+            assertThat(rendered)
+                    .doesNotContain("0000005047G")
+                    .doesNotContain("504.77");
 
             // FILLER is reported by width rather than by content: it carries no field semantics, and
             // printing twenty spaces would only pad the line.
             assertThat(rendered).contains("FILLER.length=20");
 
+            assertThat(rendered.lines()).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("the byte-exact paths still carry every value the rendering withholds")
+        void theByteExactPathsStillCarryEverything() {
+            // The parity surface is untouched, and this is what makes withholding from the rendering
+            // free: nothing that reads a record for parity reads toString().
+            DalyTranRecord record = DalyTranRecord.decode(ROW_1, ASCII);
+
+            assertThat(record.dalytranId()).isEqualTo("0000000000683580");
+            assertThat(record.dalytranAmt().toPlainString()).isEqualTo("504.77");
+            assertThat(record.dalytranAmtImage()).isEqualTo("0000005047G");
+            assertThat(record.dalytranMerchantName()).startsWith("Abshire-Lowe");
+            assertThat(record.displayImage())
+                    .contains("0000000000683580")
+                    .contains("Abshire-Lowe");
+        }
+
+        @Test
+        @DisplayName("a control character in a stored span cannot forge a second log line")
+        void aControlCharacterCannotForgeALogLine() {
+            // CWE-117. A PIC X span holds whatever the upstream file put there, and DALYTRAN-SOURCE is
+            // retained in full - so it is the one that has to be escaped rather than trusted.
+            String injected = ROW_1.substring(0, DalyTranRecord.DALYTRAN_SOURCE.offset())
+                    + "A\r\nB      "
+                    + ROW_1.substring(DalyTranRecord.DALYTRAN_SOURCE.offset()
+                            + DalyTranRecord.DALYTRAN_SOURCE.length());
+
+            String rendered = DalyTranRecord.decode(injected, ASCII).toString();
+
+            assertThat(rendered).doesNotContain("\n").doesNotContain("\r");
             assertThat(rendered.lines()).hasSize(1);
         }
 
@@ -1885,7 +1945,7 @@ class DalyTranRecordTest {
 
             // Masked in the annotated Java diagnostic, at the field's full stored width so the rendering
             // still reports the record's shape correctly.
-            assertThat(rendered).contains("DALYTRAN-CARD-NUM='************7065'")
+            assertThat(rendered).contains("DALYTRAN-CARD-NUM=************7065")
                     .doesNotContain("4859452612877065");
 
             // Not masked anywhere that parity depends on. This is the distinction that makes the two

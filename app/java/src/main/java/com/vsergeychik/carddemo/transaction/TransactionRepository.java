@@ -17,23 +17,27 @@ import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
 
 import java.nio.charset.Charset;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+
+import javax.sql.DataSource;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.UncategorizedSQLException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.ResultSetExtractor;
+import org.springframework.jdbc.datasource.lookup.DataSourceLookupFailureException;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -133,10 +137,11 @@ import org.springframework.stereotype.Repository;
  *   <li><strong>{@code COTRN01C} - keyed read.</strong> {@code READ-TRANSACT-FILE} at
  *       {@code app/cbl/COTRN01C.cbl:269-278}, with arms {@code NORMAL}, {@code NOTFND} to
  *       {@code 'Transaction ID NOT found...'} and {@code OTHER}. <strong>It specifies the
- *       {@code UPDATE} option</strong> ({@code :275}), which the AAP's brief for this file does not
- *       mention; both forms are therefore provided - {@link #readByTranId(String)} and
- *       {@link #readForUpdateByTranId(String)} - and the discrepancy is recorded rather than
- *       silently resolved (practice B4). No {@code REWRITE} follows it; see the next section.</li>
+ *       {@code UPDATE} option</strong> ({@code :275}), so its translation calls
+ *       {@link #readForUpdateByTranId(String)}, which requests the row under the lock
+ *       {@code UPDATEMODEL(LOCKING)} declares and therefore requires an open unit of work.
+ *       {@link #readByTranId(String)} is the same read without that option, for a caller whose own
+ *       source states none. No {@code REWRITE} follows either; see the next section.</li>
  *   <li><strong>{@code COTRN02C} - browse to the end, then keyed add.</strong>
  *       {@code ADD-TRANSACTION} ({@code app/cbl/COTRN02C.cbl:441-466}) and
  *       {@code COPY-LAST-TRAN-DATA} ({@code :473-478}) both do
@@ -389,12 +394,38 @@ public class TransactionRepository {
     /** A keyed {@code WRITE} or a sequential {@code WRITE}. */
     private static final String WRITE_OPERATION_NAME = "WRITE";
 
+    /**
+     * Names the abnormal disposition in a diagnostic. Not a COBOL verb: no statement in
+     * {@code CBACT04C} performs it, because the DD statement of {@code app/jcl/INTCALC.jcl:37} does.
+     */
+    private static final String DISPOSITION_OPERATION_NAME = "DISPOSITION";
+
+    /** {@code CLOSE}. */
+    private static final String CLOSE_OPERATION_NAME = "CLOSE";
+
     // =================================================================================================
     // Row limits. Each one says out loud how many rows can possibly change the answer.
     // =================================================================================================
 
     /** One row: a keyed read on a unique key, and one step of a browse or a sequential read. */
     private static final int SINGLE_ROW = 1;
+
+    /**
+     * How many rows the driver is asked to buffer for one physical-sequential pass.
+     *
+     * <p>A ceiling, not a tuning parameter: the Agent Action Plan states at {@code 0.8.6} that this
+     * migration has no performance objective, and this value is here to bound what a pass may hold, not
+     * to make it quick. Left unset, the size is the driver's own default, and several drivers default to
+     * materialising the whole result set on the client - which for a transaction generation with no
+     * source-side bound on its record count is exactly the unbounded read a sequential {@code READ} must
+     * not perform.
+     *
+     * <p>The JDBC contract makes the value a hint, so the only thing it can affect is how much the driver
+     * buffers. Which row {@code next()} returns, and the order rows arrive in, are unchanged. The same
+     * value and the same reasoning appear on {@link DalyTranRepository#FETCH_SIZE}, and matching them is
+     * deliberate: the two classes read sibling sequential datasets on the same deployment driver.
+     */
+    private static final int PASS_FETCH_SIZE = 32;
 
     /**
      * Two rows: enough to tell a unique match from a duplicate without transferring a third. A KSDS
@@ -1043,24 +1074,99 @@ public class TransactionRepository {
      * {@value #CICS_FILE_NAME}. The DD name is the same spelling as the CICS file and the dataset is
      * not the same dataset, which is exactly the collision this class keeps three keys for.
      *
-     * <p><strong>This open makes no round trip, and cannot fail.</strong> That is stated out loud
-     * because a status that cannot fail is otherwise a guard a caller writes for no reason. There is
-     * genuinely nothing to establish: an output-only dataset created {@code NEW} does not exist until it
-     * is written, so it cannot be described, and probing for it would report a failure exactly where the
-     * COBOL succeeds. Everything that <em>is</em> checkable - that the destination is configured and is
-     * a well-formed dataset name - was checked at construction, where it fails the bean rather than a
-     * job. A destination that turns out to be unusable is therefore reported by the first
-     * {@link OutputFile#writeSequential(TranRecord)}, which is the verb whose failure
-     * {@code app/cbl/CBACT04C.cbl:510} displays as {@code 'ERROR WRITING TRANSACTION RECORD'}.
+     * <p><strong>This open establishes the generation, and it can fail.</strong> Two statements, in
+     * this order:
+     * <ol>
+     *   <li>A <strong>describe</strong> - {@link DatasetRelation#describeStatement()}, read-only with a
+     *       predicate that is false on every row, so it resolves the destination and transfers nothing.
+     *       This is what makes an absent, unreachable or refused destination a failure of the
+     *       <em>open</em>, which is the verb {@code app/cbl/CBACT04C.cbl:318-321} displays as
+     *       {@code 'ERROR OPENING TRANSACTION FILE'}, rather than a failure of the first write.</li>
+     *   <li>A <strong>clear</strong> - {@link DatasetRelation#deleteAll()}, because
+     *       {@code app/jcl/INTCALC.jcl:37-41} declares {@code DISP=(NEW,CATLG,DELETE)} over
+     *       {@code SYSTRAN(+1)}. {@code NEW} means this run writes into an empty generation: last run's
+     *       interest transactions are not part of this one, and a run that computes no interest still
+     *       leaves the empty generation the JCL created rather than the previous run's records. Without
+     *       it the destination would accumulate every run's output, which is an {@code OPEN EXTEND} -
+     *       a different verb from the one the source issues.</li>
+     * </ol>
      *
-     * <p>Each call returns a fresh handle with its own record count and its own open flag, so two runs
-     * never share state and a test's outcome never depends on what ran before it (practice B9, gate
-     * G53).
+     * <p>Neither statement touches the relation's definition. No data-definition statement is issued
+     * anywhere in this module: no {@code CREATE}, no {@code DROP}, no {@code TRUNCATE} (gate G44). What
+     * a deployment declared, this open finds and empties; what it did not declare, this open reports as
+     * unopenable rather than creating.
      *
-     * @return a new per-execution output handle; never {@code null}
+     * <p>Everything checkable without a backend - that the destination is configured, is a well-formed
+     * dataset name and declares the right record width - was already checked at construction, where it
+     * fails the bean rather than a job.
+     *
+     * <p>Each call returns a fresh handle with its own record count, its own open status and its own
+     * open flag, so two runs never share state and a test's outcome never depends on what ran before it
+     * (practice B9, gate G53).
+     *
+     * @return a new per-execution output handle, carrying whatever status the open reported; never
+     *         {@code null}
      */
     public OutputFile openOutput() {
-        return new OutputFile(this, outputRelation.insertRecordImage());
+        return openOutput(outputRelation, SEQUENTIAL_OUTPUT_DD_NAME);
+    }
+
+    /**
+     * Opens the sequential output the caller's own DD binding names.
+     *
+     * <p><strong>Why a job needs this rather than {@link #openOutput()}.</strong> The DD name
+     * {@code app/jcl/INTCALC.jcl:37-41} declares for the generated-transaction output is
+     * {@value #CICS_FILE_NAME} - the same eight characters as the CICS transaction master, addressing a
+     * completely different dataset. The collision is resolved in configuration, by
+     * {@code carddemo.jobs.account-interest-calc-job.datasets.TRANSACT.alias: SYSTRAN}, and only a
+     * job-scoped resolution can see it: this repository resolved {@value #SEQUENTIAL_OUTPUT_DD_NAME}
+     * from the global catalogue at construction, and a job that declared {@value #CICS_FILE_NAME} and
+     * then called the no-argument open would be writing through a name it never resolved. That the two
+     * agree in the shipped configuration is a property of the shipped configuration, not of the code.
+     *
+     * <p>Same two statements, same absence of any data-definition statement (gate G44), same
+     * per-execution handle. Only the relation differs.
+     *
+     * @param binding the caller's resolved binding, normally from
+     *                {@code BatchConfig.datasetBinding(jobKey, ddName)}
+     * @param ddName  the DD name it was resolved for; carried into the diagnostic and the refusal
+     * @return a new per-execution output handle; never {@code null}
+     * @throws NullPointerException  if either argument is {@code null}
+     * @throws IllegalStateException if the binding declares a record width other than
+     *                               {@value #RECORD_LENGTH}, or no usable dataset name
+     */
+    public OutputFile openOutput(DatasetBinding binding, String ddName) {
+        Objects.requireNonNull(ddName, "A DD name is required: it is what a diagnostic names when the "
+                + "binding is at fault");
+        Objects.requireNonNull(binding, "A resolved dataset binding is required for DD name '" + ddName
+                + "': a job writes through the DD its JCL declares, not through the name this repository "
+                + "resolved at construction");
+        DatasetBinding checked = requireRecordWidth(ddName, binding);
+        DatasetRelation relation = DatasetRelation.of(
+                requireUsableDatasetName(ddName, checked.dsname()), RECORD_LENGTH);
+        return relation.dsname().equals(outputRelation.dsname())
+                ? openOutput(outputRelation, SEQUENTIAL_OUTPUT_DD_NAME)
+                : openOutput(relation, ddName);
+    }
+
+    /**
+     * Establishes the generation a sequential output writes into, and hands back the handle for it.
+     *
+     * @param relation the relation to open
+     * @param ddName   the DD name it was resolved for, for the refusal diagnostic
+     * @return the handle, carrying whatever status the open reported; never {@code null}
+     */
+    private OutputFile openOutput(DatasetRelation relation, String ddName) {
+        String describeStatement = relation.describeStatement();
+        String openStatus;
+        try {
+            jdbcTemplate.execute(describeStatement);
+            jdbcTemplate.update(relation.deleteAll());
+            openStatus = FileStatus.OK;
+        } catch (DataAccessException refused) {
+            openStatus = reportRefusal(OPEN_OPERATION_NAME, ddName, "for output", refused);
+        }
+        return new OutputFile(this, relation.insertRecordImage(), describeStatement, openStatus);
     }
 
     // =================================================================================================
@@ -1247,12 +1353,13 @@ public class TransactionRepository {
      *       {@code WHEN OTHER} arm at {@code :289}, for an I/O failure.</li>
      * </ul>
      *
-     * <p><strong>This is the plain read; {@code COTRN01C} specifies {@code UPDATE}.</strong> The option
-     * is on {@code :275} and the AAP's brief for this file does not mention it, so both forms are
-     * offered and the discrepancy is documented rather than resolved by omission (practice B4). Use
-     * {@link #readForUpdateByTranId(String)} for the form the program actually issues. Nothing in the
-     * estate rewrites or deletes a transaction record, so the lock that read takes is never converted
-     * into a change - which is why the plain form is the useful one for a caller that only views.
+     * <p><strong>This is the plain read, and {@code COTRN01C} does not use it.</strong> The program
+     * specifies {@code UPDATE} on {@code :275}, so its translation calls
+     * {@link #readForUpdateByTranId(String)} - which read a program issues is observable behaviour, not
+     * an optimisation, and the option the source states is the one that is reproduced. This form remains
+     * for a caller whose own source states no {@code UPDATE} option, and because the two forms share one
+     * implementation there is no second statement, no second mapping and no second set of outcomes to
+     * keep in step: they differ by the {@code FOR UPDATE} clause and by nothing else.
      *
      * @param tranId the transaction identifier to look up; never {@code null}, and it may be shorter or
      *               longer than {@link #KEY_LENGTH} because the {@code PIC X} move reshapes it. Pass an
@@ -1675,40 +1782,153 @@ public class TransactionRepository {
      * @return the {@code WHEN OTHER} step, carrying the driver's own diagnosis; never {@code null}
      */
     private static Step failedStep(String ddName, String attempt, DataAccessException refusal) {
-        return new Step(ReadResult.other(ddName,
-                reportRefusal(READ_OPERATION_NAME, ddName, attempt, refusal),
-                BackendDiagnostic.of(refusal)), null, false);
+        return failedStep(ddName, attempt, refusal, false);
     }
 
     /**
-     * Fetches every row of one pass over a physical-sequential dataset, in the order the dataset holds
-     * them.
+     * Builds the failed step for a backend refusal during a read, saying whether a row had been reached.
+     *
+     * <p>The distinction decides whether the pass stops. A refusal that arrives <em>before</em> a row is
+     * reached - the cursor could not be opened, or could not be advanced - leaves the pass where it was,
+     * so a caller that reads again reads again. A refusal that arrives <em>after</em> a row is reached,
+     * which is a record that is present and cannot be read, stops the pass: otherwise a caller looping
+     * until end of file would re-read that one row without end, which is the reasoning
+     * {@link InputFile#readNext()} already states for its {@code rowSeen} arm.
+     *
+     * @param ddName   the dataset being read
+     * @param attempt  what was being attempted, phrased to complete "Could not read the ... dataset ..."
+     * @param refusal  the exception raised
+     * @param rowSeen  whether a row had been reached before the refusal
+     * @return the {@code WHEN OTHER} step, carrying the driver's own diagnosis; never {@code null}
+     */
+    private static Step failedStep(String ddName, String attempt, DataAccessException refusal,
+                                   boolean rowSeen) {
+        return new Step(ReadResult.other(ddName,
+                reportRefusal(READ_OPERATION_NAME, ddName, attempt, refusal),
+                BackendDiagnostic.of(refusal)), null, rowSeen);
+    }
+
+    /**
+     * Opens a forward-only cursor over one pass of a physical-sequential dataset, positioned before its
+     * first record.
      *
      * <p>One statement, because a physical-sequential dataset has no key to re-anchor on and no
      * {@code ORDER BY} may be imposed on it - see
-     * {@link #composeInputStatements(DatasetRelation, boolean)}. The images are kept exactly as the
-     * backend presented them, {@code null} included: a row whose record-image column held nothing is a
-     * record that is present and unreadable, and the read that reaches it says so rather than skipping
-     * it silently.
+     * {@link #composeInputStatements(DatasetRelation, boolean)}. What this method does <em>not</em> do is
+     * drain that statement. It used to: the first {@code READ} fetched every row of the pass into a list
+     * and later reads handed rows out of it, which made a {@code READ} of the first record cost the whole
+     * dataset in heap. Two consumers read this dataset front to back - {@code CBTRN03C}'s report over
+     * {@code TRANSACT.DALY} and {@code CBTRN01C}'s pass over the posted file - and neither has any bound
+     * on how many records a generation holds, so the cost was unbounded by anything in the source. The
+     * COBOL transfers one record per {@code READ} into one record area; this transfers one row per
+     * {@link InputFile#readNext()} through one cursor.
+     *
+     * <p><strong>Nothing about the pass's contents changes.</strong> The statement is the same
+     * unordered select, so rows still arrive in the dataset's own order; the cursor is forward-only and
+     * read-only, because no consumer repositions and none writes; and one row is read per call. The
+     * fetch size is a stated positive bound rather than the driver's default, for the reason
+     * {@link DalyTranRepository} states at its own cursor: left unset, several drivers materialise the
+     * whole result set on the client, which is the very behaviour being removed here. The JDBC contract
+     * makes the value a hint, so it can only reduce buffering - it cannot change which row arrives next
+     * nor the order rows arrive in.
+     *
+     * <p>Images are still taken exactly as the backend presents them, {@code null} included: a row whose
+     * record-image column holds nothing is a record that is present and unreadable, and the read that
+     * reaches it says so rather than skipping it silently.
+     *
+     * <p>The cursor holds a connection of its own, so it must be released - {@link InputFile#closeInput()}
+     * does that, and reports whether the release was clean.
      *
      * @param statement the unordered select over the whole relation
-     * @return the rows of the pass, in the dataset's own order; never {@code null}
-     * @throws DataAccessException if the backend refused the read
+     * @param ddName    the configuration key of the dataset, for diagnostics only
+     * @return the open cursor, positioned before the first row; never {@code null}
+     * @throws DataAccessException if the backend refused the read, or the template carries no data source
      */
-    private List<byte[]> fetchPass(String statement) {
-        ResultSetExtractor<List<byte[]>> extractor = resultSet -> {
-            List<byte[]> images = new ArrayList<>();
-            while (resultSet.next()) {
-                images.add(recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX,
-                        codec.charset()));
+    private SequentialPass openPass(String statement, String ddName) {
+        DataSource dataSource = jdbcTemplate.getDataSource();
+        if (dataSource == null) {
+            // A configuration defect, not an I/O condition - but it is reached from inside a read, whose
+            // caller has a failure arm and no way to act on a different exception family. Raised as the
+            // family every other refusal on this path arrives in, so the read reports it the same way.
+            throw new DataSourceLookupFailureException("The module's JdbcTemplate carries no DataSource, "
+                    + "so no cursor can be opened over the " + ddName + " dataset");
+        }
+        Connection connection = null;
+        PreparedStatement prepared = null;
+        ResultSet rows = null;
+        try {
+            connection = dataSource.getConnection();
+            prepared = connection.prepareStatement(statement, ResultSet.TYPE_FORWARD_ONLY,
+                    ResultSet.CONCUR_READ_ONLY);
+            prepared.setFetchSize(PASS_FETCH_SIZE);
+            rows = prepared.executeQuery();
+            return new SequentialPass(connection, prepared, rows, ddName);
+        } catch (SQLException refusal) {
+            releaseQuietly(rows, prepared, connection);
+            // Translated through the module's own template so the read's catch clause - which handles the
+            // DataAccessException family - sees a refusal here exactly as it saw one when the pass was
+            // drained in a single query.
+            throw translate("open a forward-only pass", statement, refusal);
+        }
+    }
+
+    /**
+     * Translates a driver refusal into the family every read on this path reports in.
+     *
+     * @param task      what was being attempted, for the exception's own text
+     * @param statement the statement being issued
+     * @param refusal   the driver's refusal
+     * @return the translated exception; never {@code null}
+     */
+    private DataAccessException translate(String task, String statement, SQLException refusal) {
+        DataAccessException translated = jdbcTemplate.getExceptionTranslator()
+                .translate(task, statement, refusal);
+        if (translated != null) {
+            return translated;
+        }
+        // The translator declines only when it recognises nothing about the SQLState, which is not a
+        // reason to lose the refusal. Wrapped in the family the caller handles, carrying the original as
+        // its cause so the driver's own diagnosis survives.
+        return new UncategorizedSQLException(task, statement, refusal);
+    }
+
+    /**
+     * Closes whatever part of a cursor was established, without letting a release refusal displace the
+     * refusal that caused it.
+     *
+     * @param rows       the result set, or {@code null} if never obtained
+     * @param statement  the statement, or {@code null} if never prepared
+     * @param connection the connection, or {@code null} if never taken
+     */
+    private static void releaseQuietly(ResultSet rows, PreparedStatement statement,
+                                       Connection connection) {
+        if (rows != null) {
+            try {
+                rows.close();
+            } catch (SQLException ignored) {
+                LOG.warn("Could not close the result set of a refused pass - "
+                        + BackendDiagnostic.of(ignored).describe()
+                        + "; the refusal that caused the release is the one being reported");
             }
-            return images;
-        };
-        List<byte[]> images = jdbcTemplate.query(statement, extractor);
-        // A template that answered with nothing has told us nothing. An empty pass is the honest
-        // reading, and it presents as an immediate end of file - which is what a read of an empty
-        // dataset reports anyway.
-        return images == null ? List.of() : images;
+        }
+        if (statement != null) {
+            try {
+                statement.close();
+            } catch (SQLException ignored) {
+                LOG.warn("Could not close the statement of a refused pass - "
+                        + BackendDiagnostic.of(ignored).describe()
+                        + "; the refusal that caused the release is the one being reported");
+            }
+        }
+        if (connection != null) {
+            try {
+                connection.close();
+            } catch (SQLException ignored) {
+                LOG.warn("Could not close the connection of a refused pass - "
+                        + BackendDiagnostic.of(ignored).describe()
+                        + "; the refusal that caused the release is the one being reported");
+            }
+        }
     }
 
     /**
@@ -2014,6 +2234,114 @@ public class TransactionRepository {
      *                   same unreadable row for ever
      */
     record Step(ReadResult result, byte[] exactImage, boolean rowSeen) {
+    }
+
+    /**
+     * One live forward-only pass over a physical-sequential dataset: the JDBC form of an open
+     * {@code ORGANIZATION SEQUENTIAL} file positioned between two records.
+     *
+     * <p>It owns a connection, a statement and a result set, and it exists so a sequential {@code READ}
+     * transfers one record rather than draining the dataset into heap. That is the whole reason for the
+     * type: the three handles have to outlive the read that opened them and be released together, which a
+     * {@link ResultSetExtractor} cannot do because it closes everything before it returns.
+     *
+     * <p>Modelled deliberately on {@link DalyTranRepository}'s cursor, down to the release order, because
+     * the two classes read sibling sequential datasets and a reviewer comparing them should find one
+     * pattern rather than two.
+     *
+     * <p>Not thread-safe, exactly as a COBOL file position is not, and confined to the {@link InputFile}
+     * that owns it.
+     */
+    private static final class SequentialPass {
+
+        /** This pass's own connection, so two concurrent passes never share a position. */
+        private final Connection connection;
+
+        /** The forward-only, read-only statement the pass was opened with. */
+        private final PreparedStatement statement;
+
+        /** The open result set, which <em>is</em> the file position. */
+        private final ResultSet rows;
+
+        /** The configuration key of the dataset, for diagnostics only. */
+        private final String ddName;
+
+        /**
+         * Constructed only by {@link TransactionRepository#openPass(String, String)}, after all three
+         * handles are established.
+         *
+         * @param connection the pass's connection
+         * @param statement  the pass's statement
+         * @param rows       the open result set
+         * @param ddName     the configuration key of the dataset
+         */
+        private SequentialPass(Connection connection, PreparedStatement statement, ResultSet rows,
+                               String ddName) {
+            this.connection = connection;
+            this.statement = statement;
+            this.rows = rows;
+            this.ddName = ddName;
+        }
+
+        /**
+         * Advances one record: the {@code READ} itself.
+         *
+         * @return {@code true} when a record was reached, {@code false} at the end of the dataset
+         * @throws SQLException if the driver refused to advance
+         */
+        private boolean next() throws SQLException {
+            return rows.next();
+        }
+
+        /**
+         * The result set positioned on the current record, for reading its record image.
+         *
+         * @return the result set; never {@code null}
+         */
+        private ResultSet rows() {
+            return rows;
+        }
+
+        /**
+         * Releases all three handles in reverse order of acquisition, reporting whether every one of them
+         * closed cleanly.
+         *
+         * <p>Every refusal is logged and none is propagated, and the answer is the <em>conjunction</em>:
+         * one refusal anywhere makes the {@code CLOSE} report a failure, which is what
+         * {@code 'ERROR CLOSING TRANSACTION FILE'} exists for. Release continues past a refusal rather
+         * than stopping at it, because abandoning a connection to report a result-set failure would leak
+         * the more expensive of the two.
+         *
+         * @return {@code true} when all three closed cleanly
+         */
+        private boolean release() {
+            boolean clean = true;
+            try {
+                rows.close();
+            } catch (SQLException refusal) {
+                clean = false;
+                LOG.error("Could not close the result set of a pass over the " + ddName + " dataset - "
+                        + BackendDiagnostic.of(refusal).describe()
+                        + "; the close will report a failure");
+            }
+            try {
+                statement.close();
+            } catch (SQLException refusal) {
+                clean = false;
+                LOG.error("Could not close the statement of a pass over the " + ddName + " dataset - "
+                        + BackendDiagnostic.of(refusal).describe()
+                        + "; the close will report a failure");
+            }
+            try {
+                connection.close();
+            } catch (SQLException refusal) {
+                clean = false;
+                LOG.error("Could not close the connection of a pass over the " + ddName + " dataset - "
+                        + BackendDiagnostic.of(refusal).describe()
+                        + "; the close will report a failure");
+            }
+            return clean;
+        }
     }
 
     // =================================================================================================
@@ -2655,13 +2983,15 @@ public class TransactionRepository {
         private byte[] position;
 
         /**
-         * The rows of the pass, fetched together, or {@code null} until the first read. Used only by the
-         * physical-sequential path, which has no key to re-anchor on.
+         * The live forward-only cursor over the pass, or {@code null} before the first read and after the
+         * close. Used only by the physical-sequential path, which has no key to re-anchor on.
+         *
+         * <p>Opened lazily by the first read rather than by the open, which keeps two properties the
+         * caller already relies on: a pass that is opened and never read holds no connection, and a
+         * backend refusal on the first read is reported by the read - {@code 'ERROR READING TRANSACTION
+         * FILE'} - rather than retroactively by the open.
          */
-        private List<byte[]> pass;
-
-        /** The index of the next row to hand out of {@link #pass}. */
-        private int nextRow;
+        private SequentialPass pass;
 
         /** How many records this pass has returned so far. */
         private int returned;
@@ -2671,6 +3001,16 @@ public class TransactionRepository {
 
         /** Whether {@link #close()} has been called. */
         private boolean closed;
+
+        /**
+         * What the first {@link #closeInput()} reported, remembered so every later call reports the same
+         * thing.
+         *
+         * <p>Needed because a close now genuinely releases something: recomputing the status on a second
+         * call would report a clean release of a cursor that is no longer there, so a pass whose release
+         * was refused would confess it once and then deny it.
+         */
+        private String closeStatus;
 
         /**
          * Constructed only by {@link TransactionRepository}, which is what guarantees that a pass's
@@ -2845,26 +3185,58 @@ public class TransactionRepository {
         }
 
         /**
-         * One read of a physical-sequential dataset: the rows of the pass arrive together on the first
-         * read, in the order the dataset holds them, and are handed out one at a time thereafter.
+         * One read of a physical-sequential dataset: one row transferred through a forward-only cursor,
+         * in the order the dataset holds them.
+         *
+         * <p>The first read opens the cursor; every read advances it by exactly one record, which is what
+         * {@code READ ... AT END} does. Nothing behind the position is retained, so a pass over a
+         * generation of any size costs one record of heap - the record area - rather than the generation.
          *
          * @return the step; never {@code null}
          */
         private Step readNextInWrittenOrder() {
             if (pass == null) {
                 try {
-                    pass = repository.fetchPass(statements.firstRead());
+                    pass = repository.openPass(statements.firstRead(), ddName);
                 } catch (DataAccessException refused) {
                     // The read's own failure, and its own message: 'ERROR READING TRANSACTION FILE' at
-                    // app/cbl/CBTRN03C.cbl:266. The pass is left unfetched, so a caller that retries
+                    // app/cbl/CBTRN03C.cbl:266. The cursor is left unopened, so a caller that retries
                     // retries the read rather than skipping the file.
                     return failedStep(ddName, "front to back", refused);
                 }
             }
-            if (nextRow >= pass.size()) {
+            boolean rowReached;
+            try {
+                rowReached = pass.next();
+            } catch (SQLException refusal) {
+                // The advance itself was refused, so no row was reached and the pass is left where it
+                // was - reported with rowSeen false, which is what keeps it from being marked exhausted.
+                return failedStep(ddName, "front to back",
+                        repository.translate("advance a forward-only pass", statements.firstRead(),
+                                refusal));
+            } catch (DataAccessException refused) {
+                return failedStep(ddName, "front to back", refused);
+            }
+            if (!rowReached) {
+                // AT END. The cursor is deliberately left open: closeInput() owns the release, so a
+                // caller that reads past the end and then closes still gets one release and one close
+                // status, exactly as a caller that stopped on the flag does.
                 return new Step(ReadResult.endOfFile(ddName), null, false);
             }
-            return repository.classifyRow(pass.get(nextRow++), ddName);
+            byte[] image;
+            try {
+                image = repository.recordImageForm.readImage(pass.rows(), RECORD_IMAGE_COLUMN_INDEX,
+                        repository.codec.charset());
+            } catch (SQLException refusal) {
+                // A row was reached and cannot be read. Reported with rowSeen true so the pass stops on
+                // it, rather than letting a caller looping to end of file re-read it without end.
+                return failedStep(ddName, "front to back",
+                        repository.translate("read a record image from a forward-only pass",
+                                statements.firstRead(), refusal), true);
+            } catch (DataAccessException refused) {
+                return failedStep(ddName, "front to back", refused, true);
+            }
+            return repository.classifyRow(image, ddName);
         }
 
         /**
@@ -2881,32 +3253,48 @@ public class TransactionRepository {
          * failure</strong>, which is what COBOL reports for a {@code CLOSE} of a file that is not open,
          * and it is reachable exactly when a caller ignored {@link #openStatus()} - so the close tells
          * it the same thing the open did rather than reporting success over a dataset it never reached.
-         * A pass that did open reports {@link FileStatus#OK}: no connection, cursor or buffer is held
-         * between reads, so there is genuinely nothing left to flush beyond this pass's own position, and
-         * reporting a failure would be inventing one.
+         * A pass that did open reports what its release reported: a physical-sequential pass holds a
+         * forward-only cursor - a connection, a statement and a result set - and a driver that refuses to
+         * release any of the three is a failed {@code CLOSE}, which is precisely the condition
+         * {@code 'ERROR CLOSING POSTED TRANSACTION FILE'} names. A keyed pass, and a pass that was opened
+         * and never read, hold no cursor and so close cleanly.
          *
          * <p>The call is <strong>idempotent</strong>, which is what makes try-with-resources safe
-         * alongside an explicit close in the same block, and it reports the same status every time for
-         * the same reason. The fetched rows of a physical-sequential pass are released here, so a closed
-         * pass holds nothing.
+         * alongside an explicit close in the same block, and it reports the same status every time -
+         * remembered from the first call rather than recomputed, because the cursor the first call
+         * reported on is gone by the second. A closed pass holds nothing: the cursor is released here and
+         * the position is dropped with it.
          *
          * @return {@link FileStatus#OK} for a pass that was open, or
          *         {@link TransactionRepository#PERMANENT_ERROR_STATUS} for one that never opened; never
          *         {@code null}, always two characters
          */
         public String closeInput() {
+            if (closed) {
+                // Idempotent, and the same answer every time: the status the first close computed is
+                // remembered rather than recomputed, because the cursor it reported on has since been
+                // released and a second release would report a clean one over nothing.
+                return closeStatus;
+            }
             closed = true;
+            SequentialPass released = pass;
             pass = null;
             position = null;
-            if (opened) {
-                return FileStatus.OK;
+            if (!opened) {
+                LOG.error("A pass over the " + ddName + " dataset was closed although it never opened - "
+                        + "its open reported file status " + FileStatus.toStatusImage(openStatus)
+                        + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " from the close as well, because a CLOSE of a file that is not open is not a "
+                        + "success");
+                closeStatus = PERMANENT_ERROR_STATUS;
+                return closeStatus;
             }
-            LOG.error("A pass over the " + ddName + " dataset was closed although it never opened - its "
-                    + "open reported file status " + FileStatus.toStatusImage(openStatus)
-                    + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                    + " from the close as well, because a CLOSE of a file that is not open is not a "
-                    + "success");
-            return PERMANENT_ERROR_STATUS;
+            // A pass that was opened but never read holds no cursor, so there is nothing to release and
+            // nothing that could refuse - which is why an unread pass still closes cleanly.
+            closeStatus = released == null || released.release()
+                    ? FileStatus.OK
+                    : PERMANENT_ERROR_STATUS;
+            return closeStatus;
         }
 
         /**
@@ -2916,9 +3304,13 @@ public class TransactionRepository {
          * @return {@link FileStatus#APPL_AOK} or {@link TransactionRepository#APPL_RESULT_FATAL}
          */
         public int closeApplResult() {
-            // The same condition closeInput() reports on, so the status and the APPL-RESULT cannot
-            // disagree. Whether the pass has since been closed is irrelevant: closing twice is
-            // idempotent and reports the same outcome both times.
+            // Derived from what the close actually reported, so the status and the APPL-RESULT cannot
+            // disagree - including when a cursor release was refused, which is a failed CLOSE over a
+            // dataset that opened perfectly well. Before the close, the only thing known is whether the
+            // pass ever opened, which is what the COBOL ladder would conclude at that point too.
+            if (closed) {
+                return FileStatus.isOk(closeStatus) ? FileStatus.APPL_AOK : APPL_RESULT_FATAL;
+            }
             return opened ? FileStatus.APPL_AOK : APPL_RESULT_FATAL;
         }
 
@@ -2954,13 +3346,26 @@ public class TransactionRepository {
          * The parameterised insert this run issues for each record, composed once by
          * {@link DatasetRelation#insertRecordImage()}.
          *
-         * <p>No column list, and that is not an omission. An output-only dataset created {@code NEW} is
-         * never described, so there is no column name to be had - and naming one would be declaring a
+         * <p>No column list, and that is not an omission. Naming a column here would be declaring a
          * schema, which this migration does not do (gate G44). The record is one fixed-width image and
          * is bound positionally, which is the same record-image model the read side expresses as column
          * position {@link TransactionRepository#RECORD_IMAGE_COLUMN_INDEX}.
          */
         private final String insertStatement;
+
+        /**
+         * The read-only probe {@link TransactionRepository#openOutput()} used to establish the
+         * destination, retained so {@link #closeOutput()} can establish that it is still there without
+         * composing a second statement.
+         */
+        private final String describeStatement;
+
+        /**
+         * The status the {@code OPEN OUTPUT} reported - {@link FileStatus#OK} or
+         * {@link TransactionRepository#PERMANENT_ERROR_STATUS}. Decided once, by the open, and reported
+         * unchanged for the life of this handle.
+         */
+        private final String openStatus;
 
         /** How many records this run has written. */
         private int recordsWritten;
@@ -2968,49 +3373,67 @@ public class TransactionRepository {
         /** Whether {@link #close()} has been called. */
         private boolean closed;
 
+        /** Whether the abnormal disposition has already been applied, so it is idempotent. */
+        private boolean discarded;
+
+        /**
+         * The status the {@code CLOSE} reported, {@code null} until it has been called.
+         *
+         * <p>Memoised so a second close neither issues a second round trip nor contradicts the first,
+         * which is what makes {@link #close()} safe alongside an explicit {@link #closeOutput()}.
+         */
+        private String closeStatus;
+
         /**
          * Constructed only by {@link TransactionRepository#openOutput()}.
          *
-         * @param repository      the opening repository
-         * @param insertStatement the parameterised insert
+         * @param repository        the opening repository
+         * @param insertStatement   the parameterised insert
+         * @param describeStatement the read-only probe over the destination
+         * @param openStatus        the status the open reported
          */
-        private OutputFile(TransactionRepository repository, String insertStatement) {
+        private OutputFile(TransactionRepository repository, String insertStatement,
+                           String describeStatement, String openStatus) {
             this.repository = repository;
             this.insertStatement = insertStatement;
+            this.describeStatement = describeStatement;
+            this.openStatus = openStatus;
         }
 
         /**
-         * The status {@code OPEN OUTPUT} reported, which is always {@link FileStatus#OK}.
+         * The status {@code OPEN OUTPUT} reported - the value {@code app/cbl/CBACT04C.cbl:310} tests and
+         * {@code :318-321} abends on as {@code 'ERROR OPENING TRANSACTION FILE'}.
          *
-         * <p>Stated rather than left implicit: as {@link TransactionRepository#openOutput()} explains,
-         * an output-only dataset created {@code NEW} cannot be described, so there is nothing this open
-         * could establish and nothing it could fail at. The value {@code app/cbl/CBACT04C.cbl:310} tests
-         * is therefore always {@code '00'} here, and a destination that turns out to be unusable is
-         * reported by the first {@link #writeSequential(TranRecord)}.
+         * <p>{@link FileStatus#OK} when {@link TransactionRepository#openOutput()} resolved the
+         * destination and emptied it, {@link TransactionRepository#PERMANENT_ERROR_STATUS} when the
+         * backend refused either statement. The backend's own SQLSTATE and vendor code were logged at
+         * the point of refusal; the caller gets the two-character status the COBOL branches on.
          *
-         * @return {@link FileStatus#OK}
+         * @return the file status; never {@code null}, always two characters
          */
         public String openStatus() {
-            return FileStatus.OK;
+            return openStatus;
         }
 
         /**
          * The open status classified.
          *
-         * @return {@link Outcome#OK}
+         * @return {@link Outcome#OK} for an established destination, {@link Outcome#OTHER} for a refused
+         *         one
          */
         public Outcome openOutcome() {
-            return Outcome.OK;
+            return FileStatus.outcomeOfStatus(openStatus);
         }
 
         /**
-         * The {@code APPL-RESULT} the open sets - the {@code MOVE 0} branch of
-         * {@code app/cbl/CBACT04C.cbl:310-314}.
+         * The {@code APPL-RESULT} the open sets - the ladder at
+         * {@code app/cbl/CBACT04C.cbl:310-314}: {@code MOVE 0} on {@code '00'} and {@code MOVE 12}
+         * otherwise.
          *
-         * @return {@link FileStatus#APPL_AOK}
+         * @return {@link FileStatus#APPL_AOK} or {@link TransactionRepository#APPL_RESULT_FATAL}
          */
         public int openApplResult() {
-            return FileStatus.APPL_AOK;
+            return FileStatus.OK.equals(openStatus) ? FileStatus.APPL_AOK : APPL_RESULT_FATAL;
         }
 
         /**
@@ -3113,34 +3536,138 @@ public class TransactionRepository {
 
         /**
          * Closes this run: the Java form of {@code 9400-TRANFILE-CLOSE}
-         * ({@code app/cbl/CBACT04C.cbl:595-611}).
+         * ({@code app/cbl/CBACT04C.cbl:595-611}). {@code CBACT04C} tests this status at {@code :598} and
+         * abends on {@code 'ERROR CLOSING TRANSACTION FILE'}.
          *
-         * <p>{@code CBACT04C} tests this status at {@code :598} and abends on
-         * {@code 'ERROR CLOSING TRANSACTION FILE'}, so the status is returned rather than swallowed -
-         * and it is always {@link FileStatus#OK}, for a reason worth stating rather than leaving the
-         * caller to wonder. Each write borrows a pooled connection and returns it inside the call, so no
-         * buffer, cursor or connection is held between writes and there is nothing left to flush. A
-         * failure would have to be invented, and inventing one would make the caller's abend fire on a
-         * run that completed.
+         * <p><strong>What a close can still discover.</strong> Nothing is buffered - each write borrows
+         * a pooled connection and returns it inside the call, so there is no cursor, buffer or
+         * connection held between writes and nothing left to flush. What remains checkable is that the
+         * destination the records went to is still addressable: a relation dropped, revoked or made
+         * unreachable part-way through a long interest run. The same read-only describe the open used
+         * answers exactly that, transferring nothing.
          *
-         * <p>The call is idempotent, so try-with-resources is safe alongside an explicit close.
+         * <p>A run whose open failed reports the failure again rather than a success it did not have -
+         * a {@code CLOSE} of a file that never opened is not a success, which is the same rule
+         * {@link InputFile#closeInput()} applies on the read side.
          *
-         * @return {@link FileStatus#OK}
+         * <p>The call is idempotent: the outcome is decided on the first close and repeated without a
+         * second round trip, so try-with-resources is safe alongside an explicit close.
+         *
+         * @return {@link FileStatus#OK} when the destination is still addressable, or
+         *         {@link TransactionRepository#PERMANENT_ERROR_STATUS} when it is not; never
+         *         {@code null}, always two characters
          */
         public String closeOutput() {
+            if (closed) {
+                return closeStatus;
+            }
             closed = true;
-            return FileStatus.OK;
+            if (!FileStatus.OK.equals(openStatus)) {
+                LOG.error("This run over " + SEQUENTIAL_OUTPUT_DD_NAME + " was closed although it never "
+                        + "opened - its open reported file status "
+                        + FileStatus.toStatusImage(openStatus) + "; reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " from the close as well, "
+                        + "because a CLOSE of a file that is not open is not a success");
+                closeStatus = PERMANENT_ERROR_STATUS;
+                return closeStatus;
+            }
+            try {
+                repository.jdbcTemplate.execute(describeStatement);
+                closeStatus = FileStatus.OK;
+            } catch (DataAccessException refused) {
+                closeStatus = reportRefusal(CLOSE_OPERATION_NAME, SEQUENTIAL_OUTPUT_DD_NAME,
+                        "after writing " + recordsWritten + " record(s)", refused);
+            }
+            return closeStatus;
         }
 
         /**
-         * The {@code APPL-RESULT} the close sets - the {@code MOVE 0} branch of
-         * {@code app/cbl/CBACT04C.cbl:598-602}.
+         * The {@code APPL-RESULT} the close sets - the ladder at
+         * {@code app/cbl/CBACT04C.cbl:598-602}: {@code MOVE 0} on {@code '00'} and {@code MOVE 12}
+         * otherwise.
          *
-         * @return {@link FileStatus#APPL_AOK}
+         * <p>Reports on the close that has already happened, so it cannot disagree with
+         * {@link #closeOutput()}. A run that has not been closed yet has produced no close status, and
+         * saying {@code 0} for a close that never ran would be the one answer that cannot be right - so
+         * it reports the assumed-failure value the COBOL itself holds at {@code :596} until the close
+         * succeeds.
+         *
+         * @return {@link FileStatus#APPL_AOK} or {@link TransactionRepository#APPL_RESULT_FATAL}
          */
         public int closeApplResult() {
-            return FileStatus.APPL_AOK;
+            return FileStatus.OK.equals(closeStatus) ? FileStatus.APPL_AOK : APPL_RESULT_FATAL;
         }
+
+        /**
+         * Applies the abnormal disposition of {@code app/jcl/INTCALC.jcl:37} - {@code DISP=(NEW,CATLG,
+         * DELETE)} - by discarding everything this run wrote.
+         *
+         * <p>The third positional of a {@code DISP} parameter is the <em>abnormal</em> disposition, and
+         * here it is {@code DELETE}. So a run that abends leaves no generation at all: MVS does not
+         * unwrite the records, it deletes the dataset that held them. That is a different outcome from
+         * either of the two a transaction would give - every write kept, or the last chunk's writes
+         * dropped - which is why it is reproduced explicitly rather than delegated to a rollback.
+         *
+         * <p>Each write is durable as it completes, exactly as {@code RECOVERY(NONE)} makes it
+         * ({@code app/csd/CARDDEMO.CSD:84}); this discard then removes them, in the same order of events
+         * the mainframe uses. Nothing is buffered to make it possible, so the memory a run needs does not
+         * grow with the number of records it writes.
+         *
+         * <p><strong>The discard is refused unless the relation holds exactly this run's records.</strong>
+         * {@code NEW} means the step allocates the generation, so a faithful deployment gives this run a
+         * relation of its own and the counts agree. A deployment that instead maps successive generations
+         * onto one relation would have this delete another generation's records, so the count is checked
+         * first and a disagreement is reported rather than acted on. That is deliberately loud: it is a
+         * deployment-time binding question, and silently deleting the wrong records would be far worse
+         * than an operator seeing a status.
+         *
+         * <p>Idempotent, and never throws. The caller is already abending when it reaches here, and a
+         * failed disposition must not replace the abend that caused it.
+         *
+         * @return {@link FileStatus#OK} when the generation was discarded or was empty,
+         *         {@link TransactionRepository#PERMANENT_ERROR_STATUS} when it could not be
+         */
+        public String discardGeneration() {
+            if (discarded || recordsWritten == 0) {
+                // Nothing was written, so there is no generation to delete. On the mainframe the step
+                // still allocates and still deletes an empty dataset; there is no observable difference.
+                discarded = true;
+                return FileStatus.OK;
+            }
+            DatasetRelation relation = repository.outputRelation;
+            try {
+                Integer held = repository.jdbcTemplate.queryForObject(
+                        relation.countAllStatement(), Integer.class);
+                if (held == null || held != recordsWritten) {
+                    LOG.error("Refusing to apply the " + SEQUENTIAL_OUTPUT_DD_NAME
+                            + " abnormal disposition of app/jcl/INTCALC.jcl:37: this run wrote "
+                            + recordsWritten + " record(s) but the dataset holds " + held
+                            + ". DISP=(NEW,CATLG,DELETE) deletes the generation this step allocated, so a "
+                            + "dataset holding records this step did not write is not that generation. "
+                            + "Leaving it untouched and reporting file status "
+                            + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                            + "; bind " + SEQUENTIAL_OUTPUT_DD_NAME
+                            + " to a relation of its own so each run allocates its own generation");
+                    discarded = true;
+                    return PERMANENT_ERROR_STATUS;
+                }
+                int removed = repository.jdbcTemplate.update(relation.deleteAllStatement());
+                discarded = true;
+                if (removed == recordsWritten) {
+                    return FileStatus.OK;
+                }
+                LOG.error("The " + SEQUENTIAL_OUTPUT_DD_NAME + " abnormal disposition removed " + removed
+                        + " record(s) where this run wrote " + recordsWritten
+                        + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " rather than reporting the generation as discarded");
+                return PERMANENT_ERROR_STATUS;
+            } catch (DataAccessException refused) {
+                discarded = true;
+                return reportRefusal(DISPOSITION_OPERATION_NAME, SEQUENTIAL_OUTPUT_DD_NAME,
+                        "for its abnormal disposition", refused);
+            }
+        }
+
 
         /**
          * {@link AutoCloseable} form of {@link #closeOutput()}. Declared to throw nothing, because

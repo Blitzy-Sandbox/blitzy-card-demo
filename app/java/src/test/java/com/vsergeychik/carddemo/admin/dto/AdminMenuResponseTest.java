@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -130,10 +131,16 @@ class AdminMenuResponseTest {
             "nextMap");
 
     /**
-     * The two components that are deliberately NOT published: the {@code ERRMSGC} attribute byte and the
-     * clear-the-screen signal. Both are {@code @JsonIgnore}d - reachable in Java, absent from the
-     * document - because {@code app/cpy-bms/COADM01.CPY:256} declares {@code ERRMSGC} as metadata and
-     * the reset signal corresponds to no copybook item at all.
+     * The two components that are deliberately not members of THIS document: the {@code ERRMSGC}
+     * attribute byte and the clear-the-screen signal. Both are {@code @JsonIgnore}d, because
+     * {@code app/cpy-bms/COADM01.CPY:256} declares {@code ERRMSGC} as metadata and the reset signal
+     * corresponds to no copybook item at all - so neither belongs in a 1:1 projection of
+     * {@code DFHMDF} fields.
+     *
+     * <p>Absent from this document is not the same as absent from the response: both travel to the
+     * client through {@link AdminMenuResponse#screenMetadata()}, which a handler publishes beside this
+     * screen. That is what the Agent Action Plan's section 0.3.9 means by keeping metadata separate and
+     * available, and it is asserted in {@code TheMetadataEnvelope} below.
      */
     private static final List<String> UNPUBLISHED_MEMBERS =
             List.of("messageColour", "resetAllOutputFields");
@@ -968,6 +975,63 @@ class AdminMenuResponseTest {
                     .contains("AdminMenuResponse")
                     .contains("trnName=CA00")
                     .contains("option=01");
+        }
+    }
+    // =================================================================================================
+    // The metadata envelope - separate from the field projection, and present
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("screenMetadata - the two values no JSON member of this record carries")
+    class TheMetadataEnvelope {
+
+        @Test
+        @DisplayName("it publishes the message colour and the repaint signal, and nothing else")
+        void itPublishesTheTwoMetadataValues() {
+            final ScreenMetadata metadata = AdminMenuResponse.builder()
+                    .messageColour(BmsAttributes.DFHGREEN)
+                    .resetAllOutputFields(true)
+                    .build()
+                    .screenMetadata();
+
+            assertThat(metadata.messageColour())
+                    .as("published unsigned: DFHGREEN is 0xF4, which as a byte would read -12")
+                    .isEqualTo(Byte.toUnsignedInt(BmsAttributes.DFHGREEN));
+            assertThat(metadata.resetAllOutputFields()).isTrue();
+        }
+
+        @Test
+        @DisplayName("the field map is empty, because COADM01 declares no per-field attribute quads")
+        void theFieldMapIsAccuratelyEmpty() {
+            assertThat(AdminMenuResponse.empty().screenMetadata().fields()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("no cursor is named: COADM01C contains no MOVE -1 TO <field>L at all")
+        void noCursorIsNamed() {
+            assertThat(AdminMenuResponse.empty().screenMetadata().cursorField()).isNull();
+            assertThat(populated().screenMetadata().cursorField()).isNull();
+        }
+
+        @Test
+        @DisplayName("the default state is DFHRED and no repaint, matching the mapset's COLOR=RED")
+        void theDefaultStateIsTheMapsetDeclaration() {
+            final ScreenMetadata metadata = AdminMenuResponse.empty().screenMetadata();
+
+            assertThat(metadata.messageColour())
+                    .isEqualTo(Byte.toUnsignedInt(BmsAttributes.DFHRED));
+            assertThat(metadata.resetAllOutputFields()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the projection is itself @JsonIgnore, so it adds no member to this document")
+        void theProjectionIsNotAJsonMember() throws Exception {
+            assertThat(AdminMenuResponse.class.getMethod("screenMetadata")
+                    .isAnnotationPresent(com.fasterxml.jackson.annotation.JsonIgnore.class)).isTrue();
+            assertThat(new ObjectMapper().writeValueAsString(populated()))
+                    .doesNotContain("screenMetadata")
+                    .doesNotContain("messageColour")
+                    .doesNotContain("resetAllOutputFields");
         }
     }
 }

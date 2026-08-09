@@ -5,6 +5,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.NumericIntrinsics;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
 import com.vsergeychik.carddemo.util.DateUtilityJob.DateValidationResult;
@@ -392,29 +393,11 @@ public final class AccountDateValidator {
     /** The COBOL figurative constant {@code LOW-VALUE}: the byte with every bit clear. */
     private static final char LOW_VALUE = '\u0000';
 
-    /** The decimal point {@code FUNCTION NUMVAL} accepts. */
-    private static final char DECIMAL_POINT = '.';
-
-    /** The plus sign {@code FUNCTION NUMVAL} accepts in either the leading or the trailing position. */
-    private static final char PLUS_SIGN = '+';
-
-    /** The minus sign {@code FUNCTION NUMVAL} accepts in either the leading or the trailing position. */
-    private static final char MINUS_SIGN = '-';
-
-    /** The trailing credit indicator {@code FUNCTION NUMVAL} treats as a negative sign. */
-    private static final String CREDIT_INDICATOR = "CR";
-
-    /** The trailing debit indicator {@code FUNCTION NUMVAL} treats as a negative sign. */
-    private static final String DEBIT_INDICATOR = "DB";
-
     /** Mask isolating the low-order four bits of a byte: the digit of a zoned {@code DISPLAY} byte. */
     private static final int ZONED_DIGIT_MASK = 0x0F;
 
     /** The radix of a zoned {@code DISPLAY} field: one decimal digit per byte. */
     private static final int DECIMAL_RADIX = 10;
-
-    /** {@link #scanNumval(String)} reports this position when the argument conforms. */
-    private static final int NUMVAL_CONFORMS = 0;
 
     /**
      * The code page the convenience constructors and {@link EditDateState#EditDateState()} default to.
@@ -2120,7 +2103,7 @@ public final class AccountDateValidator {
         // L126 IF FUNCTION TEST-NUMVAL (WS-EDIT-DATE-MM) = 0, then L127-L129
         // COMPUTE WS-EDIT-DATE-MM-N = FUNCTION NUMVAL (WS-EDIT-DATE-MM), which rewrites the two bytes
         // as zero-filled digits.
-        NumvalScan scan = scanNumval(mm);
+        NumericIntrinsics.Scan scan = NumericIntrinsics.scanNumval(mm);
         if (scan.conforms()) {
             state.setMmN(storeIntoUnsigned(scan.value()));                       // L127-L129
         } else {
@@ -2172,7 +2155,7 @@ public final class AccountDateValidator {
 
         // L170 IF FUNCTION TEST-NUMVAL (WS-EDIT-DATE-DD) = 0, then L171-L173
         // COMPUTE WS-EDIT-DATE-DD-N = FUNCTION NUMVAL (WS-EDIT-DATE-DD).
-        NumvalScan scan = scanNumval(dd);
+        NumericIntrinsics.Scan scan = NumericIntrinsics.scanNumval(dd);
         if (scan.conforms()) {
             state.setDdN(storeIntoUnsigned(scan.value()));                       // L171-L173
         } else {
@@ -2547,7 +2530,7 @@ public final class AccountDateValidator {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static int testNumval(String image) {
-        return scanNumval(image).errorPosition();
+        return NumericIntrinsics.testNumval(image);
     }
 
     /**
@@ -2565,7 +2548,7 @@ public final class AccountDateValidator {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static BigDecimal numval(String image) {
-        return scanNumval(image).value();
+        return NumericIntrinsics.numval(image);
     }
 
     /**
@@ -2690,110 +2673,11 @@ public final class AccountDateValidator {
     }
 
     /**
-     * The shared engine of {@link #testNumval(String)} and {@link #numval(String)}: one pass that both
-     * validates and converts, because {@code TEST-NUMVAL} and {@code NUMVAL} are defined over the same
-     * grammar and the source always calls them as a pair.
-     *
-     * <p>The accepted form is a leading run of spaces, then either a leading sign or nothing, then
-     * digits with at most one decimal point among them, then trailing spaces, then - only if no leading
-     * sign was given - a trailing {@code +}, {@code -}, {@code CR} or {@code DB}, then trailing spaces,
-     * then the end of the item. {@code CR} and {@code DB} are matched in upper case only, as the
-     * standard defines them. Anything else is reported at the one-based position of the offending
-     * character; an item with no digits at all is reported at its length plus one.
-     *
-     * @param image the argument; must not be {@code null}
-     * @return the outcome: a conforming scan carrying the value, or a rejection carrying the position
-     * @throws NullPointerException if {@code image} is {@code null}
-     */
-    private static NumvalScan scanNumval(String image) {
-        Objects.requireNonNull(image, "FUNCTION TEST-NUMVAL and FUNCTION NUMVAL require an argument");
-        int length = image.length();
-        int index = skipSpaces(image, 0);
-
-        boolean negative = false;
-        boolean leadingSignSeen = false;
-        if (index < length && isSign(image.charAt(index))) {
-            negative = image.charAt(index) == MINUS_SIGN;
-            leadingSignSeen = true;
-            index = skipSpaces(image, index + 1);
-        }
-
-        StringBuilder digits = new StringBuilder();
-        int fractionDigits = 0;
-        boolean decimalPointSeen = false;
-        while (index < length) {
-            char character = image.charAt(index);
-            if (isDigit(character)) {
-                digits.append(character);
-                if (decimalPointSeen) {
-                    fractionDigits++;
-                }
-                index++;
-            } else if (character == DECIMAL_POINT && !decimalPointSeen) {
-                decimalPointSeen = true;
-                index++;
-            } else {
-                break;
-            }
-        }
-        if (digits.length() == 0) {
-            // No digits anywhere: all spaces, a bare sign, or a bare decimal point. IBM reports this
-            // at the length plus one rather than at a character position.
-            return NumvalScan.rejected(length + 1);
-        }
-
-        index = skipSpaces(image, index);
-        if (index < length && !leadingSignSeen) {
-            char character = image.charAt(index);
-            if (isSign(character)) {
-                negative = character == MINUS_SIGN;
-                index = skipSpaces(image, index + 1);
-            } else if (image.startsWith(CREDIT_INDICATOR, index)
-                    || image.startsWith(DEBIT_INDICATOR, index)) {
-                negative = true;
-                index = skipSpaces(image, index + CREDIT_INDICATOR.length());
-            }
-        }
-        if (index != length) {
-            return NumvalScan.rejected(index + 1);
-        }
-
-        BigDecimal magnitude = new BigDecimal(digits.toString())
-                .movePointLeft(fractionDigits);
-        return NumvalScan.accepted(negative ? magnitude.negate() : magnitude);
-    }
-
-    /**
-     * Advances past a run of spaces, which {@code FUNCTION NUMVAL} permits at three places in its
-     * argument.
-     *
-     * @param image the argument
-     * @param from  the index to start at
-     * @return the index of the first character at or after {@code from} that is not a space, or the
-     *         argument's length
-     */
-    private static int skipSpaces(String image, int from) {
-        int index = from;
-        while (index < image.length() && image.charAt(index) == SPACE) {
-            index++;
-        }
-        return index;
-    }
-
-    /**
      * @param character the character to classify
      * @return whether it is {@code '0'} through {@code '9'}
      */
     private static boolean isDigit(char character) {
         return character >= '0' && character <= '9';
-    }
-
-    /**
-     * @param character the character to classify
-     * @return whether it is a sign {@code FUNCTION NUMVAL} accepts in either position
-     */
-    private static boolean isSign(char character) {
-        return character == PLUS_SIGN || character == MINUS_SIGN;
     }
 
     /**
@@ -2813,41 +2697,6 @@ public final class AccountDateValidator {
     private void stringErrorMessage(EditDateState state, String literal) {
         if (state.returnMsgOff()) {
             state.stringIntoReturnMessage(trim(state.editVariableName()), literal);
-        }
-    }
-
-    /**
-     * The outcome of one {@code FUNCTION TEST-NUMVAL} and {@code FUNCTION NUMVAL} pair.
-     *
-     * @param errorPosition zero when the argument conforms, otherwise the one-based position
-     *                      {@code TEST-NUMVAL} reports
-     * @param value         the value {@code NUMVAL} yields, or zero when the argument does not conform
-     */
-    private record NumvalScan(int errorPosition, BigDecimal value) {
-
-        /**
-         * @param value the converted value
-         * @return a conforming outcome
-         */
-        static NumvalScan accepted(BigDecimal value) {
-            return new NumvalScan(NUMVAL_CONFORMS, value);
-        }
-
-        /**
-         * @param position the one-based position to report
-         * @return a rejecting outcome
-         */
-        static NumvalScan rejected(int position) {
-            return new NumvalScan(position, BigDecimal.ZERO);
-        }
-
-        /**
-         * {@code IF FUNCTION TEST-NUMVAL (...) = 0} - CSUTLDPY L126 and L170.
-         *
-         * @return whether the argument is a valid {@code NUMVAL} operand
-         */
-        boolean conforms() {
-            return errorPosition == NUMVAL_CONFORMS;
         }
     }
 }

@@ -14,7 +14,9 @@ import com.vsergeychik.carddemo.parity.FieldDiffer.ObservedResponse;
 import com.vsergeychik.carddemo.parity.FieldDiffer.ObservedSend;
 import com.vsergeychik.carddemo.parity.ParityCase.DatasetInput;
 import com.vsergeychik.carddemo.parity.ParityCase.DatasetNormalisation;
+import com.vsergeychik.carddemo.parity.ParityCase.DatasetChannel;
 import com.vsergeychik.carddemo.parity.ParityCase.EmittedMessage;
+import com.vsergeychik.carddemo.parity.ParityCase.ExpectedDataset;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedRecord;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedResponse;
 import com.vsergeychik.carddemo.parity.ParityCase.MessageChannel;
@@ -112,6 +114,21 @@ class FieldDifferTest {
     /** A correct 24-byte row: account {@code 00000000011}, balance 194.00 positive-overpunched. */
     private static final String MONEY_ROW = "00000000011" + "00000001940{" + " ";
 
+    /**
+     * A 10-byte layout over {@code ACCT-GROUP-ID}, which {@code app/cpy/CVACT01Y.cpy} declares
+     * {@code PIC X(10)}.
+     *
+     * <p>Used by the tests about how a value is <em>rendered</em> - trailing spaces counted, a control
+     * byte escaped - and chosen because the field is unclassified, so its value renders verbatim.
+     * {@code ACCT-ID} used to serve that purpose and no longer can: it names one account and is
+     * therefore masked, and a masked value has no trailing spaces and no control bytes left to render.
+     */
+    private static final RecordLayout TEXT_LAYOUT = RecordLayout.of(10,
+        FieldSpan.alphanumeric("ACCT-GROUP-ID", 0, 10));
+
+    /** A 10-byte row whose single field is {@code John} space-padded to its declared width. */
+    private static final String TEXT_ROW = "John      ";
+
     /** An 80-byte USRSEC row carrying the legacy plaintext password at offset 48. */
     private static final String USRSEC_ROW =
         "ADMIN001John                Doe                 PASSWORDA" + " ".repeat(23);
@@ -143,6 +160,13 @@ class FieldDifferTest {
             List.of());
     }
 
+    /** A batch case declaring the supplied dataset-level expectations and no row expectation. */
+    private static ParityCase datasetCase(ExpectedDataset... expectations) {
+        return new ParityCase("CBACT04C", "case01", "a dataset-level expectation",
+            UnitKind.BATCH_JOB, Map.of(), Map.of(), null, null, List.of(), List.of(), 0, List.of(),
+            List.of(), List.of(expectations));
+    }
+
     /** A batch case pinning the supplied write expectations. */
     private static ParityCase writeCase(ExpectedRecord... expectations) {
         return new ParityCase("CBACT04C", "case01", "a write expectation", UnitKind.BATCH_JOB,
@@ -157,13 +181,78 @@ class FieldDifferTest {
         return new ExpectedRecord(dataset, rowIndex, fields, null);
     }
 
-    /** Every kind the result carries, in traversal order. */
+    /** A record expectation pinning several fields of one row, in declaration order. */
+    private static ExpectedRecord pinAll(String dataset, int rowIndex, String... fieldsAndValues) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        for (int index = 0; index < fieldsAndValues.length; index += 2) {
+            fields.put(fieldsAndValues[index], fieldsAndValues[index + 1]);
+        }
+        return new ExpectedRecord(dataset, rowIndex, fields, null);
+    }
+
+    /** A record expectation pinning the whole row as bytes, which is complete by construction. */
+    private static ExpectedRecord pinBytes(String dataset, int rowIndex, String image) {
+        return new ExpectedRecord(dataset, rowIndex, Map.of(), image);
+    }
+
+    /**
+     * Every kind the result carries <strong>about the output</strong>, in traversal order.
+     *
+     * <p>{@link DiffKind#INCOMPLETE_EXPECTATION} is excluded, and the exclusion is what lets this suite
+     * keep saying what it means. Every test here pins one or two fields deliberately, because isolating
+     * one comparison behaviour is the whole method: a test about how a wrong balance is reported must
+     * not also have to state the account id, the group id and the {@code FILLER}. Under the completeness
+     * contract such a fixture is <em>also</em> reported as not accounting for its whole record, which is
+     * a true finding about the fixture and a distraction from the behaviour under test.
+     *
+     * <p>It is excluded here and asserted on its own in {@code Completeness}, which is where it belongs:
+     * that nest proves the kind is produced, that it names every uncovered span, that it counts toward
+     * {@link DiffResult#count()} like every other kind, and that a complete expectation produces none.
+     * Nothing hides behind this filter - {@link #allKindsOf(DiffResult)} is the unfiltered view and the
+     * producibility test uses it.
+     */
     private static List<DiffKind> kindsOf(DiffResult result) {
+        List<DiffKind> kinds = new ArrayList<>();
+        for (Diff diff : result.entries()) {
+            if (diff.kind() != DiffKind.INCOMPLETE_EXPECTATION) {
+                kinds.add(diff.kind());
+            }
+        }
+        return kinds;
+    }
+
+    /** Every kind the result carries, filtering nothing - the view the producibility test needs. */
+    private static List<DiffKind> allKindsOf(DiffResult result) {
         List<DiffKind> kinds = new ArrayList<>();
         for (Diff diff : result.entries()) {
             kinds.add(diff.kind());
         }
         return kinds;
+    }
+
+    /**
+     * How many differences the result carries about the output, excluding the fixture-level
+     * completeness finding for the reason {@link #kindsOf(DiffResult)} sets out.
+     */
+    private static int outputCount(DiffResult result) {
+        int count = 0;
+        for (Diff diff : result.entries()) {
+            if (diff.kind() != DiffKind.INCOMPLETE_EXPECTATION) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** The differences about the output, in traversal order. */
+    private static List<Diff> outputDiffs(DiffResult result) {
+        List<Diff> output = new ArrayList<>();
+        for (Diff diff : result.entries()) {
+            if (diff.kind() != DiffKind.INCOMPLETE_EXPECTATION) {
+                output.add(diff);
+            }
+        }
+        return output;
     }
 
     // ===============================================================================================
@@ -233,9 +322,9 @@ class FieldDifferTest {
 
             DiffResult result = differ().compare(parityCase, fingerprint);
 
-            Assertions.assertThat(result.isClean()).isTrue();
-            Assertions.assertThat(result.count()).isZero();
-            Assertions.assertThat(result.entries()).isEmpty();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
+            Assertions.assertThat(outputCount(result)).isZero();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
             Assertions.assertThat(result.render())
                 .contains("CBACT04C/case01", "0 differences", "CLEAN");
             Assertions.assertThat(result.program()).isEqualTo("CBACT04C");
@@ -247,7 +336,7 @@ class FieldDifferTest {
         void expectingNothingAndProducingNothingIsClean() {
             DiffResult result = differ().compare(finalStateCase(), Fingerprint.ofReturnCode(0));
 
-            Assertions.assertThat(result.isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
         }
 
         @Test
@@ -274,16 +363,28 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000099")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
             Assertions.assertThat(diff.dataset()).isEqualTo(ACCTDAT);
             Assertions.assertThat(diff.rowIndex()).isZero();
             Assertions.assertThat(diff.fieldName()).isEqualTo("ACCT-ID");
             Assertions.assertThat(diff.offset()).isZero();
             Assertions.assertThat(diff.length()).isEqualTo(11);
-            Assertions.assertThat(diff.expected()).isEqualTo("00000000099");
-            Assertions.assertThat(diff.actual()).isEqualTo("00000000011");
+            // ACCT-ID names one account, so both sides are rendered as a class, a length and a digest
+            // rather than as the identifier itself. The difference is still completely diagnosable:
+            // the dataset, the row, the field, its offset and its width are all reported, and the two
+            // digests differ, which is what says the values do.
+            Assertions.assertThat(diff.expected())
+                .doesNotContain("00000000099")
+                .contains("<identifier>", "len=11", "sha256=");
+            Assertions.assertThat(diff.actual())
+                .doesNotContain("00000000011")
+                .contains("<identifier>", "len=11", "sha256=");
+            Assertions.assertThat(diff.expected())
+                .as("two different identifiers must render differently, or a difference would look "
+                    + "like a match")
+                .isNotEqualTo(diff.actual());
         }
 
         @Test
@@ -298,7 +399,7 @@ class FieldDifferTest {
             DiffResult result = differ().compare(parityCase,
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.count()).isEqualTo(3);
+            Assertions.assertThat(outputCount(result)).isEqualTo(3);
             Assertions.assertThat(kindsOf(result))
                 .containsOnly(DiffKind.VALUE_MISMATCH);
         }
@@ -310,22 +411,29 @@ class FieldDifferTest {
                 finalStateCase(pin(USRSEC, 0, SecUserRecord.FIELD_SEC_USR_FNAME, "John")),
                 finalState(output(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW)));
 
-            Assertions.assertThat(result.count())
+            Assertions.assertThat(outputCount(result))
                 .as("SEC-USR-FNAME is PIC X(20) and its padding is part of its value")
                 .isOne();
-            Assertions.assertThat(result.entries().get(0).actual()).hasSize(20);
+            // The name is personal data and is rendered as a class, a length and a digest. The length
+            // is the part this test is about, and it is still stated: 20, not the 4 an expectation
+            // that had been trimmed would have carried.
+            Assertions.assertThat(outputDiffs(result).get(0).actual())
+                .doesNotContain("John")
+                .contains("<personal>", "len=20", "sha256=");
+            Assertions.assertThat(outputDiffs(result).get(0).expected())
+                .as("the expectation was four characters wide, and that is the difference")
+                .contains("len=4");
         }
 
         @Test
         @DisplayName("trailing spaces are counted in the rendering rather than left invisible")
         void trailingSpacesAreCountedInTheRendering() {
             DiffResult result = differ().compare(
-                finalStateCase(pin(USRSEC, 0, SecUserRecord.FIELD_SEC_USR_FNAME,
-                    "Jane" + " ".repeat(16))),
-                finalState(output(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW)));
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-GROUP-ID", "Jane" + " ".repeat(6))),
+                finalState(output(ACCTDAT, TEXT_LAYOUT, TEXT_ROW)));
 
             Assertions.assertThat(result.render())
-                .contains("16 trailing space(s)", "len=20", "'Jane'", "'John'");
+                .contains("6 trailing space(s)", "len=10", "'Jane'", "'John'");
         }
 
         @Test
@@ -338,9 +446,9 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "FILLER", "0")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(clean.isClean()).isTrue();
-            Assertions.assertThat(dirty.count()).isOne();
-            Assertions.assertThat(dirty.entries().get(0).kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
+            Assertions.assertThat(outputDiffs(clean)).isEmpty();
+            Assertions.assertThat(outputCount(dirty)).isOne();
+            Assertions.assertThat(outputDiffs(dirty).get(0).kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
         }
 
         @Test
@@ -353,8 +461,8 @@ class FieldDifferTest {
             DiffResult wrongOrdinal = differ().compare(
                 finalStateCase(pin("CCXREF", 0, "FILLER-1", "abc")), finalState(observed));
 
-            Assertions.assertThat(byOrdinal.isClean()).isTrue();
-            Assertions.assertThat(wrongOrdinal.entries())
+            Assertions.assertThat(outputDiffs(byOrdinal)).isEmpty();
+            Assertions.assertThat(outputDiffs(wrongOrdinal))
                 .singleElement()
                 .satisfies(diff -> Assertions.assertThat(diff.kind())
                     .isEqualTo(DiffKind.FIELD_ABSENT_IN_FINGERPRINT));
@@ -372,8 +480,8 @@ class FieldDifferTest {
                 finalStateCase(pin("CARDDAT", 0, "CC-ACCT-ID-N", "00000000099")),
                 finalState(observed));
 
-            Assertions.assertThat(clean.isClean()).isTrue();
-            Assertions.assertThat(dirty.count()).isOne();
+            Assertions.assertThat(outputDiffs(clean)).isEmpty();
+            Assertions.assertThat(outputCount(dirty)).isOne();
         }
 
         @Test
@@ -383,7 +491,7 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000099")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("alphanumeric PIC X");
         }
     }
@@ -400,7 +508,7 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "00000001940{")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
         }
 
         @Test
@@ -410,9 +518,9 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "194.00")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.isClean())
+            Assertions.assertThat(outputDiffs(result))
                 .as("encodeSignedScaled produces the overpunch form COBOL itself stores")
-                .isTrue();
+                .isEmpty();
         }
 
         @Test
@@ -424,7 +532,7 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "-919.00")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, negative)));
 
-            Assertions.assertThat(result.isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
         }
 
         @Test
@@ -441,8 +549,8 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "00000001940{")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, unsigned)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
             Assertions.assertThat(diff.explanation())
                 .contains("VALUE agrees", "REPRESENTATION does not", "overpunch");
@@ -461,8 +569,8 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "00000000000{")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, negativeZero)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("VALUE agrees", "opposite overpunch of a zero");
         }
 
@@ -473,12 +581,12 @@ class FieldDifferTest {
             String observed = "00000000011" + "00000000000".substring(0, 11) + overpunch + " ";
             String unsigned = "00000000011" + "00000000000".substring(0, 11) + digit + " ";
 
-            Assertions.assertThat(differ().compare(
+            Assertions.assertThat(outputDiffs(differ().compare(
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "00000000000" + overpunch)),
-                finalState(output(ACCTDAT, MONEY_LAYOUT, observed))).isClean()).isTrue();
-            Assertions.assertThat(differ().compare(
+                finalState(output(ACCTDAT, MONEY_LAYOUT, observed))))).isEmpty();
+            Assertions.assertThat(outputCount(differ().compare(
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "00000000000" + overpunch)),
-                finalState(output(ACCTDAT, MONEY_LAYOUT, unsigned))).count()).isOne();
+                finalState(output(ACCTDAT, MONEY_LAYOUT, unsigned))))).isOne();
         }
 
         @ParameterizedTest(name = "negative overpunch {0} is not its unsigned twin")
@@ -487,12 +595,12 @@ class FieldDifferTest {
         void everyNegativeOverpunchIsComparedAsItself(String overpunch) {
             String observed = "00000000011" + "00000000000" + overpunch + " ";
 
-            Assertions.assertThat(differ().compare(
+            Assertions.assertThat(outputDiffs(differ().compare(
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "00000000000" + overpunch)),
-                finalState(output(ACCTDAT, MONEY_LAYOUT, observed))).isClean()).isTrue();
-            Assertions.assertThat(differ().compare(
+                finalState(output(ACCTDAT, MONEY_LAYOUT, observed))))).isEmpty();
+            Assertions.assertThat(outputCount(differ().compare(
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "00000000000{")),
-                finalState(output(ACCTDAT, MONEY_LAYOUT, observed))).count()).isOne();
+                finalState(output(ACCTDAT, MONEY_LAYOUT, observed))))).isOne();
         }
 
         @Test
@@ -502,8 +610,8 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "195.00")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("values differ as well as the bytes", "195.00", "194.00",
                     CobolDecimal.COBOL_ROUNDING.toString());
         }
@@ -517,8 +625,8 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "194.00")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, corrupt)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.UNDECODABLE_FIELD);
             Assertions.assertThat(diff.explanation())
                 .contains("not a valid signed zoned DISPLAY image");
@@ -531,8 +639,8 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BAL", "about two hundred")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.MALFORMED_EXPECTATION);
             Assertions.assertThat(diff.explanation())
                 .as("an unevaluable case has not passed, so it still counts toward the diff count")
@@ -568,7 +676,7 @@ class FieldDifferTest {
                 finalState(output(ACCTDAT, MONEY_LAYOUT, row)));
 
             Assertions.assertThat(monthly).isEqualByComparingTo(new BigDecimal("1.08"));
-            Assertions.assertThat(result.isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
         }
     }
 
@@ -584,8 +692,8 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000011")),
                 Fingerprint.ofReturnCode(0));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.MISSING_RECORD);
             Assertions.assertThat(diff.actual()).isNull();
             Assertions.assertThat(diff.explanation()).contains("no dataset at all on this channel");
@@ -601,9 +709,9 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(result))
                 .as("row 3 is absent AND the row that is there was never expected; both are found")
                 .containsExactly(DiffKind.MISSING_RECORD, DiffKind.EXTRA_RECORD);
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("holds 1", "index 3");
-            Assertions.assertThat(result.entries().get(1).rowIndex()).isZero();
+            Assertions.assertThat(outputDiffs(result).get(1).rowIndex()).isZero();
         }
 
         @Test
@@ -618,8 +726,8 @@ class FieldDifferTest {
                 finalStateCase(new ExpectedRecord(ACCTDAT, 0, fields, null)),
                 Fingerprint.ofReturnCode(0));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).expected())
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).expected())
                 .contains("ACCT-ID", "ACCT-CURR-BAL", "FILLER");
         }
 
@@ -633,8 +741,8 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(writeExpected))
                 .as("\"did it write?\" and \"is the state right?\" are different questions")
                 .containsExactly(DiffKind.MISSING_RECORD, DiffKind.EXTRA_DATASET);
-            Assertions.assertThat(writeExpected.entries().get(0).explanation()).contains("writes");
-            Assertions.assertThat(writeExpected.entries().get(1).explanation())
+            Assertions.assertThat(outputDiffs(writeExpected).get(0).explanation()).contains("writes");
+            Assertions.assertThat(outputDiffs(writeExpected).get(1).explanation())
                 .contains("final state");
         }
     }
@@ -652,7 +760,7 @@ class FieldDifferTest {
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW, MONEY_ROW)));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.EXTRA_RECORD);
-            Assertions.assertThat(result.entries().get(0).rowIndex()).isEqualTo(1);
+            Assertions.assertThat(outputDiffs(result).get(0).rowIndex()).isEqualTo(1);
         }
 
         @Test
@@ -666,8 +774,8 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(result))
                 .as("a 'beyond the last expected row' check would sail straight past index 1")
                 .containsExactly(DiffKind.EXTRA_RECORD);
-            Assertions.assertThat(result.entries().get(0).rowIndex()).isEqualTo(1);
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).rowIndex()).isEqualTo(1);
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("not only beyond the highest expected index");
         }
 
@@ -678,9 +786,9 @@ class FieldDifferTest {
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW, MONEY_ROW, MONEY_ROW)));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.EXTRA_DATASET);
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("positive assertion that nothing was produced");
-            Assertions.assertThat(result.entries().get(0).actual()).contains("3 row(s)");
+            Assertions.assertThat(outputDiffs(result).get(0).actual()).contains("3 row(s)");
         }
 
         @Test
@@ -692,8 +800,8 @@ class FieldDifferTest {
                     output(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW)));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.EXTRA_DATASET);
-            Assertions.assertThat(result.entries().get(0).dataset()).isEqualTo(USRSEC);
-            Assertions.assertThat(result.entries().get(0).explanation()).contains(ACCTDAT);
+            Assertions.assertThat(outputDiffs(result).get(0).dataset()).isEqualTo(USRSEC);
+            Assertions.assertThat(outputDiffs(result).get(0).explanation()).contains(ACCTDAT);
         }
 
         @Test
@@ -705,7 +813,7 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(result))
                 .as("touching a dataset the case does not mention is itself the finding")
                 .containsExactly(DiffKind.EXTRA_DATASET);
-            Assertions.assertThat(result.entries().get(0).actual()).isEqualTo("0 row(s)");
+            Assertions.assertThat(outputDiffs(result).get(0).actual()).isEqualTo("0 row(s)");
         }
 
         @Test
@@ -719,7 +827,7 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(result))
                 .containsExactly(DiffKind.EXTRA_RECORD, DiffKind.EXTRA_RECORD,
                     DiffKind.EXTRA_RECORD);
-            Assertions.assertThat(result.entries())
+            Assertions.assertThat(outputDiffs(result))
                 .extracting(Diff::rowIndex)
                 .containsExactly(0, 2, 3);
         }
@@ -731,7 +839,7 @@ class FieldDifferTest {
                 writes(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.EXTRA_DATASET);
-            Assertions.assertThat(result.entries().get(0).explanation()).contains("writes");
+            Assertions.assertThat(outputDiffs(result).get(0).explanation()).contains("writes");
         }
     }
 
@@ -755,7 +863,7 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(result))
                 .as("field differences after a width error are noise hiding the real finding")
                 .containsExactly(DiffKind.RECORD_WIDTH_MISMATCH);
-            Diff diff = result.entries().get(0);
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.expected()).isEqualTo("24");
             Assertions.assertThat(diff.actual()).isEqualTo("23");
             Assertions.assertThat(diff.explanation()).contains("FILLER was omitted");
@@ -770,7 +878,7 @@ class FieldDifferTest {
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.RECORD_WIDTH_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("expectation itself is the wrong width");
         }
 
@@ -791,7 +899,7 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(result))
                 .as("the pad is applied once at seed time, so a short record here is a real defect")
                 .containsExactly(DiffKind.RECORD_WIDTH_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("repaired", "SEED time");
         }
 
@@ -806,7 +914,7 @@ class FieldDifferTest {
                 finalState(output(USRSEC, SecUserRecord.LAYOUT, seeded)));
 
             Assertions.assertThat(seeded).hasSize(80);
-            Assertions.assertThat(result.isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
         }
 
         @Test
@@ -817,7 +925,7 @@ class FieldDifferTest {
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW + "X")));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.RECORD_WIDTH_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).actual()).isEqualTo("25");
+            Assertions.assertThat(outputDiffs(result).get(0).actual()).isEqualTo("25");
         }
     }
 
@@ -835,8 +943,8 @@ class FieldDifferTest {
                 finalStateCase(new ExpectedRecord(ACCTDAT, 0, Map.of(), MONEY_ROW)),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, wrongBalance)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.fieldName()).isEqualTo("ACCT-CURR-BAL");
             Assertions.assertThat(diff.offset()).isEqualTo(11);
             Assertions.assertThat(diff.length()).isEqualTo(12);
@@ -852,7 +960,7 @@ class FieldDifferTest {
                     Map.of("ACCT-CURR-BAL", "00000001940{"), MONEY_ROW)),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, wrongBalance)));
 
-            Assertions.assertThat(result.count())
+            Assertions.assertThat(outputCount(result))
                 .as("the diff count must stay a count of distinct findings")
                 .isOne();
         }
@@ -866,8 +974,8 @@ class FieldDifferTest {
                 finalStateCase(new ExpectedRecord(ACCTDAT, 0, Map.of(), MONEY_ROW)),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, wrongFiller)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).fieldName()).isEqualTo("FILLER");
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName()).isEqualTo("FILLER");
         }
 
         @Test
@@ -877,10 +985,10 @@ class FieldDifferTest {
                 finalStateCase(new ExpectedRecord("CARDDAT", 0, Map.of(), "00000000011")),
                 finalState(output("CARDDAT", REDEFINES_LAYOUT, "00000000099")));
 
-            Assertions.assertThat(result.count())
+            Assertions.assertThat(outputCount(result))
                 .as("an overlay shares bytes a storage span already covers")
                 .isOne();
-            Assertions.assertThat(result.entries().get(0).fieldName()).isEqualTo("CC-ACCT-ID");
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName()).isEqualTo("CC-ACCT-ID");
         }
 
         @Test
@@ -890,7 +998,7 @@ class FieldDifferTest {
                 finalStateCase(new ExpectedRecord(ACCTDAT, 0, Map.of(), MONEY_ROW)),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
         }
     }
 
@@ -906,8 +1014,8 @@ class FieldDifferTest {
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-CURR-BALANCE", "194.00")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.FIELD_ABSENT_IN_FINGERPRINT);
             Assertions.assertThat(diff.actual()).isNull();
             Assertions.assertThat(diff.explanation())
@@ -991,10 +1099,10 @@ class FieldDifferTest {
 
             DiffResult result = compare(wrong);
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).kind())
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).kind())
                 .isEqualTo(DiffKind.RESPONSE_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).fieldName()).isEqualTo(field);
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName()).isEqualTo(field);
         }
 
         @Test
@@ -1003,8 +1111,8 @@ class FieldDifferTest {
             DiffResult result = compare(new ObservedResponse(null, "COUSR02", "COUSR2A",
                 observed().navigation(), observed().sends(), "USRIDINL", Termination.XCTL));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).actual()).isNull();
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).actual()).isNull();
         }
 
         @Test
@@ -1015,7 +1123,7 @@ class FieldDifferTest {
 
             Assertions.assertThat(kindsOf(result))
                 .containsExactly(DiffKind.FIELD_ABSENT_IN_FINGERPRINT);
-            Assertions.assertThat(result.entries().get(0).fieldName())
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName())
                 .isEqualTo("navigation.CDEMO-TO-PROGRAM");
         }
 
@@ -1030,9 +1138,9 @@ class FieldDifferTest {
                 navigation, observed().sends(), "USRIDINL", Termination.XCTL));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.RESPONSE_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).fieldName())
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName())
                 .isEqualTo("navigation.CDEMO-USER-TYPE");
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("carried forward into the next transaction");
         }
 
@@ -1045,8 +1153,8 @@ class FieldDifferTest {
                 observed().navigation(), twice, "USRIDINL", Termination.XCTL));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.SEND_COUNT_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).expected()).isEqualTo("1");
-            Assertions.assertThat(result.entries().get(0).actual()).isEqualTo("2");
+            Assertions.assertThat(outputDiffs(result).get(0).expected()).isEqualTo("1");
+            Assertions.assertThat(outputDiffs(result).get(0).actual()).isEqualTo("2");
         }
 
         @Test
@@ -1070,8 +1178,8 @@ class FieldDifferTest {
                 List.of(new ObservedSend(Map.of("ERRMSGO", "wrong"), Map.of("ERRMSGC", "DFHRED"))),
                 "USRIDINL", Termination.XCTL));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).fieldName())
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName())
                 .isEqualTo("sends[0].fields.ERRMSGO");
         }
 
@@ -1083,10 +1191,10 @@ class FieldDifferTest {
                 List.of(new ObservedSend(Map.of("ERRMSGO", "text"), Map.of("ERRMSGC", "DFHGREEN"))),
                 "USRIDINL", Termination.XCTL));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).fieldName())
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName())
                 .isEqualTo("sends[0].attributes.ERRMSGC");
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("Colour is not decoration");
         }
 
@@ -1103,7 +1211,7 @@ class FieldDifferTest {
                 "USRIDINL", Termination.XCTL));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.RESPONSE_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).fieldName())
+            Assertions.assertThat(outputDiffs(result).get(0).fieldName())
                 .isEqualTo("sends[0].fields.TITLE01O");
         }
 
@@ -1113,8 +1221,8 @@ class FieldDifferTest {
             DiffResult result = differ().compare(controllerCase(expected()),
                 Fingerprint.ofReturnCode(0));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.RESPONSE_MISMATCH);
             Assertions.assertThat(diff.fieldName()).isEqualTo("<whole>");
             Assertions.assertThat(diff.explanation()).contains("no-commarea guard");
@@ -1126,8 +1234,8 @@ class FieldDifferTest {
             DiffResult result = differ().compare(finalStateCase(),
                 Fingerprint.of(List.of(), List.of(), observed(), 0, List.of()));
 
-            Assertions.assertThat(result.count()).isOne();
-            Assertions.assertThat(result.entries().get(0).explanation())
+            Assertions.assertThat(outputCount(result)).isOne();
+            Assertions.assertThat(outputDiffs(result).get(0).explanation())
                 .contains("A batch case has no screen");
         }
 
@@ -1158,8 +1266,8 @@ class FieldDifferTest {
             DiffResult result = differ().compare(caseWith(expected),
                 Fingerprint.ofReturnCode(actual));
 
-            Assertions.assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            Assertions.assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             Assertions.assertThat(diff.kind()).isEqualTo(DiffKind.RETURN_CODE_MISMATCH);
             Assertions.assertThat(diff.expected()).isEqualTo(Integer.toString(expected));
             Assertions.assertThat(diff.actual()).isEqualTo(Integer.toString(actual));
@@ -1170,8 +1278,8 @@ class FieldDifferTest {
         @DisplayName("a matching return code is clean")
         @ValueSource(ints = {0, 3, 4, 8, 12, 16})
         void aMatchingReturnCodeIsClean(int returnCode) {
-            Assertions.assertThat(differ().compare(caseWith(returnCode),
-                Fingerprint.ofReturnCode(returnCode)).isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(differ().compare(caseWith(returnCode),
+                Fingerprint.ofReturnCode(returnCode)))).isEmpty();
         }
 
         @Test
@@ -1201,8 +1309,8 @@ class FieldDifferTest {
             Assertions.assertThat(kindsOf(result))
                 .as("MOVE WS-MESSAGE TO ERRMSGO loses the last two bytes; that is the defect")
                 .containsExactly(DiffKind.MESSAGE_CHANNEL_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).expected()).isEqualTo("WS_MESSAGE_80");
-            Assertions.assertThat(result.entries().get(0).actual()).isEqualTo("SCREEN_ERRMSG_78");
+            Assertions.assertThat(outputDiffs(result).get(0).expected()).isEqualTo("WS_MESSAGE_80");
+            Assertions.assertThat(outputDiffs(result).get(0).actual()).isEqualTo("SCREEN_ERRMSG_78");
         }
 
         @Test
@@ -1213,7 +1321,7 @@ class FieldDifferTest {
                 Fingerprint.of(List.of(), List.of(), null, 0,
                     List.of(new EmittedMessage(MessageChannel.DISPLAY_LINE, "something else"))));
 
-            Assertions.assertThat(result.count())
+            Assertions.assertThat(outputCount(result))
                 .as("the widths differ, so the text cannot mean anything until the channel matches")
                 .isOne();
         }
@@ -1229,7 +1337,7 @@ class FieldDifferTest {
 
             Assertions.assertThat(kindsOf(result))
                 .containsExactly(DiffKind.MESSAGE_COUNT_MISMATCH, DiffKind.MESSAGE_MISMATCH);
-            Assertions.assertThat(result.entries().get(1).rowIndex()).isZero();
+            Assertions.assertThat(outputDiffs(result).get(1).rowIndex()).isZero();
         }
 
         @Test
@@ -1240,7 +1348,7 @@ class FieldDifferTest {
                     List.of(new EmittedMessage(MessageChannel.DISPLAY_LINE, "unexpected"))));
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.MESSAGE_COUNT_MISMATCH);
-            Assertions.assertThat(result.entries().get(0).expected()).isEqualTo("0");
+            Assertions.assertThat(outputDiffs(result).get(0).expected()).isEqualTo("0");
         }
 
         @Test
@@ -1251,7 +1359,7 @@ class FieldDifferTest {
                 Fingerprint.of(List.of(), List.of(), null, 0,
                     List.of(new EmittedMessage(MessageChannel.DISPLAY_LINE, ""))));
 
-            Assertions.assertThat(result.isClean()).isTrue();
+            Assertions.assertThat(outputDiffs(result)).isEmpty();
         }
 
         @Test
@@ -1268,7 +1376,7 @@ class FieldDifferTest {
 
             Assertions.assertThat(kindsOf(result))
                 .containsExactly(DiffKind.MESSAGE_MISMATCH, DiffKind.MESSAGE_MISMATCH);
-            Assertions.assertThat(result.entries())
+            Assertions.assertThat(outputDiffs(result))
                 .extracting(Diff::rowIndex)
                 .containsExactly(0, 2);
         }
@@ -1316,7 +1424,7 @@ class FieldDifferTest {
 
             DiffResult result = differ().compare(parityCase, fingerprint);
 
-            Assertions.assertThat(result.entries())
+            Assertions.assertThat(outputDiffs(result))
                 .extracting(Diff::dataset)
                 .containsExactly(ACCTDAT, USRSEC, "<response>", "<return-code>", "<messages>");
         }
@@ -1333,7 +1441,7 @@ class FieldDifferTest {
                 finalStateCase(new ExpectedRecord(ACCTDAT, 0, fields, null)),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
-            Assertions.assertThat(result.entries())
+            Assertions.assertThat(outputDiffs(result))
                 .as("a rendered failure should read down the record the way the copybook does")
                 .extracting(Diff::fieldName)
                 .containsExactly("ACCT-ID", "ACCT-CURR-BAL", "FILLER");
@@ -1353,9 +1461,13 @@ class FieldDifferTest {
                 finalStateCase(expectations.toArray(new ExpectedRecord[0])),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, rows)));
 
-            Assertions.assertThat(result.count()).isEqualTo(25);
+            // Each of the twenty-five expectations pins one field of a three-span record, so each is
+            // reported twice: once for the wrong account id and once for the twenty-two bytes it
+            // accounts for nothing about. Fifty is the number the renderer must print in full.
+            Assertions.assertThat(outputCount(result)).isEqualTo(25);
+            Assertions.assertThat(result.count()).isEqualTo(50);
             Assertions.assertThat(result.render())
-                .contains("[1/25]", "[20/25]", "[25/25]", "25 differences")
+                .contains("[1/50]", "[20/50]", "[50/50]", "50 differences")
                 .doesNotContain("...");
         }
 
@@ -1387,7 +1499,7 @@ class FieldDifferTest {
                 finalStateCase(pin(USRSEC, 0, SecUserRecord.FIELD_SEC_USR_PWD, "SECRET99")),
                 finalState(output(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW)));
 
-            Assertions.assertThat(result.count())
+            Assertions.assertThat(outputCount(result))
                 .as("comparison is unaffected by masking; a wrong password is still a difference")
                 .isOne();
             Assertions.assertThat(result.render())
@@ -1404,7 +1516,7 @@ class FieldDifferTest {
                 finalStateCase(new ExpectedRecord(USRSEC, 0, Map.of(), USRSEC_ROW)),
                 finalState(output(USRSEC, SecUserRecord.LAYOUT, wrong)));
 
-            Assertions.assertThat(result.count()).isOne();
+            Assertions.assertThat(outputCount(result)).isOne();
             Assertions.assertThat(result.render())
                 .as("the type byte is the difference; the password must not travel with it")
                 .contains(SecUserRecord.FIELD_SEC_USR_TYPE)
@@ -1412,7 +1524,7 @@ class FieldDifferTest {
         }
 
         @Test
-        @DisplayName("a missing USRSEC record masks the credential span of its expected image")
+        @DisplayName("a missing USRSEC record renders its expected image as a length and a digest")
         void aMissingRecordMasksTheImageItExpected() {
             DiffResult result = differ().compare(
                 finalStateCase(new ExpectedRecord(USRSEC, 0, Map.of(), USRSEC_ROW)),
@@ -1420,8 +1532,10 @@ class FieldDifferTest {
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.MISSING_RECORD);
             Assertions.assertThat(result.render())
-                .contains("********")
-                .doesNotContain("PASSWORD");
+                .as("the unit produced nothing for USRSEC, so no layout exists to locate a span with - "
+                    + "and an image whose geometry is unknown is rendered as its length and a digest")
+                .contains("<image>", "len=80", "sha256=")
+                .doesNotContain("PASSWORD", "ADMIN001", "John", "Doe");
         }
 
         @Test
@@ -1443,9 +1557,14 @@ class FieldDifferTest {
 
             Assertions.assertThat(kindsOf(result)).containsExactly(DiffKind.EXTRA_RECORD);
             Assertions.assertThat(result.render())
-                .as("an extra row is printed as a whole image, which is where the password sits")
-                .contains("ADMIN001", "********")
-                .doesNotContain("PASSWORD");
+                .as("an extra row is printed as a whole image, and a USRSEC row is classified for its "
+                    + "first 56 bytes: the user id, both names and the password")
+                .doesNotContain("PASSWORD", "ADMIN001", "John", "Doe")
+                .contains("*".repeat(SecUserRecord.SEC_USR_TYPE_OFFSET));
+            Assertions.assertThat(result.render())
+                .as("the unclassified type and filler stay legible, and with the length they are what "
+                    + "keeps the row diagnosable")
+                .contains("len=80");
         }
 
         @ParameterizedTest(name = "an unexpected {0}-character USRSEC row prints no credential byte")
@@ -1472,8 +1591,10 @@ class FieldDifferTest {
                 .as("the width is itself the finding and must still be reported")
                 .isEqualTo(width);
             Assertions.assertThat(extra.actual())
-                .as("a truncation leaves the leading fields in place, and they make it diagnosable")
-                .startsWith("ADMIN001");
+                .as("the user id and both names are classified as well, so a truncated row discloses "
+                    + "none of them either - the width and the field name are what diagnose it")
+                .doesNotContain("ADMIN001", "John", "Doe")
+                .hasSize(width);
         }
 
         @ParameterizedTest(name = "a missing record whose expected image is {0} characters")
@@ -1491,8 +1612,13 @@ class FieldDifferTest {
                 Fingerprint.ofReturnCode(0));
 
             Diff missing = onlyDiffOfKind(result, DiffKind.MISSING_RECORD);
-            assertNoCredentialSurvives(missing.expected(), width);
-            Assertions.assertThat(missing.expected()).startsWith("ADMIN001");
+            // No layout exists on this path at all: the unit produced nothing for USRSEC, so there is
+            // no observed output to take one from and no offset in the image can be trusted. The image
+            // is therefore rendered as its length and a digest - which still states the width, so the
+            // width remains the finding it is - and discloses no byte of the row.
+            Assertions.assertThat(missing.expected())
+                .doesNotContain("PASSWORD", "ADMIN001", "John", "Doe")
+                .contains("<image>", "len=" + width, "sha256=");
         }
 
         /**
@@ -1515,8 +1641,13 @@ class FieldDifferTest {
         }
 
         /**
-         * Insists a rendered {@code USRSEC} image of the given width discloses no credential character,
+         * Insists a rendered {@code USRSEC} image of the given width discloses no classified character,
          * and that its length is unchanged so the width itself stays diagnosable.
+         *
+         * <p>The classified region of a {@code USRSEC} row is its first 56 bytes - the user id, the two
+         * names and the password - so at any of the truncated widths under test every character of the
+         * image is masked. The one byte that would remain legible, {@code SEC-USR-TYPE} at offset 56,
+         * only exists in a row that reached its declared width.
          *
          * @param rendered the value the differ rendered
          * @param width    the width of the image it was rendered from
@@ -1527,9 +1658,9 @@ class FieldDifferTest {
             Assertions.assertThat(rendered)
                 .as("the rendered length must equal the image's, or a width difference is hidden")
                 .hasSize(width);
-            // Position by position over the whole credential span, which is the only formulation that is
-            // meaningful when a single character of it is present.
-            for (int index = Redaction.SENSITIVE_SPAN_OFFSET; index < width; index++) {
+            // Position by position from the first classified byte, which is the only formulation that is
+            // meaningful when a single character of a span is present.
+            for (int index = 0; index < Math.min(width, SecUserRecord.SEC_USR_TYPE_OFFSET); index++) {
                 Assertions.assertThat(rendered.charAt(index))
                     .as("character %d of a %d-character USRSEC image (%d credential character(s) "
                         + "present) must be masked", index, width, present)
@@ -1555,7 +1686,7 @@ class FieldDifferTest {
 
             DiffResult result = differ().compare(parityCase, fingerprint);
 
-            Assertions.assertThat(result.count()).isOne();
+            Assertions.assertThat(outputCount(result)).isOne();
             Assertions.assertThat(result.render())
                 .contains("PASSWDO", Redaction.MASK)
                 .doesNotContain("PASSWORD", "SECRET99");
@@ -1565,10 +1696,69 @@ class FieldDifferTest {
         @DisplayName("an ordinary field is shown in full, or a difference could not be diagnosed")
         void anOrdinaryFieldIsShownInFull() {
             DiffResult result = differ().compare(
+                finalStateCase(pin(USRSEC, 0, SecUserRecord.FIELD_SEC_USR_TYPE, "U")),
+                finalState(output(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW)));
+
+            Assertions.assertThat(result.render())
+                .as("SEC-USR-TYPE is an authorisation byte rather than a person or an identifier, and "
+                    + "an A read as a U is exactly the difference a reviewer has to be able to see")
+                .contains("'U'", "'A'");
+        }
+
+        @Test
+        @DisplayName("a field naming one account, card, customer or user is masked as an identifier")
+        void anIdentifierFieldIsMasked() {
+            DiffResult result = differ().compare(
                 finalStateCase(pin(USRSEC, 0, SecUserRecord.FIELD_SEC_USR_ID, "USER0001")),
                 finalState(output(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW)));
 
-            Assertions.assertThat(result.render()).contains("USER0001", "ADMIN001");
+            Assertions.assertThat(result.render())
+                .as("a user id identifies one person's account on this system, so neither the expected "
+                    + "nor the observed value may be written into a build log")
+                .doesNotContain("USER0001", "ADMIN001")
+                .contains("SEC-USR-ID", "<identifier>", "len=8", "sha256=");
+        }
+
+        @Test
+        @DisplayName("a navigation difference masks the identifiers the commarea carries forward")
+        void aNavigationDifferenceMasksTheIdentifiersItCarries() {
+            Map<String, String> expectedNavigation = new LinkedHashMap<>();
+            expectedNavigation.put("CDEMO-USER-ID", "ADMIN001");
+            expectedNavigation.put("CDEMO-ACCT-ID", "00000000011");
+            expectedNavigation.put("CDEMO-CARD-NUM", "4111111111111111");
+            expectedNavigation.put("CDEMO-FROM-PROGRAM", "COSGN00C");
+            Map<String, String> observedNavigation = new LinkedHashMap<>();
+            observedNavigation.put("CDEMO-USER-ID", "USER0001");
+            observedNavigation.put("CDEMO-ACCT-ID", "00000000099");
+            observedNavigation.put("CDEMO-CARD-NUM", "4111111111111112");
+            observedNavigation.put("CDEMO-FROM-PROGRAM", "COMEN01C");
+            ParityCase parityCase = new ParityCase("COUSR02C", "case01", "navigation carried forward",
+                UnitKind.CONTROLLER_POJO, Map.of(), Map.of(),
+                new ScreenRequest(0, null, null, null, Map.of(), Map.of(), Map.of()),
+                new ExpectedResponse(null, null, null, expectedNavigation, List.of(), null,
+                    Termination.RETURN_TRANSID),
+                List.of(), List.of(), 0, List.of(), List.of());
+            Fingerprint fingerprint = Fingerprint.of(List.of(), List.of(),
+                new ObservedResponse(null, null, null, observedNavigation, List.of(), null,
+                    Termination.RETURN_TRANSID),
+                0, List.of());
+
+            DiffResult result = differ().compare(parityCase, fingerprint);
+
+            Assertions.assertThat(outputCount(result))
+                .as("four commarea fields differ, and each is its own difference")
+                .isEqualTo(4);
+            Assertions.assertThat(result.render())
+                .as("the commarea is where the user, account and card identifiers travel between "
+                    + "transactions, so a navigation difference is a disclosure path of its own")
+                .doesNotContain("ADMIN001", "USER0001", "00000000011", "00000000099",
+                    "4111111111111111", "4111111111111112")
+                .contains("navigation.CDEMO-USER-ID", "navigation.CDEMO-ACCT-ID",
+                    "navigation.CDEMO-CARD-NUM", "<identifier>", "len=16", "sha256=");
+            Assertions.assertThat(result.render())
+                .as("the program names are navigation rather than identity and must stay legible, or "
+                    + "an XCTL difference could not be diagnosed at all")
+                .contains("'COSGN00C'", "'COMEN01C'");
         }
     }
 
@@ -1580,11 +1770,11 @@ class FieldDifferTest {
         @Test
         @DisplayName("a non-printing byte is escaped rather than swallowed")
         void aNonPrintingByteIsEscaped() {
-            String withControl = "0000000001\u0001" + "00000001940{" + " ";
+            String withControl = "John\u0001     ";
 
             DiffResult result = differ().compare(
-                finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000011")),
-                finalState(output(ACCTDAT, MONEY_LAYOUT, withControl)));
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-GROUP-ID", TEXT_ROW)),
+                finalState(output(ACCTDAT, TEXT_LAYOUT, withControl)));
 
             Assertions.assertThat(result.render()).contains("\\x01");
         }
@@ -1615,7 +1805,7 @@ class FieldDifferTest {
             DiffResult result = differ().compare(
                 finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000099")),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
-            Diff diff = result.entries().get(0);
+            Diff diff = outputDiffs(result).get(0);
 
             Assertions.assertThat(diff.toString()).isEqualTo(diff.render());
             Assertions.assertThat(result.toString()).isEqualTo(result.render());
@@ -1625,10 +1815,18 @@ class FieldDifferTest {
         @Test
         @DisplayName("a singular difference is described in the singular")
         void aSingularDifferenceReadsAsOne() {
+            // A complete expectation - every span of the record named, one of them wrong - so the
+            // report carries exactly one difference and the singular reading is what is under test.
+            Map<String, String> fields = new LinkedHashMap<>();
+            fields.put("ACCT-ID", "00000000099");
+            fields.put("ACCT-CURR-BAL", "00000001940{");
+            fields.put("FILLER", " ");
+
             DiffResult result = differ().compare(
-                finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000099")),
+                finalStateCase(new ExpectedRecord(ACCTDAT, 0, fields, null)),
                 finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
 
+            Assertions.assertThat(result.count()).isOne();
             Assertions.assertThat(result.render()).contains("1 difference -")
                 .doesNotContain("1 differences");
         }
@@ -1822,14 +2020,287 @@ class FieldDifferTest {
 
     // ===============================================================================================
     @Nested
+    @DisplayName("Completeness: an expectation that leaves bytes unstated is itself a finding")
+    class Completeness {
+
+        @Test
+        @DisplayName("a one-field expectation is reported as not accounting for the rest of the row")
+        void aPartialExpectationIsReported() {
+            DiffResult result = differ().compare(
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000011")),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            // Without this the row above is judged "clean" while eleven of its twenty-four bytes -
+            // including the whole monetary field - were never looked at. That is the false pass the
+            // gate exists to prevent: a wrong balance in an unmentioned span costs nothing to produce
+            // and would be reported as a diff count of zero.
+            Assertions.assertThat(allKindsOf(result))
+                .as("a partial expectation must be a finding, not a silent pass")
+                .contains(DiffKind.INCOMPLETE_EXPECTATION);
+        }
+
+        @Test
+        @DisplayName("every uncovered span is named, with its offset and its declared length")
+        void everyUncoveredSpanIsNamed() {
+            DiffResult result = differ().compare(
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000011")),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            Diff finding = incompleteness(result);
+            Assertions.assertThat(finding.explanation())
+                .as("naming the gap is what makes the fixture repairable without reading the differ")
+                .contains("ACCT-CURR-BAL")
+                .contains("offset 11")
+                .contains("FILLER")
+                .contains("offset 23");
+            Assertions.assertThat(finding.explanation())
+                .as("a span the fixture DID state is not a gap")
+                .doesNotContain("offset 0 ");
+            Assertions.assertThat(finding.dataset()).isEqualTo(ACCTDAT);
+            Assertions.assertThat(finding.rowIndex()).isZero();
+        }
+
+        @Test
+        @DisplayName("one finding per row, however many spans it leaves unstated")
+        void oneFindingPerRow() {
+            DiffResult result = differ().compare(
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000011")),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            Assertions.assertThat(allKindsOf(result))
+                .filteredOn(kind -> kind == DiffKind.INCOMPLETE_EXPECTATION)
+                .as("two uncovered spans are one incomplete expectation, not two")
+                .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("it counts toward the gate's diff count exactly like every other kind")
+        void itCountsTowardTheGate() {
+            DiffResult result = differ().compare(
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000011")),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            // outputCount() is this suite's own convenience and says nothing about the gate. The gate
+            // reads count() and isClean(), and those must both see the finding, or the contract is
+            // advisory - which for a gate stated as "diff count = 0" would be no contract at all.
+            Assertions.assertThat(result.count())
+                .as("the gate must see it")
+                .isEqualTo(outputCount(result) + 1);
+            Assertions.assertThat(result.isClean())
+                .as("a partial fixture is not a clean module")
+                .isFalse();
+            Assertions.assertThat(result.render()).contains("INCOMPLETE_EXPECTATION");
+        }
+
+        @Test
+        @DisplayName("naming every span of the layout is complete, and produces no finding")
+        void namingEverySpanIsComplete() {
+            DiffResult result = differ().compare(
+                finalStateCase(pinAll(ACCTDAT, 0,
+                    "ACCT-ID", "00000000011",
+                    "ACCT-CURR-BAL", "00000001940{",
+                    "FILLER", " ")),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            Assertions.assertThat(allKindsOf(result))
+                .as("a fixture that states every byte is complete, and this must cost it nothing")
+                .isEmpty();
+            Assertions.assertThat(result.isClean()).isTrue();
+        }
+
+        @Test
+        @DisplayName("expectedBytes is complete by construction, so no field need be named")
+        void expectedBytesIsComplete() {
+            DiffResult result = differ().compare(
+                finalStateCase(pinBytes(ACCTDAT, 0, MONEY_ROW)),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            Assertions.assertThat(allKindsOf(result))
+                .as("stating the whole row as bytes states every span at once")
+                .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a REDEFINES overlay covers its base span: an overlay is not a gap")
+        void aRedefinesOverlayCoversItsBase() {
+            // CC-ACCT-ID and CC-ACCT-ID-N are two views of the same eleven bytes (app/cpy/CVCRD01Y.cpy).
+            // Naming either one accounts for those bytes; requiring both would demand a fixture state
+            // the same storage twice.
+            DiffResult overlayOnly = differ().compare(
+                finalStateCase(pin("CARDDAT", 0, "CC-ACCT-ID-N", "00000000011")),
+                finalState(output("CARDDAT", REDEFINES_LAYOUT, "00000000011")));
+
+            Assertions.assertThat(allKindsOf(overlayOnly))
+                .as("the overlay covers the storage, so nothing is left unstated")
+                .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a field the layout does not declare cannot make an expectation complete")
+        void anUnknownFieldDoesNotCover() {
+            DiffResult result = differ().compare(
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-EXPIRATION-DATE", "2025-05-20")),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            Assertions.assertThat(allKindsOf(result))
+                .as("an unaddressable name is both a wrong name and no coverage at all")
+                .contains(DiffKind.FIELD_ABSENT_IN_FINGERPRINT, DiffKind.INCOMPLETE_EXPECTATION);
+        }
+
+        /** The single completeness finding a result must carry. */
+        private Diff incompleteness(DiffResult result) {
+            for (Diff diff : result.entries()) {
+                if (diff.kind() == DiffKind.INCOMPLETE_EXPECTATION) {
+                    return diff;
+                }
+            }
+            throw new AssertionError("no completeness finding in: " + result.render());
+        }
+    }
+
+    // ===============================================================================================
+    @Nested
+    @DisplayName("Dataset-level expectations: a dataset that stayed empty is an observation")
+    class DatasetLevelExpectations {
+
+        @Test
+        @DisplayName("a dataset expected to hold no row passes when the unit produced none")
+        void anEmptyDatasetPasses() {
+            // CBTRN02C opens DALYREJS on every run and writes to it only when a transaction is
+            // rejected. "The file was created and stayed empty" is a real, checkable outcome, and
+            // before this it could not be stated at all: omitting the dataset asserted nothing.
+            DiffResult result = differ().compare(
+                datasetCase(ExpectedDataset.empty(ACCTDAT, DatasetChannel.FINAL_STATE, 24)),
+                finalState(DatasetOutput.empty(ACCTDAT, MONEY_LAYOUT)));
+
+            Assertions.assertThat(allKindsOf(result))
+                .as("an empty dataset the case declared is not an unexpected dataset")
+                .isEmpty();
+            Assertions.assertThat(result.isClean()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a dataset expected to hold rows is reported when the unit produced none at all")
+        void aMissingDatasetIsReported() {
+            DiffResult result = differ().compare(
+                datasetCase(ExpectedDataset.of(ACCTDAT, DatasetChannel.FINAL_STATE, 2)),
+                Fingerprint.ofReturnCode(0));
+
+            Assertions.assertThat(allKindsOf(result)).contains(DiffKind.MISSING_DATASET);
+            Assertions.assertThat(diffOf(result, DiffKind.MISSING_DATASET).explanation())
+                .contains(ACCTDAT);
+        }
+
+        @Test
+        @DisplayName("a row count that disagrees is reported, in both directions")
+        void aRowCountMismatchIsReported() {
+            DiffResult tooMany = differ().compare(
+                datasetCase(ExpectedDataset.empty(ACCTDAT, DatasetChannel.FINAL_STATE, 24)),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            Assertions.assertThat(allKindsOf(tooMany))
+                .contains(DiffKind.DATASET_ROW_COUNT_MISMATCH);
+            Assertions.assertThat(diffOf(tooMany, DiffKind.DATASET_ROW_COUNT_MISMATCH).expected())
+                .isEqualTo("0 row(s)");
+            Assertions.assertThat(diffOf(tooMany, DiffKind.DATASET_ROW_COUNT_MISMATCH).actual())
+                .isEqualTo("1 row(s)");
+
+            DiffResult tooFew = differ().compare(
+                datasetCase(ExpectedDataset.of(ACCTDAT, DatasetChannel.FINAL_STATE, 2)),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            Assertions.assertThat(diffOf(tooFew, DiffKind.DATASET_ROW_COUNT_MISMATCH).expected())
+                .isEqualTo("2 row(s)");
+        }
+
+        @Test
+        @DisplayName("a declared record length that disagrees with the layout is reported")
+        void aWidthMismatchIsReported() {
+            DiffResult result = differ().compare(
+                datasetCase(ExpectedDataset.empty(ACCTDAT, DatasetChannel.FINAL_STATE, 300)),
+                finalState(DatasetOutput.empty(ACCTDAT, MONEY_LAYOUT)));
+
+            // An empty dataset has exactly one observable property: the width the unit opened it at.
+            // A job that created DALYREJS at 350 rather than the JCL's LRECL=430 is a real defect and
+            // is invisible to any row comparison, because there is no row.
+            Assertions.assertThat(allKindsOf(result)).contains(DiffKind.DATASET_WIDTH_MISMATCH);
+            Assertions.assertThat(diffOf(result, DiffKind.DATASET_WIDTH_MISMATCH).expected())
+                .isEqualTo("300");
+            Assertions.assertThat(diffOf(result, DiffKind.DATASET_WIDTH_MISMATCH).actual())
+                .isEqualTo("24");
+        }
+
+        @Test
+        @DisplayName("rows in a dataset declared only at dataset level are still accounted for")
+        void rowsAreStillAccountedFor() {
+            DiffResult result = differ().compare(
+                datasetCase(ExpectedDataset.of(ACCTDAT, DatasetChannel.FINAL_STATE, 1)),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)));
+
+            // The count agrees, so no dataset-level finding fires - but no row expectation states what
+            // the row holds, and that must not read as "the row was checked".
+            Assertions.assertThat(allKindsOf(result))
+                .as("a dataset-level count is not a substitute for stating the row")
+                .contains(DiffKind.EXTRA_RECORD);
+        }
+
+        @Test
+        @DisplayName("the write channel and the final-state channel are declared independently")
+        void theChannelsAreIndependent() {
+            DiffResult result = differ().compare(
+                datasetCase(ExpectedDataset.empty(ACCTDAT, DatasetChannel.WRITES, 24)),
+                writes(DatasetOutput.empty(ACCTDAT, MONEY_LAYOUT)));
+
+            Assertions.assertThat(allKindsOf(result))
+                .as("a WRITES declaration is satisfied by the write channel")
+                .isEmpty();
+
+            DiffResult wrongChannel = differ().compare(
+                datasetCase(ExpectedDataset.empty(ACCTDAT, DatasetChannel.WRITES, 24)),
+                finalState(DatasetOutput.empty(ACCTDAT, MONEY_LAYOUT)));
+
+            Assertions.assertThat(allKindsOf(wrongChannel))
+                .as("and says nothing about final state, so the declaration is unmet")
+                .contains(DiffKind.MISSING_DATASET);
+        }
+
+        /** The first diff of a given kind, which the caller has already asserted is present. */
+        private Diff diffOf(DiffResult result, DiffKind kind) {
+            for (Diff diff : result.entries()) {
+                if (diff.kind() == kind) {
+                    return diff;
+                }
+            }
+            throw new AssertionError("no " + kind + " in: " + result.render());
+        }
+    }
+
+    // ===============================================================================================
+    @Nested
     @DisplayName("No decorative kind: every DiffKind is produced by a real comparison")
     class Coverage {
 
         @Test
-        @DisplayName("all fourteen kinds are reachable through compare()")
+        @DisplayName("all eighteen kinds are reachable through compare()")
         void allKindsAreReachableThroughCompare() {
             Set<DiffKind> produced = EnumSet.noneOf(DiffKind.class);
             FieldDiffer differ = differ();
+
+            // INCOMPLETE_EXPECTATION, MISSING_DATASET, DATASET_ROW_COUNT_MISMATCH,
+            // DATASET_WIDTH_MISMATCH. The first is produced by every partial expectation below and is
+            // collected here explicitly because this is the one place the unfiltered view is used.
+            produced.addAll(allKindsOf(differ.compare(
+                finalStateCase(pin(ACCTDAT, 0, "ACCT-ID", "00000000011")),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)))));
+            produced.addAll(allKindsOf(differ.compare(
+                datasetCase(ExpectedDataset.of(ACCTDAT, DatasetChannel.FINAL_STATE, 0)),
+                Fingerprint.ofReturnCode(0))));
+            produced.addAll(allKindsOf(differ.compare(
+                datasetCase(ExpectedDataset.of(ACCTDAT, DatasetChannel.FINAL_STATE, 2)),
+                finalState(output(ACCTDAT, MONEY_LAYOUT, MONEY_ROW)))));
+            produced.addAll(allKindsOf(differ.compare(
+                datasetCase(ExpectedDataset.empty(ACCTDAT, DatasetChannel.FINAL_STATE, 300)),
+                finalState(DatasetOutput.empty(ACCTDAT, MONEY_LAYOUT)))));
 
             // VALUE_MISMATCH, MISSING_RECORD, EXTRA_RECORD, EXTRA_DATASET
             produced.addAll(kindsOf(differ.compare(
@@ -1901,11 +2372,11 @@ class FieldDifferTest {
         }
 
         @Test
-        @DisplayName("there are fourteen kinds and every one counts toward the diff count")
+        @DisplayName("there are eighteen kinds and every one counts toward the diff count")
         void everyKindCountsTowardTheDiffCount() {
             Assertions.assertThat(DiffKind.values())
                 .as("an advisory kind in a parity gate is a finding that gets ignored")
-                .hasSize(14);
+                .hasSize(18);
         }
     }
 }

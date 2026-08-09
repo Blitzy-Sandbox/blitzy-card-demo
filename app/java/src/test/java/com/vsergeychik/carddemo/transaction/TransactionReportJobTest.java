@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
@@ -9,7 +10,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -25,8 +28,11 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopRequestedException;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.statement.StatementGenerationJobA.DatasetUtilityPort;
 import com.vsergeychik.carddemo.transaction.TransactionReportJob.ExecutionSummary;
 import com.vsergeychik.carddemo.transaction.TransactionReportJob.SysoutSink;
 import com.vsergeychik.carddemo.transaction.model.TranCategoryRecord;
@@ -43,10 +49,14 @@ import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+import javax.sql.DataSource;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -55,7 +65,13 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.scope.context.ChunkContext;
+import org.springframework.batch.core.scope.context.StepContext;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
@@ -112,6 +128,29 @@ class TransactionReportJobTest {
 
     /** A dataset name for the report binding. */
     private static final String TEST_TRANREPT = "TEST.TRANREPT";
+
+    /** The dataset both {@code CARDXREF} and {@code CCXREF} resolve to in these tests. */
+    private static final String TEST_CARDXREF = "TEST.CARDXREF";
+
+    /** The dataset {@code TRANTYPE} resolves to in these tests. */
+    private static final String TEST_TRANTYPE = "TEST.TRANTYPE";
+
+    /** The dataset {@code TRANCATG} resolves to in these tests. */
+    private static final String TEST_TRANCATG = "TEST.TRANCATG";
+
+    /**
+     * A dataset name for the transaction master - {@value TransactionReportJob#BACKUP_INPUT_DD_NAME},
+     * which configuration binds {@code alias: TRANSACT}.
+     */
+    private static final String TEST_MASTER = "TEST.TRANSACT.VSAM.KSDS";
+
+    /**
+     * A dataset name for the backup generation. One name under two DD names -
+     * {@value TransactionReportJob#BACKUP_OUTPUT_DD_NAME} writes it and
+     * {@value TransactionReportJob#SORT_INPUT_DD_NAME} reads it back - which is how the JCL hands the
+     * unload to the sort.
+     */
+    private static final String TEST_BACKUP = "TEST.TRANSACT.BKUP";
 
     /** The reporting range every happy-path run uses. */
     private static final String START_DATE = "2022-01-01";
@@ -192,6 +231,68 @@ class TransactionReportJobTest {
         public Stream<T> stream() {
             return bean == null ? Stream.empty() : Stream.of(bean);
         }
+    }
+
+    /**
+     * An in-memory {@link DatasetUtilityPort}: the two preparatory steps' whole data path, with no
+     * backend.
+     *
+     * <p>Keyed by DD name rather than by dataset name, because what a step addresses is a DD - and
+     * because two DD names deliberately resolve to one dataset in this job, which is how
+     * {@value TransactionReportJob#BACKUP_OUTPUT_DD_NAME} hands its output to
+     * {@value TransactionReportJob#SORT_INPUT_DD_NAME}. Both are bound to the same dataset name in
+     * configuration, so the map is keyed on that name and the aliasing is real rather than simulated.
+     */
+    private static final class InMemoryDatasetUtilityPort implements DatasetUtilityPort {
+
+        /** Dataset name to its records, in write order. */
+        private final Map<String, List<String>> datasets = new java.util.LinkedHashMap<>();
+
+        /** Every call, in order, as {@code "<verb> <dsname>"} - so a test can assert what ran. */
+        private final List<String> calls = new ArrayList<>();
+
+        @Override
+        public int deleteAllRecords(DatasetBinding binding) {
+            calls.add("delete " + binding.dsname());
+            List<String> removed = datasets.put(binding.dsname(), new ArrayList<>());
+            return removed == null ? 0 : removed.size();
+        }
+
+        @Override
+        public List<String> readAllRecordImages(DatasetBinding binding) {
+            calls.add("read " + binding.dsname());
+            return List.copyOf(datasets.getOrDefault(binding.dsname(), List.of()));
+        }
+
+        @Override
+        public int writeRecordImages(DatasetBinding binding, List<String> recordImages) {
+            calls.add("write " + binding.dsname());
+            datasets.computeIfAbsent(binding.dsname(), key -> new ArrayList<>()).addAll(recordImages);
+            return recordImages.size();
+        }
+
+        /**
+         * Seeds a dataset, as a preceding job step or a previous run would have left it.
+         *
+         * @param dsname       the dataset to seed
+         * @param recordImages its records, in order
+         */
+        private void seed(String dsname, List<String> recordImages) {
+            datasets.put(dsname, new ArrayList<>(recordImages));
+        }
+
+        /**
+         * @param dsname the dataset to read back
+         * @return its records, in order; empty when it holds none
+         */
+        private List<String> contents(String dsname) {
+            return List.copyOf(datasets.getOrDefault(dsname, List.of()));
+        }
+    }
+
+    /** @return a fresh in-memory utility port, holding nothing */
+    private static InMemoryDatasetUtilityPort utilityPort() {
+        return new InMemoryDatasetUtilityPort();
     }
 
     /** Collects every {@code DISPLAY} line in order. */
@@ -302,11 +403,75 @@ class TransactionReportJobTest {
      * @return the catalogue
      */
     private static DatasetBindings bindings(int tranFileRecordLength) {
+        return bindings(tranFileRecordLength, TEST_CARDXREF);
+    }
+
+    /**
+     * @param tranFileRecordLength the width to declare for {@code TRANFILE}
+     * @param cardxrefDsname       the dataset to declare for this job's {@code CARDXREF} DD, so a test can
+     *                             point it away from the cross-reference repository's own {@code CCXREF}
+     *                             binding and prove the startup gate rejects the divergence
+     * @return the catalogue
+     */
+    private static DatasetBindings bindings(int tranFileRecordLength, String cardxrefDsname) {
+        return bindings(tranFileRecordLength, cardxrefDsname, TranRecord.RECORD_LENGTH, "FB");
+    }
+
+    /**
+     * @param tranFileRecordLength the width to declare for {@code TRANFILE}
+     * @param utilityRecordLength  the width to declare for the four DDs of the two preparatory steps
+     * @param utilityRecordFormat  the record format to declare for those four, or {@code null} to omit
+     *                             the key
+     * @return the catalogue
+     */
+    private static DatasetBindings bindings(int tranFileRecordLength, int utilityRecordLength,
+            String utilityRecordFormat) {
+        return bindings(tranFileRecordLength, TEST_CARDXREF, utilityRecordLength, utilityRecordFormat);
+    }
+
+    /**
+     * @param tranFileRecordLength the width to declare for {@code TRANFILE}
+     * @param cardxrefDsname       the dataset to declare for this job's {@code CARDXREF} DD
+     * @param utilityRecordLength  the width to declare for the four DDs of the two preparatory steps
+     * @param utilityRecordFormat  the record format to declare for those four, or {@code null} to omit
+     *                             the key
+     * @return the catalogue
+     */
+    private static DatasetBindings bindings(int tranFileRecordLength, String cardxrefDsname,
+            int utilityRecordLength, String utilityRecordFormat) {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put(TranReportWriter.DD_NAME, new DatasetBinding(TEST_TRANREPT, "sequential", true,
                 "FB", 0, TranReportWriter.RECORD_LENGTH, "CVTRA07Y", null, null, null, null));
         catalogue.put(TransactionReportJob.TRANFILE_DD_NAME, new DatasetBinding(TEST_TRANFILE,
                 "sequential", true, "FB", 0, tranFileRecordLength, "CVTRA05Y", null, null, null, null));
+        // CBTRN03C's three lookup DDs, and the repository keys they must agree with. The program's own
+        // ASSIGN clauses name CARDXREF, TRANTYPE and TRANCATG (app/cbl/CBTRN03C.cbl:33-49); the
+        // cross-reference repository is bound to the CICS file name CCXREF, so both keys are declared and
+        // both name one dataset - which is what the job now proves at construction.
+        catalogue.put(TransactionReportJob.CARDXREF_DD_NAME, new DatasetBinding(cardxrefDsname, "ksds",
+                false, "FB", null, CardXrefRecord.RECORD_LENGTH, "CVACT03Y", null, null, null, null));
+        catalogue.put(CardXrefRepository.BASE_DD_NAME, new DatasetBinding(TEST_CARDXREF, "ksds", false,
+                "FB", null, CardXrefRecord.RECORD_LENGTH, "CVACT03Y", null, null, null, null));
+        catalogue.put(TransactionReportJob.TRANTYPE_DD_NAME, new DatasetBinding(TEST_TRANTYPE, "ksds",
+                false, "FB", null, TranTypeRecord.RECORD_LENGTH, "CVTRA03Y", null, null, null, null));
+        catalogue.put(TransactionReportJob.TRANCATG_DD_NAME, new DatasetBinding(TEST_TRANCATG, "ksds",
+                false, "FB", null, TranCategoryRecord.RECORD_LENGTH, "CVTRA04Y", null, null, null, null));
+        // STEP01R's REPRO: the master in, the backup generation out. The master is keyed, because a
+        // REPRO of a KSDS delivers key sequence and the unload reproduces that.
+        catalogue.put(TransactionReportJob.BACKUP_INPUT_DD_NAME, new DatasetBinding(TEST_MASTER,
+                "ksds", false, utilityRecordFormat, 0, utilityRecordLength, "CVTRA05Y",
+                TranRecord.TRAN_ID_KEY_LENGTH, 0, null, null));
+        catalogue.put(TransactionReportJob.BACKUP_OUTPUT_DD_NAME, new DatasetBinding(TEST_BACKUP,
+                "sequential", true, utilityRecordFormat, 0, utilityRecordLength, "CVTRA05Y", null,
+                null, null, null));
+        // STEP05R's DFSORT: the same backup generation in, the sorted daily file out - which is the
+        // dataset TRANFILE then reports from, so the two names match deliberately.
+        catalogue.put(TransactionReportJob.SORT_INPUT_DD_NAME, new DatasetBinding(TEST_BACKUP,
+                "sequential", true, utilityRecordFormat, 0, utilityRecordLength, "CVTRA05Y", null,
+                null, null, null));
+        catalogue.put(TransactionReportJob.SORT_OUTPUT_DD_NAME, new DatasetBinding(TEST_TRANFILE,
+                "sequential", true, utilityRecordFormat, 0, utilityRecordLength, "CVTRA05Y", null,
+                null, null, null));
         return catalogue;
     }
 
@@ -369,6 +534,54 @@ class TransactionReportJobTest {
         return new TranReportWriter(new JdbcTemplate(), ASCII, catalogue, RecordImageForm.CHARACTER);
     }
 
+    /**
+     * A writer whose configured destination can actually be addressed.
+     *
+     * <p>Needed by the one test that drives the tasklet's own {@code openOutput()} path rather than
+     * supplying a sink. {@code OPEN OUTPUT REPORT-FILE} is status-checked at
+     * {@code app/cbl/CBTRN03C.cbl:396-405}, so the default sink probes its destination at open - which
+     * means a template with no data source is now a wiring defect the open raises rather than something
+     * the first write discovers. Every other test here supplies a collecting sink and never reaches a
+     * backend at all.
+     *
+     * @return a writer over a destination that accepts the prepare and the write
+     */
+    private static TranReportWriter writerOverReachableDestination() {
+        try {
+            java.sql.PreparedStatement statement = mock(java.sql.PreparedStatement.class);
+            when(statement.executeUpdate()).thenReturn(1);
+            java.sql.Connection connection = mock(java.sql.Connection.class);
+            when(connection.prepareStatement(anyString())).thenReturn(statement);
+            javax.sql.DataSource dataSource = mock(javax.sql.DataSource.class);
+            when(dataSource.getConnection()).thenReturn(connection);
+            return new TranReportWriter(new JdbcTemplate(dataSource), ASCII, bindings(),
+                    RecordImageForm.CHARACTER);
+        } catch (java.sql.SQLException impossible) {
+            throw new IllegalStateException("stubbing a mock does not perform I/O", impossible);
+        }
+    }
+
+    /**
+     * A {@code TRANREPT} writer whose backend accepts the {@code OPEN OUTPUT} - a resolvable
+     * destination that transfers nothing.
+     *
+     * <p>Needed by the one test that drives the tasklet through the writer's own configured sink rather
+     * than an injected one. {@code 0100-REPTFILE-OPEN} resolves the destination and empties it, so a
+     * {@link JdbcTemplate} with no data source is a wiring defect the open surfaces immediately; this
+     * writer stands in for a deployment whose destination is there.
+     *
+     * @return the writer
+     * @throws SQLException never; declared because the JDBC mocks do
+     */
+    private static TranReportWriter writerOverAReachableDestination() throws SQLException {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.createStatement()).thenReturn(mock(Statement.class));
+        return new TranReportWriter(new JdbcTemplate(dataSource), ASCII, bindings(),
+                RecordImageForm.CHARACTER);
+    }
+
     // =============================================================================================
     // The harness: five mocked collaborators, a real writer, and one call to the program body.
     // =============================================================================================
@@ -422,11 +635,19 @@ class TransactionReportJobTest {
             when(transactions.openInput(any(DatasetBinding.class))).thenReturn(tranFile);
             when(tranFile.openStatus()).thenReturn(FileStatus.OK);
             when(tranFile.closeInput()).thenReturn(FileStatus.OK);
+            // isOpen() is !closed on the real handle, and closeInput() sets closed whatever status it
+            // reports, so the double answers from its own invocation record rather than from a flag: a
+            // test that overrides closeInput() to report a failure still leaves the handle closed, which
+            // is what keeps the program's own CLOSE at :208-213 the only close on the happy path.
+            when(tranFile.isOpen()).thenAnswer(question -> mockingDetails(tranFile).getInvocations()
+                    .stream().noneMatch(call -> "closeInput".equals(call.getMethod().getName())));
             yielding(records);
 
             when(xrefs.openBrowse()).thenReturn(xrefCursor);
             when(xrefCursor.openStatus()).thenReturn(FileStatus.OK);
             when(xrefCursor.closeBrowse()).thenReturn(FileStatus.OK);
+            when(xrefCursor.isOpen()).thenAnswer(question -> mockingDetails(xrefCursor).getInvocations()
+                    .stream().noneMatch(call -> "closeBrowse".equals(call.getMethod().getName())));
             when(xrefs.readByCardNumber(anyString())).thenAnswer(invocation ->
                     CardXrefRepository.ReadResult.found(CardXrefRepository.BASE_DD_NAME,
                             new CardXrefRecord(invocation.getArgument(0), CUSTOMER_ID, ACCOUNT_ID)));
@@ -481,7 +702,7 @@ class TransactionReportJobTest {
         private TransactionReportJob job(JobContracts jobContracts) {
             return new TransactionReportJob(batchConfig(jobContracts, catalogue), transactions, xrefs,
                     types, categories, dateParms, writer(catalogue), ASCII,
-                    new SuppliedProvider<>(null));
+                    new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort()));
         }
 
         /** @return the summary of one run */
@@ -505,6 +726,54 @@ class TransactionReportJobTest {
      */
     private static Harness harness(List<TranRecord> records, CollectingSink sink) {
         return new Harness(records, sink);
+    }
+
+    /**
+     * A step execution shaped as the framework builds one, so a tasklet can be driven exactly as a
+     * running step drives it.
+     *
+     * <p>Built by hand rather than with a test factory from another artifact, because the dependency set
+     * is closed and the constructors needed are public API. Only the step name and the
+     * {@code terminateOnly} flag are read by anything under test here.
+     *
+     * @param stepName the step being run, so a stop diagnostic names the right one
+     * @return a fresh step execution, not asked to stop
+     */
+    private static StepExecution stepExecution(String stepName) {
+        return new StepExecution(stepName, new JobExecution(1L));
+    }
+
+    /**
+     * The chunk context the framework hands a tasklet, over the given step execution.
+     *
+     * @param stepExecution the execution the tasklet is running inside
+     * @return a real chunk context; never a mock, because the tasklet reads through it to the execution
+     */
+    private static ChunkContext chunkContext(StepExecution stepExecution) {
+        return new ChunkContext(new StepContext(stepExecution));
+    }
+
+    /**
+     * A probe that permits the given number of records and then reports a stop.
+     *
+     * <p>It sets {@code terminateOnly} on the real step execution and then delegates to the real
+     * {@link StopSignal}, so the refusal is produced by the production probe and the framework's own
+     * interruption policy rather than by a stand-in that merely throws the same type.
+     *
+     * @param stepExecution the execution to mark
+     * @param permitted     how many consultations return before the stop is requested
+     * @return the probe
+     */
+    private static StopSignal signalStoppingAfter(StepExecution stepExecution, int permitted) {
+        StopSignal real = StopSignal.of(stepExecution);
+        int[] consulted = { 0 };
+        return () -> {
+            if (consulted[0] == permitted) {
+                stepExecution.setTerminateOnly();
+            }
+            consulted[0]++;
+            real.checkStopRequested();
+        };
     }
 
     /**
@@ -627,11 +896,537 @@ class TransactionReportJobTest {
 
 
     // =============================================================================================
+    // STEP01R and STEP05R - the two preparatory steps this job runs before the program.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("STEP01R and STEP05R - the REPROC unload and the DFSORT filter-and-sort")
+    class PreparatoryStepsTests {
+
+        /** The in-memory data path both steps use. */
+        private final InMemoryDatasetUtilityPort port = utilityPort();
+
+        /**
+         * @return the job wired to {@link #port}, with everything else mocked
+         */
+        private TransactionReportJob job() {
+            return job(bindings());
+        }
+
+        /**
+         * @param catalogue the dataset catalogue to resolve every DD from
+         * @return the job wired to {@link #port}
+         */
+        private TransactionReportJob job(DatasetBindings catalogue) {
+            return new TransactionReportJob(batchConfig(validContracts(), catalogue),
+                    mock(TransactionRepository.class), mock(CardXrefRepository.class),
+                    mock(TranTypeRepository.class), mock(TranCategoryRepository.class),
+                    mock(DateParmReader.class), writer(catalogue), ASCII,
+                    new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(port));
+        }
+
+        /**
+         * @param tranId   the record's key
+         * @param cardNum  its card number, the sort key
+         * @param procDate its processing date, the include-filter field
+         * @return the 350-character record image
+         */
+        private String image(String tranId, String cardNum, String procDate) {
+            return new String(record(tranId, cardNum, "0000000100.00", procDate).encode(ASCII), ASCII);
+        }
+
+        @Test
+        @DisplayName("the job runs all three steps, in the JCL's order (C-02)")
+        void theJobRunsAllThreeSteps() {
+            // The whole point of the finding: the configured three-step contract was documentary and the
+            // Job held STEP10R alone, so nothing unloaded the master and nothing filtered or sorted the
+            // input. Read the flow back off the built Job rather than trusting the builder call.
+            Job built = job().transactionReportJob();
+
+            assertThat(built.getName()).isEqualTo(TransactionReportJob.JOB_NAME);
+            assertThat(((org.springframework.batch.core.job.SimpleJob) built).getStepNames())
+                    .containsExactly(TransactionReportJob.BACKUP_STEP_NAME,
+                            TransactionReportJob.SORT_STEP_NAME, TransactionReportJob.STEP_NAME);
+        }
+
+        @Test
+        @DisplayName("both preparatory steps are named from the contract, so the batch metadata carries "
+                + "the JCL's own step names")
+        void bothStepsAreNamedFromTheContract() {
+            TransactionReportJob job = job();
+
+            assertThat(job.transactionReportBackupStep().getName())
+                    .isEqualTo(TransactionReportJob.BACKUP_STEP_NAME);
+            assertThat(job.transactionReportSortStep().getName())
+                    .isEqualTo(TransactionReportJob.SORT_STEP_NAME);
+            assertThat(job.backupStepName()).isEqualTo(TransactionReportJob.BACKUP_STEP_NAME);
+            assertThat(job.sortStepName()).isEqualTo(TransactionReportJob.SORT_STEP_NAME);
+            assertThat(job.datasetUtilityPort()).isSameAs(port);
+        }
+
+        @Test
+        @DisplayName("STEP01R copies every record of the master onto the backup generation, unchanged "
+                + "and in key order (REPRO INFILE/OUTFILE)")
+        void theUnloadCopiesEveryRecordInKeyOrder() {
+            // Seeded out of key order, because a REPRO of a KSDS delivers ascending key sequence and an
+            // unload that echoed the backend's row order would make the sort step's treatment of equal
+            // card numbers depend on the backend.
+            String second = image("0000000000000002", CARD_ONE, IN_RANGE_DATE);
+            String first = image("0000000000000001", CARD_TWO, IN_RANGE_DATE);
+            port.seed(TEST_MASTER, List.of(second, first));
+
+            assertThat(job().unloadTransactionMaster()).isEqualTo(2);
+
+            assertThat(port.contents(TEST_BACKUP)).containsExactly(first, second);
+            assertThat(port.calls).containsExactly("read " + TEST_MASTER, "delete " + TEST_BACKUP,
+                    "write " + TEST_BACKUP);
+        }
+
+        @Test
+        @DisplayName("STEP01R empties the backup generation first, because DISP=(NEW,CATLG,DELETE) "
+                + "means this run unloads into a new one")
+        void theUnloadEmptiesTheDestinationFirst() {
+            port.seed(TEST_BACKUP, List.of(image("0000000000000009", CARD_ONE, IN_RANGE_DATE)));
+            port.seed(TEST_MASTER, List.of(image("0000000000000001", CARD_ONE, IN_RANGE_DATE)));
+
+            assertThat(job().unloadTransactionMaster()).isOne();
+
+            assertThat(port.contents(TEST_BACKUP))
+                    .containsExactly(image("0000000000000001", CARD_ONE, IN_RANGE_DATE));
+        }
+
+        @Test
+        @DisplayName("a physical-sequential master is unloaded in its stored order, because REPRO of a "
+                + "PS file copies the order the records were written in")
+        void aSequentialMasterKeepsItsStoredOrder() {
+            String second = image("0000000000000002", CARD_ONE, IN_RANGE_DATE);
+            String first = image("0000000000000001", CARD_TWO, IN_RANGE_DATE);
+            port.seed(TEST_MASTER, List.of(second, first));
+            DatasetBindings unkeyed = bindings();
+            unkeyed.put(TransactionReportJob.BACKUP_INPUT_DD_NAME, new DatasetBinding(TEST_MASTER,
+                    "sequential", false, "FB", 0, TranRecord.RECORD_LENGTH, "CVTRA05Y", null, null,
+                    null, null));
+
+            assertThat(job(unkeyed).unloadTransactionMaster()).isEqualTo(2);
+
+            assertThat(port.contents(TEST_BACKUP)).containsExactly(second, first);
+        }
+
+        @Test
+        @DisplayName("an empty master produces an empty backup generation, not a missing one")
+        void anEmptyMasterProducesAnEmptyBackup() {
+            assertThat(job().unloadTransactionMaster()).isZero();
+
+            assertThat(port.contents(TEST_BACKUP)).isEmpty();
+            assertThat(port.calls).contains("delete " + TEST_BACKUP, "write " + TEST_BACKUP);
+        }
+
+        @Test
+        @DisplayName("STEP05R keeps the records inside the INCLUDE range and orders them by card "
+                + "number, then writes the sorted daily file")
+        void theSortFiltersThenOrders() {
+            String late = image("0000000000000001", CARD_ONE, OUT_OF_RANGE_DATE);
+            String cardTwo = image("0000000000000002", CARD_TWO, IN_RANGE_DATE);
+            String cardOne = image("0000000000000003", CARD_ONE, IN_RANGE_DATE);
+            port.seed(TEST_BACKUP, List.of(late, cardTwo, cardOne));
+
+            assertThat(job().filterAndSortUnloadedTransactions()).isEqualTo(2);
+
+            // The out-of-range record is gone; what survives is in ascending card-number order, which is
+            // the precondition CBTRN03C's account break rests on.
+            assertThat(port.contents(TEST_TRANFILE)).containsExactly(cardOne, cardTwo);
+            assertThat(port.calls).containsExactly("read " + TEST_BACKUP, "delete " + TEST_TRANFILE,
+                    "write " + TEST_TRANFILE);
+        }
+
+        @Test
+        @DisplayName("both INCLUDE bounds are inclusive - GE and LE, not GT and LT")
+        void bothIncludeBoundsAreInclusive() {
+            String atStart = image("0000000000000001", CARD_ONE,
+                    TransactionReportJob.SORT_INCLUDE_START_DATE);
+            String atEnd = image("0000000000000002", CARD_ONE,
+                    TransactionReportJob.SORT_INCLUDE_END_DATE);
+            String beforeStart = image("0000000000000003", CARD_ONE, "2021-12-31");
+            String afterEnd = image("0000000000000004", CARD_ONE, "2022-07-07");
+
+            assertThat(job().filterAndSort(List.of(atStart, atEnd, beforeStart, afterEnd)))
+                    .containsExactly(atStart, atEnd);
+        }
+
+        @Test
+        @DisplayName("equal card numbers keep their input order, so the detail lines inside an "
+                + "account's block are deterministic")
+        void equalKeysKeepTheirInputOrder() {
+            String third = image("0000000000000003", CARD_ONE, IN_RANGE_DATE);
+            String first = image("0000000000000001", CARD_ONE, IN_RANGE_DATE);
+            String second = image("0000000000000002", CARD_ONE, IN_RANGE_DATE);
+
+            // DFSORT leaves the order of equal keys unspecified unless EQUALS is in effect; a migration
+            // cannot leave it unspecified and still be verifiable, so the input order survives.
+            assertThat(job().filterAndSort(List.of(third, first, second)))
+                    .containsExactly(third, first, second);
+        }
+
+        @Test
+        @DisplayName("no record inside the range is dropped and none outside it survives, whatever the "
+                + "order they arrive in")
+        void nothingIsDroppedAndNothingLeaks() {
+            List<String> mixed = new ArrayList<>();
+            for (int index = 1; index <= 6; index++) {
+                mixed.add(image(String.format("%016d", index), CARD_ONE,
+                        index % 2 == 0 ? IN_RANGE_DATE : OUT_OF_RANGE_DATE));
+            }
+
+            assertThat(job().filterAndSort(mixed)).hasSize(3)
+                    .allSatisfy(included -> assertThat(included.substring(
+                            TranRecord.TRAN_PROC_DT_OFFSET,
+                            TranRecord.TRAN_PROC_DT_OFFSET + TranRecord.TRAN_PROC_DT_LENGTH))
+                            .isEqualTo(IN_RANGE_DATE));
+        }
+
+        @Test
+        @DisplayName("an empty unload yields an empty sorted file, which is an empty report rather "
+                + "than an error")
+        void anEmptyUnloadYieldsAnEmptySortedFile() {
+            assertThat(job().filterAndSort(List.of())).isEmpty();
+            assertThat(job().filterAndSortUnloadedTransactions()).isZero();
+            assertThat(port.contents(TEST_TRANFILE)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a record of the wrong width is refused by name, rather than throwing an "
+                + "exception about a substring index")
+        void aWrongWidthRecordIsRefused() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> job().filterAndSort(List.of("too short")))
+                    .withMessageContaining(TransactionReportJob.SORT_INPUT_DD_NAME)
+                    .withMessageContaining("350");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> job().filterAndSort(java.util.Collections.singletonList(null)));
+            assertThatNullPointerException().isThrownBy(() -> job().filterAndSort(null));
+        }
+
+        @Test
+        @DisplayName("the two tasklets report what they wrote and finish")
+        void bothTaskletsReportAndFinish() throws Exception {
+            port.seed(TEST_MASTER, List.of(image("0000000000000001", CARD_ONE, IN_RANGE_DATE),
+                    image("0000000000000002", CARD_TWO, OUT_OF_RANGE_DATE)));
+            TransactionReportJob job = job();
+            StepContribution unload = contribution();
+            StepContribution sort = contribution();
+
+            assertThat(job.transactionReportBackupTasklet()
+                    .execute(unload, chunkContext(stepExecution(TransactionReportJob.BACKUP_STEP_NAME))))
+                    .isEqualTo(RepeatStatus.FINISHED);
+            assertThat(job.transactionReportSortTasklet()
+                    .execute(sort, chunkContext(stepExecution(TransactionReportJob.SORT_STEP_NAME))))
+                    .isEqualTo(RepeatStatus.FINISHED);
+
+            assertThat(unload.getWriteCount()).isEqualTo(2);
+            // One of the two was processed outside the INCLUDE range.
+            assertThat(sort.getWriteCount()).isOne();
+        }
+
+        @Test
+        @DisplayName("the two steps hand over through one dataset: what STEP01R writes is what STEP05R "
+                + "reads, and STEP10R's TRANFILE is what STEP05R wrote")
+        void thePipelineHandsOverThroughTheConfiguredDatasets() {
+            String inRangeCardTwo = image("0000000000000001", CARD_TWO, IN_RANGE_DATE);
+            String inRangeCardOne = image("0000000000000002", CARD_ONE, IN_RANGE_DATE);
+            String outOfRange = image("0000000000000003", CARD_ONE, OUT_OF_RANGE_DATE);
+            port.seed(TEST_MASTER, List.of(inRangeCardTwo, inRangeCardOne, outOfRange));
+            TransactionReportJob job = job();
+
+            job.unloadTransactionMaster();
+            job.filterAndSortUnloadedTransactions();
+
+            // The backup holds the whole master in key order; the daily file holds only what the report
+            // covers, in card-number order. TEST_TRANFILE is the dataset the program's own binding
+            // names, which is what makes the three steps one pipeline.
+            assertThat(port.contents(TEST_BACKUP))
+                    .containsExactly(inRangeCardTwo, inRangeCardOne, outOfRange);
+            assertThat(port.contents(TEST_TRANFILE))
+                    .containsExactly(inRangeCardOne, inRangeCardTwo);
+            assertThat(job.tranFileDatasetName()).isEqualTo(TEST_TRANFILE);
+        }
+
+        @Test
+        @DisplayName("the INCLUDE literals are the JCL's SYMNAMES, and the sort positions are the "
+                + "copybook's offsets")
+        void theSortSymbolTableIsTranscribed() {
+            // app/jcl/TRANREPT.jcl:L41-L44 and app/proc/TRANREPT.prc:L39-L42.
+            assertThat(TransactionReportJob.SORT_INCLUDE_START_DATE).isEqualTo("2022-01-01");
+            assertThat(TransactionReportJob.SORT_INCLUDE_END_DATE).isEqualTo("2022-07-06");
+            assertThat(TransactionReportJob.SORT_TRAN_CARD_NUM_POSITION).isEqualTo(263);
+            assertThat(TransactionReportJob.SORT_TRAN_CARD_NUM_LENGTH).isEqualTo(16);
+            assertThat(TransactionReportJob.SORT_TRAN_PROC_DT_POSITION).isEqualTo(305);
+            assertThat(TransactionReportJob.SORT_TRAN_PROC_DT_LENGTH).isEqualTo(10);
+            assertThat(TransactionReportJob.UTILITY_RECORD_FORMAT).isEqualTo("FB");
+        }
+
+        @Test
+        @DisplayName("a utility DD bound to the wrong width is refused at startup, all four of them")
+        void aWrongUtilityWidthIsRefused() {
+            for (String ddName : List.of(TransactionReportJob.BACKUP_INPUT_DD_NAME,
+                    TransactionReportJob.BACKUP_OUTPUT_DD_NAME,
+                    TransactionReportJob.SORT_INPUT_DD_NAME,
+                    TransactionReportJob.SORT_OUTPUT_DD_NAME)) {
+                DatasetBindings narrow = bindings();
+                narrow.put(ddName, new DatasetBinding("TEST.NARROW", "sequential", false, "FB", 0,
+                        TranRecord.RECORD_LENGTH - 1, "CVTRA05Y", null, null, null, null));
+
+                assertThatIllegalStateException()
+                        .isThrownBy(() -> job(narrow))
+                        .withMessageContaining(ddName)
+                        .withMessageContaining("349");
+            }
+        }
+
+        @Test
+        @DisplayName("a utility DD that is not RECFM=FB is refused at startup, and an omitted key "
+                + "reads as absent rather than as the word null")
+        void aWrongUtilityRecordFormatIsRefused() {
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> job(bindings(TranRecord.RECORD_LENGTH,
+                            TranRecord.RECORD_LENGTH, "V")))
+                    .withMessageContaining("record-format 'V'")
+                    .withMessageContaining("RECFM=FB");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> job(bindings(TranRecord.RECORD_LENGTH,
+                            TranRecord.RECORD_LENGTH, null)))
+                    .withMessageContaining("record-format absent");
+            assertThatCode(() -> job(bindings(TranRecord.RECORD_LENGTH, TranRecord.RECORD_LENGTH,
+                    "fb"))).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("SORTOUT takes DCB=(*.SORTIN), so a profile that overrode one geometry and not "
+                + "the other is refused")
+        void theSortOutputMustMatchTheSortInput() {
+            DatasetBindings mismatched = bindings();
+            mismatched.put(TransactionReportJob.SORT_OUTPUT_DD_NAME, new DatasetBinding(TEST_TRANFILE,
+                    "sequential", true, "FBA", 0, TranRecord.RECORD_LENGTH, "CVTRA05Y", null, null,
+                    null, null));
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> job(mismatched))
+                    .withMessageContaining("DCB=(*.SORTIN)");
+        }
+
+        @Test
+        @DisplayName("a utility DD bound to no dataset name is refused at startup")
+        void aBlankUtilityDatasetNameIsRefused() {
+            DatasetBindings blank = bindings();
+            blank.put(TransactionReportJob.SORT_OUTPUT_DD_NAME, new DatasetBinding("   ",
+                    "sequential", true, "FB", 0, TranRecord.RECORD_LENGTH, "CVTRA05Y", null, null,
+                    null, null));
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> job(blank))
+                    .withMessageContaining(TransactionReportJob.SORT_OUTPUT_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("the default utility port is the JDBC one the statement job also defaults to, "
+                + "when the deployment publishes none")
+        void theDefaultPortIsTheJdbcOne() {
+            TransactionReportJob job = new TransactionReportJob(validBatchConfig(),
+                    mock(TransactionRepository.class), mock(CardXrefRepository.class),
+                    mock(TranTypeRepository.class), mock(TranCategoryRepository.class),
+                    mock(DateParmReader.class), writer(), ASCII, new SuppliedProvider<>(null),
+                    new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(null));
+
+            assertThat(job.datasetUtilityPort())
+                    .isInstanceOf(com.vsergeychik.carddemo.statement.StatementGenerationJobA
+                            .JdbcDatasetUtilityPort.class);
+        }
+
+        /** @return a fresh contribution over a step execution, so the write count is readable */
+        private StepContribution contribution() {
+            JobExecution jobExecution = new JobExecution(1L);
+            return new StepContribution(new StepExecution("utility", jobExecution));
+        }
+    }
+
+    @Nested
+    @DisplayName("Bounded cancellation - every step yields to a stop request between records")
+    class BoundedCancellation {
+
+        /** The in-memory data path the two utility steps use. */
+        private final InMemoryDatasetUtilityPort port = utilityPort();
+
+        /**
+         * @return the job wired to {@link #port}, with the program's collaborators mocked
+         */
+        private TransactionReportJob jobOverPort() {
+            return new TransactionReportJob(validBatchConfig(), mock(TransactionRepository.class),
+                    mock(CardXrefRepository.class), mock(TranTypeRepository.class),
+                    mock(TranCategoryRepository.class), mock(DateParmReader.class), writer(), ASCII,
+                    new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER,
+                    new SuppliedProvider<>(port));
+        }
+
+        @Test
+        @DisplayName("STEP01R stops before writing anything, and the destination is left untouched")
+        void theUnloadStopsBeforeWriting() {
+            port.seed(TEST_MASTER, List.of(image("0000000000000001", CARD_ONE, IN_RANGE_DATE),
+                    image("0000000000000002", CARD_TWO, IN_RANGE_DATE)));
+            StepExecution stepExecution = stepExecution(TransactionReportJob.BACKUP_STEP_NAME);
+            stepExecution.setTerminateOnly();
+
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(() -> jobOverPort()
+                            .unloadTransactionMaster(StopSignal.of(stepExecution)))
+                    .withMessageContaining(TransactionReportJob.BACKUP_STEP_NAME)
+                    .withCauseInstanceOf(JobInterruptedException.class);
+
+            // The clear ran - it is one statement and it precedes the probe - but no record followed it,
+            // which is why the step reports as stopped rather than as an unload that produced nothing.
+            assertThat(port.contents(TEST_BACKUP)).isEmpty();
+            assertThat(port.calls).doesNotContain("write " + TEST_BACKUP);
+        }
+
+        @Test
+        @DisplayName("STEP05R stops before writing anything, and the daily file is left untouched")
+        void theSortStopsBeforeWriting() {
+            port.seed(TEST_BACKUP, List.of(image("0000000000000001", CARD_ONE, IN_RANGE_DATE)));
+            StepExecution stepExecution = stepExecution(TransactionReportJob.SORT_STEP_NAME);
+            stepExecution.setTerminateOnly();
+
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(() -> jobOverPort()
+                            .filterAndSortUnloadedTransactions(StopSignal.of(stepExecution)))
+                    .withMessageContaining(TransactionReportJob.SORT_STEP_NAME);
+
+            assertThat(port.contents(TEST_TRANFILE)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("both utility steps run unbounded through their no-signal overloads")
+        void theNoSignalOverloadsAreUnbounded() {
+            port.seed(TEST_MASTER, List.of(image("0000000000000001", CARD_ONE, IN_RANGE_DATE)));
+            TransactionReportJob job = jobOverPort();
+
+            assertThat(job.unloadTransactionMaster()).isOne();
+            assertThat(job.filterAndSortUnloadedTransactions()).isOne();
+        }
+
+        @Test
+        @DisplayName("STEP10R stops between records: whole 133-byte records, and no grand total")
+        void theReportStopsBetweenRecords() {
+            Harness harness = harness(List.of(
+                    record("0000000000000001", CARD_ONE, "0000000100.00", IN_RANGE_DATE),
+                    record("0000000000000002", CARD_ONE, "0000000200.00", IN_RANGE_DATE),
+                    record("0000000000000003", CARD_ONE, "0000000300.00", IN_RANGE_DATE)));
+            StepExecution stepExecution = stepExecution(TransactionReportJob.STEP_NAME);
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    harness.job().execute(harness.sysout, harness.sink,
+                            signalStoppingAfter(stepExecution, 2)));
+
+            // Every record written is a WHOLE 133-byte report record: the probe sits before
+            // 1000-TRANFILE-GET-NEXT, so no detail line is ever half emitted.
+            assertThat(harness.sink.lines()).isNotEmpty();
+            assertThat(harness.sink.lines()).allSatisfy(line ->
+                    assertThat(line).hasSize(TranReportWriter.RECORD_LENGTH));
+
+            // And the totals at :202-203 are NOT written, exactly as they are not written when the
+            // preserved NEXT SENTENCE defect ends the loop early.
+            assertThat(harness.sink.lines()).noneSatisfy(line ->
+                    assertThat(line).contains("Grand Total"));
+        }
+
+        @Test
+        @DisplayName("STEP10R runs the whole pass when no stop is pending, unchanged")
+        void withoutAStopTheWholeReportRuns() {
+            Harness withSignal = harness(List.of(
+                    record("0000000000000001", CARD_ONE, "0000000100.00", IN_RANGE_DATE)));
+            Harness withoutSignal = harness(List.of(
+                    record("0000000000000001", CARD_ONE, "0000000100.00", IN_RANGE_DATE)));
+
+            withoutSignal.job().execute(withoutSignal.sysout, withoutSignal.sink);
+            withSignal.job().execute(withSignal.sysout, withSignal.sink, StopSignal.RUNNING);
+
+            assertThat(withoutSignal.sink.lines()).isEqualTo(withSignal.sink.lines());
+        }
+
+        @Test
+        @DisplayName("a null stop signal is refused rather than silently treated as 'never stop'")
+        void aNullStopSignalIsRefused() {
+            Harness harness = harness(List.of());
+
+            assertThatNullPointerException().isThrownBy(() ->
+                            harness.job().execute(harness.sysout, harness.sink, null))
+                    .withMessageContaining("StopSignal.RUNNING");
+        }
+
+        @Test
+        @DisplayName("the report tasklet takes its signal from the step execution the framework supplies")
+        void theReportTaskletTakesItsSignalFromTheStepExecution() throws SQLException {
+            Harness harness = harness(List.of(
+                    record("0000000000000001", CARD_ONE, "0000000100.00", IN_RANGE_DATE)));
+            TransactionReportJob job = new TransactionReportJob(validBatchConfig(),
+                    harness.transactions, harness.xrefs, harness.types, harness.categories,
+                    harness.dateParms, writerOverAReachableDestination(), ASCII,
+                    new SuppliedProvider<>(harness.sysout), new JdbcTemplate(),
+                    RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort()));
+            StepExecution stepExecution = stepExecution(TransactionReportJob.STEP_NAME);
+            stepExecution.setTerminateOnly();
+
+            // Driven exactly as TaskletStep drives it, so this asserts the wiring and not just the
+            // program: a tasklet that ignored the chunk context would run the whole pass here.
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    job.transactionReportTasklet().execute(null, chunkContext(stepExecution)));
+
+            assertThat(harness.sysout.lines).first()
+                    .isEqualTo(TransactionReportJob.START_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("the two utility tasklets take their signals from their own step executions")
+        void theUtilityTaskletsTakeTheirSignalsFromTheirStepExecutions() throws Exception {
+            port.seed(TEST_MASTER, List.of(image("0000000000000001", CARD_ONE, IN_RANGE_DATE)));
+            TransactionReportJob job = jobOverPort();
+            StepExecution unload = stepExecution(TransactionReportJob.BACKUP_STEP_NAME);
+            StepExecution sort = stepExecution(TransactionReportJob.SORT_STEP_NAME);
+            unload.setTerminateOnly();
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    job.transactionReportBackupTasklet().execute(null, chunkContext(unload)));
+
+            // The sibling step is unaffected: a stop is per step execution, not per job class.
+            assertThat(job.transactionReportSortTasklet()
+                    .execute(contributionOver(sort), chunkContext(sort)))
+                    .isEqualTo(RepeatStatus.FINISHED);
+        }
+
+        /**
+         * @param stepExecution the execution to contribute to
+         * @return a contribution the utility tasklets can report a write count to
+         */
+        private StepContribution contributionOver(StepExecution stepExecution) {
+            return new StepContribution(stepExecution);
+        }
+
+        /**
+         * A {@value TranRecord#RECORD_LENGTH}-character record image, as a dataset holds it.
+         *
+         * @param tranId   {@code TRAN-ID}
+         * @param cardNum  {@code TRAN-CARD-NUM}
+         * @param procDate the first ten characters of {@code TRAN-PROC-TS}
+         * @return the image
+         */
+        private String image(String tranId, String cardNum, String procDate) {
+            return new String(record(tranId, cardNum, "0000000100.00", procDate).encode(ASCII), ASCII);
+        }
+    }
+
+    // =============================================================================================
     // Wiring and identity.
     // =============================================================================================
 
     @Nested
-    @DisplayName("Wiring - one job, one tasklet step, no parameters (gate G3)")
+    @DisplayName("Wiring - one job, three tasklet steps, no parameters (gate G3)")
     class Wiring {
 
         @Test
@@ -645,6 +1440,8 @@ class TransactionReportJobTest {
             assertThat(built.getName()).isEqualTo(TransactionReportJob.JOB_NAME);
             assertThat(step.getName()).isEqualTo(TransactionReportJob.STEP_NAME);
             assertThat(job.stepName()).isEqualTo(TransactionReportJob.STEP_NAME);
+            assertThat(job.backupStepName()).isEqualTo(TransactionReportJob.BACKUP_STEP_NAME);
+            assertThat(job.sortStepName()).isEqualTo(TransactionReportJob.SORT_STEP_NAME);
         }
 
         @Test
@@ -655,9 +1452,12 @@ class TransactionReportJobTest {
             // the one under test rather than the two-argument execute overload.
             TransactionReportJob job = new TransactionReportJob(validBatchConfig(),
                     harness.transactions, harness.xrefs, harness.types, harness.categories,
-                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(harness.sysout));
+                    harness.dateParms, writerOverAReachableDestination(), ASCII,
+                    new SuppliedProvider<>(harness.sysout), new JdbcTemplate(),
+                    RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort()));
 
-            assertThat(job.transactionReportTasklet().execute(null, null))
+            assertThat(job.transactionReportTasklet()
+                    .execute(null, chunkContext(stepExecution(TransactionReportJob.STEP_NAME))))
                     .isEqualTo(RepeatStatus.FINISHED);
             assertThat(harness.sysout.lines).first()
                     .isEqualTo(TransactionReportJob.START_OF_EXECUTION);
@@ -725,33 +1525,43 @@ class TransactionReportJobTest {
 
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(null,
                     harness.transactions, harness.xrefs, harness.types, harness.categories,
-                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null)));
+                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), null, harness.xrefs, harness.types, harness.categories,
-                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null)));
+                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), harness.transactions, null, harness.types, harness.categories,
-                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null)));
+                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), harness.transactions, harness.xrefs, null, harness.categories,
-                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null)));
+                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), harness.transactions, harness.xrefs, harness.types, null,
-                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null)));
+                    harness.dateParms, writer(), ASCII, new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), harness.transactions, harness.xrefs, harness.types,
-                    harness.categories, null, writer(), ASCII, new SuppliedProvider<>(null)));
+                    harness.categories, null, writer(), ASCII, new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), harness.transactions, harness.xrefs, harness.types,
                     harness.categories, harness.dateParms, null, ASCII,
-                    new SuppliedProvider<>(null)));
+                    new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), harness.transactions, harness.xrefs, harness.types,
                     harness.categories, harness.dateParms, writer(), null,
-                    new SuppliedProvider<>(null)));
+                    new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
             assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
                     validBatchConfig(), harness.transactions, harness.xrefs, harness.types,
-                    harness.categories, harness.dateParms, writer(), ASCII, null));
+                    harness.categories, harness.dateParms, writer(), ASCII, null, new JdbcTemplate(),
+                    RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())));
+            assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
+                    validBatchConfig(), harness.transactions, harness.xrefs, harness.types,
+                    harness.categories, harness.dateParms, writer(), ASCII,
+                    new SuppliedProvider<>(null), null, RecordImageForm.CHARACTER,
+                    new SuppliedProvider<>(utilityPort())));
+            assertThatNullPointerException().isThrownBy(() -> new TransactionReportJob(
+                    validBatchConfig(), harness.transactions, harness.xrefs, harness.types,
+                    harness.categories, harness.dateParms, writer(), ASCII,
+                    new SuppliedProvider<>(null), new JdbcTemplate(), RecordImageForm.CHARACTER, null));
         }
 
         @Test
@@ -770,6 +1580,30 @@ class TransactionReportJobTest {
     @Nested
     @DisplayName("Startup guards - the contract must still say what the JCL says")
     class StartupGuards {
+
+        @Test
+        @DisplayName("CARDXREF and CCXREF pointing at different datasets is refused at construction")
+        void divergingCrossReferenceDdNamesAreRefused() {
+            // CBTRN03C's ASSIGN clause names CARDXREF (app/cbl/CBTRN03C.cbl:33-37); the repository it
+            // reads through is bound to the CICS file name CCXREF. Both keys carry independent overrides
+            // in application.yml. This report groups and subtotals by account as records arrive, so
+            // reading the wrong cross-reference would produce a report with plausible rows and wrong
+            // totals - the worst kind of wrong, and invisible without this check.
+            Harness harness = harness(List.of());
+            harness.catalogue = bindings(TranRecord.RECORD_LENGTH, "TEST.SOMETHING.ELSE");
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> harness.job(validContracts()))
+                    .withMessageContaining(TransactionReportJob.CARDXREF_DD_NAME)
+                    .withMessageContaining(CardXrefRepository.BASE_DD_NAME)
+                    .withMessageContaining("TEST.SOMETHING.ELSE");
+        }
+
+        @Test
+        @DisplayName("CARDXREF and CCXREF naming one dataset is accepted, which is the shipped default")
+        void agreeingCrossReferenceDdNamesAreAccepted() {
+            assertThat(harness(List.of()).job()).isNotNull();
+        }
 
         @Test
         @DisplayName("a contract naming another program is refused")
@@ -901,7 +1735,8 @@ class TransactionReportJobTest {
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionReportJob(validBatchConfig(),
                             harness.transactions, harness.xrefs, harness.types, harness.categories,
-                            harness.dateParms, narrow, ASCII, new SuppliedProvider<>(null)))
+                            harness.dateParms, narrow, ASCII, new SuppliedProvider<>(null),
+                            new JdbcTemplate(), RecordImageForm.CHARACTER, new SuppliedProvider<>(utilityPort())))
                     .withMessageContaining("133");
         }
 
@@ -1720,6 +2555,85 @@ class TransactionReportJobTest {
             verify(harness.categories).close();
             verify(harness.dateParms).close();
             assertThat(harness.sysout.lines).last().isEqualTo(TransactionReportJob.END_OF_EXECUTION);
+        }
+    }
+
+    @Nested
+    @DisplayName("Handle release - an incomplete run reclaims what it acquired, silently")
+    class HandleRelease {
+
+        @Test
+        @DisplayName("an abend after the opens still releases the handles the run acquired")
+        void anAbendReleasesEveryAcquiredHandle() {
+            // CALL 'CEE3ABD' ends a z/OS task and the operating system reclaims its open files. An
+            // AbendException ends one step inside a JVM that keeps running, so a deployment-supplied
+            // cursor left open there is held for the life of the process.
+            Harness harness = harness(List.of());
+            doReturn(DateParmReader.ReadResult.other("35")).when(harness.dateParms).read();
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(harness::run);
+
+            verify(harness.tranFile).closeInput();
+            verify(harness.xrefCursor).closeBrowse();
+            assertThat(harness.sysout.lines)
+                    .as("the release is silent: it emits no CLOSE message the program never writes, and "
+                            + "no end-of-execution line")
+                    .doesNotContain(TransactionReportJob.ERROR_CLOSING_POSTED_TRANSACTION_FILE,
+                            TransactionReportJob.ERROR_CLOSING_CROSS_REF_FILE,
+                            TransactionReportJob.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("the happy path closes each handle exactly once - the release adds no second close")
+        void theHappyPathClosesExactlyOnce() {
+            Harness harness = harness(List.of(record("TRAN000000000001", CARD_ONE, "1.00",
+                    IN_RANGE_DATE)));
+
+            harness.run();
+
+            verify(harness.tranFile).closeInput();
+            verify(harness.xrefCursor).closeBrowse();
+        }
+
+        @Test
+        @DisplayName("a handle that fails to release does not replace the abend the caller needs")
+        void aFailingReleaseDoesNotMaskTheAbend() {
+            Harness harness = harness(List.of());
+            doReturn(DateParmReader.ReadResult.other("35")).when(harness.dateParms).read();
+            doThrow(new IllegalStateException("the gateway dropped the pass"))
+                    .when(harness.tranFile).closeInput();
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(harness::run);
+
+            // The one that threw did not stop the next one being released.
+            verify(harness.xrefCursor).closeBrowse();
+        }
+
+        @Test
+        @DisplayName("a release failure on the browse is swallowed too, and the abend still surfaces")
+        void aFailingBrowseReleaseIsSwallowed() {
+            Harness harness = harness(List.of());
+            doReturn(DateParmReader.ReadResult.other("35")).when(harness.dateParms).read();
+            doThrow(new IllegalStateException("the browse could not be released"))
+                    .when(harness.xrefCursor).closeBrowse();
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(harness::run);
+
+            verify(harness.tranFile).closeInput();
+        }
+
+        @Test
+        @DisplayName("a handle never acquired is not closed - only what the run took is released")
+        void onlyWhatWasAcquiredIsReleased() {
+            // The first open fails, so the run abends before it ever asks for the cross-reference browse.
+            // A null field is not a handle, and the release has nothing to reclaim for it.
+            Harness harness = harness(List.of());
+            when(harness.tranFile.openStatus()).thenReturn("35");
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(harness::run);
+
+            verify(harness.xrefs, never()).openBrowse();
+            verify(harness.xrefCursor, never()).closeBrowse();
         }
     }
 

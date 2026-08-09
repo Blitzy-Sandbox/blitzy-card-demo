@@ -17,11 +17,13 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementSetter;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.Charset;
+import java.sql.PreparedStatement;
 import java.util.Objects;
 
 /**
@@ -438,11 +440,14 @@ public final class TranReportWriter {
          * paragraph of the three whose guard chain - the {@code 'ERROR OPENING REPTFILE'} arm at
          * {@code L405} - had no outcome to branch on.
          *
-         * <p>Defaulted to {@link FileStatus.Outcome#OK} for the same reason {@link #close()} is: a sink
-         * that holds nothing - the in-memory collector a test supplies, and the {@link JdbcTemplate}-backed
-         * default, which borrows a pooled connection per record rather than holding one open - has nothing
-         * to prepare. A sink that does hold something, such as one writing to a file or a queue, overrides
-         * this and reports whether the destination could be established.
+         * <p>Defaulted to {@link FileStatus.Outcome#OK} because an in-memory collector - what a unit test
+         * and the parity harness supply - has no destination outside the process and so nothing that
+         * could refuse to be established. Every sink that does address something outside the process
+         * overrides this and reports whether that destination could be reached, the
+         * {@link JdbcTemplate}-backed default included: it borrows a pooled connection per record rather
+         * than holding one open, but the relation it will insert into either exists for this run or does
+         * not, and that is an open-time fact. Leaving it defaulted there was a parity defect, because it
+         * made {@code L405} reachable only through the write.
          *
          * @return {@link FileStatus.Outcome#OK} when the destination is ready, or
          *         {@link FileStatus.Outcome#OTHER} otherwise. <strong>Never {@code null}</strong>, for the
@@ -706,7 +711,8 @@ public final class TranReportWriter {
      */
     public ReportFile openOutput() {
         return new ReportFile(new JdbcRecordSink(jdbcTemplate, insertStatement(), recordImageForm,
-                codec.charset()));
+                codec.charset(), requireRelation().describeStatement(),
+                requireRelation().deleteAll()));
     }
 
     /**
@@ -772,6 +778,22 @@ public final class TranReportWriter {
      *                               the parity harness do
      */
     String insertStatement() {
+        return requireRelation().insertRecordImage();
+    }
+
+    /**
+     * The resolved relation, or a refusal naming the configuration that could not be addressed.
+     *
+     * <p>Refused here rather than at startup for the reason the constructor records: a profile may
+     * legitimately bind this DD name to something no JDBC statement can address, and in that case the
+     * right outcome is a refusal when a sink is actually built - a fixture-backed profile, every unit
+     * test and the parity harness all write through {@link #openOutput(RecordSink)} instead and never
+     * reach this.
+     *
+     * @return the relation; never {@code null}
+     * @throws IllegalStateException if the configured name is not a dataset name
+     */
+    private DatasetRelation requireRelation() {
         if (relation == null) {
             throw new IllegalStateException("carddemo.datasets." + DD_NAME + ".dsname cannot be "
                     + "addressed as a dataset, so no statement can be composed for it and the default "
@@ -781,7 +803,7 @@ public final class TranReportWriter {
                     + "is refused here rather than at startup. The grammar's own verdict is attached.",
                     datasetRefusal);
         }
-        return relation.insertRecordImage();
+        return relation;
     }
 
     /**
@@ -790,7 +812,9 @@ public final class TranReportWriter {
      *
      * <p>Immutable and stateless, so it is safe to hold and safe to share; the pooled connection is
      * borrowed and returned inside each call, which is why {@link RecordSink#close()} has nothing to do
-     * and is left defaulted.
+     * and is left defaulted. {@link RecordSink#open()} is <em>not</em> left defaulted: holding no
+     * connection is not the same as having no destination, and whether the configured relation can be
+     * addressed at all is what {@code OPEN OUTPUT} answers.
      *
      * <p>The record image is bound through the injected {@link RecordImageForm} - the module's single
      * authority on whether a record image crosses JDBC as characters or as bytes. The code page
@@ -812,19 +836,109 @@ public final class TranReportWriter {
         private final Charset charset;
 
         /**
+         * A read-only statement that resolves and describes the destination without transferring any of
+         * it - the probe both {@link #open()} and {@link #close()} use to establish that the relation is
+         * actually addressable.
+         */
+        private final String describeStatement;
+
+        /**
+         * Empties the destination, which is what {@code DISP=(NEW,CATLG,DELETE)} means for a relation
+         * that already exists. Issued by {@link #open()} and nowhere else.
+         */
+        private final String clearStatement;
+
+        /**
          * Creates the sink.
          *
-         * @param jdbcTemplate    the template that issues the insert
-         * @param statement       the parameterised statement
-         * @param recordImageForm how a record image crosses JDBC in this deployment
-         * @param charset         the dataset code page
+         * @param jdbcTemplate      the template that issues the insert
+         * @param statement         the parameterised statement
+         * @param recordImageForm   how a record image crosses JDBC in this deployment
+         * @param charset           the dataset code page
+         * @param describeStatement the read-only probe {@link #open()} and {@link #close()} issue
+         * @param clearStatement    the statement {@link #open()} issues to establish an empty generation
          */
         JdbcRecordSink(JdbcTemplate jdbcTemplate, String statement, RecordImageForm recordImageForm,
-                       Charset charset) {
+                       Charset charset, String describeStatement, String clearStatement) {
             this.jdbcTemplate = jdbcTemplate;
             this.statement = statement;
             this.recordImageForm = recordImageForm;
             this.charset = charset;
+            this.describeStatement = describeStatement;
+            this.clearStatement = clearStatement;
+        }
+
+        /**
+         * Establishes the generation this run writes into: {@code OPEN OUTPUT REPORT-FILE} at
+         * {@code app/cbl/CBTRN03C.cbl:L396}, over a dataset {@code app/jcl/TRANREPT.jcl:L76-L80}
+         * declares {@code DISP=(NEW,CATLG,DELETE)}.
+         *
+         * <p>Two statements, in this order, and each is doing something the COBOL open does:
+         * <ol>
+         *   <li><strong>Describe.</strong> An {@code OPEN} on the mainframe resolves the DD name to a
+         *       real dataset and fails if it cannot. The describe is read-only - its predicate is false
+         *       on every row - so it resolves and describes the relation while none of it is
+         *       transferred, and a destination that does not exist, cannot be reached or is refused by
+         *       the credentials is reported here rather than record by record.</li>
+         *   <li><strong>Clear.</strong> {@code NEW} means the run writes into an <em>empty</em>
+         *       generation. Emptying it is what makes the previous run's report cease to be part of this
+         *       one, and it is also what leaves an empty report behind when a run writes no line at all -
+         *       a dataset the JCL created and the program left empty, rather than no dataset. Nothing
+         *       touches the relation's definition: no data-definition statement is issued anywhere in
+         *       this module (gate G44).</li>
+         * </ol>
+         *
+         * <p>Either statement failing is the {@code TRANREPT-STATUS NOT = '00'} arm at
+         * {@code app/cbl/CBTRN03C.cbl:L404-L409}, which displays {@code 'ERROR OPENING REPTFILE'} and
+         * abends with {@code APPL-RESULT} 12. That is the whole outcome vocabulary the COBOL has for an
+         * open, so it is the whole vocabulary reported.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination is established, or
+         *         {@link FileStatus.Outcome#OTHER} when it could not be
+         */
+        @Override
+        public FileStatus.Outcome open() {
+            try {
+                jdbcTemplate.execute(describeStatement);
+                jdbcTemplate.update(clearStatement);
+                return FileStatus.Outcome.OK;
+            } catch (DataAccessException refused) {
+                LOG.error("Could not establish the " + DD_NAME + " generation for output - "
+                        + BackendDiagnostic.of(refused).describe()
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " to the caller, which is the ERROR OPENING REPTFILE arm that sets "
+                        + "APPL-RESULT to 12");
+                return FileStatus.Outcome.OTHER;
+            }
+        }
+
+        /**
+         * Confirms the destination survived the run: {@code CLOSE REPORT-FILE} at
+         * {@code app/cbl/CBTRN03C.cbl:L534}.
+         *
+         * <p>There is nothing buffered to flush - each record was inserted as it was written, through a
+         * connection borrowed and returned per record - so what a close can still discover is that the
+         * destination is no longer there: a relation dropped, revoked or unreachable part-way through a
+         * report. The same read-only describe {@link #open()} used answers that, and a failure is the
+         * {@code 'ERROR CLOSING REPORT FILE'} arm at {@code app/cbl/CBTRN03C.cbl:L540-L545}. A close
+         * that could not fail would leave that arm unreachable, which is precisely what the COBOL's own
+         * guard chain says must not be true.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination is still addressable, or
+         *         {@link FileStatus.Outcome#OTHER} when it is not
+         */
+        @Override
+        public FileStatus.Outcome close() {
+            try {
+                jdbcTemplate.execute(describeStatement);
+                return FileStatus.Outcome.OK;
+            } catch (DataAccessException refused) {
+                LOG.error("Could not confirm the " + DD_NAME + " destination on close - "
+                        + BackendDiagnostic.of(refused).describe()
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " to the caller, which is the ERROR CLOSING REPORT FILE arm");
+                return FileStatus.Outcome.OTHER;
+            }
         }
 
         /**

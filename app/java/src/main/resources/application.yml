@@ -312,6 +312,43 @@ carddemo:
     form: CHARACTER
 
   # -------------------------------------------------------------------------------------------
+  # carddemo.jdbc.query-timeout-seconds - THE PER-STATEMENT BOUND. Consumed by
+  # config/DataSourceConfig.java.
+  #
+  # WHAT IT BOUNDS: one statement, not one job. A batch job may legitimately run for hours while
+  # every individual read, write and browse it issues completes in seconds, so this value is not a
+  # job duration and must never be tuned as though it were.
+  #
+  # WHY IT EXISTS AND WHY IT IS REQUIRED. Left unset, JdbcTemplate passes -1 to the driver, which
+  # means "leave your own default alone" - and for a site whose driver has no default that is
+  # unbounded: one hung read then holds its pool connection, its enclosing transaction and its
+  # batch step for as long as the process lives, with no diagnostic and no way to end the job short
+  # of killing the JVM. The pool's spring.datasource.hikari.connection-timeout above does NOT cover
+  # this; it bounds only how long a caller waits to BORROW a connection, and says nothing about how
+  # long a statement may then run on one.
+  #
+  # ZERO AND NEGATIVE VALUES ARE REFUSED at startup rather than read as "no limit", because
+  # java.sql.Statement treats a query timeout of 0 as unlimited and JdbcTemplate treats -1 as "use
+  # the driver default" - either would reinstate by configuration exactly the unbounded behaviour
+  # this key exists to remove. DataSourceConfig binds it with a bare placeholder and no Java-side
+  # default, so removing this key fails the context at startup naming it.
+  #
+  # THE SHIPPED VALUE is deliberately generous rather than tight: it has to exceed the slowest
+  # single statement in the estate, which is the utility unload's select-all over the transaction
+  # master, not the fastest. It is a safety bound, not a service-level objective - this migration
+  # has no performance objective (AAP 0.8.6) and this key must not become one. Raise it per site
+  # through CARDDEMO_JDBC_QUERY_TIMEOUT_SECONDS if the site's gateway is slower.
+  #
+  # SOCKET-LEVEL BOUNDS BELOW THIS ONE are driver-specific - login timeout, connect timeout, socket
+  # read timeout are all spelled differently by every driver - and this module pins no JDBC driver
+  # coordinate (residual risk R-E). Supply them at deployment time under
+  # spring.datasource.hikari.data-source-properties.*, which reaches the driver untouched. No Java
+  # source names any of them, exactly as no Java source names a dataset (gate G46).
+  # -------------------------------------------------------------------------------------------
+  jdbc:
+    query-timeout-seconds: ${CARDDEMO_JDBC_QUERY_TIMEOUT_SECONDS:300}
+
+  # -------------------------------------------------------------------------------------------
   # DATASET BINDINGS - 27 entries: the 8 CICS FILE definitions plus the 19 batch-only DD names.
   #
   # Keys are the DD / CICS FILE names exactly as the JCL and the CSD spell them, in upper case.
@@ -927,6 +964,11 @@ carddemo:
   # padded, one record after another, appended to whatever is already there rather than
   # truncating it.
   #
+  # queue-name JOBS and dd-name INREADER are the CSD's own identifiers and are pinned to it at
+  # context refresh - they name the queue CORPT00C writes to, so a profile that renamed either
+  # would send the records to a queue the program never wrote to while every write still reported
+  # NORMAL.
+  #
   # THE DESTINATION IS OUTSIDE EVERY REFERENCE TREE, AND THAT IS NOW ENFORCED RATHER THAN ASKED
   # FOR (practice B3, gate G42). This is the one value in this file an operator supplies from
   # outside the process, through CARDDEMO_JOB_SUBMISSION_DESTINATION, and the writer appends to it
@@ -940,6 +982,28 @@ carddemo:
   # contain a ".." segment, neither may name a reference tree, and the destination must resolve
   # STRICTLY INSIDE approved-root. A deployment that wants a different location changes the root
   # deliberately - it cannot arrive at one by traversal.
+  #
+  # NEITHER PATH IS DEFAULTED, AND THAT IS THE POINT. Both keys below are bare environment
+  # references with no fallback, so a deployment that does not set them fails at context refresh
+  # with a message naming the key rather than starting and appending records somewhere nobody
+  # chose. They previously fell back to ${java.io.tmpdir}/carddemo, which is exactly the wrong
+  # place for them: the system temporary directory is world-writable and shared, so any local user
+  # could pre-create the destination, or plant a symbolic link at it or at a directory on the way
+  # to it, and receive every 80-byte record this port emits (CWE-59, CWE-367).
+  #
+  # APPROVED-ROOT MUST THEREFORE BE OPERATOR-PROVISIONED: a directory the deployment creates and
+  # whose permissions it controls, not a shared location and not inside this repository. The port
+  # resolves it with toRealPath() on every write, descends to the destination refusing any
+  # component that is a symbolic link, and opens the record's file with NOFOLLOW_LINKS - but those
+  # checks are a second line of defence, and they are only as strong as the root's own permissions.
+  #
+  #     export CARDDEMO_JOB_SUBMISSION_ROOT=/var/opt/carddemo/jobsub
+  #     export CARDDEMO_JOB_SUBMISSION_DESTINATION=/var/opt/carddemo/jobsub/inreader/JOBS
+  #
+  # The root must exist before the first write - the port will not create it, because creating the
+  # boundary one is checked against would defeat the check - while the directories BELOW it are
+  # created on demand, one inspected level at a time. The test profile binds both keys to a
+  # workspace-local root of its own; see application-test.yml.
   # -------------------------------------------------------------------------------------------
   job-submission:
     queue-name: JOBS
@@ -948,10 +1012,15 @@ carddemo:
     record-format: FIXED
     block-format: UNBLOCKED
     disposition: MOD
+    # The code page the 80-byte records are encoded in. IBM037 is the EBCDIC code page the rest of
+    # this file uses for mainframe-facing data; a deployment whose internal reader expects another
+    # single-byte page changes it here.
+    charset: ${CARDDEMO_JOB_SUBMISSION_CHARSET:IBM037}
     # The only directory tree this module will append job-submission records anywhere beneath.
-    # Absolute, outside the repository, and the boundary the destination is checked against.
-    approved-root: ${CARDDEMO_JOB_SUBMISSION_ROOT:${java.io.tmpdir}/carddemo}
-    destination: ${CARDDEMO_JOB_SUBMISSION_DESTINATION:${java.io.tmpdir}/carddemo/inreader/JOBS}
+    # Absolute, operator-provisioned, outside the repository, and the boundary the destination is
+    # checked against. No default: an unset value is a startup failure, never a guess.
+    approved-root: ${CARDDEMO_JOB_SUBMISSION_ROOT:}
+    destination: ${CARDDEMO_JOB_SUBMISSION_DESTINATION:}
 
 # ---------------------------------------------------------------------------------------------
 # Logging. The batch programs DISPLAY their progress and their abend diagnostics to SYSOUT, and

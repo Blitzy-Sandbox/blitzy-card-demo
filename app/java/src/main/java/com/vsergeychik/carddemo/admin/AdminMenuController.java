@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import jakarta.validation.Valid;
 import java.time.Clock;
@@ -359,13 +360,17 @@ public class AdminMenuController {
      * a payload that fails its declared field widths, or a body that will not parse.
      *
      * @param request the inbound screen and communication area, or {@code null} for the cold start
-     * @return the painted screen, the communication area to send back next time and the navigation
-     *         triple naming where the client goes if control transferred; never {@code null}
+     * @return the painted screen, the communication area to send back next time, the navigation triple
+     *         naming where the client goes if control transferred, and - beside the screen rather than
+     *         inside it - the presentation metadata this program sets: the message colour and the
+     *         repaint flag, neither of which is a {@code DFHMDF} field and neither of which had any way
+     *         to travel before; never {@code null}
      */
     @GetMapping(path = ADMIN_MENU_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
-    public AdminMenuResponse getAdminMenu(
+    public ScreenResponse<AdminMenuResponse> getAdminMenu(
             @Valid @RequestBody(required = false) final AdminMenuRequest request) {
-        return showAdminMenu(Objects.requireNonNullElse(request, coldStartRequest));
+        AdminMenuResponse painted = showAdminMenu(Objects.requireNonNullElse(request, coldStartRequest));
+        return ScreenResponse.of(painted, painted.screenMetadata());
     }
 
     /**

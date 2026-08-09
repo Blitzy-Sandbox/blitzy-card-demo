@@ -1,24 +1,28 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.TransactionAddController.ProgramState;
 import com.vsergeychik.carddemo.transaction.TransactionRepository.ReadResult;
 import com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest;
@@ -35,8 +39,10 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -45,8 +51,12 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * Proves {@link TransactionAddController} against {@code app/cbl/COTRN01C.cbl}, the 330-line CICS
@@ -100,7 +110,28 @@ class TransactionAddControllerTest {
     }
 
     private static TransactionAddController controllerOver(TransactionRepository repository) {
-        return new TransactionAddController(repository, pinnedClock());
+        return new TransactionAddController(repository, pinnedClock(), realUnitOfWork());
+    }
+
+    /**
+     * A unit of work over a real transaction manager and a real single connection.
+     *
+     * <p>Deliberately not a stub. {@code :275} states the {@code UPDATE} option, so the read takes a
+     * row lock and {@link TransactionRepository#readForUpdateByTranId(String)} refuses to issue one
+     * with no transaction open; a double that merely ran the body would hide whether the boundary is
+     * really there. An in-memory database is used because the subject is the boundary itself, which is
+     * the framework's behaviour rather than the deployment driver's.
+     *
+     * @return a unit of work whose {@code execute} opens a genuine transaction
+     */
+    private static DatasetUnitOfWork realUnitOfWork() {
+        SingleConnectionDataSource source = new SingleConnectionDataSource(
+                "jdbc:h2:mem:cotrn01c-" + System.nanoTime()
+                        + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
+                "sa", "", true);
+        source.setSuppressClose(true);
+        DataSource dataSource = source;
+        return new DatasetUnitOfWork(new JdbcTransactionManager(dataSource));
     }
 
     /** A repository that is never expected to be reached. */
@@ -108,10 +139,19 @@ class TransactionAddControllerTest {
         return mock(TransactionRepository.class);
     }
 
-    /** A repository whose keyed read reports {@code outcome} for any key. */
+    /**
+     * A repository whose keyed read-for-update reports {@code outcome} for any key.
+     *
+     * <p>{@code readForUpdateByTranId}, not {@code readByTranId}: {@code :275} states the
+     * {@code UPDATE} option and the translation issues the form the source states.
+     *
+     * @param outcome what the locking read reports
+     * @return the stubbed repository
+     */
     private static TransactionRepository repositoryReturning(ReadResult outcome) {
         TransactionRepository repository = mock(TransactionRepository.class);
-        when(repository.readByTranId(org.mockito.ArgumentMatchers.anyString())).thenReturn(outcome);
+        when(repository.readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(outcome);
         return repository;
     }
 
@@ -224,8 +264,9 @@ class TransactionAddControllerTest {
 
             verify(repository, never()).write(org.mockito.ArgumentMatchers.any());
             verify(repository, never()).openOutput();
-            verify(repository, never())
-                    .readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString());
+            // The plain read is never used either: :275 states UPDATE, so the locking form is the one
+            // the translation issues - which is a read, not a write, and leaves this claim intact.
+            verify(repository, never()).readByTranId(org.mockito.ArgumentMatchers.anyString());
         }
     }
 
@@ -301,7 +342,8 @@ class TransactionAddControllerTest {
             assertThat(state.response().getTitle01o()).isEqualTo(ScreenTitles.CCDA_TITLE01);
             assertThat(state.response().getErrmsgo()).isBlank();
 
-            verify(repository, never()).readByTranId(org.mockito.ArgumentMatchers.anyString());
+            verify(repository, never())
+                    .readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString());
         }
 
         @Test
@@ -327,7 +369,7 @@ class TransactionAddControllerTest {
                     .isEqualTo(2);
             assertThat(state.errFlagOn()).isFalse();
             assertThat(state.returned()).isTrue();
-            verify(repository).readByTranId(KNOWN_TRAN_ID);
+            verify(repository).readForUpdateByTranId(KNOWN_TRAN_ID);
         }
 
         @Test
@@ -347,7 +389,7 @@ class TransactionAddControllerTest {
 
             ProgramState state = controllerOver(repository).mainPara(request);
 
-            verify(repository).readByTranId(org.mockito.ArgumentMatchers.anyString());
+            verify(repository).readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString());
             assertThat(state.errFlagOn()).isTrue();
             assertThat(state.message().strip())
                     .isEqualTo(TransactionAddController.MSG_TRAN_ID_NOT_FOUND);
@@ -508,7 +550,8 @@ class TransactionAddControllerTest {
             assertThat(state.screensSent()).isEqualTo(1);
             assertThat(state.readResult()).isEmpty();
             assertThat(state.tranRecord()).isEmpty();
-            verify(repository, never()).readByTranId(org.mockito.ArgumentMatchers.anyString());
+            verify(repository, never())
+                    .readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString());
         }
 
         @Test
@@ -526,7 +569,8 @@ class TransactionAddControllerTest {
             assertThat(state.message().strip())
                     .as("neither SPACES nor LOW-VALUES, so it is read and reported as not found")
                     .isEqualTo(TransactionAddController.MSG_TRAN_ID_NOT_FOUND);
-            verify(repository).readByTranId(org.mockito.ArgumentMatchers.anyString());
+            verify(repository)
+                    .readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString());
         }
 
         @Test
@@ -901,6 +945,50 @@ class TransactionAddControllerTest {
             assertThat(TransactionAddController.eibAidOf("")).isEqualTo(CicsAid.DFHNULL);
         }
 
+        @ParameterizedTest(name = "U+{0} is refused")
+        @CsvSource({"01F3", "00F3F3", "0100", "FFFF", "20AC"})
+        @DisplayName("a character above U+00FF is refused, never narrowed onto a named key")
+        void anAidAboveOneByteIsRefused(String hex) {
+            String aid = hex.length() > 4
+                    ? String.valueOf((char) Integer.parseInt(hex.substring(0, 4), 16))
+                            + (char) Integer.parseInt(hex.substring(4), 16)
+                    : String.valueOf((char) Integer.parseInt(hex, 16));
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> TransactionAddController.eibAidOf(aid))
+                    .withMessageContaining("EIBAID is one byte");
+        }
+
+        @Test
+        @DisplayName("U+01F3 would have narrowed onto DFHPF3, the key this program transfers on")
+        void theAliasThisGuardCloses() {
+            // The whole point of the guard: (byte) '\u01F3' is 0xF3, which IS DFHPF3. Without it a
+            // caller could reach the PF3 arm at :115 without ever presenting PF3.
+            assertThat((byte) '\u01F3').isEqualTo(CicsAid.DFHPF3);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> TransactionAddController.eibAidOf("\u01F3"));
+            // And the AID it aliases is still accepted on its own, so nothing legitimate was lost.
+            assertThat(TransactionAddController.eibAidOf("\u00F3")).isEqualTo(CicsAid.DFHPF3);
+            assertThat(TransactionAddController.MAX_AID_CODE_POINT).isEqualTo((char) 0x00FF);
+        }
+
+        @Test
+        @DisplayName("an AID longer than one character is refused: EIBAID is one byte")
+        void anAidLongerThanOneCharacterIsRefused() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> TransactionAddController.eibAidOf("\u007D\u00F3"))
+                    .withMessageContaining("characters");
+            assertThat(TransactionAddRequest.AID_LENGTH).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the whole one-byte AID space is accepted, boundaries included")
+        void theWholeOneByteSpaceIsAccepted() {
+            assertThat(TransactionAddController.eibAidOf("\u0000")).isEqualTo((byte) 0x00);
+            assertThat(TransactionAddController.eibAidOf(String.valueOf(
+                    TransactionAddController.MAX_AID_CODE_POINT))).isEqualTo((byte) 0xFF);
+        }
+
         @Test
         @DisplayName("this screen never highlights a field - in either state (gate G38)")
         void theCssetatyDecisionIsAlwaysUntouched() {
@@ -1208,19 +1296,72 @@ class TransactionAddControllerTest {
     class Wiring {
 
         @Test
-        @DisplayName("both collaborators are required, and the code page is never the platform default")
+        @DisplayName("all three collaborators are required, and the code page is never the default")
         void bothCollaboratorsAreRequired() {
             TransactionRepository repository = unusedRepository();
+            DatasetUnitOfWork unitOfWork = realUnitOfWork();
             assertThatNullPointerException()
-                    .isThrownBy(() -> new TransactionAddController(null, pinnedClock()));
+                    .isThrownBy(() -> new TransactionAddController(null, pinnedClock(), unitOfWork));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new TransactionAddController(repository, null));
+                    .isThrownBy(() -> new TransactionAddController(repository, null, unitOfWork));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new TransactionAddController(repository, pinnedClock(), null))
+                    .withMessageContaining("unit of work");
             assertThatNullPointerException().isThrownBy(
-                    () -> new TransactionAddController(repository, pinnedClock(), null));
+                    () -> new TransactionAddController(repository, pinnedClock(), unitOfWork, null));
             assertThat(TransactionAddController.DEFAULT_WORKING_STORAGE_CHARSET)
                     .isEqualTo(StandardCharsets.US_ASCII);
-            assertThat(new TransactionAddController(repository, pinnedClock(),
+            assertThat(new TransactionAddController(repository, pinnedClock(), unitOfWork,
                     java.nio.charset.Charset.forName("IBM037"))).isNotNull();
+        }
+
+        @Test
+        @DisplayName(":275 the UPDATE option's lock is taken inside an open unit of work")
+        void theLockingReadRunsInsideAUnitOfWork() {
+            TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
+            TransactionRepository repository = mock(TransactionRepository.class);
+            List<Boolean> insideAUnitOfWork = new ArrayList<>();
+            List<Integer> completion = new ArrayList<>();
+            when(repository.readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString()))
+                    .thenAnswer(invocation -> {
+                        insideAUnitOfWork.add(DatasetUnitOfWork.active());
+                        TransactionSynchronizationManager.registerSynchronization(
+                                new TransactionSynchronization() {
+                                    @Override
+                                    public void afterCompletion(int status) {
+                                        completion.add(status);
+                                    }
+                                });
+                        return ReadResult.found(DD_NAME, record);
+                    });
+
+            TransactionAddRequest request = reentry(CicsAid.DFHENTER);
+            request.setTrnidin(KNOWN_TRAN_ID);
+            ProgramState state = controllerOver(repository).mainPara(request);
+
+            assertThat(state.tranRecord()).isPresent();
+            // The real repository refuses FOR UPDATE with no transaction open, so this is what makes
+            // the option the source states reproducible at all rather than only nominally issued.
+            assertThat(insideAUnitOfWork).containsExactly(true);
+            // The program writes nothing, so the boundary commits - which is the task's implicit
+            // syncpoint at EXEC CICS RETURN, and there is no ROLLBACK anywhere in COTRN01C.
+            assertThat(completion).containsExactly(TransactionSynchronization.STATUS_COMMITTED);
+            assertThat(DatasetUnitOfWork.active())
+                    .as("the boundary closes when the task returns")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a null request is refused before any boundary opens")
+        void aNullRequestIsRefusedOutsideTheBoundary() {
+            TransactionRepository repository = unusedRepository();
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> controllerOver(repository).mainPara(null));
+
+            assertThat(DatasetUnitOfWork.active()).isFalse();
+            verify(repository, never())
+                    .readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString());
         }
 
         @Test
@@ -1231,10 +1372,12 @@ class TransactionAddControllerTest {
             assertThat(TransactionAddController.MAPSET_NAME).isEqualTo("COTRN01");
             assertThat(TransactionAddController.MAP_NAME).isEqualTo("COTRN1A");
             assertThat(TransactionAddController.TRANSACT_FILE_NAME).isEqualTo("TRANSACT");
-            assertThat(TransactionAddController.TRANSACTION_VIEW_PATH)
-                    .as("the path names the source behaviour, never 'add'")
-                    .isEqualTo("/api/transactions/view")
-                    .doesNotContain("add");
+            assertThat(TransactionAddController.TRANSACTION_DETAIL_PATH)
+                    .as("a read is expressed as a read on the record it reads, never as a command")
+                    .isEqualTo("/api/transactions/{tranId}")
+                    .doesNotContain("add")
+                    .doesNotContain("view");
+            assertThat(TransactionAddController.TRAN_ID_VARIABLE).isEqualTo("tranId");
             assertThat(TransactionAddController.PROGRAM_NAME)
                     .isEqualTo(TransactionAddResponse.PROGRAM_NAME);
             assertThat(TransactionAddController.MSG_TRAN_ID_EMPTY)
@@ -1261,18 +1404,27 @@ class TransactionAddControllerTest {
                     .as("two @Autowired constructors would make the bean definition ambiguous")
                     .isEqualTo(1);
             assertThat(TransactionAddController.class
-                    .getConstructor(TransactionRepository.class, Clock.class))
+                    .getConstructor(TransactionRepository.class, Clock.class,
+                            DatasetUnitOfWork.class))
                     .isNotNull();
 
             java.lang.reflect.Method handler = TransactionAddController.class
-                    .getMethod("viewTransaction", TransactionAddRequest.class);
-            org.springframework.web.bind.annotation.PostMapping mapping = handler.getAnnotation(
-                    org.springframework.web.bind.annotation.PostMapping.class);
-            assertThat(mapping).isNotNull();
+                    .getMethod("viewTransaction", String.class, TransactionAddRequest.class);
+            org.springframework.web.bind.annotation.GetMapping mapping = handler.getAnnotation(
+                    org.springframework.web.bind.annotation.GetMapping.class);
+            assertThat(mapping)
+                    .as("COTRN01C reads and writes nothing, so the route is a GET")
+                    .isNotNull();
+            assertThat(handler.getAnnotation(
+                    org.springframework.web.bind.annotation.PostMapping.class))
+                    .as("no write-shaped mapping may remain on a read-only program")
+                    .isNull();
             assertThat(mapping.path())
-                    .containsExactly(TransactionAddController.TRANSACTION_VIEW_PATH);
-            assertThat(mapping.consumes()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
+                    .containsExactly(TransactionAddController.TRANSACTION_DETAIL_PATH);
             assertThat(mapping.produces()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(handler.getReturnType())
+                    .as("the screen travels in the shared envelope, beside its metadata")
+                    .isEqualTo(ScreenResponse.class);
             assertThat(TransactionAddController.class.getPackageName())
                     .as("inside the scanned package, so no explicit registration is needed")
                     .startsWith("com.vsergeychik.carddemo");
@@ -1289,7 +1441,7 @@ class TransactionAddControllerTest {
                             try {
                                 return Files.readString(path, StandardCharsets.UTF_8)
                                         .contains("\"" + TransactionAddController
-                                                .TRANSACTION_VIEW_PATH + "\"");
+                                                .TRANSACTION_DETAIL_PATH + "\"");
                             } catch (IOException failure) {
                                 throw new IllegalStateException("Could not read " + path, failure);
                             }
@@ -1301,7 +1453,7 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName("POST /api/transactions/view binds the body, delegates and returns the screen")
+        @DisplayName("GET /api/transactions/{tranId} binds the body, delegates and returns the screen")
         void theAdapterBindsDelegatesAndProjects() throws Exception {
             TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
             TransactionRepository repository = repositoryReturning(ReadResult.found(DD_NAME, record));
@@ -1313,20 +1465,24 @@ class TransactionAddControllerTest {
                     .build();
 
             TransactionAddRequest request = reentry(CicsAid.DFHENTER);
-            request.setTrnidin(KNOWN_TRAN_ID);
 
-            mockMvc.perform(post(TransactionAddController.TRANSACTION_VIEW_PATH)
+            mockMvc.perform(get("/api/transactions/{tranId}", KNOWN_TRAN_ID)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(request)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.trnido").value(KNOWN_TRAN_ID))
                     .andExpect(jsonPath("$.trnamto").value("+00000504.77"))
                     .andExpect(jsonPath("$.nextProgram").value("COTRN01C"))
-                    .andExpect(jsonPath("$.pgmnameo").value("COTRN01C"));
+                    .andExpect(jsonPath("$.pgmnameo").value("COTRN01C"))
+                    // The 21 screen items stay flat at the top level; the metadata joins them as one
+                    // sibling member rather than being dropped or mixed into the projection.
+                    .andExpect(jsonPath("$.screenMetadata.cursorField").value("TRNIDIN"))
+                    .andExpect(jsonPath("$.screenMetadata.fields.ERRMSG.colour").exists())
+                    .andExpect(jsonPath("$.cursorField").doesNotExist());
         }
 
         @Test
-        @DisplayName("a cold-start body is accepted and answered with the sign-on target")
+        @DisplayName("an absent body is EIBCALEN = 0 and is answered with the sign-on target")
         void theAdapterAnswersAColdStart() throws Exception {
             ObjectMapper mapper = new ObjectMapper();
             MockMvc mockMvc = MockMvcBuilders
@@ -1334,9 +1490,7 @@ class TransactionAddControllerTest {
                     .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
                     .build();
 
-            mockMvc.perform(post(TransactionAddController.TRANSACTION_VIEW_PATH)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(mapper.writeValueAsString(coldStart())))
+            mockMvc.perform(get("/api/transactions/{tranId}", KNOWN_TRAN_ID))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.nextProgram").value("COSGN00C"));
         }
@@ -1361,6 +1515,193 @@ class TransactionAddControllerTest {
             assertThat(second.response().getTrnido())
                     .as("the second execution cannot see the first one's record")
                     .isNotEqualTo(KNOWN_TRAN_ID);
+        }
+    }
+    // =============================================================================================
+    // The route binding: the URI's identity, and the metadata the envelope carries
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("bind - the URI names the transaction, and the body may not contradict it")
+    class RouteBinding {
+
+        private final TransactionAddController controller = controllerOver(unusedRepository());
+
+        @Test
+        @DisplayName("the path variable is the identity, and it fills TRNIDIN")
+        void thePathVariableIsTheIdentity() {
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, reentry(CicsAid.DFHENTER));
+
+            assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID)
+                    .hasSize(TransactionAddRequest.TRNIDIN_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a shorter path value is padded to the declared width, as a PIC X MOVE pads")
+        void aShorterPathValueIsPadded() {
+            TransactionAddRequest bound = controller.bind("1", reentry(CicsAid.DFHENTER));
+
+            assertThat(bound.getTrnidin())
+                    .isEqualTo("1" + " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH - 1));
+        }
+
+        @Test
+        @DisplayName("an over-width path value is refused, never truncated onto another transaction")
+        void anOverWidePathValueIsRefused() {
+            String tooWide = "0".repeat(TransactionAddRequest.TRNIDIN_LENGTH + 1);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controller.bind(tooWide, reentry(CicsAid.DFHENTER)))
+                    .withMessageContaining("Padding it would keep the leading");
+        }
+
+        @Test
+        @DisplayName("a body naming a different transaction is refused before any read")
+        void aDisagreeingBodyIsRefused() {
+            TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
+            stating.setTrnidin("0000000000000099");
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> controller.bind(KNOWN_TRAN_ID, stating))
+                    .withMessageContaining("TRNIDIN is the resource's identity");
+        }
+
+        @Test
+        @DisplayName("a body that agrees, space-padded or not, is accepted")
+        void anAgreeingBodyIsAccepted() {
+            TransactionAddRequest padded = reentry(CicsAid.DFHENTER);
+            padded.setTrnidin(KNOWN_TRAN_ID);
+            assertThat(controller.bind(KNOWN_TRAN_ID, padded).getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
+
+            TransactionAddRequest shortForm = reentry(CicsAid.DFHENTER);
+            shortForm.setTrnidin("1");
+            assertThat(controller.bind("1", shortForm).getTrnidin())
+                    .isEqualTo("1" + " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH - 1));
+        }
+
+        @Test
+        @DisplayName("a blank or LOW-VALUES body field states nothing, so the path supplies it")
+        void aBlankBodyFieldStatesNothing() {
+            TransactionAddRequest spaces = reentry(CicsAid.DFHENTER);
+            spaces.setTrnidin(" ".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
+            assertThat(controller.bind(KNOWN_TRAN_ID, spaces).getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
+
+            TransactionAddRequest lowValues = reentry(CicsAid.DFHENTER);
+            lowValues.setTrnidin("\u0000".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
+            assertThat(controller.bind(KNOWN_TRAN_ID, lowValues).getTrnidin())
+                    .isEqualTo(KNOWN_TRAN_ID);
+        }
+
+        @Test
+        @DisplayName("an absent body is EIBCALEN = 0: no communication area travelled")
+        void anAbsentBodyIsTheColdStart() {
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, null);
+
+            assertThat(bound.hasNavigationContext()).isFalse();
+            assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
+        }
+
+        @Test
+        @DisplayName("binding copies rather than mutating what arrived, so the caller's body is intact")
+        void bindingCopies() {
+            TransactionAddRequest arrived = reentry(CicsAid.DFHENTER);
+            String before = arrived.getTrnidin();
+
+            controller.bind(KNOWN_TRAN_ID, arrived);
+
+            assertThat(arrived.getTrnidin()).isEqualTo(before);
+        }
+
+        @Test
+        @DisplayName("the handler refuses an absent path variable: it is the RIDFLD of the read")
+        void theHandlerRefusesAnAbsentPathVariable() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> controller.viewTransaction(null, reentry(CicsAid.DFHENTER)))
+                    .withMessageContaining("transaction id");
+        }
+
+        @Test
+        @DisplayName("the metadata reports the cursor request, the quads and the message colour")
+        void theMetadataTravelsBesideTheScreen() {
+            TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
+            ScreenResponse<TransactionAddResponse> answer =
+                    controllerOver(repositoryReturning(ReadResult.found(DD_NAME, record)))
+                            .viewTransaction(KNOWN_TRAN_ID, reentry(CicsAid.DFHENTER));
+
+            ScreenMetadata metadata = answer.screenMetadata();
+            assertThat(metadata.cursorField())
+                    .as("MOVE -1 TO TRNIDINL is the one cursor request this program makes")
+                    .isEqualTo("TRNIDIN");
+            assertThat(metadata.fields())
+                    .hasSize(TransactionAddResponse.ScreenField.values().length);
+            assertThat(metadata.fields().keySet())
+                    .as("keyed by DFHMDF label, not by the xxxO item name")
+                    .contains("ERRMSG", "TRNID")
+                    .doesNotContain("ERRMSGO");
+            assertThat(metadata.messageColour())
+                    .isEqualTo(Byte.toUnsignedInt(
+                            answer.screen().attributes(TransactionAddResponse.ScreenField.ERRMSGO)
+                                    .colour()));
+            assertThat(metadata.resetAllOutputFields())
+                    .as("MOVE LOW-VALUES has already been applied to the screen being published")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("an unsigned quad is published, so DFHRED reads 242 and never -14")
+        void quadsArePublishedUnsigned() {
+            TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("1.00"));
+            ProgramState state = controllerOver(repositoryReturning(ReadResult.found(DD_NAME, record)))
+                    .mainPara(reentry(CicsAid.DFHENTER));
+            state.response().setAttributes(TransactionAddResponse.ScreenField.ERRMSGO,
+                    new TransactionAddResponse.AttributeQuad(BmsAttributes.DFHRED,
+                            BmsAttributes.DFHDFCOL, BmsAttributes.DFHDFCOL, BmsAttributes.DFHDFCOL));
+
+            ScreenMetadata metadata = state.screenMetadata();
+
+            assertThat(metadata.field("ERRMSG").colour()).isEqualTo(242);
+            assertThat(metadata.messageColour()).isEqualTo(242);
+        }
+
+        @Test
+        @DisplayName("the CT00 list and the CT01 detail read coexist: one path template, two handlers")
+        void theListAndTheDetailReadCoexist() throws Exception {
+            TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
+            TransactionRepository shared = repositoryReturning(ReadResult.found(DD_NAME, record));
+            TransactionMenuController list = new TransactionMenuController(shared,
+                    new com.vsergeychik.carddemo.common.FixedWidthCodec(StandardCharsets.US_ASCII),
+                    pinnedClock());
+
+            // Both controllers in one dispatcher, which is what production has. If GET
+            // /api/transactions/{tranId} could be read as the collection route, or the other way round,
+            // Spring would refuse to start or would answer the wrong handler - and this would fail.
+            MockMvc both = MockMvcBuilders
+                    .standaloneSetup(controllerOver(shared), list)
+                    .setMessageConverters(new MappingJackson2HttpMessageConverter(new ObjectMapper()))
+                    .build();
+
+            // The two screens are told apart by a member only one of them declares: COTRN00's paging
+            // field, and COTRN01's edited amount. Which handler answered is therefore unambiguous
+            // without depending on what either one painted.
+            both.perform(get("/api/transactions"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.pagenumO").exists())
+                    .andExpect(jsonPath("$.trnamto").doesNotExist());
+            both.perform(get("/api/transactions/{tranId}", KNOWN_TRAN_ID))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.trnamto").exists())
+                    .andExpect(jsonPath("$.pagenumO").doesNotExist());
+        }
+
+        @Test
+        @DisplayName("a transferring arm places no cursor, and the metadata names no field")
+        void aTransferPlacesNoCursor() {
+            ScreenResponse<TransactionAddResponse> answer = controllerOver(unusedRepository())
+                    .viewTransaction(KNOWN_TRAN_ID, null);
+
+            assertThat(answer.screen().getNextProgram().strip())
+                    .isEqualTo(TransactionAddController.SIGN_ON_PROGRAM);
+            assertThat(answer.screenMetadata().cursorField()).isNull();
         }
     }
 }

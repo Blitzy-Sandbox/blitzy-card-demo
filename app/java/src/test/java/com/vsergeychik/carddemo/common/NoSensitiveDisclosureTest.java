@@ -2,6 +2,12 @@ package com.vsergeychik.carddemo.common;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.vsergeychik.carddemo.account.AccountUpdateService;
+import com.vsergeychik.carddemo.account.dto.AccountUpdateRequest;
+import com.vsergeychik.carddemo.account.dto.AccountUpdateRequest.DetailGroup;
+import com.vsergeychik.carddemo.account.dto.AccountViewRequest;
+import com.vsergeychik.carddemo.billing.dto.BillPaymentResponse;
+import com.vsergeychik.carddemo.transaction.model.DalyTranRecord;
 import com.vsergeychik.carddemo.admin.dto.AdminMenuRequest;
 import com.vsergeychik.carddemo.admin.dto.AdminMenuResponse;
 import com.vsergeychik.carddemo.admin.dto.MainMenuRequest;
@@ -15,6 +21,7 @@ import com.vsergeychik.carddemo.statement.model.Stm03CustomerRecord;
 import com.vsergeychik.carddemo.user.dto.UserListRequest;
 import com.vsergeychik.carddemo.user.dto.SignOnResponse;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestRequest;
+import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -1043,6 +1050,154 @@ class NoSensitiveDisclosureTest {
                             // so it was neither flagged nor vouched for while publishing both names.
                             "com.vsergeychik.carddemo.user.model.SecUserRecord")
                     .hasSizeGreaterThan(5);
+        }
+    }
+
+    // =============================================================================================
+    // The B2 renderings brought under the policy - the security findings of this checkpoint.
+    //
+    // Each of these published personal or financial data through a Java-only toString(). None of them
+    // has a COBOL counterpart, so withholding costs no observable behaviour; publishing cost a log line
+    // holding a named person's identity (CWE-532) and a field able to forge a second line (CWE-117).
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("the account screen DTOs, the update service records, and the transaction diagnostics")
+    class BoundaryRenderings {
+
+        @Test
+        @DisplayName("the account view request discloses none of the sentinels")
+        void accountViewRequestDisclosesNothing() {
+            AccountViewRequest request = new AccountViewRequest();
+            request.setAcctsid(Long.toString(SENTINEL_ACCT_ID));
+            request.setAcstssn(SENTINEL_SSN);
+            request.setAcsgovt(SENTINEL_GOVT_ID);
+            request.setAcseftc(SENTINEL_EFT);
+            request.setAcsfnam(SENTINEL_FNAME);
+            request.setAcslnam(SENTINEL_LNAME);
+
+            disclosesNothing("AccountViewRequest", request.toString());
+        }
+
+        @Test
+        @DisplayName("the account update request and both of its snapshots disclose none of the "
+                + "sentinels")
+        void accountUpdateRequestDisclosesNothing() {
+            AccountUpdateRequest request = AccountUpdateRequest.builder()
+                    .acctsid(Long.toString(SENTINEL_ACCT_ID))
+                    .actssn1(SENTINEL_SSN.substring(0, 3))
+                    .actssn2(SENTINEL_SSN.substring(3, 5))
+                    .actssn3(SENTINEL_SSN.substring(5))
+                    .acsgovt(SENTINEL_GOVT_ID)
+                    .acseftc(SENTINEL_EFT)
+                    .acsfnam(SENTINEL_FNAME)
+                    .acslnam(SENTINEL_LNAME)
+                    .build();
+
+            disclosesNothing("AccountUpdateRequest", request.toString());
+
+            // And the nested snapshots on their own, because the generated record renderings printed
+            // every component and the group recursed into both of them.
+            AccountUpdateRequest.CustSnapshot cust = new AccountUpdateRequest.CustSnapshot(
+                    Integer.toString(SENTINEL_CUST_ID), SENTINEL_FNAME, "Q", SENTINEL_LNAME,
+                    "1 MAIN ST", "APT 2", "SPRINGFIELD", "IL", "USA", "62704-0001",
+                    "(217)555-1234", "(217)555-9876", SENTINEL_SSN, SENTINEL_GOVT_ID, "19800704",
+                    SENTINEL_EFT, "Y", "750");
+            AccountUpdateRequest.AcctSnapshot acct = new AccountUpdateRequest.AcctSnapshot(
+                    Long.toString(SENTINEL_ACCT_ID), "Y", "1000.00", "5000.00", "500.00",
+                    "20220101", "20270101", "20240101", "10.00", "20.00", "GROUP01");
+
+            disclosesNothing("AccountUpdateRequest.CustSnapshot", cust.toString());
+            disclosesNothing("AccountUpdateRequest.AcctSnapshot", acct.toString());
+            disclosesNothing("AccountUpdateRequest.Details",
+                    new AccountUpdateRequest.Details(DetailGroup.OLD, acct, cust).toString());
+        }
+
+        @Test
+        @DisplayName("the update service's account and customer subgroups disclose none of the "
+                + "sentinels")
+        void accountUpdateServiceRecordsDiscloseNothing() {
+            AccountUpdateService.CustomerData customer = new AccountUpdateService.CustomerData(
+                    SENTINEL_CUST_ID, SENTINEL_FNAME, "Q", SENTINEL_LNAME,
+                    "1 MAIN ST", "APT 2", "SPRINGFIELD", "IL", "USA", "62704-0001",
+                    "(217)555-1234", "(217)555-9876", Integer.parseInt(SENTINEL_SSN),
+                    SENTINEL_GOVT_ID, "1980", "07", "04", SENTINEL_EFT, "Y", 750);
+            AccountUpdateService.AccountData account = new AccountUpdateService.AccountData(
+                    SENTINEL_ACCT_ID, "Y", new BigDecimal("1000.00"), new BigDecimal("5000.00"),
+                    new BigDecimal("500.00"), "2022", "01", "01", "2027", "01", "01",
+                    "2024", "01", "01", new BigDecimal("10.00"), new BigDecimal("20.00"), "GROUP01");
+
+            disclosesNothing("AccountUpdateService.CustomerData", customer.toString());
+            disclosesNothing("AccountUpdateService.AccountData", account.toString());
+            disclosesNothing("AccountUpdateService.AccountUpdateDetails",
+                    new AccountUpdateService.AccountUpdateDetails(
+                            AccountUpdateService.DetailGroup.OLD, account, customer).toString());
+        }
+
+        @Test
+        @DisplayName("the daily transaction record discloses none of the sentinels, and withholds the "
+                + "amount")
+        void dalyTranRecordDisclosesNothing() {
+            String image = (SENTINEL_PAN + "0000000000683580").substring(0, 0)
+                    + padded("0000000000683580", 16)
+                    + padded("01", 2) + padded("0001", 4) + padded("POS TERM", 10)
+                    + padded("A DESCRIPTION", 100) + padded("0000005047G", 11)
+                    + padded("800000000", 9) + padded("MERCHANT", 50) + padded("CITY", 50)
+                    + padded("72112", 10) + padded(SENTINEL_PAN, 16)
+                    + padded("2022-06-10 19:27:53.000000", 26)
+                    + padded("2022-06-10 19:27:53.000000", 26) + padded("", 20);
+
+            DalyTranRecord record = DalyTranRecord.decode(image, StandardCharsets.US_ASCII);
+
+            disclosesNothing("DalyTranRecord", record.toString());
+            // The amount is the field this record exists to carry, and it is withheld in both forms.
+            assertThat(record.toString()).doesNotContain("0000005047G").doesNotContain("504.77");
+            // While the byte-exact path - the parity surface - still carries everything.
+            assertThat(record.displayImage()).contains(SENTINEL_PAN);
+        }
+
+        @Test
+        @DisplayName("the bill payment response discloses none of the sentinels and withholds the "
+                + "balance")
+        void billPaymentResponseDisclosesNothing() {
+            BillPaymentResponse response = new BillPaymentResponse();
+            response.setActIdIn(Long.toString(SENTINEL_ACCT_ID));
+            response.setCurBal("1234.56");
+            response.setNavigationContext(populatedContext());
+
+            disclosesNothing("BillPaymentResponse", response.toString());
+            assertThat(response.toString()).doesNotContain("1234.56");
+        }
+
+        @Test
+        @DisplayName("every one of these renderings stays on one line, whatever it was given")
+        void everyRenderingStaysOnOneLine() {
+            // CWE-117, checked once for the whole group: a fixed-width field holds whatever was moved
+            // into it, so a CR or LF must not survive into the rendering.
+            AccountViewRequest request = new AccountViewRequest();
+            request.setTrnname("CAVW\r\nINJECTED");
+            AccountUpdateRequest update = AccountUpdateRequest.builder()
+                    .trnname("CAUP\r\nINJECTED").build();
+            BillPaymentResponse bill = new BillPaymentResponse();
+            bill.setErrMsg("BROKEN\r\nINJECTED");
+
+            for (String rendering : java.util.List.of(request.toString(), update.toString(),
+                    bill.toString())) {
+                assertThat(rendering.lines()).hasSize(1);
+                assertThat(rendering).doesNotContain("\r");
+            }
+        }
+
+        /**
+         * Right-pads a value to a declared width, as a stored record span holds it.
+         *
+         * @param value the value
+         * @param width the declared width
+         * @return exactly {@code width} characters
+         */
+        private static String padded(String value, int width) {
+            return value.length() >= width ? value.substring(0, width)
+                    : value + " ".repeat(width - value.length());
         }
     }
 }

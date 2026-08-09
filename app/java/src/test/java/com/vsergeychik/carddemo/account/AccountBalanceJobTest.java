@@ -13,6 +13,8 @@ import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopRequestedException;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 
@@ -24,6 +26,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
@@ -777,6 +780,78 @@ class AccountBalanceJobTest {
         }
     }
 
+    // =================================================================================================
+    // The handle is released however the pass ends. CBACT01C abends outright without closing, so what
+    // matters here is that releasing changes nothing the program observably produces - its SYSOUT line
+    // sequence and its return code are the whole of that.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("the account-master handle is released however the pass ends")
+    class HandleRelease {
+
+        /**
+         * The job over a repository whose opens can be observed.
+         *
+         * @param template the template reaching the relation
+         * @param sysout   where displayed lines are captured
+         * @param opened   collects every handle the open returned
+         * @return the job
+         */
+        private AccountBalanceJob jobRecordingOpens(JdbcTemplate template, SysoutSink sysout,
+                List<AccountFile> opened) {
+            AccountRepository spied = Mockito.spy(repository(template));
+            Mockito.doAnswer(invocation -> {
+                AccountFile handle = (AccountFile) invocation.callRealMethod();
+                opened.add(handle);
+                return handle;
+            }).when(spied).open(Mockito.any());
+            return new AccountBalanceJob(scaffolding(jobContracts()), spied, new PresentBean<>(sysout));
+        }
+
+        @Test
+        @DisplayName("an abending read leaves the handle closed, and adds no line to SYSOUT")
+        void anAbendingReadStillReleasesTheHandle() {
+            JdbcTemplate template = emptyDatabase();
+            template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (" + RECORD_IMAGE_COLUMN
+                    + " VARCHAR(" + RECORD_LENGTH + "))");
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (NULL)");
+            CapturedSysout sysout = new CapturedSysout();
+            List<AccountFile> opened = new ArrayList<>();
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> jobRecordingOpens(template, sysout, opened)
+                            .readAndPrintAccountFile());
+
+            assertThat(opened).hasSize(1);
+            assertThat(opened.get(0).isClosed())
+                    .as("L83 was never reached, so the request boundary released the handle")
+                    .isTrue();
+            assertThat(sysout.lines())
+                    .as("and it did so silently - the source has no such line")
+                    .containsExactly(AccountBalanceJob.START_OF_EXECUTION,
+                            AccountBalanceJob.ERROR_READING_ACCOUNT_FILE,
+                            PERMANENT_ERROR_LINE,
+                            AbendException.ABEND_DISPLAY_TEXT);
+        }
+
+        @Test
+        @DisplayName("a normal run closes the handle once, at L83, and the release does not fire")
+        void aNormalRunClosesAtL83() {
+            CapturedSysout sysout = new CapturedSysout();
+            List<AccountFile> opened = new ArrayList<>();
+
+            jobRecordingOpens(seeded(List.of()), sysout, opened).readAndPrintAccountFile();
+
+            assertThat(opened).hasSize(1);
+            assertThat(opened.get(0).isClosed()).isTrue();
+            assertThat(sysout.lines())
+                    .as("the successful path is unchanged: banner, close, banner")
+                    .containsExactly(AccountBalanceJob.START_OF_EXECUTION,
+                            AccountBalanceJob.END_OF_EXECUTION);
+        }
+    }
+
     @Nested
     @DisplayName("The fatal arm of 9000-ACCTFILE-CLOSE")
     class CloseFailure {
@@ -1312,6 +1387,132 @@ class AccountBalanceJobTest {
                 assertThat(storage.endOfFileIsYes()).isTrue();
                 assertThat(storage.applEof()).isTrue();
             }
+        }
+    }
+    // =============================================================================================
+    // Bounded cancellation - the pass yields to a stop request between records.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("Bounded cancellation - the pass yields to a stop request between records")
+    class BoundedCancellation {
+
+        @Test
+        @DisplayName("no stop requested leaves the pass exactly as it was, line for line")
+        void withoutAStopTheWholePassRuns() {
+            CapturedSysout withSignal = new CapturedSysout();
+            CapturedSysout withoutSignal = new CapturedSysout();
+
+            job(seeded(fixtureRows()), withoutSignal).readAndPrintAccountFile(withoutSignal);
+            job(seeded(fixtureRows()), withSignal)
+                    .readAndPrintAccountFile(withSignal, StopSignal.of(stepExecution()));
+
+            // The signal is consulted on every iteration and changes nothing while nothing is pending,
+            // which is the property that makes the probe additive rather than a change to the pass.
+            assertThat(withSignal.lines()).isEqualTo(withoutSignal.lines());
+            assertThat(withSignal.lines()).hasSize(EXPECTED_LINES);
+        }
+
+        @Test
+        @DisplayName("a stop requested before the pass starts ends it at the first record boundary")
+        void aStopBeforeTheFirstRecordEndsThePassAtOnce() {
+            StepExecution stepExecution = stepExecution();
+            stepExecution.setTerminateOnly();
+            CapturedSysout sysout = new CapturedSysout();
+            AccountBalanceJob subject = job(seeded(fixtureRows()), sysout);
+
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(() -> subject.readAndPrintAccountFile(sysout,
+                            StopSignal.of(stepExecution)))
+                    .withMessageContaining(AccountBalanceJob.STEP_NAME)
+                    .withMessageContaining("NO write is retried")
+                    // The cause is what makes AbstractStep report the step as STOPPED rather than
+                    // FAILED, so it is asserted rather than left as an implementation detail.
+                    .withCauseInstanceOf(JobInterruptedException.class);
+
+            // The OPEN happened and its banner was written; not one record line was.
+            assertThat(sysout.lines()).containsExactly(AccountBalanceJob.START_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("a stop part way through leaves whole record images and no closing banner")
+        void aStopPartWayThroughLeavesTheRecordInFlightComplete() {
+            StepExecution stepExecution = stepExecution();
+            CapturedSysout sysout = new CapturedSysout();
+            AccountBalanceJob subject = job(seeded(fixtureRows()), sysout);
+            int stopAfter = 5;
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    subject.readAndPrintAccountFile(sysout,
+                            signalStoppingAfter(stepExecution, stopAfter)));
+
+            // CBACT01C displays each record as a BLOCK of AccountBalanceJob.LINES_PER_RECORD lines, so
+            // a pass stopped between records must show a whole number of blocks. A count that was not an
+            // exact multiple would mean the probe had landed mid-record, which is the one thing its
+            // position rules out - and it is a stronger statement than any per-line assertion.
+            assertThat(sysout.lines())
+                    .hasSize(1 + stopAfter * AccountBalanceJob.LINES_PER_RECORD);
+            assertThat((sysout.lines().size() - 1) % AccountBalanceJob.LINES_PER_RECORD).isZero();
+
+            // The closing banner is NOT written, exactly as it is not written on an abend: a stopped
+            // pass must not report the end of a normal execution.
+            assertThat(sysout.lines()).doesNotContain(AccountBalanceJob.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("a null stop signal is refused rather than silently treated as 'never stop'")
+        void aNullStopSignalIsRefused() {
+            AccountBalanceJob subject = job(seeded(List.of()), new CapturedSysout());
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> subject.readAndPrintAccountFile(new CapturedSysout(), null))
+                    .withMessageContaining("StopSignal.RUNNING");
+        }
+
+        @Test
+        @DisplayName("the tasklet takes its signal from the step execution the framework supplies")
+        void theTaskletTakesItsSignalFromTheStepExecution() {
+            StepExecution stepExecution = stepExecution();
+            stepExecution.setTerminateOnly();
+            CapturedSysout sysout = new CapturedSysout();
+            Tasklet tasklet = job(seeded(fixtureRows()), sysout).accountFileDisplayTasklet();
+            StepContribution contribution = new StepContribution(stepExecution);
+
+            // Driven exactly as TaskletStep drives it, so this asserts the wiring and not just the
+            // program: a tasklet that ignored the chunk context would run the whole pass here.
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    tasklet.execute(contribution, new ChunkContext(new StepContext(stepExecution))));
+
+            assertThat(sysout.lines()).containsExactly(AccountBalanceJob.START_OF_EXECUTION);
+            assertThat(contribution.getReadCount()).isZero();
+        }
+
+        /** @return a fresh step execution over this job's step, not asked to stop */
+        private StepExecution stepExecution() {
+            return new StepExecution(AccountBalanceJob.STEP_NAME, new JobExecution(9L));
+        }
+
+        /**
+         * A probe that permits the given number of records and then reports a stop.
+         *
+         * <p>It sets {@code terminateOnly} on the real step execution and then delegates to the real
+         * {@link StopSignal}, so the refusal is produced by the production probe and the framework's own
+         * interruption policy rather than by a stand-in that merely throws the same type.
+         *
+         * @param stepExecution the execution to mark
+         * @param permitted     how many consultations return before the stop is requested
+         * @return the probe
+         */
+        private StopSignal signalStoppingAfter(StepExecution stepExecution, int permitted) {
+            StopSignal real = StopSignal.of(stepExecution);
+            int[] consulted = { 0 };
+            return () -> {
+                if (consulted[0] == permitted) {
+                    stepExecution.setTerminateOnly();
+                }
+                consulted[0]++;
+                real.checkStopRequested();
+            };
         }
     }
 }

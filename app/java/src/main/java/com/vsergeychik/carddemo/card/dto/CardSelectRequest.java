@@ -499,48 +499,63 @@ public final class CardSelectRequest {
     //
     // @JsonProperty pins each wire name to the DFHMDF label in lower case, so a JSON naming strategy
     // configured later cannot rename a field out from under the presentation contract.
+    //
+    // Every @Size declares PUBLIC_LENGTH_MESSAGE. The copybook item, its PICTURE clause and the line
+    // it was read from stay in the Javadoc on each member, which is where a maintainer looks for them;
+    // they are not constraint-violation text, because that text is written for a caller.
     // =================================================================================================
+
+    /**
+     * The message every width constraint below declares, and the only text a rejected field publishes.
+     *
+     * <p>{@code {max}} is the constraint's own declared bound, interpolated by the validator, so the
+     * sentence states the width without restating the number - and the width of a field a caller sends
+     * is already part of the published contract, so naming it discloses nothing.
+     *
+     * <p><strong>What it deliberately does not say.</strong> Each of these messages used to read
+     * {@code "CARDSID is CARDSIDI PIC X(16) at app/cpy-bms/COCRDSL.CPY:66 and holds at most 16
+     * characters"} - the symbolic-map item, its {@code PICTURE} clause, the copybook path and the line
+     * number. That is provenance written for the engineer maintaining the field, and its place is the
+     * Javadoc on the member, where it remains in full. Handed to an unauthenticated caller one
+     * rejected field at a time it becomes an inventory of this module's copybooks and their line
+     * numbers - a description of the estate behind the API rather than a correction the caller can act
+     * on.
+     *
+     * <p>{@code config/WebConfig}'s error advice does not forward a validator message at all - it maps
+     * the constraint's code and bound onto its own fixed sentence, so nothing declared here can reach a
+     * caller by accident. This constant matches that sentence exactly, so the two agree if a future
+     * consumer of Bean Validation does surface a message directly.
+     */
+    public static final String PUBLIC_LENGTH_MESSAGE = "must be at most {max} characters";
 
     /** {@code TRNNAME}: {@code TRNNAMEI PIC X(4)}, {@code app/cpy-bms/COCRDSL.CPY:24}. */
     @JsonProperty("trnname")
-    @Size(max = TRNNAME_LENGTH,
-            message = "TRNNAME is TRNNAMEI PIC X(4) at app/cpy-bms/COCRDSL.CPY:24 and holds at most 4 "
-                    + "characters")
+    @Size(max = TRNNAME_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String trnname;
 
     /** {@code TITLE01}: {@code TITLE01I PIC X(40)}, {@code app/cpy-bms/COCRDSL.CPY:30}. */
     @JsonProperty("title01")
-    @Size(max = TITLE01_LENGTH,
-            message = "TITLE01 is TITLE01I PIC X(40) at app/cpy-bms/COCRDSL.CPY:30 and holds at most 40 "
-                    + "characters")
+    @Size(max = TITLE01_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String title01;
 
     /** {@code CURDATE}: {@code CURDATEI PIC X(8)}, {@code app/cpy-bms/COCRDSL.CPY:36}. */
     @JsonProperty("curdate")
-    @Size(max = CURDATE_LENGTH,
-            message = "CURDATE is CURDATEI PIC X(8) at app/cpy-bms/COCRDSL.CPY:36 and holds at most 8 "
-                    + "characters")
+    @Size(max = CURDATE_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String curdate;
 
     /** {@code PGMNAME}: {@code PGMNAMEI PIC X(8)}, {@code app/cpy-bms/COCRDSL.CPY:42}. */
     @JsonProperty("pgmname")
-    @Size(max = PGMNAME_LENGTH,
-            message = "PGMNAME is PGMNAMEI PIC X(8) at app/cpy-bms/COCRDSL.CPY:42 and holds at most 8 "
-                    + "characters")
+    @Size(max = PGMNAME_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String pgmname;
 
     /** {@code TITLE02}: {@code TITLE02I PIC X(40)}, {@code app/cpy-bms/COCRDSL.CPY:48}. */
     @JsonProperty("title02")
-    @Size(max = TITLE02_LENGTH,
-            message = "TITLE02 is TITLE02I PIC X(40) at app/cpy-bms/COCRDSL.CPY:48 and holds at most 40 "
-                    + "characters")
+    @Size(max = TITLE02_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String title02;
 
     /** {@code CURTIME}: {@code CURTIMEI PIC X(8)}, {@code app/cpy-bms/COCRDSL.CPY:54}. */
     @JsonProperty("curtime")
-    @Size(max = CURTIME_LENGTH,
-            message = "CURTIME is CURTIMEI PIC X(8) at app/cpy-bms/COCRDSL.CPY:54 and holds at most 8 "
-                    + "characters")
+    @Size(max = CURTIME_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String curtime;
 
     /**
@@ -551,9 +566,7 @@ public final class CardSelectRequest {
      * {@code CC-ACCT-ID}.
      */
     @JsonProperty("acctsid")
-    @Size(max = ACCTSID_LENGTH,
-            message = "ACCTSID is ACCTSIDI PIC X(11) at app/cpy-bms/COCRDSL.CPY:60 and holds at most 11 "
-                    + "characters")
+    @Size(max = ACCTSID_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String acctsid;
 
     /**
@@ -565,58 +578,42 @@ public final class CardSelectRequest {
      * (practice <strong>B6</strong>).
      */
     @JsonProperty("cardsid")
-    @Size(max = CARDSID_LENGTH,
-            message = "CARDSID is CARDSIDI PIC X(16) at app/cpy-bms/COCRDSL.CPY:66 and holds at most 16 "
-                    + "characters")
+    @Size(max = CARDSID_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String cardsid;
 
     /** {@code CRDNAME}: {@code CRDNAMEI PIC X(50)}, {@code app/cpy-bms/COCRDSL.CPY:72}. */
     @JsonProperty("crdname")
-    @Size(max = CRDNAME_LENGTH,
-            message = "CRDNAME is CRDNAMEI PIC X(50) at app/cpy-bms/COCRDSL.CPY:72 and holds at most 50 "
-                    + "characters")
+    @Size(max = CRDNAME_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String crdname;
 
     /** {@code CRDSTCD}: {@code CRDSTCDI PIC X(1)}, {@code app/cpy-bms/COCRDSL.CPY:78}. */
     @JsonProperty("crdstcd")
-    @Size(max = CRDSTCD_LENGTH,
-            message = "CRDSTCD is CRDSTCDI PIC X(1) at app/cpy-bms/COCRDSL.CPY:78 and holds at most 1 "
-                    + "character")
+    @Size(max = CRDSTCD_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String crdstcd;
 
     /** {@code EXPMON}: {@code EXPMONI PIC X(2)}, {@code app/cpy-bms/COCRDSL.CPY:84}. */
     @JsonProperty("expmon")
-    @Size(max = EXPMON_LENGTH,
-            message = "EXPMON is EXPMONI PIC X(2) at app/cpy-bms/COCRDSL.CPY:84 and holds at most 2 "
-                    + "characters")
+    @Size(max = EXPMON_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String expmon;
 
     /** {@code EXPYEAR}: {@code EXPYEARI PIC X(4)}, {@code app/cpy-bms/COCRDSL.CPY:90}. */
     @JsonProperty("expyear")
-    @Size(max = EXPYEAR_LENGTH,
-            message = "EXPYEAR is EXPYEARI PIC X(4) at app/cpy-bms/COCRDSL.CPY:90 and holds at most 4 "
-                    + "characters")
+    @Size(max = EXPYEAR_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String expyear;
 
     /** {@code INFOMSG}: {@code INFOMSGI PIC X(40)}, {@code app/cpy-bms/COCRDSL.CPY:96}. */
     @JsonProperty("infomsg")
-    @Size(max = INFOMSG_LENGTH,
-            message = "INFOMSG is INFOMSGI PIC X(40) at app/cpy-bms/COCRDSL.CPY:96 and holds at most 40 "
-                    + "characters")
+    @Size(max = INFOMSG_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String infomsg;
 
     /** {@code ERRMSG}: {@code ERRMSGI PIC X(80)}, {@code app/cpy-bms/COCRDSL.CPY:102}. */
     @JsonProperty("errmsg")
-    @Size(max = ERRMSG_LENGTH,
-            message = "ERRMSG is ERRMSGI PIC X(80) at app/cpy-bms/COCRDSL.CPY:102 and holds at most 80 "
-                    + "characters")
+    @Size(max = ERRMSG_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String errmsg;
 
     /** {@code FKEYS}: {@code FKEYSI PIC X(75)}, {@code app/cpy-bms/COCRDSL.CPY:108}. */
     @JsonProperty("fkeys")
-    @Size(max = FKEYS_LENGTH,
-            message = "FKEYS is FKEYSI PIC X(75) at app/cpy-bms/COCRDSL.CPY:108 and holds at most 75 "
-                    + "characters")
+    @Size(max = FKEYS_LENGTH, message = PUBLIC_LENGTH_MESSAGE)
     private String fkeys;
 
     // =================================================================================================
@@ -652,6 +649,21 @@ public final class CardSelectRequest {
      */
     @JsonProperty("navigationContext")
     private NavigationContext navigationContext;
+
+    /**
+     * {@code WS-THIS-PROGCOMMAREA} - the twelve bytes this program appends to
+     * {@code CARDDEMO-COMMAREA} when it returns, and restores from what the caller passed.
+     *
+     * <p>Never {@code null}: {@link ThisProgCommarea#initialized()} is the state
+     * {@code app/cbl/COCRDSLC.cbl:272} leaves it in, and a payload that omits it is a payload whose
+     * trailer is spaces - which is a value, not an absence. Its presence is <strong>not</strong> what
+     * distinguishes a cold start; {@link #hasNavigationContext()} is, because {@code :268} tests
+     * {@code EIBCALEN} against zero and the trailer has no separate presence of its own.
+     *
+     * @see ThisProgCommarea for why the twelve bytes have to travel in both directions
+     */
+    @JsonProperty("thisProgCommarea")
+    private ThisProgCommarea thisProgCommarea = ThisProgCommarea.initialized();
 
     /**
      * The {@code xxxL} and {@code xxxA} items of all fifteen fields, one holder per field.
@@ -740,6 +752,9 @@ public final class CardSelectRequest {
         this.fkeys = other.fkeys;
         this.cardScreenState = new CardScreenState(other.cardScreenState);
         this.navigationContext = other.navigationContext;
+        // A record, so sharing it is safe - and it must be carried, or a copy would return a trailer of
+        // spaces where the original returned the caller's twelve bytes.
+        this.thisProgCommarea = other.thisProgCommarea;
         for (ScreenField field : ScreenField.values()) {
             metadata.put(field, new ScreenFieldMetadata(other.metadata.get(field)));
         }
@@ -808,6 +823,10 @@ public final class CardSelectRequest {
         // Absence, not an initialised area: EIBCALEN = 0 is the first disjunct of COCRDSLC.cbl:268,
         // and a request nobody has passed a communication area to has not been passed one.
         this.navigationContext = null;
+        // The trailer, unlike the communication area, has no absent state of its own: :272 INITIALIZEs
+        // it to spaces and :276-278 restores it from the passed area, so spaces is what a request that
+        // states nothing states.
+        this.thisProgCommarea = ThisProgCommarea.initialized();
     }
 
     /**
@@ -1300,6 +1319,30 @@ public final class CardSelectRequest {
     }
 
     /**
+     * {@code WS-THIS-PROGCOMMAREA} as it arrived - the twelve bytes {@code :276-278} restores.
+     *
+     * @return the trailer; never {@code null}, and {@link ThisProgCommarea#initialized()} when the
+     *         payload stated none
+     */
+    public ThisProgCommarea getThisProgCommarea() {
+        return thisProgCommarea;
+    }
+
+    /**
+     * Sets {@code WS-THIS-PROGCOMMAREA}.
+     *
+     * <p>{@code null} is normalised to {@link ThisProgCommarea#initialized()} rather than stored,
+     * because a COBOL group item has no absent state and every reader of this member would otherwise
+     * have to defend against one.
+     *
+     * @param thisProgCommarea the trailer, or {@code null} for the initialised twelve spaces
+     */
+    public void setThisProgCommarea(ThisProgCommarea thisProgCommarea) {
+        this.thisProgCommarea =
+                thisProgCommarea == null ? ThisProgCommarea.initialized() : thisProgCommarea;
+    }
+
+    /**
      * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
      * being non-zero at {@code app/cbl/COCRDSLC.cbl:268}.
      *
@@ -1314,16 +1357,30 @@ public final class CardSelectRequest {
     }
 
     /**
-     * The length CICS would report in {@code EIBCALEN}:
-     * {@value NavigationContext#COMMAREA_LENGTH} when a communication area travelled with this request
-     * and {@code 0} when none did.
+     * The length CICS would report in {@code EIBCALEN}: {@value #PASSED_COMMAREA_LENGTH} when a
+     * communication area travelled with this request and {@code 0} when none did.
      *
-     * @return {@value NavigationContext#COMMAREA_LENGTH} or {@code 0}
+     * <p>{@value #PASSED_COMMAREA_LENGTH} and not {@value NavigationContext#COMMAREA_LENGTH}, because
+     * what {@code COCRDSLC} passes and receives is {@code CARDDEMO-COMMAREA} <em>followed by</em>
+     * {@code WS-THIS-PROGCOMMAREA}: {@code app/cbl/COCRDSLC.cbl:397-400} composes the two into
+     * {@code WS-COMMAREA} before the {@code EXEC CICS RETURN} at {@code :402-406}, and {@code :274-278}
+     * splits an inbound area back into both. A caller that reported 160 here would be describing an
+     * area this program never sends.
+     *
+     * @return {@value #PASSED_COMMAREA_LENGTH} or {@code 0}
      */
     @JsonIgnore
     public int commareaLength() {
-        return hasNavigationContext() ? NavigationContext.COMMAREA_LENGTH : 0;
+        return hasNavigationContext() ? PASSED_COMMAREA_LENGTH : 0;
     }
+
+    /**
+     * The length of the area this screen passes and receives: {@code CARDDEMO-COMMAREA} plus
+     * {@code WS-THIS-PROGCOMMAREA}, {@value NavigationContext#COMMAREA_LENGTH} +
+     * {@value ThisProgCommarea#RECORD_LENGTH} = {@value #PASSED_COMMAREA_LENGTH} bytes.
+     */
+    public static final int PASSED_COMMAREA_LENGTH =
+            NavigationContext.COMMAREA_LENGTH + ThisProgCommarea.RECORD_LENGTH;
 
     /**
      * {@code CDEMO-PGM-CONTEXT PIC 9(01)} as carried by the communication area, or
@@ -2359,4 +2416,114 @@ public final class CardSelectRequest {
         };
     }
 
+    // =================================================================================================
+    // WS-THIS-PROGCOMMAREA - app/cbl/COCRDSLC.cbl:200-203.
+    // =================================================================================================
+
+    /**
+     * {@code WS-THIS-PROGCOMMAREA} - the twelve bytes {@code COCRDSLC} appends to
+     * {@code CARDDEMO-COMMAREA} when it returns.
+     *
+     * <pre>
+     * 01 WS-THIS-PROGCOMMAREA.
+     *    05 CA-CALL-CONTEXT.
+     *       10 CA-FROM-PROGRAM  PIC X(08).
+     *       10 CA-FROM-TRANID   PIC X(04).
+     * </pre>
+     *
+     * <p>The program never reads or writes either field - it restores the area at {@code :276-278} and
+     * returns it at {@code :398-400}, so the twelve bytes travel out exactly as they travelled in. That
+     * pass-through is behaviour, and dropping it shortens the returned area from
+     * {@value CardSelectRequest#PASSED_COMMAREA_LENGTH} bytes to
+     * {@value NavigationContext#COMMAREA_LENGTH} and changes what the next program in a chain receives.
+     *
+     * <h4>Why it is declared here, and separately from the communication area</h4>
+     * It is a member of this request and of the paired response because it is <em>payload</em>: a
+     * carrier that only existed inside the controller could be initialised and returned but never
+     * received, so {@code :276-278} would restore twelve spaces on every turn no matter what the caller
+     * passed - which is what this migration did before this type moved here.
+     *
+     * <p>It is <strong>not</strong> folded into {@link NavigationContext}. That type is
+     * {@code COCOM01Y}'s {@code 01 CARDDEMO-COMMAREA}, exactly
+     * {@value NavigationContext#COMMAREA_LENGTH} bytes, shared verbatim by all seventeen screens;
+     * widening it by twelve bytes for one program's private trailer would change the width every other
+     * screen sends. The two areas are contiguous on the wire and distinct in declaration, which is
+     * precisely how the COBOL has them - and it is the same arrangement the {@code CT01} screen uses for
+     * {@code CDEMO-CT01-INFO}.
+     *
+     * @param caFromProgram {@code CA-FROM-PROGRAM PIC X(08)}, {@code app/cbl/COCRDSLC.cbl:202}
+     * @param caFromTranid  {@code CA-FROM-TRANID PIC X(04)}, {@code :203}
+     */
+    public record ThisProgCommarea(@JsonProperty("caFromProgram") String caFromProgram,
+                                   @JsonProperty("caFromTranid") String caFromTranid) {
+
+        /** Declared width of {@code CA-FROM-PROGRAM}: {@code PIC X(08)}. */
+        public static final int CA_FROM_PROGRAM_LENGTH = 8;
+
+        /** Declared width of {@code CA-FROM-TRANID}: {@code PIC X(04)}. */
+        public static final int CA_FROM_TRANID_LENGTH = 4;
+
+        /** The whole area: {@value #CA_FROM_PROGRAM_LENGTH} + {@value #CA_FROM_TRANID_LENGTH} bytes. */
+        public static final int RECORD_LENGTH = CA_FROM_PROGRAM_LENGTH + CA_FROM_TRANID_LENGTH;
+
+        /**
+         * Rejects {@code null} in either component. A COBOL alphanumeric field is never absent; the
+         * empty state is a run of spaces.
+         *
+         * <p>Widths are deliberately not enforced, because a group item can legitimately be observed
+         * mid-{@code MOVE}. {@link #toImage(FixedWidthCodec)} applies them.
+         *
+         * @throws NullPointerException if either component is {@code null}
+         */
+        public ThisProgCommarea {
+            Objects.requireNonNull(caFromProgram, "caFromProgram (CA-FROM-PROGRAM) must not be null: "
+                    + "COBOL has no absent state, so an empty value is a run of spaces");
+            Objects.requireNonNull(caFromTranid, "caFromTranid (CA-FROM-TRANID) must not be null: "
+                    + "COBOL has no absent state, so an empty value is a run of spaces");
+        }
+
+        /**
+         * {@code INITIALIZE WS-THIS-PROGCOMMAREA} - {@code app/cbl/COCRDSLC.cbl:272}: both alphanumeric
+         * items to spaces at their declared widths.
+         *
+         * @return the initialised area; never {@code null}
+         */
+        public static ThisProgCommarea initialized() {
+            return new ThisProgCommarea(spaces(CA_FROM_PROGRAM_LENGTH),
+                    spaces(CA_FROM_TRANID_LENGTH));
+        }
+
+        /**
+         * Renders the area as its twelve-character fixed-width image, applying the {@code PIC X} move to
+         * each component.
+         *
+         * @param codec the codec owning the {@code PIC X} move rule
+         * @return exactly {@value #RECORD_LENGTH} characters
+         * @throws NullPointerException if {@code codec} is {@code null}
+         */
+        public String toImage(FixedWidthCodec codec) {
+            Objects.requireNonNull(codec, "A codec is required to apply the PIC X move");
+            return codec.movePicX(caFromProgram, CA_FROM_PROGRAM_LENGTH)
+                    + codec.movePicX(caFromTranid, CA_FROM_TRANID_LENGTH);
+        }
+
+        /**
+         * Reads the area back from a twelve-character image, splitting at the copybook's offsets.
+         *
+         * @param image a {@value #RECORD_LENGTH}-character image
+         * @return the decoded area; never {@code null}
+         * @throws NullPointerException     if {@code image} is {@code null}
+         * @throws IllegalArgumentException if {@code image} is not exactly {@value #RECORD_LENGTH}
+         *                                  characters
+         */
+        public static ThisProgCommarea fromImage(String image) {
+            Objects.requireNonNull(image, "An image is required to decode WS-THIS-PROGCOMMAREA");
+            if (image.length() != RECORD_LENGTH) {
+                throw new IllegalArgumentException("WS-THIS-PROGCOMMAREA is " + RECORD_LENGTH
+                        + " characters, but the image supplied is " + image.length());
+            }
+            return new ThisProgCommarea(image.substring(0, CA_FROM_PROGRAM_LENGTH),
+                    image.substring(CA_FROM_PROGRAM_LENGTH));
+        }
+    }
 }

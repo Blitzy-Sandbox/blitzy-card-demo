@@ -24,6 +24,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /**
  * Unit tests for {@link UserDeleteRequest}, the inbound payload of the {@code CU03} delete-user
@@ -82,7 +83,7 @@ class UserDeleteRequestTest {
     private static UserDeleteRequest populated(NavigationContext context) {
         return new UserDeleteRequest("CU03", "AWS Mainframe Modernization", "08/08/26", "COUSR03C",
                 "CardDemo", "09:31:41", "USER0001", "John", "Doe", "U",
-                "Press PF5 key to delete this user ...", context, "ENTER");
+                "Press PF5 key to delete this user ...", context, "ENTER", null);
     }
 
     private static List<String> mapValuesOf(UserDeleteRequest request) {
@@ -92,19 +93,19 @@ class UserDeleteRequestTest {
     }
 
     @Nested
-    @DisplayName("The field set: eleven members, and the twelfth that must never appear")
+    @DisplayName("The field set: eleven map members, and the twelfth that must never appear")
     class FieldSet {
 
         @Test
-        @DisplayName("there are exactly eleven map-derived members plus the two state carriers")
+        @DisplayName("there are exactly eleven map-derived members plus the three state carriers")
         void memberCount() {
             RecordComponent[] components = UserDeleteRequest.class.getRecordComponents();
 
-            assertThat(components).hasSize(13);
+            assertThat(components).hasSize(14);
             assertThat(Stream.of(components).map(RecordComponent::getName).toList())
                     .startsWith(MAP_MEMBERS.toArray(String[]::new))
-                    .endsWith("navigationContext", "aid");
-            assertThat(components.length - 2).isEqualTo(UserDeleteRequest.MAP_FIELD_COUNT);
+                    .endsWith("navigationContext", "aid", "cu03Info");
+            assertThat(components.length - 3).isEqualTo(UserDeleteRequest.MAP_FIELD_COUNT);
             assertThat(UserDeleteRequest.MAP_FIELD_COUNT).isEqualTo(11);
         }
 
@@ -129,13 +130,17 @@ class UserDeleteRequestTest {
         }
 
         @Test
-        @DisplayName("every member is a String except the navigation context, and none is floating point")
+        @DisplayName("every member is a String except the two typed state carriers, and none is float")
         void memberTypes() {
             for (RecordComponent component : UserDeleteRequest.class.getRecordComponents()) {
+                Class<?> expected = switch (component.getName()) {
+                    case "navigationContext" -> NavigationContext.class;
+                    case "cu03Info" -> UserDeleteRequest.Cu03Info.class;
+                    default -> String.class;
+                };
                 assertThat(component.getType())
                         .isNotIn(double.class, float.class, Double.class, Float.class)
-                        .isEqualTo("navigationContext".equals(component.getName())
-                                ? NavigationContext.class : String.class);
+                        .isEqualTo(expected);
             }
         }
 
@@ -278,7 +283,7 @@ class UserDeleteRequestTest {
                 // replace an observable answer with a protocol error.
                 assertThat(validator.validate(UserDeleteRequest.empty())).isEmpty();
                 assertThat(validator.validate(new UserDeleteRequest(null, null, null, null, null,
-                        null, null, null, null, null, null, null, null))).isEmpty();
+                        null, null, null, null, null, null, null, null, null))).isEmpty();
             }
         }
 
@@ -290,7 +295,7 @@ class UserDeleteRequestTest {
 
                 UserDeleteRequest nineCharacterId = new UserDeleteRequest("CU03", "T1", "08/08/26",
                         "COUSR03C", "T2", "09:31:41", "USER00012", "John", "Doe", "U", "msg",
-                        NavigationContext.empty(), "ENTER");
+                        NavigationContext.empty(), "ENTER", null);
                 Set<ConstraintViolation<UserDeleteRequest>> violations =
                         validator.validate(nineCharacterId);
 
@@ -305,24 +310,24 @@ class UserDeleteRequestTest {
         private UserDeleteRequest withErrMsgOfWidth(int width) {
             return new UserDeleteRequest("CU03", "T1", "08/08/26", "COUSR03C", "T2", "09:31:41",
                     "USER0001", "John", "Doe", "U", "x".repeat(width), NavigationContext.empty(),
-                    "ENTER");
+                    "ENTER", null);
         }
     }
 
     @Nested
-    @DisplayName("Serialisation: thirteen keys, no map metadata, no trimming")
+    @DisplayName("Serialisation: fourteen keys, no map metadata, no trimming")
     class Serialisation {
 
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
-        @DisplayName("the payload is exactly the thirteen declared members")
+        @DisplayName("the payload is exactly the fourteen declared members")
         void keySet() throws Exception {
             Set<String> keys = keysOf(populated(NavigationContext.empty()));
 
-            assertThat(keys).hasSize(13).containsExactlyInAnyOrder("trnName", "title01", "curDate",
+            assertThat(keys).hasSize(14).containsExactlyInAnyOrder("trnName", "title01", "curDate",
                     "pgmName", "title02", "curTime", "usrIdIn", "fName", "lName", "usrType",
-                    "errMsg", "navigationContext", "aid");
+                    "errMsg", "navigationContext", "aid", "cu03Info");
         }
 
         @Test
@@ -354,7 +359,7 @@ class UserDeleteRequestTest {
         void roundTrip() throws Exception {
             UserDeleteRequest original = new UserDeleteRequest("CU03", "  padded title  ", null,
                     "COUSR03C", null, "        ", "USER    ", "                    ", null, " ",
-                    "   message with trailing space   ", NavigationContext.empty(), "PA1  ");
+                    "   message with trailing space   ", NavigationContext.empty(), "PA1  ", null);
 
             UserDeleteRequest back = mapper.readValue(mapper.writeValueAsString(original),
                     UserDeleteRequest.class);
@@ -461,7 +466,7 @@ class UserDeleteRequestTest {
             // delete. None of those paths is reachable without a faithful key indication here.
             assertThat(populated(NavigationContext.empty()).trnName()).isEqualTo("CU03");
             assertThat(new UserDeleteRequest(null, null, null, null, null, null, null, null, null,
-                    null, null, null, token).aid()).isEqualTo(token).hasSize(5);
+                    null, null, null, token, null).aid()).isEqualTo(token).hasSize(5);
         }
     }
 
@@ -498,7 +503,7 @@ class UserDeleteRequestTest {
             // remain distinguishable because the program itself tests '= SPACES OR LOW-VALUES'.
             assertThat(UserDeleteRequest.empty().usrIdIn()).isNotNull().isBlank();
             assertThat(UserDeleteRequest.empty()).isNotEqualTo(new UserDeleteRequest(null, null,
-                    null, null, null, null, null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null, null, null, null, null));
         }
 
         @Test
@@ -509,6 +514,96 @@ class UserDeleteRequestTest {
                     .hasSameHashCodeAs(UserDeleteRequest.empty())
                     .isNotSameAs(UserDeleteRequest.empty());
             assertThat(UserDeleteRequest.empty()).hasToString(UserDeleteRequest.empty().toString());
+        }
+    }
+    @Nested
+    @DisplayName("CDEMO-CU03-INFO - the 34-byte extension COUSR03C declares at :50-58")
+    class Cu03InfoExtension {
+
+        @Test
+        @DisplayName("initial() is what the VALUE clauses leave: spaces, and a page number of zero")
+        void initialIsTheValueClauseState() {
+            UserDeleteRequest.Cu03Info info = UserDeleteRequest.Cu03Info.initial();
+
+            assertThat(info.usridFirst()).isEqualTo(" ".repeat(
+                    UserDeleteRequest.Cu03Info.USRID_FIRST_LENGTH));
+            assertThat(info.usridLast()).isEqualTo(" ".repeat(
+                    UserDeleteRequest.Cu03Info.USRID_LAST_LENGTH));
+            // COUSR03C:53 declares CDEMO-CU03-NEXT-PAGE-FLG PIC X(01) VALUE 'N', so the initial state
+            // of this one item is 'N' and not a space.
+            assertThat(info.nextPageFlg()).isEqualTo(UserDeleteRequest.Cu03Info.NEXT_PAGE_NO);
+            assertThat(info.usrSelFlg()).isEqualTo(" ".repeat(
+                    UserDeleteRequest.Cu03Info.USR_SEL_FLG_LENGTH));
+            assertThat(info.usrSelected()).isEqualTo(" ".repeat(
+                    UserDeleteRequest.Cu03Info.USR_SELECTED_LENGTH));
+            assertThat(info.pageNum()).isZero();
+        }
+
+        @Test
+        @DisplayName("an item that was not supplied becomes its declared width in spaces, not null")
+        void anAbsentItemBecomesSpaces() {
+            // A group item inside the communication area has no absent state: the bytes are there,
+            // holding whatever the VALUE clauses left. null therefore projects to the space image.
+            UserDeleteRequest.Cu03Info info =
+                    new UserDeleteRequest.Cu03Info(null, null, 0, null, null, null);
+
+            assertThat(info.usridFirst()).isEqualTo(" ".repeat(
+                    UserDeleteRequest.Cu03Info.USRID_FIRST_LENGTH));
+            assertThat(info.usridLast()).isEqualTo(" ".repeat(
+                    UserDeleteRequest.Cu03Info.USRID_LAST_LENGTH));
+            assertThat(info.usrSelFlg()).isEqualTo(" ");
+            assertThat(info.usrSelected()).isEqualTo(" ".repeat(
+                    UserDeleteRequest.Cu03Info.USR_SELECTED_LENGTH));
+            // The one item with a VALUE clause is the only one initial() sets to something other than
+            // spaces, so null is a space here and 'N' there - which is exactly the difference.
+            assertThat(info.nextPageFlg()).isEqualTo(" ");
+            assertThat(info).isNotEqualTo(UserDeleteRequest.Cu03Info.initial());
+        }
+
+        @Test
+        @DisplayName("a value wider than its item is truncated on the right, as a PIC X MOVE is")
+        void anOverWideItemIsTruncatedOnTheRight() {
+            UserDeleteRequest.Cu03Info info = new UserDeleteRequest.Cu03Info(
+                    "USER00012345", "USER9999", 0, "YES", "SS", "SELECTED9");
+
+            assertThat(info.usridFirst()).isEqualTo("USER0001");
+            assertThat(info.nextPageFlg()).isEqualTo("Y");
+            assertThat(info.usrSelFlg()).isEqualTo("S");
+            assertThat(info.usrSelected()).isEqualTo("SELECTED");
+        }
+
+        @Test
+        @DisplayName("CDEMO-CU03-PAGE-NUM is PIC 9(08): a negative page number has no representation")
+        void aNegativePageNumberIsRefused() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new UserDeleteRequest.Cu03Info(null, null, -1, null, null, null))
+                    .withMessageContaining("no sign position");
+        }
+
+        @Test
+        @DisplayName("a page number needing more than eight digits is refused, not silently truncated")
+        void anOverWidePageNumberIsRefused() {
+            int tooWide = (int) Math.pow(10, UserDeleteRequest.Cu03Info.PAGE_NUM_DIGITS);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new UserDeleteRequest.Cu03Info(null, null, tooWide, null, null,
+                            null))
+                    .withMessageContaining("drop its high-order");
+            assertThat(new UserDeleteRequest.Cu03Info(null, null, tooWide - 1, null, null, null)
+                    .pageNum()).isEqualTo(tooWide - 1);
+        }
+
+        @Test
+        @DisplayName("the group is 34 bytes, which is what widens the passed commarea to 194")
+        void theGroupIsThirtyFourBytes() {
+            assertThat(UserDeleteRequest.Cu03Info.LENGTH).isEqualTo(34);
+            assertThat(UserDeleteRequest.Cu03Info.USRID_FIRST_LENGTH
+                    + UserDeleteRequest.Cu03Info.USRID_LAST_LENGTH
+                    + UserDeleteRequest.Cu03Info.PAGE_NUM_DIGITS
+                    + UserDeleteRequest.Cu03Info.NEXT_PAGE_FLG_LENGTH
+                    + UserDeleteRequest.Cu03Info.USR_SEL_FLG_LENGTH
+                    + UserDeleteRequest.Cu03Info.USR_SELECTED_LENGTH)
+                    .isEqualTo(UserDeleteRequest.Cu03Info.LENGTH);
         }
     }
 }

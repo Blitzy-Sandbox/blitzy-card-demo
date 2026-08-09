@@ -24,6 +24,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
@@ -812,18 +813,27 @@ public class CardListController {
      * sends the payload it received last time, carrying the communication area, the pagination cursor
      * and the screen the operator was looking at - never a server-side session (gate G37).
      *
+     * <p><strong>The reply is the screen plus its metadata.</strong> {@code CCRDLIAO}'s 45 payload members
+     * are unwrapped at the top level of the JSON, exactly as before, and the map's 45 attribute quads, the
+     * colour of the error line and the field the {@code MOVE -1} aimed the cursor at travel beside them
+     * under {@code screenMetadata}. Those items are metadata by the symbolic map's own declaration and are
+     * therefore not payload members (gate G9), but a client that cannot see them cannot repaint a field the
+     * program turned red or place the cursor where it was asked for - so they are published in the one
+     * envelope every online screen in this module uses rather than being dropped.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start
      * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255}, or
      *                {@code null} for {@link CicsAid#DFHENTER}
-     * @return the {@code CCRDLIAO} projection, or - on a transfer of control - the navigation triple
-     *         naming where the client goes next
+     * @return the {@code CCRDLIAO} projection - or, on a transfer of control, the navigation triple naming
+     *         where the client goes next - together with this screen's presentation metadata
      * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
      */
     @GetMapping(path = CARD_LIST_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
-    public CardListResponse getCards(
+    public ScreenResponse<CardListResponse> getCards(
             @Valid @RequestBody(required = false) CardListRequest request,
             @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
-        return listCards(request, resolveEibAid(eibaid));
+        CardListResponse painted = listCards(request, resolveEibAid(eibaid));
+        return ScreenResponse.of(painted, painted.screenMetadata());
     }
 
     /**
@@ -2121,6 +2131,11 @@ public class CardListController {
         // The map and mapset the send names, so a caller can confirm which screen was painted.
         response.setPageCursor(ws.cursor);
         response.setCardScreenState(ws.ccWorkArea);
+        // CURSOR on the SEND statement honours the xxxL markers the two attribute paragraphs left. This
+        // is the one point at which the cursor request becomes observable, so it is where the request is
+        // handed to the response for publication under screenMetadata (see placeCursor for why the
+        // marker cannot travel as a payload field).
+        response.setCursorField(ws.cursorField);
     }
 
     // =================================================================================================

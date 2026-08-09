@@ -5,6 +5,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.math.BigDecimal;
@@ -1249,23 +1250,50 @@ public final class DalyTranRecord {
      *
      * @return a single-line description of every field
      */
+    /**
+     * A diagnostic rendering that describes the transaction without disclosing the activity.
+     *
+     * <p>The card number was already masked, and the rest was not: the transaction identifier, the
+     * description, the amount in both its raw zoned image and its decoded form, the merchant identifier,
+     * name, city and postcode, and both timestamps were printed verbatim. Together those describe who
+     * spent how much where and when - so a log holding them holds the financial activity the record exists
+     * to carry (CWE-532) - and every one of them is a {@code PIC X} span that can hold any byte the
+     * upstream file put there, so a CR or LF among them forges a second log line (CWE-117).
+     *
+     * <p>The transaction and merchant identifiers are masked to their last four characters, which still
+     * distinguishes one record from another while diagnosing a parity failure. The amount is withheld in
+     * both forms - the decoded {@code BigDecimal} was the more revealing of the two and had no protection
+     * at all. The description, merchant name, city and postcode are described by length only, which is
+     * what a width or padding investigation needs. The type, category, source and timestamp fields carry
+     * no personal data and are retained, escaped to a single line.
+     *
+     * <p><strong>The parity surface is untouched.</strong> {@link #displayImage()} still renders the
+     * record byte for byte, and every field accessor still returns exactly what the span holds - those are
+     * what a parity case reads. This rendering has no COBOL counterpart at all, so withholding from it
+     * costs no observable behaviour.
+     *
+     * @return the rendering; never {@code null}
+     */
     @Override
     public String toString() {
         return "DalyTranRecord["
                 + "charset=" + area.charset().name()
-                + ", DALYTRAN-ID='" + dalytranId() + '\''
-                + ", DALYTRAN-TYPE-CD='" + dalytranTypeCd() + '\''
-                + ", DALYTRAN-CAT-CD='" + dalytranCatCdImage() + '\''
-                + ", DALYTRAN-SOURCE='" + dalytranSource() + '\''
-                + ", DALYTRAN-DESC='" + dalytranDesc() + '\''
-                + ", DALYTRAN-AMT='" + dalytranAmtImage() + "'=" + dalytranAmt()
-                + ", DALYTRAN-MERCHANT-ID='" + dalytranMerchantIdImage() + '\''
-                + ", DALYTRAN-MERCHANT-NAME='" + dalytranMerchantName() + '\''
-                + ", DALYTRAN-MERCHANT-CITY='" + dalytranMerchantCity() + '\''
-                + ", DALYTRAN-MERCHANT-ZIP='" + dalytranMerchantZip() + '\''
-                + ", DALYTRAN-CARD-NUM='" + SensitiveDiagnostics.maskPan(dalytranCardNum()) + '\''
-                + ", DALYTRAN-ORIG-TS='" + dalytranOrigTs() + '\''
-                + ", DALYTRAN-PROC-TS='" + dalytranProcTs() + '\''
+                + ", DALYTRAN-ID=" + SensitiveDiagnostics.maskIdentifier(dalytranId())
+                + ", DALYTRAN-TYPE-CD=" + DiagnosticText.singleLine(dalytranTypeCd())
+                + ", DALYTRAN-CAT-CD=" + DiagnosticText.singleLine(dalytranCatCdImage())
+                + ", DALYTRAN-SOURCE=" + DiagnosticText.singleLine(dalytranSource())
+                + ", DALYTRAN-DESC=" + SensitiveDiagnostics.describeText(dalytranDesc())
+                + ", DALYTRAN-AMT=" + DiagnosticText.omitted(dalytranAmtImage())
+                + ", DALYTRAN-MERCHANT-ID=" + SensitiveDiagnostics.maskIdentifier(
+                        dalytranMerchantIdImage())
+                + ", DALYTRAN-MERCHANT-NAME=" + SensitiveDiagnostics.describeText(
+                        dalytranMerchantName())
+                + ", DALYTRAN-MERCHANT-CITY=" + SensitiveDiagnostics.describeText(
+                        dalytranMerchantCity())
+                + ", DALYTRAN-MERCHANT-ZIP=" + SensitiveDiagnostics.describeText(dalytranMerchantZip())
+                + ", DALYTRAN-CARD-NUM=" + SensitiveDiagnostics.maskPan(dalytranCardNum())
+                + ", DALYTRAN-ORIG-TS=" + DiagnosticText.singleLine(dalytranOrigTs())
+                + ", DALYTRAN-PROC-TS=" + DiagnosticText.singleLine(dalytranProcTs())
                 // FILLER carries no field semantics - it is pad - so its width is the only thing worth
                 // reporting about it, and printing twenty spaces would only pad the line.
                 + ", FILLER.length=" + filler().length()

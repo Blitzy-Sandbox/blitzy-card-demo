@@ -559,6 +559,66 @@ public final class DatasetRelation {
         return "INSERT INTO " + identifier + " VALUES (?)";
     }
 
+    /**
+     * How many records the relation holds.
+     *
+     * <p>Needed for one purpose, and it is worth naming so this is not mistaken for a general-purpose
+     * count: a dataset a step allocates {@code NEW} and whose DD statement carries an abnormal
+     * disposition of {@code DELETE} must be discarded when the step abends, and a discard is only safe
+     * once the relation has been shown to hold nothing but what this run wrote. It takes no column name,
+     * which matters because an output-only relation created {@code NEW} is never described and has no
+     * column name to be had.
+     *
+     * @return {@code SELECT COUNT(*) FROM <relation>}
+     */
+    public String countAllStatement() {
+        return "SELECT COUNT(*) FROM " + identifier;
+    }
+
+    /**
+     * Removes every record the relation holds - the Java form of a DD statement's {@code DELETE}
+     * abnormal disposition.
+     *
+     * <p>{@code DISP=(NEW,CATLG,DELETE)} names three things: the dataset is created by the step, is
+     * catalogued if the step ends normally, and is <em>deleted</em> if it does not. The deletion is of the
+     * whole dataset, not of selected records, which is why this statement carries no predicate - and it is
+     * only equivalent to the mainframe's behaviour where the relation holds exactly one allocation's
+     * records. A caller must establish that with {@link #countAllStatement()} before issuing this, and
+     * refuse the discard rather than issue it when the counts disagree.
+     *
+     * @return {@code DELETE FROM <relation>}
+     */
+    public String deleteAllStatement() {
+        return "DELETE FROM " + identifier;
+    }
+
+    /**
+     * Empties the relation - what {@code DISP=(NEW,CATLG,DELETE)} means for a dataset whose relation
+     * already exists.
+     *
+     * <p>Every output dataset in this estate is created {@code NEW} by its JCL: {@code SYSTRAN(+1)} at
+     * {@code app/jcl/INTCALC.jcl:L37-L41}, {@code DALYREJS(+1)} at {@code app/jcl/POSTTRAN.jcl:L34-L38},
+     * {@code TRANREPT(+1)} at {@code app/jcl/TRANREPT.jcl:L76-L80}, and the statement pair at
+     * {@code app/jcl/CREASTMT.JCL:L87-L96}. A run therefore writes into an <em>empty</em> generation,
+     * and whatever a previous run produced is not part of it.
+     *
+     * <p>This is the one statement form that expresses that, and it is deliberately a delete of rows
+     * rather than anything that touches the relation's definition: no {@code DROP}, no
+     * {@code TRUNCATE}, no {@code CREATE} - this migration issues no data-definition statement at all
+     * (gate G44). Emptying an already-empty relation removes nothing and is not a failure, exactly as
+     * {@code app/jcl/CREASTMT.JCL:L28} follows its deletes with {@code SET MAXCC = 0} because on a first
+     * run there is nothing there to delete.
+     *
+     * <p>No column is named and no predicate is composed, so nothing external reaches the statement
+     * text beyond the dataset name this class has already validated as a z/OS dataset name and
+     * delimited.
+     *
+     * @return {@code DELETE FROM <relation>}
+     */
+    public String deleteAll() {
+        return "DELETE FROM " + identifier;
+    }
+
     /** The keyed predicate: an escaped {@code LIKE} over the record image. */
     private String keyedPredicate(String recordImageColumnName) {
         return " WHERE " + delimit(recordImageColumnName) + " LIKE ? ESCAPE '" + LIKE_ESCAPE + "'";

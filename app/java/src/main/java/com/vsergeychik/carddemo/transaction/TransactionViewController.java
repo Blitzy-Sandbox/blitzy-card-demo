@@ -11,7 +11,10 @@ import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.NumericIntrinsics;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.transaction.dto.TransactionViewRequest;
@@ -28,6 +31,7 @@ import java.nio.charset.Charset;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -642,18 +646,6 @@ public class TransactionViewController {
     /** {@code ADD 1 TO WS-TRAN-ID-N} - L449. */
     private static final long ONE = 1L;
 
-    /** {@code '$'}, which is what distinguishes {@code NUMVAL-C} from {@code NUMVAL}. */
-    private static final char CURRENCY_SIGN = '$';
-
-    /** {@code ','}, the digit-grouping separator {@code NUMVAL-C} tolerates in the integer part. */
-    private static final char DIGIT_SEPARATOR = ',';
-
-    /** The trailing credit indicator both intrinsics accept as a negative sign. */
-    private static final String CREDIT_INDICATOR = "CR";
-
-    /** The trailing debit indicator, which the intrinsics treat exactly as {@code CR}. */
-    private static final String DEBIT_INDICATOR = "DB";
-
 
     // =================================================================================================
     // Collaborators. All final, all constructor-injected, none static (practice B9, gate G53).
@@ -813,14 +805,19 @@ public class TransactionViewController {
      *
      * @param request the inbound screen, the communication area and the {@code EIBAID}; must not be
      *                {@code null}
-     * @return the painted screen, the next program and the communication area to carry forward
+     * @return the painted screen, the next program, the communication area to carry forward and the
+     *         presentation metadata - the cursor request, the twenty-one attribute quads and the
+     *         message colour - which are metadata by declaration and travel beside the screen rather
+     *         than inside it
      * @throws NullPointerException if {@code request} is {@code null}
      */
     @PostMapping(path = TRANSACTIONS_PATH,
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public TransactionViewResponse addTransaction(@Valid @RequestBody TransactionViewRequest request) {
-        return mainPara(request).response();
+    public ScreenResponse<TransactionViewResponse> addTransaction(
+            @Valid @RequestBody TransactionViewRequest request) {
+        ProgramState state = mainPara(request);
+        return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
     // =================================================================================================
@@ -1412,15 +1409,24 @@ public class TransactionViewController {
         requireState(state);
 
         state.moveHighValuesToTranId();                                                    // L444
-        startbrTransactFile(state);                                                        // L445
-        if (state.taskEnded()) {
-            return;
+
+        // L445-L447 The browse spans three statements, and either of the two rejecting arms between them
+        // ends the task before L447's ENDBR. Under CICS that is harmless because task termination
+        // releases the browse implicitly; there is no such implicit release here, so the request boundary
+        // performs it. releaseBrowse is a no-op when L447 already ran.
+        try {
+            startbrTransactFile(state);                                                    // L445
+            if (state.taskEnded()) {
+                return;
+            }
+            readprevTransactFile(state);                                                   // L446
+            if (state.taskEnded()) {
+                return;
+            }
+            endbrTransactFile(state);                                                      // L447
+        } finally {
+            releaseBrowse(state);
         }
-        readprevTransactFile(state);                                                       // L446
-        if (state.taskEnded()) {
-            return;
-        }
-        endbrTransactFile(state);                                                          // L447
 
         state.setWsTranIdN(movePicXToPic9(state.tranRecord().tranId(),
                 WS_TRAN_ID_N_DIGITS));                                                     // L448
@@ -1487,15 +1493,22 @@ public class TransactionViewController {
         }
 
         state.moveHighValuesToTranId();                                                       // L475
-        startbrTransactFile(state);                                                           // L476
-        if (state.taskEnded()) {
-            return;
+
+        // L476-L478 The same three-statement browse as ADD-TRANSACTION, with the same two rejecting arms
+        // between them. See that paragraph for why the request boundary releases it.
+        try {
+            startbrTransactFile(state);                                                       // L476
+            if (state.taskEnded()) {
+                return;
+            }
+            readprevTransactFile(state);                                                      // L477
+            if (state.taskEnded()) {
+                return;
+            }
+            endbrTransactFile(state);                                                         // L478
+        } finally {
+            releaseBrowse(state);
         }
-        readprevTransactFile(state);                                                          // L477
-        if (state.taskEnded()) {
-            return;
-        }
-        endbrTransactFile(state);                                                             // L478
 
         // L480 IF NOT ERR-FLG-ON.
         if (!state.errFlagOn()) {
@@ -1553,6 +1566,16 @@ public class TransactionViewController {
         state.response().setNavigationContext(state.commarea());
         state.response().setCt02Info(state.ct02Info());
         state.response().setNextProgram(state.commarea().toProgram());
+
+        // The mapset and map are blanked, and that is the whole of the correction here. An XCTL hands
+        // control to another program, and which map that program will paint is its decision, made after
+        // this one has ended: COTRN02C names no map in the XCTL at L508-511, and the CDEMO-LAST-MAPSET
+        // and CDEMO-LAST-MAP items it passes are the caller's, not the target's. Leaving this response's
+        // own COTRN02 / COTRN2A defaults standing would tell the client to paint the screen it is
+        // leaving, which is the one screen that is certainly wrong. Blank means "not stated here" -
+        // the client follows nextProgram, and the target's own reply names its map.
+        state.response().setNextMapset(spaces(NavigationContext.LAST_MAPSET_LENGTH));
+        state.response().setNextMap(spaces(NavigationContext.LAST_MAP_LENGTH));
         state.markTransferred();
     }
 
@@ -1918,6 +1941,41 @@ public class TransactionViewController {
     }
 
     /**
+     * Releases the transaction browse on the way out of a paragraph that did not reach its {@code ENDBR}.
+     *
+     * <p>{@code ADD-TRANSACTION} and {@code COPY-LAST-TRAN-DATA} both position a browse at {@code L445}
+     * and {@code L476} and end it at {@code L447} and {@code L478}, with two rejecting arms in between
+     * that end the task first. Under CICS the unended browse costs nothing, because terminating the task
+     * releases it; a request handler has no equivalent implicit release, so this supplies one.
+     *
+     * <p>Nothing observable changes. {@code EXEC CICS ENDBR} at {@code L704} carries no {@code RESP} and
+     * the paragraph tests no outcome, so the program already inspects nothing from its own {@code ENDBR};
+     * and {@link ProgramState#closeBrowse()} is null-safe and clears the handle, so a paragraph that
+     * reached {@code L447} or {@code L478} finds nothing left to release. No map is sent, no message set
+     * and no flag raised. Any fault raised while releasing is swallowed so it cannot displace the
+     * request's own outcome.
+     *
+     * @param state the per-request working storage
+     */
+    private static void releaseBrowse(ProgramState state) {
+        if (!state.browseOpen()) {
+            return;
+        }
+        try {
+            state.closeBrowse();
+        } catch (RuntimeException cleanupFailure) {
+            // Only the failure's TYPE is logged - never the throwable and never its message. A driver
+            // composes its message around the value it refused, and a transaction row carries the card
+            // number and the amount (CWE-532); a newline in that text could forge a second log entry
+            // (CWE-117). A class name carries no data and no newline.
+            LOG.warn("Ending the " + WS_TRANSACT_FILE + " browse of " + PROGRAM_NAME + " after a request "
+                    + "that did not reach ENDBR failed - " + cleanupFailure.getClass().getName()
+                    + ". The request's own outcome is unchanged, because the request's own failure is "
+                    + "the one that matters.");
+        }
+    }
+
+    /**
      * {@code ENDBR-TRANSACT-FILE} - lines 702 to 706: end the browse.
      *
      * <p>{@code EXEC CICS ENDBR DATASET(WS-TRANSACT-FILE)} with <strong>no {@code RESP}</strong>, so the
@@ -2258,22 +2316,24 @@ public class TransactionViewController {
     /**
      * {@code FUNCTION NUMVAL} - lines 204 and 218.
      *
-     * <p>Returns the numeric value of a character representation that may carry a sign, digit-grouping
-     * commas and a decimal point, as a {@link BigDecimal} so every digit survives - never as
-     * {@code double} or {@code float}, which cannot represent a decimal fraction exactly (gate G22). The
-     * argument format is the one the intrinsic documents, with spaces permitted between the elements:
+     * <p>Returns the numeric value of a character representation that may carry a sign and a decimal
+     * point, as a {@link BigDecimal} so every digit survives - never as {@code double} or
+     * {@code float}, which cannot represent a decimal fraction exactly (gate G22). The argument format
+     * is the one the intrinsic documents, with spaces permitted between the elements:
      *
-     * <pre>{@code [+|-] digits[,digits]... [.[digits]] [+|-|CR|DB]}</pre>
+     * <pre>{@code [+|-] digits[.[digits]] [+|-|CR|DB]}</pre>
      *
-     * <p>It differs from {@link #numvalC(String)} in exactly one way: <strong>no currency sign is
-     * accepted.</strong> That is the whole distinction between the two intrinsics, and it is why
-     * {@code "$12"} converts under {@code NUMVAL-C} and does not conform under {@code NUMVAL}.
+     * <p>It differs from {@link #numvalC(String)} in <strong>two</strong> ways, not one: {@code NUMVAL}
+     * accepts neither a currency sign nor a digit-grouping comma. Both are {@code NUMVAL-C}
+     * extensions, which is why {@code "$12"} and {@code "1,234"} convert under {@code NUMVAL-C} and
+     * neither conforms under {@code NUMVAL}. {@code CR} and {@code DB}, by contrast, belong to
+     * <em>both</em> intrinsics.
      *
-     * <p><strong>An argument that does not conform yields zero.</strong> COBOL leaves that case undefined,
-     * so a deterministic choice has to be made and zero is chosen, consistently with the sibling screen's
-     * treatment of the same intrinsic. It changes nothing this screen accepts: both call sites are guarded
-     * by an {@code IS NOT NUMERIC} test that has already rejected every non-conforming value, so the
-     * fallback is defensive rather than reachable through the composed flow. Use
+     * <p><strong>An argument that does not conform yields zero.</strong> The policy, and the reason it
+     * is safe, are stated once in {@link NumericIntrinsics} rather than restated here. It changes
+     * nothing this screen accepts: both call sites are guarded by an {@code IS NOT NUMERIC} test that
+     * has already rejected every non-conforming value - a comma is not numeric, so the guard errors
+     * first - so the fallback is defensive rather than reachable through the composed flow. Use
      * {@link #testNumval(String)} when the verdict itself is what matters.
      *
      * @param image the argument to convert; must not be {@code null}
@@ -2281,7 +2341,7 @@ public class TransactionViewController {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static BigDecimal numval(String image) {
-        return scan(image, false).value();
+        return NumericIntrinsics.numval(image);
     }
 
     /**
@@ -2299,14 +2359,14 @@ public class TransactionViewController {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static int testNumval(String image) {
-        return scan(image, false).errorPosition();
+        return NumericIntrinsics.testNumval(image);
     }
 
     /**
      * {@code FUNCTION NUMVAL-C} - lines 383 and 456.
      *
-     * <p>As {@link #numval(String)}, and additionally accepting a currency sign between the leading sign
-     * and the first digit:
+     * <p>As {@link #numval(String)}, and additionally accepting a currency sign between the leading
+     * sign and the first digit, and digit-grouping commas within the integer part:
      *
      * <pre>{@code [+|-] [$] digits[,digits]... [.[digits]] [+|-|CR|DB]}</pre>
      *
@@ -2321,7 +2381,7 @@ public class TransactionViewController {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static BigDecimal numvalC(String image) {
-        return scan(image, true).value();
+        return NumericIntrinsics.numvalC(image);
     }
 
     /**
@@ -2334,121 +2394,7 @@ public class TransactionViewController {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static int testNumvalC(String image) {
-        return scan(image, true).errorPosition();
-    }
-
-    /**
-     * The single scan behind all four intrinsic accessors, so the value and the verdict can never disagree.
-     *
-     * @param image            the argument; must not be {@code null}
-     * @param acceptCurrency   {@code true} for {@code NUMVAL-C}, {@code false} for {@code NUMVAL}
-     * @return the scan's outcome
-     * @throws NullPointerException if {@code image} is {@code null}
-     */
-    private static NumvalScan scan(String image, boolean acceptCurrency) {
-        Objects.requireNonNull(image, "An intrinsic conversion requires an argument");
-
-        int length = image.length();
-        int index = skipSpaces(image, 0);
-
-        boolean negative = false;
-        boolean leadingSignSeen = false;
-        if (index < length && isSign(image.charAt(index))) {
-            negative = image.charAt(index) == MINUS_SIGN;
-            leadingSignSeen = true;
-            index = skipSpaces(image, index + 1);
-        }
-
-        // The currency sign is what distinguishes NUMVAL-C from NUMVAL. It contributes no digit and may be
-        // followed by spaces.
-        if (acceptCurrency && index < length && image.charAt(index) == CURRENCY_SIGN) {
-            index = skipSpaces(image, index + 1);
-        }
-
-        StringBuilder digits = new StringBuilder();
-        int fractionDigits = 0;
-        boolean decimalPointSeen = false;
-        while (index < length) {
-            char character = image.charAt(index);
-            if (isDigit(character)) {
-                digits.append(character);
-                if (decimalPointSeen) {
-                    fractionDigits++;
-                }
-                index++;
-            } else if (character == DECIMAL_POINT && !decimalPointSeen) {
-                decimalPointSeen = true;
-                index++;
-            } else if (character == DIGIT_SEPARATOR && !decimalPointSeen && digits.length() > 0
-                    && index + 1 < length && isDigit(image.charAt(index + 1))) {
-                // A grouping comma: permitted between digits of the integer part only, and it contributes
-                // no digit of its own.
-                index++;
-            } else {
-                break;
-            }
-        }
-
-        if (digits.length() == 0) {
-            // No digit anywhere: all spaces, a bare sign, a bare currency sign or a bare decimal point.
-            // The intrinsic reports this at the length plus one rather than at a character position.
-            return NumvalScan.rejected(length + 1);
-        }
-
-        index = skipSpaces(image, index);
-        if (index < length && !leadingSignSeen) {
-            char character = image.charAt(index);
-            if (isSign(character)) {
-                negative = character == MINUS_SIGN;
-                index = skipSpaces(image, index + 1);
-            } else if (image.startsWith(CREDIT_INDICATOR, index)
-                    || image.startsWith(DEBIT_INDICATOR, index)) {
-                negative = true;
-                index = skipSpaces(image, index + CREDIT_INDICATOR.length());
-            }
-        }
-
-        if (index != length) {
-            return NumvalScan.rejected(index + 1);
-        }
-
-        BigDecimal magnitude = new BigDecimal(digits.toString()).movePointLeft(fractionDigits);
-        return NumvalScan.accepted(negative ? magnitude.negate() : magnitude);
-    }
-
-    /**
-     * The outcome of one intrinsic scan: the value and the conformance verdict together.
-     *
-     * @param value         the value the argument denotes, or zero when it does not conform
-     * @param errorPosition {@value #NUMVAL_CONFORMS} when it conforms, otherwise the one-based position of
-     *                      the first character in error
-     */
-    private record NumvalScan(BigDecimal value, int errorPosition) {
-
-        /** @param value the converted value */
-        static NumvalScan accepted(BigDecimal value) {
-            return new NumvalScan(value, NUMVAL_CONFORMS);
-        }
-
-        /** @param position the one-based position of the first character in error */
-        static NumvalScan rejected(int position) {
-            return new NumvalScan(BigDecimal.ZERO, position);
-        }
-    }
-
-    /**
-     * Skips over spaces, which every element of both intrinsics' argument format may be separated by.
-     *
-     * @param image the argument
-     * @param from  the position to start at
-     * @return the position of the first non-space at or after {@code from}
-     */
-    private static int skipSpaces(String image, int from) {
-        int index = from;
-        while (index < image.length() && image.charAt(index) == ' ') {
-            index++;
-        }
-        return index;
+        return NumericIntrinsics.testNumvalC(image);
     }
 
     /**
@@ -2457,14 +2403,6 @@ public class TransactionViewController {
      */
     private static boolean isDigit(char character) {
         return character >= '0' && character <= '9';
-    }
-
-    /**
-     * @param character the character to classify
-     * @return {@code true} when it is {@code '+'} or {@code '-'}
-     */
-    private static boolean isSign(char character) {
-        return character == PLUS_SIGN || character == MINUS_SIGN;
     }
 
     // =================================================================================================
@@ -2999,6 +2937,54 @@ public class TransactionViewController {
             Objects.requireNonNull(field, "A cursor query names a field");
             return symbolicMap.isCursorRequested(
                     TransactionViewRequest.ScreenField.valueOf(field.name()));
+        }
+
+        /**
+         * This screen's presentation metadata, in the shared envelope every online response publishes.
+         *
+         * <p>Three things this execution produces are metadata by declaration rather than payload, and
+         * before this envelope existed none of them had any way to travel:
+         *
+         * <ul>
+         *   <li>the {@code MOVE -1 TO <field>L} cursor request, an {@code xxxL} item. The Agent Action
+         *       Plan's section 0.3.9 is explicit that {@code xxxL} is validation and highlight metadata
+         *       and not a payload member, so it is reported here rather than smuggled into a projection
+         *       of {@code xxxI} and {@code xxxO} items. The field named is the first in map declaration
+         *       order whose length item holds {@value TransactionViewRequest#CURSOR_REQUEST}, which is
+         *       the one the terminal would place the cursor in;</li>
+         *   <li>the {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} quad of each of the
+         *       twenty-one fields, which is what {@code app/cpy/CSSETATY.cpy} writes
+         *       {@link BmsAttributes#DFHRED} into when a field is in error;</li>
+         *   <li>the colour of the message line, read from {@code ERRMSGC} rather than restated, so a
+         *       rename cannot silently leave this pointing at a field that no longer exists.</li>
+         * </ul>
+         *
+         * <p>Each quad is published as four unsigned {@code 0}-{@code 255} values, because an attribute
+         * byte with the high bit set - {@link BmsAttributes#DFHRED} is {@code 0xF2} - is a negative
+         * {@code byte} in Java and publishing {@code -14} would misstate it. The map is keyed by the
+         * {@code DFHMDF} label.
+         *
+         * <p>{@code resetAllOutputFields} is {@code false}: where {@code MOVE LOW-VALUES TO COTRN2AO}
+         * runs it has already been applied to the response being published, so the client is not being
+         * asked to clear anything a second time.
+         *
+         * @return the metadata; never {@code null}
+         */
+        public ScreenMetadata screenMetadata() {
+            Map<String, ScreenMetadata.FieldMetadata> fields = new LinkedHashMap<>();
+            String cursorOn = null;
+            for (ScreenField field : ScreenField.values()) {
+                TransactionViewResponse.FieldMetadata quad = response.getMetadata(field);
+                fields.put(field.label(), ScreenMetadata.FieldMetadata.of(quad.getColour(),
+                        quad.getProgrammedSymbols(), quad.getHighlight(), quad.getValidation()));
+                if (cursorOn == null && cursorRequestedOn(field)) {
+                    cursorOn = field.label();
+                }
+            }
+            return ScreenMetadata.of(cursorOn,
+                    response.getMetadata(ScreenField.ERRMSG).getColour(),
+                    false,
+                    fields);
         }
 
         /** @return {@code ACTIDINI OF COTRN2AI} */
@@ -3604,4 +3590,3 @@ public class TransactionViewController {
         }
     }
 }
-

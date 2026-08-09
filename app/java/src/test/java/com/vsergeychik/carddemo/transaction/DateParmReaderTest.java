@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -30,6 +31,7 @@ import java.lang.reflect.RecordComponent;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -42,6 +44,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 
 import org.junit.jupiter.api.DisplayName;
@@ -54,6 +57,7 @@ import org.mockito.ArgumentMatchers;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Component;
@@ -157,14 +161,80 @@ class DateParmReaderTest {
      *                     the template yield no result object at all
      */
     private static void stubRows(JdbcTemplate jdbcTemplate, List<String> rows) {
+        stubRows(jdbcTemplate, rows, new ArrayList<>());
+    }
+
+    /**
+     * Stubs the read and records how the statement it sent was bounded.
+     *
+     * <p>The read is issued through a {@link PreparedStatementCreator} rather than as a bare SQL string,
+     * because {@code CBTRN03C} performs one {@code READ} and the statement is bounded to one row. So the
+     * stub cannot simply match on the SQL: it runs the creator against a recording connection, which is
+     * what makes both the statement text and its row limits observable.
+     *
+     * @param jdbcTemplate the mocked template
+     * @param rows         the images, which may contain a {@code null} element, or {@code null} to make
+     *                     the template yield no result object at all
+     * @param sink         collects one entry per read, in order
+     */
+    private static void stubRows(JdbcTemplate jdbcTemplate, List<String> rows,
+            List<BoundedStatement> sink) {
         // The row mapper now yields the stored BYTES, because the record-image representation - not this
         // reader - decides whether the column is read as characters or as bytes. The fixture rows stay
         // text here, where they are legible, and are encoded in the same code page the reader is given.
         List<byte[]> images = rows == null
                 ? null
                 : rows.stream().map(row -> row == null ? null : row.getBytes(ASCII)).toList();
-        when(jdbcTemplate.query(eq(SELECT_SQL), ArgumentMatchers.<RowMapper<byte[]>>any()))
-                .thenReturn(images);
+        when(jdbcTemplate.query(ArgumentMatchers.<PreparedStatementCreator>any(),
+                ArgumentMatchers.<RowMapper<byte[]>>any()))
+                .thenAnswer(invocation -> {
+                    sink.add(BoundedStatement.of(
+                            invocation.getArgument(0, PreparedStatementCreator.class)));
+                    return images;
+                });
+    }
+
+    /**
+     * What a statement asked the driver for, captured by running the creator that composed it.
+     *
+     * @param sql       the statement text prepared
+     * @param maxRows   the value passed to {@link java.sql.Statement#setMaxRows(int)}, or -1 if unset
+     * @param fetchSize the value passed to {@link java.sql.Statement#setFetchSize(int)}, or -1 if unset
+     */
+    private record BoundedStatement(String sql, int maxRows, int fetchSize) {
+
+        /** Sentinel for a limit the creator never set, so "unset" is distinguishable from "set to 0". */
+        private static final int UNSET = -1;
+
+        /**
+         * Runs a creator against a recording connection and reports what it prepared.
+         *
+         * @param creator the creator to drive
+         * @return what it asked for
+         */
+        private static BoundedStatement of(PreparedStatementCreator creator) throws SQLException {
+            Connection connection = mock(Connection.class);
+            PreparedStatement prepared = mock(PreparedStatement.class);
+            AtomicReference<String> sql = new AtomicReference<>();
+            AtomicInteger maxRows = new AtomicInteger(UNSET);
+            AtomicInteger fetchSize = new AtomicInteger(UNSET);
+            when(connection.prepareStatement(anyString())).thenAnswer(invocation -> {
+                sql.set(invocation.getArgument(0, String.class));
+                return prepared;
+            });
+            doAnswer(invocation -> {
+                maxRows.set(invocation.getArgument(0, Integer.class));
+                return null;
+            }).when(prepared).setMaxRows(ArgumentMatchers.anyInt());
+            doAnswer(invocation -> {
+                fetchSize.set(invocation.getArgument(0, Integer.class));
+                return null;
+            }).when(prepared).setFetchSize(ArgumentMatchers.anyInt());
+
+            creator.createPreparedStatement(connection);
+
+            return new BoundedStatement(sql.get(), maxRows.get(), fetchSize.get());
+        }
     }
 
     /**
@@ -221,6 +291,12 @@ class DateParmReaderTest {
         /** Every statement the driver was actually asked to execute, in order. */
         private final List<String> executedSql = new ArrayList<>();
 
+        /** The row limit each prepared statement carried, in order. */
+        private final List<Integer> preparedMaxRows = new ArrayList<>();
+
+        /** The fetch size each prepared statement carried, in order. */
+        private final List<Integer> preparedFetchSizes = new ArrayList<>();
+
         /**
          * @param rows the record images the dataset holds, in physical-sequential order
          * @throws SQLException never in practice - declared because the stubbed JDBC methods declare it
@@ -239,6 +315,31 @@ class DateParmReaderTest {
                 // nothing - so it is answered with metadata and an empty cursor, exactly as a driver
                 // would answer it.
                 return resultSetOver(sql.endsWith(NO_ROW_PREDICATE) ? List.of() : seeded);
+            });
+            // The read is a bounded PREPARED statement: CBTRN03C performs one READ, so the statement
+            // carries setMaxRows(1). This stub HONOURS that limit rather than ignoring it, so a fixture
+            // holding two records serves one - which is what a driver does and what makes the bound
+            // observable rather than merely asserted.
+            when(connection.prepareStatement(anyString())).thenAnswer(prepareInvocation -> {
+                String sql = prepareInvocation.getArgument(0, String.class);
+                PreparedStatement prepared = mock(PreparedStatement.class);
+                AtomicInteger limit = new AtomicInteger(Integer.MAX_VALUE);
+                doAnswer(limitInvocation -> {
+                    int requested = limitInvocation.getArgument(0, Integer.class);
+                    preparedMaxRows.add(requested);
+                    limit.set(requested == 0 ? Integer.MAX_VALUE : requested);
+                    return null;
+                }).when(prepared).setMaxRows(ArgumentMatchers.anyInt());
+                doAnswer(fetchInvocation -> {
+                    preparedFetchSizes.add(fetchInvocation.getArgument(0, Integer.class));
+                    return null;
+                }).when(prepared).setFetchSize(ArgumentMatchers.anyInt());
+                when(prepared.executeQuery()).thenAnswer(executeInvocation -> {
+                    executedSql.add(sql);
+                    List<String> served = sql.endsWith(NO_ROW_PREDICATE) ? List.of() : seeded;
+                    return resultSetOver(served.subList(0, Math.min(limit.get(), served.size())));
+                });
+                return prepared;
             });
             this.template = new JdbcTemplate(dataSource);
         }
@@ -434,6 +535,27 @@ class DateParmReaderTest {
                     .as("no fallback range exists anywhere in this reader")
                     .isEmpty();
             assertThat(empty.executedSql).containsExactly(SELECT_SQL);
+        }
+
+        @Test
+        @DisplayName("a driver honouring the row limit serves one record of two, and the read still works")
+        void theDriverIsAskedForOneRowOfTwo() throws SQLException {
+            // The same claim as the mocked-template tests, but through a real JdbcTemplate against a
+            // driver stub that HONOURS setMaxRows. Two records are seeded and one is transferred, so the
+            // bound is observed in what came back rather than only in what was asked for.
+            SeededDataset dataset = new SeededDataset(
+                    RECORD, "1999-01-01 1999-12-31" + " ".repeat(59));
+            DateParmReader reader = dataset.reader();
+
+            ReadResult result = reader.read();
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(result.dateParm().orElseThrow().startDate())
+                    .as("the first record in physical order, which is the one the single READ sees")
+                    .isEqualTo("2022-01-01");
+            assertThat(dataset.preparedMaxRows).containsExactly(1);
+            assertThat(dataset.preparedFetchSizes).containsExactly(1);
+            assertThat(dataset.executedSql).containsExactly(SELECT_SQL);
         }
 
         @Test
@@ -742,7 +864,8 @@ class DateParmReaderTest {
             DateParmReader reader = reader(jdbc);
             // The mapper's element type is byte[], because the record-image representation - not this
             // reader - decides whether column 1 is read as characters or as bytes.
-            when(jdbc.query(eq(SELECT_SQL), ArgumentMatchers.<RowMapper<byte[]>>any()))
+            when(jdbc.query(ArgumentMatchers.<PreparedStatementCreator>any(),
+                    ArgumentMatchers.<RowMapper<byte[]>>any()))
                     .thenThrow(new DataAccessResourceFailureException("unreachable",
                             new SQLException("no route to host", "08001", 17_002)));
 
@@ -856,6 +979,68 @@ class DateParmReaderTest {
             stubRows(jdbc, Arrays.asList(RECORD, "1999-01-01 1999-12-31" + " ".repeat(59)));
 
             assertThat(reader.read().dateParm().orElseThrow().startDate()).isEqualTo("2022-01-01");
+        }
+
+        // ------------------------------------------------- the read asks for one row, not the dataset
+
+        @Test
+        @DisplayName("the statement is bounded to one row at the backend and at the fetch")
+        void theStatementAsksForOneRowOnly() {
+            // CBTRN03C performs one READ of DATE-PARM-FILE and never resumes from it, so one record is
+            // ever consumed. Asking for the relation and taking element zero would transfer and hold
+            // every record to satisfy a read of eighty bytes - on a dataset whose size is a deployment's
+            // business, not this reader's.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            DateParmReader reader = reader(jdbc);
+            List<BoundedStatement> sent = new ArrayList<>();
+            stubRows(jdbc, List.of(RECORD), sent);
+
+            assertThat(reader.read().isFound()).isTrue();
+
+            assertThat(sent).hasSize(1);
+            BoundedStatement bounded = sent.get(0);
+            assertThat(bounded.sql())
+                    .as("the same statement as before: bounding the read must not change what it reads")
+                    .isEqualTo(SELECT_SQL);
+            // Two different limits. setMaxRows bounds what the backend produces at all; setFetchSize
+            // bounds what one round trip carries. Either alone leaves the other at a driver default.
+            assertThat(bounded.maxRows()).isEqualTo(1);
+            assertThat(bounded.fetchSize()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the statement adds no ORDER BY: ordering a PS dataset would change which record")
+        void theBoundedStatementImposesNoOrder() {
+            // DATEPARM is physical-sequential - app/proc/TRANREPT.prc:65-66 binds it with no key - so its
+            // records are in the order they were written and READ returns the first of them. Limiting the
+            // statement does not change which record that is; ordering it would.
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            DateParmReader reader = reader(jdbc);
+            List<BoundedStatement> sent = new ArrayList<>();
+            stubRows(jdbc, List.of(RECORD), sent);
+
+            reader.read();
+
+            assertThat(sent.get(0).sql()).doesNotContainIgnoringCase("order by");
+        }
+
+        @Test
+        @DisplayName("re-reading bounds each read the same way, because no cursor is carried between them")
+        void everyReadIsBoundedIndependently() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            DateParmReader reader = reader(jdbc);
+            List<BoundedStatement> sent = new ArrayList<>();
+            stubRows(jdbc, List.of(RECORD), sent);
+
+            reader.read();
+            reader.read();
+
+            assertThat(sent).hasSize(2);
+            assertThat(sent).allSatisfy(bounded -> {
+                assertThat(bounded.sql()).isEqualTo(SELECT_SQL);
+                assertThat(bounded.maxRows()).isEqualTo(1);
+                assertThat(bounded.fetchSize()).isEqualTo(1);
+            });
         }
     }
 

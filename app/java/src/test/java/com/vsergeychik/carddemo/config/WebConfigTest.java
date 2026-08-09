@@ -249,6 +249,7 @@ class WebConfigTest {
                         "spring.profiles.active=",
                         "carddemo.job-submission.queue-name=JOBS",
                         "carddemo.job-submission.dd-name=INREADER",
+                        "carddemo.job-submission.charset=US-ASCII",
                         "carddemo.job-submission.record-length=80",
                         "carddemo.job-submission.record-format=FIXED",
                         "carddemo.job-submission.block-format=UNBLOCKED",
@@ -904,8 +905,14 @@ class WebConfigTest {
                     .andExpect(jsonPath("$.error").value(HttpStatus.BAD_REQUEST.getReasonPhrase()))
                     .andExpect(jsonPath("$.fieldErrors.length()").value(1))
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("USERID"))
+                    // The declared width, and nothing else. The validator's own message is NOT what
+                    // travels: on this module's DTOs it is maintainer prose naming the symbolic-map
+                    // item, its PICTURE clause and the copybook path and line the width came from, and
+                    // forwarding it would publish the copybook inventory one rejected field at a time.
+                    // Neither is the constraint implementation's default wording - "size must be
+                    // between 0 and 8" - because that is whatever the validator release happens to say.
                     .andExpect(jsonPath("$.fieldErrors[0].message")
-                            .value("size must be between 0 and 8"));
+                            .value("must be at most 8 characters"));
         }
 
         @Test
@@ -1048,18 +1055,26 @@ class WebConfigTest {
         }
 
         @Test
-        @DisplayName("a conversion failure reaches the narrower handler, so it reports the field")
-        void aConversionFailureReachesTheNarrowerHandler() throws Exception {
-            // MethodArgumentTypeMismatchException extends TypeMismatchException, and both have a
-            // handler. Closest-match resolution must pick the MVC one, which reports the parameter
-            // and the required type; if the broader one won, the field would be lost.
-            adviceDispatcher().perform(get("/webconfig-fixture/accounts/not-a-number"))
+        @DisplayName("a conversion failure answers the one fixed body, naming no Java type")
+        void aConversionFailureNamesNoJavaType() throws Exception {
+            // MethodArgumentTypeMismatchException extends TypeMismatchException and there is exactly
+            // ONE handler for the family, so the same fixed sentence answers a path variable, a query
+            // parameter and a conversion refused during binding alike. There used to be a narrower
+            // handler for the MVC subclass which, because closest-match resolution preferred it,
+            // reported the required type - "is not a valid long" - and so published the internal Java
+            // type of a screen field to an unauthenticated caller.
+            final String body = adviceDispatcher()
+                    .perform(get("/webconfig-fixture/accounts/not-a-number"))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.fieldErrors.length()").value(1))
-                    .andExpect(jsonPath("$.fieldErrors[0].field").value("accountId"))
-                    // "long", lower case: getRequiredType() reports the primitive, and
-                    // Class.getSimpleName() of a primitive is the keyword itself.
-                    .andExpect(jsonPath("$.fieldErrors[0].message").value("is not a valid long"));
+                    .andExpect(jsonPath("$.status").value(400))
+                    .andExpect(jsonPath("$.message").value(CobolErrorHandler.TYPE_MISMATCH_MESSAGE))
+                    .andReturn().getResponse().getContentAsString();
+
+            assertThat(body)
+                    .doesNotContain("long")
+                    .doesNotContain("Long")
+                    .doesNotContain("accountId")
+                    .doesNotContain("not-a-number");
         }
 
         @Test

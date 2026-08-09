@@ -15,7 +15,10 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.step.tasklet.Tasklet;
@@ -171,6 +174,12 @@ public class AccountBalanceReaderJob {
      * so a failed run names the program a mainframe operator would have looked for.
      */
     public static final String PROGRAM_ID = "CBACT02C";
+
+    /**
+     * Diagnostics for the one thing this program does that its SYSOUT cannot carry: a failure to end the
+     * card-file browse while unwinding from an abend. Nothing on a successful path is logged.
+     */
+    private static final Log LOG = LogFactory.getLog(AccountBalanceReaderJob.class);
 
     /**
      * This job's key in the {@code carddemo.jobs} configuration catalogue: {@value}.
@@ -417,6 +426,13 @@ public class AccountBalanceReaderJob {
         this.sysoutSinkProvider = Objects.requireNonNull(sysoutSinkProvider,
                 "A sink provider is required: SYSOUT is a seam so that a parity case can capture the "
                         + "exact line sequence this job emits");
+        // This job's JCL names its input CARDFILE (app/jcl/READCARD.jcl:25-26); the repository it reads
+        // through is bound to the CICS file name CARDDAT, because the online programs address it that
+        // way. Both keys carry independent overrides in application.yml, so they can be pointed at
+        // different datasets - and a step that read a dataset its own DD statement never named would do
+        // so silently and with a correct-looking result. Proven equal here, once, so a divergence fails
+        // the context instead of a run.
+        this.batchConfig.requireSameDataset(JOB_KEY, DD_NAME, CardRepository.BASE_DD_NAME);
     }
 
     // =================================================================================================
@@ -431,10 +447,14 @@ public class AccountBalanceReaderJob {
      * when something deliberately launches it - which is how a job ran on the mainframe, when JCL
      * submitted an {@code EXEC PGM=} step and not before.
      *
-     * <p>No job-parameters incrementer is attached, deliberately. An incrementer would add a run
-     * counter to every launch, and that counter is a job parameter the COBOL never receives.
+     * <p><strong>No business parameter is declared or invented.</strong>
      * {@code app/jcl/READCARD.jcl:22} passes nothing, so this job accepts nothing, and
-     * {@link #requireContract()} checks that the configured contract agrees.
+     * {@link #requireContract()} checks that the configured contract agrees. What
+     * {@link BatchConfig#job(String)} does attach is a <em>run identity</em> and a non-restartable
+     * policy, which together make every launch a whole fresh run - the necessary consequence of a job
+     * with no parameters, since without an identity of its own it would have exactly one instance for
+     * all time and a second submission of {@code READCARD} would be refused as already complete. The
+     * identity is not a value the COBOL receives; it is the equivalent of submitting the JCL again.
      *
      * @return the job, bound to the shared job repository and carrying the shared return-code
      *         listener; never {@code null}
@@ -477,20 +497,26 @@ public class AccountBalanceReaderJob {
     /**
      * The step body: the whole program, run once.
      *
-     * <p>It resolves the sink and delegates to {@link #execute(SysoutSink)}, then reports
+     * <p>It resolves the sink and delegates to {@link #execute(SysoutSink, StopSignal)}, then reports
      * {@link RepeatStatus#FINISHED} because {@code CBACT02C} runs exactly once and
      * {@code GOBACK}s ({@code app/cbl/CBACT02C.cbl:87}) - there is no second pass to ask for.
+     *
+     * <p>The chunk context is read for one thing: this step execution's {@link StopSignal}, which the
+     * pass consults between records. Because the tasklet runs once, the framework's own interruption
+     * check happens once at the top and cannot end a pass already under way.
      *
      * <p>An {@link AbendException} raised inside is <strong>not</strong> caught here. It propagates so
      * that the shared listeners can carry its {@code RETURN-CODE} onto the step's exit status and out
      * to the process exit code, which is what makes a JCL-equivalent {@code COND} test on a following
-     * step still work. Swallowing it would report a clean run over a failed one.
+     * step still work. Swallowing it would report a clean run over a failed one. A
+     * {@link BatchConfig.StopRequestedException} propagates for the same reason and to the same
+     * effect, except that the framework reads it as a stop rather than a failure.
      *
      * @return the tasklet; never {@code null}
      */
     public Tasklet readCardfileTasklet() {
         return (contribution, chunkContext) -> {
-            execute(sysoutSink());
+            execute(sysoutSink(), StopSignal.of(chunkContext));
             return RepeatStatus.FINISHED;
         };
     }
@@ -589,9 +615,63 @@ public class AccountBalanceReaderJob {
      *                              {@code 9999-ABEND-PROGRAM} does
      */
     public void execute(SysoutSink sysout) {
+        execute(sysout, StopSignal.RUNNING);
+    }
+
+    /**
+     * Runs the program, yielding to the given stop signal between records.
+     *
+     * <p>The pass is identical to {@link #execute(SysoutSink)} - same reads, same displayed lines, same
+     * order - and the signal changes nothing while no stop is pending. It exists because
+     * {@code CBACT02C} is one pass over the whole card master inside a single tasklet invocation, so the
+     * framework's interruption check at the step's repeat boundary happens once and cannot end a pass
+     * already under way. The probe is consulted between records, where the record in flight is always
+     * complete, and nothing is retried; see {@link StopSignal}.
+     *
+     * @param sysout     where the {@code DISPLAY} output goes; never {@code null}
+     * @param stopSignal the between-record cancellation probe; {@link StopSignal#RUNNING} for a caller
+     *                   outside a step; never {@code null}
+     * @throws NullPointerException if {@code sysout} or {@code stopSignal} is {@code null}
+     * @throws AbendException       if the open, a read or the close fails, carrying
+     *                              {@link #APPL_RESULT_FATAL} as the {@code RETURN-CODE} exactly as
+     *                              {@code 9999-ABEND-PROGRAM} does
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop, which abandons the pass
+     *                              between records
+     */
+    public void execute(SysoutSink sysout, StopSignal stopSignal) {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required to run " + PROGRAM_ID
                 + "; every one of its DISPLAY statements writes through it");
-        new CardfileRead(cardRepository, datasetCharset, sysout).execute();
+        Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING outside a "
+                + "step, which is what the single-argument overload does");
+        new CardfileRead(cardfileRepository(), datasetCharset, sysout).execute(stopSignal);
+    }
+
+    /**
+     * The card repository addressing <strong>this job's</strong> {@value #DD_NAME} DD.
+     *
+     * <p>{@code CBACT02C} reads the dataset {@code app/jcl/READCARD.jcl:25-26} binds to
+     * {@code //CARDFILE DD}, and this job resolves that DD through its own view of the catalogue - the
+     * job-scoped entry first, the global one second - because a DD name is not unique across this
+     * estate. The injected repository resolved {@link CardRepository#BASE_DD_NAME} from the global
+     * catalogue instead, which is the <em>online</em> name for the same dataset.
+     *
+     * <p>Those two resolutions agree in the shipped configuration, and the finding was that nothing
+     * required them to: the job validated {@value #DD_NAME} in {@link #cardfileDatasetName()} and then
+     * read through {@code CARDDAT}, so a deployment that re-pointed {@value #DD_NAME} - which is
+     * precisely what a {@code //CARDFILE DD} statement does - would have read a dataset nobody asked
+     * for while every startup check passed. Handing the resolved binding to the repository makes the
+     * declared DD the one that drives the read.
+     *
+     * <p>Resolved per execution rather than held, because the catalogue is the configuration's to
+     * answer and this class holds no I/O state (practice B9). The repository returns itself when the
+     * binding names the dataset it already addresses, so the common case costs nothing.
+     *
+     * @return the repository this run reads through; never {@code null}
+     * @throws IllegalStateException if neither this job nor the global catalogue declares
+     *                               {@value #DD_NAME}, or the binding is unusable
+     */
+    private CardRepository cardfileRepository() {
+        return cardRepository.addressing(batchConfig.datasetBinding(JOB_KEY, DD_NAME), DD_NAME);
     }
 
     /**
@@ -694,14 +774,38 @@ public class AccountBalanceReaderJob {
         /**
          * {@code PROCEDURE DIVISION} - {@code app/cbl/CBACT02C.cbl:70-87}.
          *
+         * @param stopSignal the between-record cancellation probe
          * @throws AbendException if the open, a read or the close fails
+         * @throws BatchConfig.StopRequestedException if the step is asked to stop
          */
-        private void execute() {
+        private void execute(StopSignal stopSignal) {
             sysout.write(START_BANNER);                                      // :71
             openCardfile();                                                  // :72
+            try {
+                executeAfterOpen(stopSignal);
+            } finally {
+                releaseBrowse();
+            }
+        }
+
+        /**
+         * The read loop and the close - everything {@link #execute()} performs once the file is open.
+         *
+         * <p>Split out so the browse can be released on every exit from the pass without the
+         * paragraph-by-paragraph body acquiring a nesting level it does not have in the source.
+         *
+         * @param stopSignal the between-record cancellation probe
+         * @throws AbendException if a read or the close fails
+         */
+        private void executeAfterOpen(StopSignal stopSignal) {
 
             // :74  PERFORM UNTIL END-OF-FILE = 'Y'
             while (!endOfFile()) {
+                // NO COBOL COUNTERPART. The between-record yield to a stop request: a call rather than
+                // a condition, so it adds no arm to the translated control flow, and positioned before
+                // the read below so the record in flight is always complete. See BatchConfig.StopSignal.
+                stopSignal.checkStopRequested();
+
                 // :75  IF END-OF-FILE = 'N' - true on every iteration, by construction. The loop
                 // condition immediately above has just tested the same one-character field, and 'N'
                 // and 'Y' are its only two reachable values: :65 initialises it to 'N' and :108 is
@@ -724,6 +828,53 @@ public class AccountBalanceReaderJob {
             closeCardfile();                                                 // :83
             sysout.write(END_BANNER);                                        // :85
             // :87  GOBACK - RETURN-CODE is left at zero, which a normal return from this method is.
+        }
+
+        /**
+         * Ends the card-file browse on the way out of an incomplete run, silently and only if it is still
+         * open.
+         *
+         * <p>{@code CBACT02C} abends outright without closing, so this changes nothing the program
+         * observably produces. Three properties make that true rather than merely intended:
+         *
+         * <ul>
+         *   <li><strong>It costs nothing.</strong> {@link CardBrowse#endBrowse()} sets a flag and issues
+         *       no I/O at all, so releasing an already-ended browse is free and releasing an open one on
+         *       the abend path is equally free.</li>
+         *   <li><strong>It is silent.</strong> No {@code DISPLAY} is emitted. The line sequence is this
+         *       program's entire observable output and the source has no such line.</li>
+         *   <li><strong>It cannot displace the real failure.</strong> Any exception raised while
+         *       releasing is swallowed, so the {@link AbendException} the run is already unwinding with
+         *       is the one the caller receives.</li>
+         * </ul>
+         *
+         * <p>The reason it exists at all is the contract rather than a present leak: {@link CardBrowse}
+         * declares {@link AutoCloseable}, and a pass that only releases on its normal tail depends on
+         * what the handle happens to hold today instead of on what it promises.
+         *
+         * <p>The guard is {@link #closeIssued} - this execution's own record of having run
+         * {@code 9000-CARDFILE-CLOSE} - rather than {@link CardBrowse#isEnded()}. Asking the handle
+         * would make "exactly one {@code CLOSE} per run", which is what the single {@code CLOSE}
+         * statement at {@code :83} means, depend on the handle tracking its own state; asking this
+         * execution makes it depend on the program's control flow, which is where the property actually
+         * comes from.
+         */
+        private void releaseBrowse() {
+            if (cardfile == null || closeIssued) {
+                return;
+            }
+            try {
+                cardfile.endBrowse();
+            } catch (RuntimeException cleanupFailure) {
+                // Only the failure's TYPE is logged - never the throwable and never its message. A driver
+                // composes its message around the value it refused, and a card row carries the card
+                // number and CVV (CWE-532); a newline in that text could forge a second log entry
+                // (CWE-117). A class name carries no data and no newline.
+                LOG.warn("Ending the " + DD_NAME + " browse of " + PROGRAM_ID + " after an incomplete run "
+                        + "failed - " + cleanupFailure.getClass().getName()
+                        + ". The run's own outcome is reported unchanged, because the run's own failure is "
+                        + "the one that matters.");
+            }
         }
 
         /**
@@ -762,6 +913,14 @@ public class AccountBalanceReaderJob {
          *
          * @throws AbendException if the open reports anything but {@link FileStatus#OK}
          */
+        /**
+         * Whether {@code 9000-CARDFILE-CLOSE} has already issued this execution's {@code CLOSE}.
+         *
+         * <p>Per-execution state on a per-execution object, never a field of the singleton job bean
+         * (practice B9, gate G53).
+         */
+        private boolean closeIssued;
+
         private void openCardfile() {
             // :119  The program assumes failure before it attempts the open and earns success below.
             // The assignment is overwritten either way; it is kept because the COBOL performs it.
@@ -799,9 +958,21 @@ public class AccountBalanceReaderJob {
          */
         private String openCardfileBrowse() {
             try {
-                cardfile = cardRepository.startBrowse(LOWEST_CARD_NUMBER_KEY, BrowseDirection.FORWARD);
-                return FileStatus.OK;
+                // openBrowse, not startBrowse: this program tests its OPEN. startBrowse is the online
+                // entry point, which issues no backend call and reports nothing because COCRDLIC discards
+                // its own STARTBR response - reading through it here left ':129-:132' unreachable, so an
+                // unusable dataset first appeared as 'ERROR READING CARDFILE' on the following read.
+                cardfile = cardRepository.openBrowse(LOWEST_CARD_NUMBER_KEY, BrowseDirection.FORWARD);
+                // The repository answers in CICS responses, translated the same way a read's response is
+                // translated (see readNextCardfileRecord) so the open and the read reach their arms
+                // identically. A response with no batch equivalent lands on the permanent-error
+                // convention, and thence on the ELSE MOVE 12 arm.
+                return FileStatus.batchStatusOfCicsResp(cardfile.openResp())
+                        .orElse(PERMANENT_ERROR_STATUS);
             } catch (RuntimeException refused) {
+                // A configuration fault rather than a dataset condition - an unresolvable binding, say.
+                // Still reported as a status, because the caller abends one line later and carries this
+                // out as the abend's cause, so nothing is swallowed.
                 datasetRefusal = refused;
                 return PERMANENT_ERROR_STATUS;
             }
@@ -945,6 +1116,7 @@ public class AccountBalanceReaderJob {
          *         it did not
          */
         private String closeCardfileBrowse() {
+            closeIssued = true;
             try {
                 cardfile.endBrowse();
                 return FileStatus.OK;

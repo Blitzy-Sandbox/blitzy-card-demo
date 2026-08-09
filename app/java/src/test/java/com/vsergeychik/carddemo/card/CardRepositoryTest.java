@@ -56,6 +56,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -1735,6 +1737,65 @@ class CardRepositoryTest {
                     .isThrownBy(() -> repository.startBrowse(null, BrowseDirection.FORWARD));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> repository.startBrowse(FIRST_FIXTURE_CARD_NUM, null));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> repository.openBrowse(null, BrowseDirection.FORWARD));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> repository.openBrowse(FIRST_FIXTURE_CARD_NUM, null));
+        }
+
+        @Test
+        @DisplayName("startBrowse reports NORMAL without asking, because COCRDLIC discards its own status")
+        void startBrowseReportsNormalWithoutAsking() {
+            // Both EXEC CICS STARTBR sites capture the response and never test it (COCRDLIC:1129-1136 and
+            // :1273-1280), so this entry point makes no call and a caller that does look sees the normal
+            // arm rather than a status the COBOL never produced.
+            CardBrowse browse = repository.startBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            assertThat(browse.openResp()).isEqualTo(FileStatus.NORMAL);
+            assertThat(browse.isOpen()).isTrue();
+            verify(jdbcTemplate, never()).query(anyString(),
+                    CardRepositoryTest.<String>anyExtractor());
+        }
+
+        @Test
+        @DisplayName("openBrowse describes the relation and reports NORMAL: the batch OPEN INPUT")
+        void openBrowseProbesAndReportsNormal() {
+            // app/cbl/CBACT02C.cbl:120 is an OPEN INPUT with FILE STATUS IS CARDFILE-STATUS declared at
+            // :33 and tested at :121-:127, so the batch caller needs an outcome. The probe describes the
+            // relation - no row crosses the wire - which is what an OPEN INPUT establishes too.
+            CardBrowse browse = repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            assertThat(browse.openResp()).isEqualTo(FileStatus.NORMAL);
+            assertThat(browse.isOpen()).isTrue();
+            assertThat(browse.anchorKey()).isEqualTo(FIRST_FIXTURE_CARD_NUM);
+            assertThat(browse.direction()).isEqualTo(BrowseDirection.FORWARD);
+            verify(jdbcTemplate).query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor());
+        }
+
+        @Test
+        @DisplayName("openBrowse reports NOTOPEN when the backend refuses the describe")
+        void openBrowseReportsNotOpenOnRefusal() {
+            when(jdbcTemplate.query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor()))
+                    .thenThrow(new DataAccessResourceFailureException("the dataset is not there"));
+
+            CardBrowse browse = repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            assertThat(browse.openResp()).isEqualTo(FileStatus.NOTOPEN);
+            assertThat(browse.isOpen()).isFalse();
+        }
+
+        @Test
+        @DisplayName("openBrowse reports NOTOPEN when the relation presents no record-image column")
+        void openBrowseReportsNotOpenWhenNoColumnIsPresented() {
+            when(jdbcTemplate.query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor())).thenReturn(null);
+
+            CardBrowse browse = repository.openBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD);
+
+            assertThat(browse.openResp()).isEqualTo(FileStatus.NOTOPEN);
+            assertThat(browse.isOpen()).isFalse();
         }
 
         @Test
@@ -2849,6 +2910,116 @@ class CardRepositoryTest {
                             .doesNotStartWith("jakarta.persistence.")
                             .doesNotStartWith("javax.persistence.")
                             .doesNotStartWith("org.hibernate."));
+        }
+    }
+
+    // =============================================================================================
+    // The batch DD view - the DD-mapping finding.
+    //
+    // A batch reader reads through the DD its JCL binds, and it resolves that DD through its own view
+    // of the catalogue. This repository resolved CARDDAT from the global catalogue at construction, so
+    // a job needs a way to say "address MY binding" or it validates one name and reads another.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("addressing - the caller's own DD binding is the one read")
+    class TheBatchDdView {
+
+        @Test
+        @DisplayName("the batch DD name is the one app/jcl/READCARD.jcl:25-26 binds")
+        void theBatchDdNameIsTheJcls() {
+            assertThat(CardRepository.BATCH_DD_NAME).isEqualTo("CARDFILE");
+            assertThat(CardRepository.BATCH_DD_NAME).isNotEqualTo(CardRepository.BASE_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("a binding naming the dataset already addressed hands back the same instance")
+        void anIdenticalBindingIsIdentity() {
+            // The shipped configuration: CARDFILE and CARDDAT are two names for one dataset. Returning
+            // the same instance keeps the resolved statements, so the common case costs nothing and
+            // performs no second describe.
+            CardRepository same = repository.addressing(
+                    cardDatBinding("CARDDEMO.CARDDATA.KSDS", CardRecord.RECORD_LENGTH),
+                    CardRepository.BATCH_DD_NAME);
+
+            assertThat(same).isSameAs(repository);
+        }
+
+        @Test
+        @DisplayName("a binding naming a different dataset yields an instance addressing that dataset")
+        void aDifferentBindingRebases() {
+            CardRepository rebound = repository.addressing(
+                    cardDatBinding("CARDDEMO.BATCH.CARDDATA.KSDS", CardRecord.RECORD_LENGTH),
+                    CardRepository.BATCH_DD_NAME);
+
+            assertThat(rebound).isNotSameAs(repository);
+            assertThat(rebound.baseDatasetName()).isEqualTo("CARDDEMO.BATCH.CARDDATA.KSDS");
+            assertThat(repository.baseDatasetName()).isEqualTo("CARDDEMO.CARDDATA.KSDS");
+            // The statements the re-bound instance sends address ITS relation. Carrying the source's
+            // resolved statements over would have sent them at the wrong dataset - which is the whole
+            // defect, expressed in SQL.
+            assertThat(rebound.describeBaseStatement())
+                    .contains("CARDDEMO.BATCH.CARDDATA.KSDS")
+                    .doesNotContain("CARDDEMO.CARDDATA.KSDS");
+        }
+
+        @Test
+        @DisplayName("the alternate-index path is unchanged, because a DD selects a dataset and nothing "
+                + "else")
+        void theAlternateIndexIsCarriedOver() {
+            CardRepository rebound = repository.addressing(
+                    cardDatBinding("CARDDEMO.BATCH.CARDDATA.KSDS", CardRecord.RECORD_LENGTH),
+                    CardRepository.BATCH_DD_NAME);
+
+            assertThat(rebound.alternateIndexDatasetName())
+                    .isEqualTo(repository.alternateIndexDatasetName());
+        }
+
+        @Test
+        @DisplayName("a binding of the wrong record width is refused, naming the key to correct")
+        void aWrongWidthIsRefused() {
+            DatasetBinding wrong = cardDatBinding("CARDDEMO.BATCH.CARDDATA.KSDS",
+                    CardRecord.RECORD_LENGTH + 1);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.addressing(wrong, CardRepository.BATCH_DD_NAME))
+                    .withMessageContaining(CardRepository.BATCH_DD_NAME)
+                    .withMessageContaining("record-length")
+                    .withMessageContaining(String.valueOf(CardRecord.RECORD_LENGTH));
+        }
+
+        @Test
+        @DisplayName("a binding declaring no dataset name is refused")
+        void aBlankDatasetNameIsRefused() {
+            DatasetBinding blank = cardDatBinding("   ", CardRecord.RECORD_LENGTH);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.addressing(blank, CardRepository.BATCH_DD_NAME))
+                    .withMessageContaining(CardRepository.BATCH_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("neither argument may be null, and the DD name is checked first so it can be named")
+        void neitherArgumentMayBeNull() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> repository.addressing(cardDatBinding(), null))
+                    .withMessageContaining("DD name");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> repository.addressing(null, CardRepository.BATCH_DD_NAME))
+                    .withMessageContaining(CardRepository.BATCH_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("a re-bound instance builds keys through the same codec, so it moves identically")
+        void theCodecIsShared() {
+            // The codec carries the code page and the MOVE semantics every key is built with. A re-bound
+            // instance that had its own would pad or truncate differently from the one it came from.
+            CardRepository rebound = repository.addressing(
+                    cardDatBinding("CARDDEMO.BATCH.CARDDATA.KSDS", CardRecord.RECORD_LENGTH),
+                    CardRepository.BATCH_DD_NAME);
+
+            assertThat(rebound.describeAlternateIndexStatement())
+                    .isEqualTo(repository.describeAlternateIndexStatement());
         }
     }
 }

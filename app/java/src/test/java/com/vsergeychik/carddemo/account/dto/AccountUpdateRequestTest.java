@@ -549,20 +549,39 @@ class AccountUpdateRequestTest {
         }
 
         @Test
-        @DisplayName("renders every value verbatim, masking nothing")
-        void rendersEveryValueVerbatim() {
-            String rendered = AccountUpdateRequest.builder()
+        @DisplayName("discloses none of the sensitive values, and still names every field")
+        void disclosesNoSensitiveValue() {
+            // The payload keeps every value - the builder and the accessors are the parity surface. This
+            // rendering is Java-only, so a social security number, a date of birth and a passport number
+            // in it are CWE-532 exposure with no parity benefit.
+            AccountUpdateRequest request = AccountUpdateRequest.builder()
                     .actssn1("123").actssn2("45").actssn3("6789")
                     .dobyear("1980").dobmon("02").dobday("29")
                     .acsgovt("PASSPORT-9911")
-                    .build()
-                    .toString();
+                    .build();
+
+            String rendered = request.toString();
+
             assertThat(rendered).startsWith("AccountUpdateRequest[")
-                    .contains("ACTSSN1='123'", "ACTSSN2='45'", "ACTSSN3='6789'",
-                            "DOBYEAR='1980'", "DOBMON='02'", "DOBDAY='29'",
-                            "ACSGOVT='PASSPORT-9911'", "commArea=", "cardScreenState=",
-                            "navigationContext=")
-                    .doesNotContain("redacted", "REDACTED", "withheld");
+                    .contains("ACTSSN1='", "ACTSSN2='", "ACTSSN3='",
+                            "DOBYEAR='", "DOBMON='", "DOBDAY='",
+                            "ACSGOVT='", "commArea=", "cardScreenState=", "navigationContext=")
+                    .doesNotContain("PASSPORT-9911")
+                    .doesNotContain("6789");
+
+            // Unchanged: the values are still there to be read.
+            assertThat(request.getAcsgovt()).startsWith("PASSPORT-9911");
+            assertThat(request.getActssn3()).startsWith("6789");
+        }
+
+        @Test
+        @DisplayName("no field value can forge a second log line")
+        void noFieldValueCanForgeALogLine() {
+            AccountUpdateRequest request = AccountUpdateRequest.builder()
+                    .trnname("CAUP\r\nINJECTED")
+                    .build();
+
+            assertThat(request.toString()).doesNotContain("\n").doesNotContain("\r");
         }
 
         @Test

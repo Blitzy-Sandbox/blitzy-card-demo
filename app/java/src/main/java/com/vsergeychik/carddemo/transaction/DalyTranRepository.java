@@ -230,6 +230,23 @@ public class DalyTranRepository {
     public static final int RECORD_IMAGE_COLUMN_INDEX = DatasetRelation.RECORD_IMAGE_COLUMN_INDEX;
 
     /**
+     * The driver fetch size the sequential read asks for: {@value}.
+     *
+     * <p>A source-faithful {@code READ} of {@code ORGANIZATION IS SEQUENTIAL} returns one record and keeps
+     * a position; nothing behind that position is revisited, so nothing behind it needs to be held. Stating
+     * a positive size is what turns that into a bound the deployment can rely on: with the size left unset
+     * the amount buffered is the driver's own default, and drivers exist that default to materialising the
+     * entire result set on the client - which for {@code app/data/ASCII/dailytran.txt}'s successor in
+     * production is a file of unbounded size.
+     *
+     * <p>Chosen small deliberately, and not tuned. This is not a performance change - AAP §0.8.6 states no
+     * performance objective exists - it is a ceiling. The JDBC contract makes the value a hint, so it can
+     * only reduce buffering: it cannot alter which record {@code next()} returns, nor the physical order
+     * they arrive in, both of which remain exactly what the dataset holds.
+     */
+    public static final int FETCH_SIZE = 32;
+
+    /**
      * The scale {@code DALYTRAN-AMT} decodes at: {@value}, from
      * {@link CobolDecimal#MONETARY_SCALE}.
      *
@@ -538,6 +555,16 @@ public class DalyTranRepository {
             // consumer repositions, and no updatability, because no consumer writes.
             statement = connection.prepareStatement(selectRecordSql,
                     ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+            // The cursor is walked one record at a time and nothing behind the position is ever revisited,
+            // so the driver is asked to buffer a page rather than the file. Stating a positive size is
+            // what makes that a bound: left unset, the value is the driver's own default, and several
+            // drivers default to materialising the whole result set on the client - which is precisely
+            // the unbounded behaviour a source-faithful sequential READ must not have.
+            //
+            // The JDBC contract makes the value a hint, so it can only reduce buffering; it cannot change
+            // which row next() returns nor the order rows arrive in, both of which stay exactly as the
+            // dataset holds them.
+            statement.setFetchSize(FETCH_SIZE);
             rows = statement.executeQuery();
             ResultSetMetaData metaData = rows.getMetaData();
             if (metaData == null || metaData.getColumnCount() < RECORD_IMAGE_COLUMN_INDEX) {

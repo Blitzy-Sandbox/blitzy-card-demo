@@ -14,6 +14,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
+import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.FailureResponse;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.FaultResponse;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.ValidationResponse;
 import java.io.IOException;
@@ -234,50 +235,50 @@ class WebConfigErrorBoundaryTest {
     }
 
     @Nested
-    @DisplayName("A parameter of the wrong type reports the parameter, never its value")
+    @DisplayName("A parameter of the wrong type reports neither its value nor its Java type")
     class TypeMismatch {
 
         @Test
-        @DisplayName("It reports 400, the parameter name and the required type")
-        void itReportsTheParameterAndTheRequiredType() {
+        @DisplayName("The MVC subclass takes the same fixed answer as any other conversion failure")
+        void theSubclassTakesTheFixedAnswer() {
+            // MethodArgumentTypeMismatchException extends TypeMismatchException, and there is exactly
+            // ONE handler for the family. There used to be a narrower one for the MVC subclass, and
+            // because closest-match resolution preferred it, a caller who put a word where a number
+            // belonged was told the field is "not a valid Long" - the internal Java type of a screen
+            // field, published to an unauthenticated caller. The narrower handler is gone, so the
+            // subclass and the superclass now answer identically.
             MethodArgumentTypeMismatchException mismatch = new MethodArgumentTypeMismatchException(
                     PAN, Long.class, "acctId", null, new NumberFormatException(PAN));
 
-            ResponseEntity<ValidationResponse> response =
-                    HANDLER.handleArgumentTypeMismatch(mismatch);
+            ResponseEntity<FailureResponse> response = HANDLER.handleTypeMismatch(mismatch);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().fieldErrors()).singleElement()
-                    .satisfies(entry -> {
-                        assertThat(entry.field()).isEqualTo("acctId");
-                        assertThat(entry.message()).isEqualTo("is not a valid Long");
-                    });
+            assertThat(response.getBody().message())
+                    .isEqualTo(CobolErrorHandler.TYPE_MISMATCH_MESSAGE);
         }
 
         @Test
-        @DisplayName("The rejected value is not echoed, even though the exception carries it")
-        void theRejectedValueIsNotEchoed() {
+        @DisplayName("Neither the rejected value nor the required type is echoed")
+        void neitherTheValueNorTheTypeIsEchoed() {
             MethodArgumentTypeMismatchException mismatch = new MethodArgumentTypeMismatchException(
                     PAN, Long.class, "acctId", null, new NumberFormatException(PAN));
 
             assertThat(mismatch.getValue()).isEqualTo(PAN);
-            assertThat(CobolErrorHandler.typeMismatchResponse(mismatch).toString())
-                    .doesNotContain(PAN);
+            assertThat(HANDLER.handleTypeMismatch(mismatch).getBody().toString())
+                    .doesNotContain(PAN)
+                    .doesNotContain("Long")
+                    .doesNotContain("acctId");
         }
 
         @Test
-        @DisplayName("An absent required type degrades rather than failing mid-response")
-        void anAbsentRequiredTypeDegrades() {
+        @DisplayName("An absent required type needs no degraded wording, because no type is read")
+        void anAbsentRequiredTypeNeedsNoSpecialCase() {
             MethodArgumentTypeMismatchException untyped = new MethodArgumentTypeMismatchException(
                     PAN, null, "cardNum", null, new IllegalStateException("no converter"));
 
-            ValidationResponse body = CobolErrorHandler.typeMismatchResponse(untyped);
-
-            assertThat(body.fieldErrors()).singleElement().satisfies(entry -> {
-                assertThat(entry.field()).isEqualTo("cardNum");
-                assertThat(entry.message()).isEqualTo("is not of the required type");
-            });
+            assertThat(HANDLER.handleTypeMismatch(untyped).getBody().message())
+                    .isEqualTo(CobolErrorHandler.TYPE_MISMATCH_MESSAGE);
         }
     }
 

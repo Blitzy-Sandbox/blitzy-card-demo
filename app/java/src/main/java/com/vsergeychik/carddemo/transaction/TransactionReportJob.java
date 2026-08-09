@@ -5,11 +5,18 @@ import com.vsergeychik.carddemo.card.CardXrefRepository.BrowseCursor;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
+import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
+import com.vsergeychik.carddemo.statement.StatementGenerationJobA.DatasetUtilityPort;
+import com.vsergeychik.carddemo.statement.StatementGenerationJobA.JdbcDatasetUtilityPort;
 import com.vsergeychik.carddemo.transaction.model.TranCategoryRecord;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
 import com.vsergeychik.carddemo.transaction.model.TranReportLayouts;
@@ -20,17 +27,23 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * {@code CBTRN03C} - print the transaction detail report - as a Spring Batch job.
@@ -50,7 +63,7 @@ import org.springframework.context.annotation.Configuration;
  * reach the output, which is precisely the observable this migration is measured against, so the
  * single-pass tasklet is the only provably identical shape (AAP section 0.3.5).
  *
- * <h2>The three JCL steps, and what this job assumes about the first two</h2>
+ * <h2>The three JCL steps, all three of them run here</h2>
  *
  * <p>{@code app/jcl/TRANREPT.jcl} names its first two steps {@code STEP05R} twice - at {@code L23}
  * and again at {@code L37}, which is a defect in that JCL - while
@@ -66,25 +79,30 @@ import org.springframework.context.annotation.Configuration;
  *       {@code TRAN-CARD-NUM,263,16,ZD} and {@code TRAN-PROC-DT,305,10,CH}; its control statements
  *       are {@code SORT FIELDS=(TRAN-CARD-NUM,A)} and
  *       {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)}.</li>
- *   <li>{@code STEP10R} - {@code EXEC PGM=CBTRN03C}. <strong>This class is that step, and only that
- *       step.</strong></li>
+ *   <li>{@code STEP10R} - {@code EXEC PGM=CBTRN03C}. <strong>The migrated program, and the only one
+ *       of the three steps that is a COBOL program at all.</strong></li>
  * </ol>
  *
- * <p><strong>The precondition is explicit rather than reimplemented.</strong> This job's
- * {@code TRANFILE} is {@code TRANSACT.DALY(+1)} - the already sorted, already date-filtered
- * sequential dataset - presented in <em>ascending card-number order</em>. The account-break logic
- * at {@code :181-188} depends entirely on that order: it writes an account total whenever the card
- * number changes, so an unsorted input would emit one "account total" per change of card rather than
- * one per account. The two preparatory steps are therefore <em>not</em> reproduced as Spring Batch
- * steps here. Reproducing them would mean this class owning an unload and a sort of the transaction
- * master, which is a data-movement contract belonging to the deployment's own utilities, and it
- * would additionally re-filter records the SORT has already removed. What is reproduced is the
- * contract: the DD binding, its width, its organization and its order, all validated at startup and
- * all documented here. The step sequence itself is recorded in
- * {@code carddemo.jobs.transaction-report-job.steps} so a reader can see all three, and every one of
- * them is ungated - {@code app/jcl/TRANREPT.jcl} carries no step-level {@code COND} at all, the
- * {@code COND=} it contains being the SORT's {@code INCLUDE} filter - which is why
- * {@link BatchConfig#precedingExitCodeZeroDecider()} is deliberately not wired into this job.
+ * <p><strong>All three are Spring Batch steps of this job, in that order.</strong>
+ * {@link #transactionReportBackupStep()} is the {@code REPRO}, {@link #transactionReportSortStep()} is
+ * the DFSORT, and {@link #transactionReportStep()} is the program. The first two run mainframe
+ * utilities over whole record images rather than any COBOL, so they hold no program logic and reach
+ * their datasets through the shared {@link DatasetUtilityPort} - the same
+ * contract the statement job's three utility steps use.
+ *
+ * <p>The order is load-bearing, not cosmetic. This job's {@code TRANFILE} is
+ * {@code TRANSACT.DALY(+1)} - the sorted, date-filtered sequential dataset the SORT step produces -
+ * presented in <em>ascending card-number order</em>. The account-break logic at {@code :181-188}
+ * depends entirely on that order: it writes an account total whenever the card number changes, so an
+ * unsorted input would emit one "account total" per change of card rather than one per account. Run
+ * the program without its two predecessors and it reports whatever a previous run happened to leave
+ * in that dataset.
+ *
+ * <p>Every transition is unconditional: {@code app/jcl/TRANREPT.jcl} carries no step-level
+ * {@code COND} at all, the {@code COND=} it contains being the SORT's {@code INCLUDE} filter, which is
+ * why {@link BatchConfig#precedingExitCodeZeroDecider()} is deliberately not wired into this job. The
+ * contract in {@code carddemo.jobs.transaction-report-job.steps} records all three and is validated at
+ * startup, so a profile can neither drop a step nor gate one.
  *
  * <p>The two SORT offsets independently confirm {@link TranRecord}'s layout, and that corroboration
  * is worth keeping: {@code TRAN-CARD-NUM} is declared at one-based position <strong>263</strong> for
@@ -196,6 +214,35 @@ public class TransactionReportJob {
     // =================================================================================================
 
     /**
+     * Where a swallowed cleanup failure is recorded.
+     *
+     * <p>Used by {@link ReportRun#releaseHandles()} and by nothing else. Every condition the program
+     * itself reports goes to {@code SYSOUT} through a {@link SysoutSink}, because a {@code DISPLAY} is
+     * parity-relevant output rather than a log line; this logger carries only what happens
+     * <em>outside</em> the program, on a path the COBOL has no statement for.
+     */
+    private static final Log LOG = LogFactory.getLog(TransactionReportJob.class);
+
+    /**
+     * Where a swallowed cleanup failure is described.
+     *
+     * <p>The throwable itself is never passed to the logger and neither is its message: a driver's text
+     * is outside this module's control, and a newline in it would let the message forge a second entry
+     * (CWE-117). {@link BackendDiagnostic} carries the {@code SQLSTATE}, the vendor code and the
+     * exception type and has no component for a message, which is this module's established way to keep
+     * a failure diagnosable without repeating what the backend said.
+     *
+     * @param ddName         the DD whose handle was being released
+     * @param cleanupFailure what the release threw
+     */
+    private static void reportCleanupFailure(String ddName, RuntimeException cleanupFailure) {
+        LOG.warn("Releasing the " + ddName + " handle of " + PROGRAM_NAME + " after an incomplete run "
+                + "failed - " + BackendDiagnostic.of(cleanupFailure).describe()
+                + ". The run's own outcome is reported to the caller unchanged, because the run's own "
+                + "failure is the one that matters.");
+    }
+
+    /**
      * The bean name of this configuration class, stated rather than derived from the class name so a
      * rename cannot silently change a bean name an operator may have referred to.
      */
@@ -212,8 +259,14 @@ public class TransactionReportJob {
     /** The job's name in the Spring Batch metadata, and the name of its bean. */
     public static final String JOB_NAME = "transactionReportJob";
 
-    /** The bean name of the single step. */
+    /** The bean name of the step that runs the program. */
     public static final String STEP_BEAN_NAME = "transactionReportStep";
+
+    /** The bean name of the {@value #BACKUP_STEP_NAME} unload step. */
+    public static final String BACKUP_STEP_BEAN_NAME = "transactionReportBackupStep";
+
+    /** The bean name of the {@value #SORT_STEP_NAME} filter-and-sort step. */
+    public static final String SORT_STEP_BEAN_NAME = "transactionReportSortStep";
 
     /** The COBOL {@code PROGRAM-ID} this class translates. */
     public static final String PROGRAM_NAME = "CBTRN03C";
@@ -225,17 +278,21 @@ public class TransactionReportJob {
     public static final String STEP_NAME = "STEP10R";
 
     /**
-     * The first preparatory step, {@code EXEC PROC=REPROC}
-     * ({@code app/proc/TRANREPT.prc:L21}). Named so the startup check can assert that the contract
-     * still records all three steps in order; this class does not run it.
+     * The first step, {@code EXEC PROC=REPROC} ({@code app/proc/TRANREPT.prc:L21}) - the
+     * {@code IDCAMS REPRO INFILE(FILEIN) OUTFILE(FILEOUT)} of {@code app/ctl/REPROCT.ctl:L15}, which
+     * unloads the transaction master onto the backup generation.
+     *
+     * <p>Run by {@link #transactionReportBackupStep()}. It is not decoration: without it the sort step
+     * has nothing to read, and {@value #STEP_NAME} would have to report straight from the master.
      */
     public static final String BACKUP_STEP_NAME = "STEP01R";
 
     /**
-     * The second preparatory step, {@code EXEC PGM=SORT}
-     * ({@code app/proc/TRANREPT.prc:L35}). Named for the same reason as
-     * {@value #BACKUP_STEP_NAME}; this class does not run it either, but its output <em>is</em> this
-     * job's input and its sort order is this job's precondition.
+     * The second step, {@code EXEC PGM=SORT} ({@code app/proc/TRANREPT.prc:L35}) - the DFSORT that
+     * filters the unloaded records to the reporting date range and orders them by card number.
+     *
+     * <p>Run by {@link #transactionReportSortStep()}. Its output <em>is</em> {@value #STEP_NAME}'s
+     * input and its sort order is the precondition the account-break logic rests on.
      */
     public static final String SORT_STEP_NAME = "STEP05R";
 
@@ -292,6 +349,53 @@ public class TransactionReportJob {
     public static final String TRANREPT_DD_NAME = TranReportWriter.DD_NAME;
 
     /**
+     * {@value #BACKUP_STEP_NAME}'s input: {@code //PRC001.FILEIN DD DISP=SHR}
+     * ({@code app/jcl/TRANREPT.jcl:L26-L27}, {@code app/proc/TRANREPT.prc:L24-L25}), the transaction
+     * master itself - which is why configuration binds it {@code alias: TRANSACT}.
+     *
+     * <p>{@code app/ctl/REPROCT.ctl:L15} names it as {@code REPRO INFILE(FILEIN)}, so the DD name is the
+     * utility's own parameter and not an invention of this migration.
+     */
+    public static final String BACKUP_INPUT_DD_NAME = "FILEIN";
+
+    /**
+     * {@value #BACKUP_STEP_NAME}'s output: {@code //PRC001.FILEOUT DD DISP=(NEW,CATLG,DELETE)} with
+     * {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)} ({@code app/jcl/TRANREPT.jcl:L29-L33}), the backup
+     * generation - {@code REPRO OUTFILE(FILEOUT)}.
+     */
+    public static final String BACKUP_OUTPUT_DD_NAME = "FILEOUT";
+
+    /**
+     * {@value #SORT_STEP_NAME}'s input: {@code //SORTIN DD DISP=SHR}
+     * ({@code app/jcl/TRANREPT.jcl:L38-L39}), the same backup generation
+     * {@value #BACKUP_OUTPUT_DD_NAME} just wrote. Two DD names over one dataset, which is exactly how
+     * the JCL hands one step's output to the next.
+     */
+    public static final String SORT_INPUT_DD_NAME = "SORTIN";
+
+    /**
+     * {@value #SORT_STEP_NAME}'s output: {@code //SORTOUT DD DISP=(NEW,CATLG,DELETE)} with
+     * {@code DCB=(*.SORTIN)} ({@code app/jcl/TRANREPT.jcl:L51-L55}), the sorted daily file - and the
+     * dataset this job's own {@value #TRANFILE_DD_NAME} binding then reports from.
+     *
+     * <p>{@code DCB=(*.SORTIN)} means "the geometry of {@value #SORT_INPUT_DD_NAME}", so the two
+     * bindings must agree on width and record format; {@link #requireUtilityStepBindings()} checks that
+     * rather than assuming it.
+     */
+    public static final String SORT_OUTPUT_DD_NAME = "SORTOUT";
+
+    /**
+     * The record format every dataset of the two utility steps declares: {@code FB}, fixed blocked
+     * ({@code app/jcl/TRANREPT.jcl:L31}, and {@code L53}'s {@code DCB=(*.SORTIN)} by reference).
+     *
+     * <p>It is what makes "every record is exactly {@value TranRecord#RECORD_LENGTH} bytes" true, and
+     * therefore what makes reading a fixed field at a fixed offset meaningful. The unload copies whole
+     * records and the sort reads two fixed spans out of them, so a variable-format binding would leave
+     * both steps operating on records whose fields are not where the SORT symbol table says they are.
+     */
+    public static final String UTILITY_RECORD_FORMAT = "FB";
+
+    /**
      * The value {@code carddemo.jobs.transaction-report-job.date-range-source} must hold.
      *
      * <p>Configuration declares this key precisely because the range is <em>not</em> a {@code PARM}.
@@ -316,6 +420,27 @@ public class TransactionReportJob {
 
     /** {@code TRAN-PROC-DT,305,10,CH} - length of the include-filter field. */
     public static final int SORT_TRAN_PROC_DT_LENGTH = TranRecord.TRAN_PROC_DT_LENGTH;
+
+    /**
+     * {@code PARM-START-DATE,C'2022-01-01'} - {@code app/jcl/TRANREPT.jcl:L43},
+     * {@code app/proc/TRANREPT.prc:L41}.
+     *
+     * <p><strong>A DFSORT symbol, and deliberately not a property.</strong> It is the low bound of the
+     * SORT step's {@code INCLUDE} filter and nothing else. It is emphatically <em>not</em> the report's
+     * date range: {@code CBTRN03C} reads that from DD {@value #DATEPARM_DD_NAME}
+     * ({@code app/cbl/CBTRN03C.cbl:L221}), which is what {@link #DATE_RANGE_SOURCE} records. The two are
+     * independent in the source and are kept independent here, and {@code application.yml} says so in as
+     * many words: these values "must never become configurable dates". Making them configurable would
+     * hand an operator a second, silent way to change which transactions reach the report.
+     */
+    public static final String SORT_INCLUDE_START_DATE = "2022-01-01";
+
+    /**
+     * {@code PARM-END-DATE,C'2022-07-06'} - {@code app/jcl/TRANREPT.jcl:L44},
+     * {@code app/proc/TRANREPT.prc:L42}. The high bound of the same {@code INCLUDE} filter, held for the
+     * same reason and under the same prohibition as {@link #SORT_INCLUDE_START_DATE}.
+     */
+    public static final String SORT_INCLUDE_END_DATE = "2022-07-06";
 
     // =================================================================================================
     // Pagination and arithmetic shapes.
@@ -533,13 +658,16 @@ public class TransactionReportJob {
     public static final String WS_PAGE_TOTAL_DISPLAY_LABEL = "WS-PAGE-TOTAL";
 
     /**
-     * The bean name of the module's active dataset code page, published by
-     * {@code config/CobolCharsetConfig}.
+     * The bean name of the module's active dataset code page.
      *
-     * <p>Declared here as a literal rather than imported, so this file's imports remain exactly its
-     * declared dependency set. The value is asserted against the publisher by that class's own suite.
+     * <p>Taken from {@link CobolCharsetConfig#DATASET_CHARSET_BEAN_NAME}, the class that publishes the
+     * bean, rather than restated as a literal here. A second spelling of a bean name is a rename waiting
+     * to break silently: the qualifier would still compile, still resolve at startup against the old
+     * name, and fail only when the publisher moved on. Kept as a constant of this class so a caller or a
+     * test that referred to it still can.
      */
-    public static final String DATASET_CHARSET_BEAN_NAME = "carddemoDatasetCharset";
+    public static final String DATASET_CHARSET_BEAN_NAME =
+            CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME;
 
     /**
      * What separates two {@code SYSOUT} lines. A {@code DISPLAY} produces one line; the terminator is
@@ -579,6 +707,19 @@ public class TransactionReportJob {
     private final TranReportWriter tranReportWriter;
 
     /**
+     * The data path the two utility steps use: {@value #BACKUP_STEP_NAME}'s {@code IDCAMS REPRO} and
+     * {@value #SORT_STEP_NAME}'s {@code DFSORT}.
+     *
+     * <p>Neither step runs a migrated COBOL program - they run mainframe utilities over whole record
+     * images - so neither belongs to a repository, whose methods reproduce a program's {@code READ},
+     * {@code WRITE} and {@code REWRITE} verbs. The same contract already serves the statement job's
+     * three utility steps ({@code app/jcl/CREASTMT.JCL}), so it is reused rather than restated: one
+     * dataset-utility path for the module means one place where a deployment overrides it and one place
+     * where the record-image representation is decided.
+     */
+    private final DatasetUtilityPort datasetUtilityPort;
+
+    /**
      * The codec over the module's active dataset code page.
      *
      * <p>Used for three things and nothing else: rendering a {@code SYSOUT} line's bytes, moving a card
@@ -598,6 +739,15 @@ public class TransactionReportJob {
 
     /** The configured step name, read from the contract so the metadata matches the JCL. */
     private final String stepName;
+
+    /**
+     * The configured name of the unload step, read from the contract for the same reason as
+     * {@link #stepName}: the batch metadata an operator reads must carry the JCL's own step names.
+     */
+    private final String backupStepName;
+
+    /** The configured name of the filter-and-sort step, read from the contract. */
+    private final String sortStepName;
 
     /**
      * The configured {@value #TRANFILE_DD_NAME} dataset name, kept only so an operator or a test can
@@ -631,6 +781,17 @@ public class TransactionReportJob {
      * @param sysoutSinkProvider     provider for a {@code SYSOUT} destination; never {@code null},
      *                               though it may resolve to nothing, in which case
      *                               {@link #defaultSysoutSink()} is used
+     * @param jdbcTemplate           the module's single {@link JdbcTemplate}, used only to build the
+     *                               default {@linkplain DatasetUtilityPort utility port} when the
+     *                               deployment supplies none; never {@code null}
+     * @param recordImageForm        how this deployment's driver presents a record image, from
+     *                               {@value RecordImageForm#FORM_PROPERTY} - carried into that default
+     *                               port so the two preparatory steps read and write a record image
+     *                               exactly as every repository and writer does; never {@code null}
+     * @param datasetUtilityPortProvider provider for the dataset-utility path the two preparatory steps
+     *                               use; never {@code null}, though it may resolve to nothing, in which
+     *                               case the JDBC implementation the statement job also defaults to is
+     *                               constructed here
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if the contract names a different program, declares any job
      *                               parameter, sources its date range from anything but
@@ -650,7 +811,10 @@ public class TransactionReportJob {
             DateParmReader dateParmReader,
             TranReportWriter tranReportWriter,
             @Qualifier(DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
-            ObjectProvider<SysoutSink> sysoutSinkProvider) {
+            ObjectProvider<SysoutSink> sysoutSinkProvider,
+            JdbcTemplate jdbcTemplate,
+            RecordImageForm recordImageForm,
+            ObjectProvider<DatasetUtilityPort> datasetUtilityPortProvider) {
 
         this.batchConfig = Objects.requireNonNull(batchConfig, "The batch configuration seam is "
                 + "required: it supplies the job repository, the transaction manager and the abend "
@@ -680,6 +844,18 @@ public class TransactionReportJob {
         this.sysoutSinkProvider = Objects.requireNonNull(sysoutSinkProvider, "A SysoutSink provider is "
                 + "required: DISPLAY output is emitted through an injected sink so it can be captured "
                 + "and compared, never written straight to a stream from the program body");
+        Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required to build the default dataset "
+                + "utility path for the " + BACKUP_STEP_NAME + " unload and the " + SORT_STEP_NAME
+                + " sort; the data-source configuration declares the single instance this module shares");
+        Objects.requireNonNull(recordImageForm, "A record-image representation is required: whether "
+                + "this deployment's driver presents a record image as characters or as bytes is stated "
+                + "once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided per component");
+        Objects.requireNonNull(datasetUtilityPortProvider, "A dataset-utility port provider is "
+                + "required: the two preparatory steps run mainframe utilities over whole record images, "
+                + "and which data path they use is a deployment-time input rather than a decision this "
+                + "job makes");
+        this.datasetUtilityPort = datasetUtilityPortProvider.getIfAvailable(
+                () -> new JdbcDatasetUtilityPort(jdbcTemplate, datasetCharset, recordImageForm));
 
         JobContract contract = batchConfig.contract(JOB_KEY);
         requireProgram(contract.program(), "carddemo.jobs." + JOB_KEY + ".program");
@@ -691,6 +867,8 @@ public class TransactionReportJob {
         requireProgram(step.program(), "carddemo.jobs." + JOB_KEY + ".steps[" + STEP_NAME
                 + "].program");
         this.stepName = step.name();
+        this.backupStepName = contract.step(BACKUP_STEP_NAME).name();
+        this.sortStepName = contract.step(SORT_STEP_NAME).name();
 
         // The DD name is a configuration key; what it resolves to is configuration's business. Only the
         // two facts this job needs are read - which dataset, and how wide its records are - and neither
@@ -700,7 +878,78 @@ public class TransactionReportJob {
         requireTranFileRecordWidth(tranFile.recordLength());
         this.tranFileDatasetName = requireUsableDatasetName(TRANFILE_DD_NAME, tranFile.dsname());
 
+        requireUtilityStepBindings();
         requireReportRecordWidth(tranReportWriter.recordLength());
+
+        // This program's ASSIGN clauses name CARDXREF, TRANTYPE and TRANCATG; the repositories that
+        // serve them are bound to their own keys - CCXREF for the cross-reference cluster, because the
+        // online programs address it that way. Each key carries an independent override in
+        // application.yml, so a deployment can point a job's DD and its repository's DD at different
+        // datasets. This job's report groups and subtotals by account as records arrive, so reading the
+        // wrong cross-reference would produce a report with plausible rows and wrong totals - the worst
+        // kind of wrong, and invisible without this check. Proven equal here, once, at startup.
+        batchConfig.requireSameDataset(JOB_KEY, CARDXREF_DD_NAME, CardXrefRepository.BASE_DD_NAME);
+        batchConfig.requireSameDataset(JOB_KEY, TRANTYPE_DD_NAME, TranTypeRepository.DD_NAME);
+        batchConfig.requireSameDataset(JOB_KEY, TRANCATG_DD_NAME, TranCategoryRepository.DD_NAME);
+    }
+
+    /**
+     * Requires the four DDs of the two preparatory steps to be bound, addressable, and to declare the
+     * geometry the JCL declares.
+     *
+     * <p>Checked at startup rather than discovered in a batch window, and checked for all four rather
+     * than for the two that are written: {@value #BACKUP_INPUT_DD_NAME} and
+     * {@value #SORT_INPUT_DD_NAME} are read whole-record, so a binding of the wrong width would copy
+     * and filter records whose {@code TRAN-PROC-DT} and {@code TRAN-CARD-NUM} spans are not where the
+     * SORT symbol table says they are - and would produce a plausible report from the wrong bytes.
+     *
+     * <p>{@value #SORT_OUTPUT_DD_NAME} takes {@code DCB=(*.SORTIN)}, so its geometry <em>is</em>
+     * {@value #SORT_INPUT_DD_NAME}'s by definition; that identity is asserted rather than assumed,
+     * because a profile that overrode one and not the other would satisfy every individual check while
+     * breaking the reference the JCL expresses.
+     *
+     * @throws IllegalStateException if any of the four is unbound, blank, of the wrong width, or of a
+     *                               record format other than {@value #UTILITY_RECORD_FORMAT}, or if the
+     *                               two sort bindings disagree
+     */
+    private void requireUtilityStepBindings() {
+        for (String ddName : List.of(BACKUP_INPUT_DD_NAME, BACKUP_OUTPUT_DD_NAME,
+                SORT_INPUT_DD_NAME, SORT_OUTPUT_DD_NAME)) {
+            var binding = batchConfig.datasetBinding(JOB_KEY, ddName);
+            requireUsableDatasetName(ddName, binding.dsname());
+            if (binding.recordLength() != TranRecord.RECORD_LENGTH) {
+                throw new IllegalStateException("The " + ddName + " binding of " + JOB_KEY
+                        + " declares record-length " + binding.recordLength() + ", but "
+                        + "app/jcl/TRANREPT.jcl:31 declares DCB=(LRECL=" + TranRecord.RECORD_LENGTH
+                        + ",RECFM=" + UTILITY_RECORD_FORMAT + ",BLKSIZE=0) for the unload and its SORT "
+                        + "reads TRAN-CARD-NUM at one-based " + SORT_TRAN_CARD_NUM_POSITION
+                        + " and TRAN-PROC-DT at one-based " + SORT_TRAN_PROC_DT_POSITION
+                        + " out of that record. app/cpy/CVTRA05Y.cpy declares (RECLN "
+                        + TranRecord.RECORD_LENGTH + ").");
+            }
+            if (!UTILITY_RECORD_FORMAT.equalsIgnoreCase(binding.recordFormat())) {
+                throw new IllegalStateException("The " + ddName + " binding of " + JOB_KEY
+                        + " declares record-format "
+                        + (binding.recordFormat() == null
+                                ? "absent" : "'" + binding.recordFormat() + "'")
+                        + ", but app/jcl/TRANREPT.jcl:31 declares RECFM=" + UTILITY_RECORD_FORMAT
+                        + " and its L53 DCB=(*.SORTIN) carries the same format onto the sorted file. "
+                        + "Fixed blocked is what makes every record exactly "
+                        + TranRecord.RECORD_LENGTH + " bytes, so it is required rather than assumed.");
+            }
+        }
+        var sortIn = batchConfig.datasetBinding(JOB_KEY, SORT_INPUT_DD_NAME);
+        var sortOut = batchConfig.datasetBinding(JOB_KEY, SORT_OUTPUT_DD_NAME);
+        if (sortIn.recordLength() != sortOut.recordLength()
+                || !String.valueOf(sortIn.recordFormat())
+                        .equalsIgnoreCase(String.valueOf(sortOut.recordFormat()))) {
+            throw new IllegalStateException("The " + SORT_OUTPUT_DD_NAME + " binding of " + JOB_KEY
+                    + " declares record-length " + sortOut.recordLength() + " and record-format '"
+                    + sortOut.recordFormat() + "', but app/jcl/TRANREPT.jcl:53 declares "
+                    + "DCB=(*.SORTIN) - the geometry of " + SORT_INPUT_DD_NAME + ", which is "
+                    + sortIn.recordLength() + " and '" + sortIn.recordFormat() + "'. The sorted file is "
+                    + "the same records in a different order, so it is the same shape.");
+        }
     }
 
     // =================================================================================================
@@ -776,10 +1025,10 @@ public class TransactionReportJob {
     /**
      * Requires the contract to record all three JCL steps, in order, all ungated.
      *
-     * <p>The first two are the unload and the SORT. This class does not run them, but their presence in
-     * the contract is what documents that this job's input arrives already filtered and already sorted
-     * by card number - the precondition the account-break logic rests on. A contract that had lost
-     * them would read as though {@code CBTRN03C} reported straight from the transaction master.
+     * <p>The first two are the unload and the SORT, and this job runs both - so the contract is not
+     * documentation here, it is the source of the two step names the batch metadata records and the
+     * proof that the sequence has not been reordered. A contract that had lost them would leave
+     * {@code CBTRN03C} reporting straight from whatever its {@code TRANFILE} binding last held.
      *
      * <p>All three must be ungated. {@code COND=(0,NE)} appears on three steps of
      * {@code app/jcl/CREASTMT.JCL} and nowhere else in this estate; the {@code COND=} in
@@ -888,12 +1137,12 @@ public class TransactionReportJob {
 
 
     // =================================================================================================
-    // The Spring Batch assembly: one job, one step, one tasklet. app/jcl/TRANREPT.jcl has no
-    // step-level COND, so there is no flow to build and no decider to place.
+    // The Spring Batch assembly: one job, three steps in the JCL's order. app/jcl/TRANREPT.jcl has no
+    // step-level COND, so every transition is unconditional and there is no decider to place.
     // =================================================================================================
 
     /**
-     * The job {@code app/jcl/TRANREPT.jcl} ends with: one migrated step, no parameters, no gating.
+     * The job {@code app/jcl/TRANREPT.jcl} is: three steps in order, no parameters, no gating.
      *
      * <p>Built through {@link BatchConfig#job(String)}, so it carries the shared job repository and the
      * abend listener that turns an {@link AbendException}'s {@code RETURN-CODE} into the job's exit
@@ -905,13 +1154,328 @@ public class TransactionReportJob {
      * parameter; and a validator asserting that the parameters are empty would forbid the identifying
      * parameter a re-run of the same job instance needs.
      *
+     * <p><strong>All three steps, in the JCL's order, with unconditional transitions.</strong>
+     * {@value #BACKUP_STEP_NAME} unloads the transaction master onto the backup generation,
+     * {@value #SORT_STEP_NAME} filters that unload to the {@code INCLUDE} date range and orders it by
+     * card number, and {@value #STEP_NAME} reports from the result. The order is the whole point: this
+     * job's {@value #TRANFILE_DD_NAME} binding names the <em>sorted daily file</em>, so running the
+     * program without its two predecessors would report from whatever the previous run left there.
+     *
+     * <p>No {@code COND} anywhere, so no decider and no skip transition. The {@code COND=} at
+     * {@code app/jcl/TRANREPT.jcl:L47} is the SORT's {@code INCLUDE} filter on {@code TRAN-PROC-DT}, not
+     * step gating - reading it as gating would skip a report the mainframe produces. Gating is checked
+     * against the contract at startup by {@link #requireStepSequence(JobContract)}, so a profile cannot
+     * introduce it either.
+     *
      * @return the job, named {@value #JOB_NAME} in the batch metadata
      */
     @Bean(JOB_NAME)
     public Job transactionReportJob() {
         return batchConfig.job(JOB_NAME)
-                .start(transactionReportStep())
+                .start(transactionReportBackupStep())
+                .next(transactionReportSortStep())
+                .next(transactionReportStep())
                 .build();
+    }
+
+    /**
+     * {@value #BACKUP_STEP_NAME} - {@code EXEC PROC=REPROC} ({@code app/jcl/TRANREPT.jcl:L23},
+     * {@code app/proc/TRANREPT.prc:L21}), an {@code IDCAMS REPRO} and nothing more.
+     *
+     * <p>A tasklet, because {@code REPRO} is one whole-dataset operation with no per-record decision to
+     * chunk.
+     *
+     * @return the unload step; never {@code null}
+     */
+    @Bean(BACKUP_STEP_BEAN_NAME)
+    public Step transactionReportBackupStep() {
+        return batchConfig.taskletStep(backupStepName, transactionReportBackupTasklet()).build();
+    }
+
+    /**
+     * {@value #SORT_STEP_NAME} - {@code EXEC PGM=SORT} ({@code app/jcl/TRANREPT.jcl:L37},
+     * {@code app/proc/TRANREPT.prc:L35}).
+     *
+     * <p>A tasklet for a stronger reason than the unload's: a sort is not a record-at-a-time operation
+     * at all. Every record must be in hand before the first one can be written, so a chunk-oriented
+     * step could not express it without writing records in an order the sort has not decided yet.
+     *
+     * @return the filter-and-sort step; never {@code null}
+     */
+    @Bean(SORT_STEP_BEAN_NAME)
+    public Step transactionReportSortStep() {
+        return batchConfig.taskletStep(sortStepName, transactionReportSortTasklet()).build();
+    }
+
+    /**
+     * {@value #BACKUP_STEP_NAME}'s body: one call, one complete unload.
+     *
+     * <p>Not a bean, for the same reason {@link #transactionReportTasklet()} is not: the step is the
+     * bean, and a separately published tasklet would be a second handle on the same body with no
+     * caller.
+     *
+     * @return a tasklet that unloads the master exactly once per step execution
+     */
+    public Tasklet transactionReportBackupTasklet() {
+        return (contribution, chunkContext) ->
+                reportRecordsWritten(contribution,
+                        unloadTransactionMaster(StopSignal.of(chunkContext)));
+    }
+
+    /**
+     * {@value #SORT_STEP_NAME}'s body: one call, one complete filter and sort.
+     *
+     * @return a tasklet that filters and sorts exactly once per step execution
+     */
+    public Tasklet transactionReportSortTasklet() {
+        return (contribution, chunkContext) ->
+                reportRecordsWritten(contribution,
+                        filterAndSortUnloadedTransactions(StopSignal.of(chunkContext)));
+    }
+
+    /**
+     * Publishes what a utility step wrote onto the step metadata.
+     *
+     * <p>A write count is the one number these two steps genuinely produce - {@code REPRO} and DFSORT
+     * both report records out - so it is contributed rather than invented. The migrated program's own
+     * step contributes nothing, because its only counter counts report lines rather than records.
+     *
+     * @param contribution  the framework's contribution for this step execution
+     * @param recordsWritten how many records the step wrote
+     * @return {@link RepeatStatus#FINISHED}, because a utility step runs once
+     */
+    private static RepeatStatus reportRecordsWritten(StepContribution contribution,
+            int recordsWritten) {
+        contribution.incrementWriteCount(recordsWritten);
+        return RepeatStatus.FINISHED;
+    }
+
+    /**
+     * {@value #BACKUP_STEP_NAME} - {@code REPRO INFILE(FILEIN) OUTFILE(FILEOUT)}
+     * ({@code app/ctl/REPROCT.ctl:L15}).
+     *
+     * <p>Copies every record of the transaction master onto the backup generation, record for record and
+     * unchanged. {@code REPRO} transforms nothing, so neither does this: no field is decoded, no width is
+     * adjusted, no record is dropped.
+     *
+     * <p><strong>The destination is emptied first</strong>, because
+     * {@code app/jcl/TRANREPT.jcl:L29} declares {@code DISP=(NEW,CATLG,DELETE)} over
+     * {@code ...TRANSACT.BKUP(+1)}: each run unloads into a new generation, so last run's unload is not
+     * part of this one. Content only - no data-definition statement is issued anywhere in this module
+     * (gate G44).
+     *
+     * <p><strong>The order is the master's key order.</strong> {@code REPRO} of a KSDS delivers records
+     * in ascending key sequence, and the master's key is {@code TRAN-ID} at offset
+     * {@value TranRecord#TRAN_ID_OFFSET} for {@value TranRecord#TRAN_ID_KEY_LENGTH} bytes. Stated
+     * explicitly and applied here rather than left to whatever order the backend returns rows in,
+     * because an unordered unload would make the sort step's treatment of equal card numbers depend on
+     * the backend. A binding that declares no key is a physical-sequential dataset, whose records
+     * {@code REPRO} copies in the order they were written; that order is then whatever the read returns,
+     * and imposing one would reorder the file.
+     *
+     * @return how many records were unloaded
+     * @throws IllegalStateException if either dataset cannot be addressed
+     */
+    public int unloadTransactionMaster() {
+        return unloadTransactionMaster(StopSignal.RUNNING);
+    }
+
+    /**
+     * {@value #BACKUP_STEP_NAME}, yielding to a stop request between written records.
+     *
+     * <p>Identical to {@link #unloadTransactionMaster()} in what it reads, how it orders it and what it
+     * writes. The read and the clear are one statement each, bounded by the configured statement
+     * timeout; the unload is a record at a time, which is where a stop can be honoured. Nothing is
+     * retried, so a stopped unload leaves the records it had already written and reports that count -
+     * and the step reports as stopped, so nothing downstream reads a partial backup as a complete one.
+     *
+     * @param stopSignal the between-record cancellation probe; never {@code null}
+     * @return how many records were unloaded
+     * @throws IllegalStateException if either dataset cannot be addressed
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
+     */
+    public int unloadTransactionMaster(StopSignal stopSignal) {
+        DatasetBinding source = batchConfig.datasetBinding(JOB_KEY, BACKUP_INPUT_DD_NAME);
+        DatasetBinding destination = batchConfig.datasetBinding(JOB_KEY, BACKUP_OUTPUT_DD_NAME);
+        List<String> unloaded = new ArrayList<>(datasetUtilityPort.readAllRecordImages(source));
+        if (source.keyLength() != null) {
+            unloaded.sort(MASTER_KEY_ORDER);
+        }
+        datasetUtilityPort.deleteAllRecords(destination);
+        return datasetUtilityPort.writeRecordImages(destination, unloaded, stopSignal);
+    }
+
+    /**
+     * {@value #SORT_STEP_NAME} - {@code SORT FIELDS=(TRAN-CARD-NUM,A)} with
+     * {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)}
+     * ({@code app/jcl/TRANREPT.jcl:L46-L48}, {@code app/proc/TRANREPT.prc:L44-L46}).
+     *
+     * <p>Reads {@value #SORT_INPUT_DD_NAME}, keeps the records whose {@code TRAN-PROC-DT} lies inside
+     * the {@code INCLUDE} range, orders what survives by {@code TRAN-CARD-NUM} ascending, and writes the
+     * result to {@value #SORT_OUTPUT_DD_NAME} - which it empties first, for the same
+     * {@code DISP=(NEW,CATLG,DELETE)} reason the unload does.
+     *
+     * <p><strong>Filter before sort, and both before the write.</strong> DFSORT applies {@code INCLUDE}
+     * as it reads, so a record outside the range never reaches the sort; doing it in the other order
+     * would produce the same set but is not what the utility does, and would sort records it then threw
+     * away.
+     *
+     * <p><strong>This ordering is load-bearing.</strong> {@code CBTRN03C} breaks and subtotals by
+     * account as records arrive ({@code app/cbl/CBTRN03C.cbl:L168-L207}), resolving the account from the
+     * card number, so records for one card must arrive together. Reporting from an unsorted file would
+     * produce the right rows under the wrong subtotals.
+     *
+     * @return how many records were written to {@value #SORT_OUTPUT_DD_NAME}
+     * @throws IllegalStateException if either dataset cannot be addressed
+     */
+    public int filterAndSortUnloadedTransactions() {
+        return filterAndSortUnloadedTransactions(StopSignal.RUNNING);
+    }
+
+    /**
+     * {@value #SORT_STEP_NAME}, yielding to a stop request between written records.
+     *
+     * <p>Identical to {@link #filterAndSortUnloadedTransactions()} in what it includes, how it orders it
+     * and what it writes. The read and the clear are one statement each, bounded by the configured
+     * statement timeout; the write is a record at a time, which is where a stop can be honoured. Nothing
+     * is retried, so a stopped write leaves the records it had already written and reports that count -
+     * and the step reports as stopped, so the report step is never fed a half-sorted file as though it
+     * were whole.
+     *
+     * @param stopSignal the between-record cancellation probe; never {@code null}
+     * @return how many records were written to {@value #SORT_OUTPUT_DD_NAME}
+     * @throws IllegalStateException if either dataset cannot be addressed
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
+     */
+    public int filterAndSortUnloadedTransactions(StopSignal stopSignal) {
+        DatasetBinding source = batchConfig.datasetBinding(JOB_KEY, SORT_INPUT_DD_NAME);
+        DatasetBinding destination = batchConfig.datasetBinding(JOB_KEY, SORT_OUTPUT_DD_NAME);
+        List<String> included = filterAndSort(datasetUtilityPort.readAllRecordImages(source));
+        datasetUtilityPort.deleteAllRecords(destination);
+        return datasetUtilityPort.writeRecordImages(destination, included, stopSignal);
+    }
+
+    /**
+     * The SORT step's transformation, as a function of its input - so it is assertable with no dataset,
+     * no backend and no step execution.
+     *
+     * @param recordImages the unloaded records, each {@value TranRecord#RECORD_LENGTH} characters; never
+     *                     {@code null} and never containing {@code null}
+     * @return the included records in {@code TRAN-CARD-NUM} order; empty when none qualifies, which is
+     *         not an error - it is an empty report
+     * @throws IllegalArgumentException if any record is not {@value TranRecord#RECORD_LENGTH} characters
+     */
+    public List<String> filterAndSort(List<String> recordImages) {
+        Objects.requireNonNull(recordImages, "Records are required to filter and sort; an empty unload "
+                + "yields an empty sorted file and is not an error");
+        List<String> included = new ArrayList<>(recordImages.size());
+        for (String recordImage : recordImages) {
+            if (includedByDateRange(requireSortableRecord(recordImage))) {
+                included.add(recordImage);
+            }
+        }
+        included.sort(SORT_FIELDS_ORDER);
+        return included;
+    }
+
+    /**
+     * {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)}, applied
+     * to one record.
+     *
+     * <p>Both bounds are <strong>inclusive</strong> - {@code GE} and {@code LE}, not {@code GT} and
+     * {@code LT} - so a transaction processed on either boundary date is reported. The field is declared
+     * {@code CH} in the SORT symbol table, so it is compared as characters rather than as a date: no
+     * parsing, no calendar, no time zone, and a malformed value simply falls outside the range instead of
+     * failing the step. Lexicographic comparison is the right one for this domain, and it is the same
+     * under both code pages this module reads: {@code TRAN-PROC-DT} holds {@code YYYY-MM-DD}, whose
+     * digits are monotonically ordered and whose hyphen sorts below every digit under US-ASCII and under
+     * IBM037 alike.
+     *
+     * @param recordImage one record, already width-checked
+     * @return whether DFSORT would have included it
+     */
+    private static boolean includedByDateRange(String recordImage) {
+        String processedDate = jclField(recordImage, SORT_TRAN_PROC_DT_POSITION,
+                SORT_TRAN_PROC_DT_LENGTH);
+        return processedDate.compareTo(SORT_INCLUDE_START_DATE) >= 0
+                && processedDate.compareTo(SORT_INCLUDE_END_DATE) <= 0;
+    }
+
+    /**
+     * Requires one record to be exactly as wide as the copybook declares, before a fixed span is read
+     * out of it.
+     *
+     * <p>A short record would make {@link #jclField} throw
+     * {@link StringIndexOutOfBoundsException} - an exception naming an index rather than the dataset
+     * whose record was the wrong width. The check is here so the diagnostic names the DD, the declared
+     * width and the width found.
+     *
+     * @param recordImage the record to check
+     * @return that record, unchanged
+     * @throws IllegalArgumentException if it is not {@value TranRecord#RECORD_LENGTH} characters
+     */
+    private static String requireSortableRecord(String recordImage) {
+        Objects.requireNonNull(recordImage, "A record of " + SORT_INPUT_DD_NAME + " is null, which is "
+                + "not a record a dataset can hold");
+        if (recordImage.length() != TranRecord.RECORD_LENGTH) {
+            throw new IllegalArgumentException("A record of " + SORT_INPUT_DD_NAME + " is "
+                    + recordImage.length() + " characters, but app/cpy/CVTRA05Y.cpy declares (RECLN "
+                    + TranRecord.RECORD_LENGTH + ") and app/jcl/TRANREPT.jcl:31 unloads at LRECL="
+                    + TranRecord.RECORD_LENGTH + ". TRAN-PROC-DT sits at one-based "
+                    + SORT_TRAN_PROC_DT_POSITION + " and TRAN-CARD-NUM at one-based "
+                    + SORT_TRAN_CARD_NUM_POSITION + ", so a record of any other width would be filtered "
+                    + "and ordered on the wrong bytes.");
+        }
+        return recordImage;
+    }
+
+    /**
+     * {@code SORT FIELDS=(TRAN-CARD-NUM,A)} - ascending {@code TRAN-CARD-NUM}, the field the symbol
+     * table declares at {@code 263,16,ZD} ({@code app/jcl/TRANREPT.jcl:L41,L46}).
+     *
+     * <p>{@code ZD} is zoned decimal, and for this field's domain zoned-decimal order and character
+     * order coincide: {@code TRAN-CARD-NUM} is a {@code PIC X(16)} span holding sixteen unsigned digits,
+     * so there is no sign overpunch to interpret, no length difference to align and no letter to
+     * disagree about. A {@link String} comparison therefore produces DFSORT's order, and it produces the
+     * same order under US-ASCII and IBM037 because the digits are monotonic in both.
+     *
+     * <p><strong>The sort is stable, deliberately.</strong> A card has many transactions, so equal keys
+     * are the normal case rather than the exception, and their relative order decides the order of the
+     * detail lines inside an account's block of the report. DFSORT leaves that order unspecified unless
+     * {@code EQUALS} is in effect; a migration cannot leave it unspecified and still be verifiable, so
+     * the input order is preserved - which, after a {@code REPRO} of the master, is {@code TRAN-ID}
+     * order.
+     *
+     * <p>Stateless and immutable, so publishing it as a constant introduces no shared mutable state.
+     */
+    public static final Comparator<String> SORT_FIELDS_ORDER = Comparator.comparing(
+            (String recordImage) -> jclField(recordImage, SORT_TRAN_CARD_NUM_POSITION,
+                    SORT_TRAN_CARD_NUM_LENGTH));
+
+    /**
+     * The master's key order: ascending {@code TRAN-ID}, the {@value TranRecord#TRAN_ID_KEY_LENGTH}-byte
+     * key at offset {@value TranRecord#TRAN_ID_OFFSET} that {@code app/csd/CARDDEMO.CSD} defines the
+     * cluster on - the sequence {@code REPRO} delivers a KSDS in.
+     */
+    private static final Comparator<String> MASTER_KEY_ORDER = Comparator.comparing(
+            (String recordImage) -> recordImage.substring(TranRecord.TRAN_ID_OFFSET,
+                    TranRecord.TRAN_ID_OFFSET + TranRecord.TRAN_ID_KEY_LENGTH));
+
+    /**
+     * One JCL field reference: {@code length} characters starting at the 1-based {@code position}.
+     *
+     * <p><strong>The 1-based-to-0-based conversion lives here and nowhere else.</strong> JCL and DFSORT
+     * count byte positions from 1 and Java counts from 0; doing the subtraction inline at each call site
+     * is how an off-by-one gets in.
+     *
+     * @param recordImage      the record to read from
+     * @param oneBasedPosition the SORT symbol table's position, counting from 1
+     * @param length           how many characters to take
+     * @return exactly {@code length} characters
+     */
+    private static String jclField(String recordImage, int oneBasedPosition, int length) {
+        int from = oneBasedPosition - 1;
+        return recordImage.substring(from, from + length);
     }
 
     /**
@@ -946,7 +1510,7 @@ public class TransactionReportJob {
      */
     public Tasklet transactionReportTasklet() {
         return (contribution, chunkContext) -> {
-            execute(resolveSysoutSink());
+            execute(resolveSysoutSink(), null, StopSignal.of(chunkContext));
             return RepeatStatus.FINISHED;
         };
     }
@@ -1024,10 +1588,46 @@ public class TransactionReportJob {
      *                               {@value #TRANREPT_DD_NAME} name cannot be addressed as a dataset
      */
     public ExecutionSummary execute(SysoutSink sysout, TranReportWriter.RecordSink reportSink) {
+        return execute(sysout, reportSink, StopSignal.RUNNING);
+    }
+
+    /**
+     * Runs {@code CBTRN03C}, yielding to the given stop signal between records.
+     *
+     * <p>The pass is identical to {@link #execute(SysoutSink, TranReportWriter.RecordSink)} - same reads,
+     * same lookups, same report records, same totals, same order - and the signal changes nothing while
+     * no stop is pending. It exists because this program is one pass over the whole filtered transaction
+     * file inside a single tasklet invocation, so the framework's interruption check at the step's repeat
+     * boundary happens once and cannot end a pass already under way.
+     *
+     * <p>The probe is consulted between records, where the record in flight is complete: its detail line
+     * has been written and its subtotals accumulated, or it has not been read. Nothing is retried - a
+     * report record already written stays written, and the page and grand totals are simply not reached,
+     * exactly as they are not reached on the {@code NEXT SENTENCE} defect the loop preserves. See
+     * {@link StopSignal}.
+     *
+     * @param sysout     where the {@code DISPLAY} lines go; never {@code null}
+     * @param reportSink where the report records go, or {@code null} to write to the configured
+     *                   {@value #TRANREPT_DD_NAME} dataset
+     * @param stopSignal the between-record cancellation probe; {@link StopSignal#RUNNING} for a caller
+     *                   outside a step; never {@code null}
+     * @return what the run produced and the return code it ended with
+     * @throws NullPointerException  if {@code sysout} or {@code stopSignal} is {@code null}
+     * @throws AbendException        if any open, read, write or close reports a status the program does
+     *                               not name, or if a keyed lookup finds nothing
+     * @throws IllegalStateException if {@code reportSink} is {@code null} and the configured
+     *                               {@value #TRANREPT_DD_NAME} name cannot be addressed as a dataset
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop, which abandons the pass
+     *                               between records
+     */
+    public ExecutionSummary execute(SysoutSink sysout, TranReportWriter.RecordSink reportSink,
+            StopSignal stopSignal) {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required to run " + PROGRAM_NAME
                 + ": its DISPLAY lines are half of its observable output, so there is nothing to run "
                 + "without somewhere to put them");
-        return new ReportRun(sysout, reportSink).run();
+        Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING outside a "
+                + "step, which is what the two-argument overload does");
+        return new ReportRun(sysout, reportSink).run(stopSignal);
     }
 
     // =================================================================================================
@@ -1149,6 +1749,35 @@ public class TransactionReportJob {
      */
     public String stepName() {
         return stepName;
+    }
+
+    /**
+     * The configured name of the unload step, which is {@value #BACKUP_STEP_NAME} unless configuration
+     * says otherwise.
+     *
+     * @return the step name as the batch metadata will record it
+     */
+    public String backupStepName() {
+        return backupStepName;
+    }
+
+    /**
+     * The configured name of the filter-and-sort step, which is {@value #SORT_STEP_NAME} unless
+     * configuration says otherwise.
+     *
+     * @return the step name as the batch metadata will record it
+     */
+    public String sortStepName() {
+        return sortStepName;
+    }
+
+    /**
+     * The dataset-utility path the two preparatory steps use, as resolved.
+     *
+     * @return the port, deployment-supplied or the JDBC default; never {@code null}
+     */
+    public DatasetUtilityPort datasetUtilityPort() {
+        return datasetUtilityPort;
     }
 
     /**
@@ -1342,10 +1971,89 @@ public class TransactionReportJob {
          * transcription of the source this follows, and this class's outer documentation for the two
          * defects the loop preserves.
          *
+         * @param stopSignal the between-record cancellation probe
          * @return what the run produced
          * @throws AbendException if any paragraph reaches {@code 9999-ABEND-PROGRAM}
+         * @throws BatchConfig.StopRequestedException if the step is asked to stop
          */
-        private ExecutionSummary run() {
+        private ExecutionSummary run(StopSignal stopSignal) {
+            try {
+                return runToGoback(stopSignal);
+            } finally {
+                releaseHandles();
+            }
+        }
+
+        /**
+         * Releases this run's three acquired handles, silently and idempotently.
+         *
+         * <p>The {@code finally} above is not a second {@code CLOSE}. It reports nothing, displays
+         * nothing and cannot change what the caller sees: on the normal path {@code :208-213} has
+         * already closed every handle and each close is guarded here by {@code isOpen()}, so it does
+         * nothing at all. It exists for the abend and stop paths. {@code CALL 'CEE3ABD'} ends a z/OS
+         * task and the operating system reclaims its open files; an {@link AbendException} - or a
+         * {@link BatchConfig.StopRequestedException} - ends one job step inside a JVM that keeps
+         * running, and a deployment-supplied cursor or sink left open there is held for the life of the
+         * process.
+         *
+         * <p>Three properties, and each is what keeps this from changing the program's behaviour:
+         * <ul>
+         *   <li><strong>Idempotent, and only what was acquired.</strong> A field is {@code null} until
+         *       its open runs, and each handle is asked whether it is still open before it is closed -
+         *       which also keeps a failed open silent, because
+         *       {@link TransactionRepository.InputFile#closeInput()} and
+         *       {@link BrowseCursor#closeBrowse()} both report a permanent error for a close of
+         *       something that never opened, and that is a condition the program has already abended
+         *       on.</li>
+         *   <li><strong>Silent.</strong> No {@code SYSOUT} line, no status returned, nothing branched
+         *       on. The six {@code CLOSE} statements of {@code :208-213} are the program's only closes
+         *       and they are already translated with their {@code '00'}-or-12 ladders intact. Their
+         *       {@code 'ERROR CLOSING ...'} displays belong there and are not repeated here.</li>
+         *   <li><strong>Non-throwing.</strong> Every failure is swallowed, because this runs in a
+         *       {@code finally}: throwing would replace the {@link AbendException} the caller needs
+         *       with a cleanup fault, and the abend is always the more important of the two. The
+         *       swallowed condition is logged instead, so it stays diagnosable.</li>
+         * </ul>
+         *
+         * <p>{@value TransactionReportJob#TRANTYPE_DD_NAME},
+         * {@value TransactionReportJob#TRANCATG_DD_NAME} and
+         * {@value TransactionReportJob#DATEPARM_DD_NAME} hold nothing to release: their repositories
+         * expose {@code open}/{@code close} as dataset probes rather than handles, so there is no
+         * per-run object for this method to reclaim.
+         */
+        private void releaseHandles() {
+            if (tranFile != null && tranFile.isOpen()) {
+                try {
+                    tranFile.closeInput();
+                } catch (RuntimeException cleanupFailure) {
+                    reportCleanupFailure(TRANFILE_DD_NAME, cleanupFailure);
+                }
+            }
+            if (reportFile != null && reportFile.isOpen()) {
+                try {
+                    reportFile.closeOutput();
+                } catch (RuntimeException cleanupFailure) {
+                    reportCleanupFailure(TRANREPT_DD_NAME, cleanupFailure);
+                }
+            }
+            if (xrefCursor != null && xrefCursor.isOpen()) {
+                try {
+                    xrefCursor.closeBrowse();
+                } catch (RuntimeException cleanupFailure) {
+                    reportCleanupFailure(CARDXREF_DD_NAME, cleanupFailure);
+                }
+            }
+        }
+
+        /**
+         * The mainline proper, run inside {@link #run(StopSignal)}'s release boundary.
+         *
+         * @param stopSignal the between-record cancellation probe
+         * @return what the run produced
+         * @throws AbendException if any paragraph reaches {@code 9999-ABEND-PROGRAM}
+         * @throws BatchConfig.StopRequestedException if the step is asked to stop
+         */
+        private ExecutionSummary runToGoback(StopSignal stopSignal) {
             // :160  DISPLAY 'START OF EXECUTION OF PROGRAM CBTRN03C'.
             sysout.display(START_OF_EXECUTION);
 
@@ -1362,6 +2070,12 @@ public class TransactionReportJob {
 
             // :170  PERFORM UNTIL END-OF-FILE = 'Y'
             while (!AT_END_OF_FILE.equals(endOfFile)) {
+
+                // NO COBOL COUNTERPART. The between-record yield to a stop request: a call rather than a
+                // condition, so it adds no arm to the translated control flow, and positioned before
+                // 1000-TRANFILE-GET-NEXT so a detail line is never abandoned half written. See
+                // BatchConfig.StopSignal.
+                stopSignal.checkStopRequested();
 
                 // :171  IF END-OF-FILE = 'N'  - redundant: the PERFORM UNTIL condition already
                 // establishes it and the flag holds only 'N' or 'Y', so the false path is unreachable.
@@ -2790,4 +3504,3 @@ public class TransactionReportJob {
         }
     }
 }
-

@@ -1131,11 +1131,11 @@ final class CardSelectResponseTest {
     }
 
     @Nested
-    @DisplayName("The JSON wire - exactly the 15 data members plus the five carriers")
+    @DisplayName("The JSON wire - exactly the 15 data members plus the six carriers")
     class JsonContract {
 
         @Test
-        @DisplayName("serialisation emits 20 properties and no attribute item")
+        @DisplayName("serialisation emits 21 properties and no attribute item")
         void serialisedShape() throws Exception {
             ObjectMapper mapper = new ObjectMapper();
             CardSelectResponse response = populated();
@@ -1146,15 +1146,37 @@ final class CardSelectResponseTest {
             Map<String, Object> json =
                     mapper.readValue(mapper.writeValueAsString(response), Map.class);
 
+            // The fifteen xxxO items, plus six carriers: CC-WORK-AREA, CARDDEMO-COMMAREA, the
+            // next-screen triple, and the twelve-byte WS-THIS-PROGCOMMAREA that COMMON-RETURN appends
+            // behind the commarea at app/cbl/COCRDSLC.cbl:398-400.
             assertThat(json.keySet()).containsExactlyInAnyOrder(
                     "trnnameo", "title01o", "curdateo", "pgmnameo", "title02o", "curtimeo",
                     "acctsido", "cardsido", "crdnameo", "crdstcdo", "expmono", "expyearo",
                     "infomsgo", "errmsgo", "fkeyso",
-                    "cardScreenState", "navigationContext", "nextProgram", "nextMapset", "nextMap");
-            assertThat(json).hasSize(20);
+                    "cardScreenState", "navigationContext", "nextProgram", "nextMapset", "nextMap",
+                    "thisProgCommarea");
+            assertThat(json).hasSize(21);
+            // The attribute quads are metadata and are published under the ScreenResponse envelope's
+            // screenMetadata member, never as siblings of the fifteen values - so no xxxC item and no
+            // accessor-shaped name appears here.
             assertThat(json.keySet()).doesNotContain("attributeQuads", "attributeItems",
                     "fieldImages", "describe", "groupGeometry", "attributes", "acctsidc",
-                    "ACCTSIDC", "expday", "pageno");
+                    "ACCTSIDC", "expday", "pageno", "screenMetadata");
+        }
+
+        @Test
+        @DisplayName("the returned trailer has no absent state either")
+        void theTrailerIsNeverNull() {
+            CardSelectResponse response = new CardSelectResponse();
+
+            response.setThisProgCommarea(null);
+
+            assertThat(response.getThisProgCommarea())
+                    .isEqualTo(CardSelectRequest.ThisProgCommarea.initialized());
+
+            response.setThisProgCommarea(
+                    new CardSelectRequest.ThisProgCommarea("COCRDLIC", "CCLI"));
+            assertThat(response.getThisProgCommarea().caFromTranid()).isEqualTo("CCLI");
         }
 
         @Test

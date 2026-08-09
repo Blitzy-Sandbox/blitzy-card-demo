@@ -14,13 +14,14 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.SecUserRepository.HeldRecord;
 import com.vsergeychik.carddemo.user.SecUserRepository.ReadResult;
 import com.vsergeychik.carddemo.user.SecUserRepository.WriteResult;
-import com.vsergeychik.carddemo.user.UserUpdateController.Cu02Info;
+import com.vsergeychik.carddemo.user.dto.UserUpdateRequest.Cu02Info;
 import com.vsergeychik.carddemo.user.UserUpdateController.ProgramState;
 import com.vsergeychik.carddemo.user.UserUpdateController.ScreenField;
 import com.vsergeychik.carddemo.user.UserUpdateController.Send;
@@ -127,6 +128,11 @@ class UserUpdateControllerTest {
         return NavigationContext.empty().withPgmReenter();
     }
 
+    /** {@code CDEMO-PGM-CONTEXT = 0}: first entry, so the map is painted rather than received. */
+    private static NavigationContext enter() {
+        return NavigationContext.empty().withPgmEnter();
+    }
+
     /** A terminal input area carrying the five typed items and a communication area. */
     private static UserUpdateRequest screen(String usrIdIn,
                                             String fName,
@@ -135,7 +141,7 @@ class UserUpdateControllerTest {
                                             String usrType,
                                             NavigationContext commarea) {
         return new UserUpdateRequest(null, null, null, null, null, null,
-                usrIdIn, fName, lName, passwd, usrType, null, commarea, null);
+                usrIdIn, fName, lName, passwd, usrType, null, commarea, null, null);
     }
 
     /** The screen a fully populated, valid update carries. */
@@ -151,6 +157,14 @@ class UserUpdateControllerTest {
     /** The commarea extension a cold-started list hand-off would leave, selecting nobody. */
     private static Cu02Info noSelection() {
         return Cu02Info.initial();
+    }
+
+    /** The same terminal input area, carrying a stated {@code 05 CDEMO-CU02-INFO}. */
+    private static UserUpdateRequest withExtension(UserUpdateRequest request, Cu02Info info) {
+        return new UserUpdateRequest(request.trnName(), request.title01(), request.curDate(),
+                request.pgmName(), request.title02(), request.curTime(), request.usrIdIn(),
+                request.fName(), request.lName(), request.passwd(), request.usrType(),
+                request.errMsg(), request.navigationContext(), request.aid(), info);
     }
 
     /** {@code MOVE WS-MESSAGE TO ERRMSGO} - the text as the 78-character screen field holds it. */
@@ -1088,8 +1102,17 @@ class UserUpdateControllerTest {
             assertThat(response.usrType()).isEqualTo("U");
             assertThat(response.errMsg()).hasSize(UserUpdateResponse.ERR_MSG_LENGTH);
             assertThat(response.navigationContext()).isEqualTo(state.commarea());
-            assertThat(response.nextMapset()).isEqualTo(state.commarea().lastMapset());
-            assertThat(response.nextMap()).isEqualTo(state.commarea().lastMap());
+            // The navigation triple names the screen this SEND paints - COUSR02C:272-278 sends MAP
+            // 'COUSR2A' of MAPSET 'COUSR02' - not CDEMO-LAST-MAPSET and CDEMO-LAST-MAP, which the
+            // caller wrote and COUSR02C never touches.
+            assertThat(response.nextProgram()).isEqualTo(UserUpdateController.WS_PGMNAME);
+            assertThat(response.nextMapset()).isEqualTo(UserUpdateResponse.MAPSET_NAME);
+            assertThat(response.nextMap()).isEqualTo(UserUpdateResponse.MAP_NAME);
+            // And the caller's two commarea items are still carried byte for byte, which is where the
+            // COBOL values remain observable.
+            assertThat(response.navigationContext().lastMapset())
+                    .isEqualTo(state.commarea().lastMapset());
+            assertThat(response.navigationContext().lastMap()).isEqualTo(state.commarea().lastMap());
         }
 
         @Test
@@ -1155,71 +1178,176 @@ class UserUpdateControllerTest {
     // =================================================================================================
 
     @Nested
-    @DisplayName("PUT /api/users/{userId} - the adapter's own two rules")
+    @DisplayName("PUT /api/users/{userId} - the adapter's own rules")
     class HttpAdapter {
 
+        /** The screen inside the envelope the mapping returns. */
+        private UserUpdateResponse screenOf(ScreenResponse<UserUpdateResponse> answer) {
+            assertThat(answer).isNotNull();
+            assertThat(answer.screen()).isNotNull();
+            return answer.screen();
+        }
+
         @Test
-        @DisplayName("the path variable is the identity and lands in USRIDIN, truncated to eight")
+        @DisplayName("the path variable is the identity and lands in USRIDIN")
         void thePathVariableIsTheIdentity() {
             stubFoundRead();
 
-            UserUpdateResponse response = controller.updateUser("USER00019",
-                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()),
-                    null, null, null, null, null, null, null);
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null));
 
-            verify(repository).readForUpdate("USER0001");
-            assertThat(response.usrIdIn()).isEqualTo("USER0001");
+            verify(repository).readForUpdate(USER_ID);
+            assertThat(response.usrIdIn()).isEqualTo(USER_ID);
         }
 
         @Test
-        @DisplayName("an absent EIBCALEN is inferred from whether the payload carried a commarea")
-        void eibcalenIsInferred() {
-            // No communication area -> the cold start at :90.
-            UserUpdateResponse cold = controller.updateUser(USER_ID,
-                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null),
-                    null, null, null, null, null, null, null);
-            assertThat(cold.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
+        @DisplayName("a path identity wider than PIC X(08) is REFUSED, never truncated onto another user")
+        void anOverWidePathIdentityIsRefused() {
+            assertThatThrownBy(() -> controller.updateUser("USER00019",
+                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("USRIDIN");
 
-            // A communication area -> the transaction runs.
-            stubFoundRead();
-            UserUpdateResponse warm = controller.updateUser(USER_ID,
-                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", reenter()),
-                    null, null, null, null, null, null, null);
-            assertThat(warm.fName()).isEqualTo(padded("Sam", 20));
-        }
-
-        @Test
-        @DisplayName("an explicit EIBCALEN of zero forces the cold start even with a commarea present")
-        void anExplicitZeroEibcalenForcesTheColdStart() {
-            UserUpdateResponse response = controller.updateUser(USER_ID,
-                    populated(reenter()), 0, null, null, null, null, null, null);
-
-            assertThat(response.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
+            // Refused at the boundary: no read, and therefore no lock.
             verify(repository, never()).readForUpdate(anyString());
         }
 
         @Test
-        @DisplayName("the six optional commarea-extension parameters default the way their VALUE clauses do")
-        void theExtensionParametersDefault() {
+        @DisplayName("an absent EIBCALEN is derived from whether the payload carried a commarea")
+        void eibcalenIsDerivedFromTheCarrier() {
+            // No communication area -> the cold start at :90.
+            UserUpdateResponse cold = screenOf(controller.updateUser(USER_ID,
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null), null));
+            assertThat(cold.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
+
+            // A communication area -> the transaction runs.
+            stubFoundRead();
+            UserUpdateResponse warm = screenOf(controller.updateUser(USER_ID,
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", reenter()), null));
+            assertThat(warm.fName()).isEqualTo(padded("Sam", 20));
+        }
+
+        @Test
+        @DisplayName("a stated EIBCALEN that agrees with the carrier is taken")
+        void aStatedEibcalenThatAgreesIsTaken() {
+            UserUpdateResponse cold = screenOf(controller.updateUser(USER_ID,
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null),
+                    UserUpdateController.NO_COMMAREA_LENGTH));
+            assertThat(cold.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
+
+            stubFoundRead();
+            UserUpdateResponse warm = screenOf(controller.updateUser(USER_ID,
+                    populated(reenter()), UserUpdateController.PASSED_COMMAREA_LENGTH));
+            assertThat(warm.fName()).isEqualTo(padded("Sam", 20));
+        }
+
+        @Test
+        @DisplayName("an EIBCALEN that contradicts the carrier is refused, in either direction")
+        void aContradictingEibcalenIsRefused() {
+            // Claiming state that was not sent - which used to force the cold start and discard the
+            // conversation the payload actually carried.
+            assertThatThrownBy(() -> controller.updateUser(USER_ID, populated(reenter()),
+                    UserUpdateController.NO_COMMAREA_LENGTH))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("a communication area");
+
+            assertThatThrownBy(() -> controller.updateUser(USER_ID,
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null),
+                    UserUpdateController.PASSED_COMMAREA_LENGTH))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("no communication area");
+
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @ParameterizedTest(name = "eibcalen = {0} is refused")
+        @ValueSource(ints = {-1, 1, 159, 160, 193, 195, 2000})
+        @DisplayName("EIBCALEN can only be one of the two lengths CICS could have set")
+        void anImpossibleEibcalenIsRefused(int stated) {
+            assertThatThrownBy(() -> controller.updateUser(USER_ID, populated(reenter()), stated))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(UserUpdateController.EIBCALEN_PARAM);
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("the 34-byte extension arrives in the body and comes back out on the response")
+        void theExtensionTravelsInThePayload() {
+            stubFoundRead();
+            Cu02Info sent = new Cu02Info("USER0001", "USER0050", 2, Cu02Info.NEXT_PAGE_YES, "S",
+                    USER_ID);
+
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    withExtension(populated(reenter()), sent),
+                    UserUpdateController.PASSED_COMMAREA_LENGTH));
+
+            assertThat(response.cu02Info()).isEqualTo(sent);
+            verify(repository).readForUpdate(USER_ID);
+        }
+
+        @Test
+        @DisplayName("a payload naming no extension is given the state its VALUE clauses declare")
+        void anAbsentExtensionIsInitialised() {
             stubFoundRead();
 
-            UserUpdateResponse response = controller.updateUser(USER_ID,
-                    populated(reenter()), UserUpdateController.PASSED_COMMAREA_LENGTH,
-                    "USER0001", "USER0050", 2, Cu02Info.NEXT_PAGE_YES, "S", USER_ID);
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    populated(reenter()), null));
 
-            assertThat(response).isNotNull();
-            verify(repository).readForUpdate(USER_ID);
+            assertThat(response.cu02Info()).isEqualTo(Cu02Info.initial());
+        }
+
+        @Test
+        @DisplayName("the reply publishes this screen's own identity, not the caller's leftovers")
+        void theNavigationTripleNamesThisScreen() {
+            stubFoundRead();
+
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    populated(reenter()), null));
+
+            assertThat(response.nextProgram()).isEqualTo(UserUpdateController.WS_PGMNAME);
+            assertThat(response.nextMapset()).isEqualTo(UserUpdateResponse.MAPSET_NAME);
+            assertThat(response.nextMap()).isEqualTo(UserUpdateResponse.MAP_NAME);
+            // And the commarea arrives back untouched: COUSR02C writes CDEMO-FROM-TRANID and
+            // CDEMO-FROM-PROGRAM only at :255-256, inside RETURN-TO-PREV-SCREEN, and never writes
+            // CDEMO-LAST-MAPSET or CDEMO-LAST-MAP at all - so on a paint they are still the caller's.
+            assertThat(response.navigationContext())
+                    .isEqualTo(populated(reenter()).navigationContext());
+        }
+
+        @Test
+        @DisplayName("on a transfer the reply names the target program and leaves both maps blank")
+        void aTransferNamesTheTargetAndNoMap() {
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null), null));
+
+            assertThat(response.nextProgram()).isEqualTo(UserUpdateController.LIT_SIGNON_PGM);
+            assertThat(response.nextMapset()).isBlank();
+            assertThat(response.nextMap()).isBlank();
+        }
+
+        @Test
+        @DisplayName("the presentation metadata travels in the envelope, beside the screen")
+        void theMetadataTravelsInTheEnvelope() {
+            stubFoundRead();
+
+            ScreenResponse<UserUpdateResponse> answer =
+                    controller.updateUser(USER_ID, populated(reenter()), null);
+
+            assertThat(answer.screenMetadata()).isNotNull();
+            assertThat(answer.screenMetadata().fields())
+                    .as("COUSR02 declares no attribute quads this program writes")
+                    .isEmpty();
+            assertThat(answer.screenMetadata().messageColour()).isNotNull();
+            assertThat(answer.screenMetadata().resetAllOutputFields()).isFalse();
         }
 
         @Test
         @DisplayName("a null path variable or a null payload is refused before anything runs")
         void nullArgumentsAreRefused() {
-            assertThatThrownBy(() -> controller.updateUser(null, populated(reenter()),
-                    null, null, null, null, null, null, null))
+            assertThatThrownBy(() -> controller.updateUser(null, populated(reenter()), null))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessageContaining("user id");
-            assertThatThrownBy(() -> controller.updateUser(USER_ID, null,
-                    null, null, null, null, null, null, null))
+            assertThatThrownBy(() -> controller.updateUser(USER_ID, null, null))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessageContaining("request");
             verify(repository, never()).readForUpdate(anyString());
@@ -1238,5 +1366,48 @@ class UserUpdateControllerTest {
         ProgramState state = reentryWith(populated(reenter()), CicsAid.DFHENTER);
 
         assertThat(state.hold()).isEqualTo(Optional.empty());
+    }
+    // =================================================================================================
+    // The payload's own readings of the communication area, and its redacted diagnostics
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("UserUpdateRequest - the 88-level readings and the masked toString")
+    class PayloadReadings {
+
+        @Test
+        @DisplayName("contextIsEnter and contextIsReenter read CDEMO-PGM-CONTEXT, both arms")
+        void theContextReadingsReadTheEightyEightLevels() {
+            assertThat(populated(enter()).contextIsEnter()).isTrue();
+            assertThat(populated(enter()).contextIsReenter()).isFalse();
+            assertThat(populated(reenter()).contextIsEnter()).isFalse();
+            assertThat(populated(reenter()).contextIsReenter()).isTrue();
+        }
+
+        @Test
+        @DisplayName("with no communication area both readings are false, which :90 has already handled")
+        void withNoCommunicationAreaBothAreFalse() {
+            UserUpdateRequest none = populated(null);
+
+            // COUSR02C:90 tests EIBCALEN = 0 before :95 tests the context, so a payload with no area
+            // never reaches the context test in the source either - and false is the honest answer.
+            assertThat(none.contextIsEnter()).isFalse();
+            assertThat(none.contextIsReenter()).isFalse();
+        }
+
+        @Test
+        @DisplayName("toString masks the password, and discloses only whether one was transmitted")
+        void toStringMasksThePassword() {
+            String withPassword = populated(reenter()).toString();
+
+            assertThat(withPassword).doesNotContain(STORED_PWD).contains("passwd=");
+            assertThat(withPassword).contains("cu02Info=", "usrIdIn=" + USER_ID);
+
+            // null models the LOW-VALUES a field the terminal never transmitted arrives as, and telling
+            // that apart from a transmitted value is what makes the :198 guard traceable.
+            String withoutPassword =
+                    screen(USER_ID, "Sam", "Spade", null, "U", reenter()).toString();
+            assertThat(withoutPassword).contains("passwd=null");
+        }
     }
 }

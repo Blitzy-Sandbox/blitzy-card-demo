@@ -7,9 +7,11 @@ import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -17,6 +19,8 @@ import java.io.UncheckedIOException;
 import java.nio.charset.Charset;
 import java.util.Objects;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.step.tasklet.Tasklet;
@@ -207,6 +211,12 @@ public class AccountBalanceUpdateJob {
     public static final String PROGRAM_NAME = "CBACT03C";
 
     /**
+     * Diagnostics for the one thing this program does that its SYSOUT cannot carry: a failure to close the
+     * cross-reference browse while unwinding from an abend. Nothing on a successful path is logged.
+     */
+    private static final Log LOG = LogFactory.getLog(AccountBalanceUpdateJob.class);
+
+    /**
      * The step name, transcribed from {@code app/jcl/READXREF.jcl}'s only step.
      *
      * <p>The JCL step is {@code //STEP05 EXEC PGM=CBACT03C}, so the Spring Batch step carries the
@@ -224,22 +234,16 @@ public class AccountBalanceUpdateJob {
     public static final String XREFFILE_DD_NAME = "XREFFILE";
 
     /**
-     * The bean name of the module's active dataset code page, published by the module's charset
-     * configuration from {@code carddemo.charset.dataset}.
+     * The bean name of the module's active dataset code page.
      *
-     * <p>Restated here as a literal rather than imported from the class that declares it, because
-     * this file's dependency set is exactly the eight files the migration plan declares for it and
-     * the charset configuration is not among them. The coupling is therefore stated explicitly
-     * instead of being implied by an import, and it cannot drift silently: an incorrect name makes
-     * the context fail to start with an unsatisfied dependency, and
-     * {@code AccountBalanceUpdateJobTest} pins this literal against the constant the configuration
-     * publishes.
-     *
-     * <p>The code page matters because the record image this job displays is 50 bytes of fixed-width
-     * data. It is named explicitly and never taken from the platform default: {@code IBM037} for the
-     * EBCDIC datasets, {@code US-ASCII} for the text fixtures.
+     * <p>Taken from {@link CobolCharsetConfig#DATASET_CHARSET_BEAN_NAME}, the class that publishes the
+     * bean, rather than restated as a literal here. A second spelling of a bean name is a rename waiting
+     * to break silently: the qualifier would still compile, still resolve at startup against the old
+     * name, and fail only when the publisher moved on. Kept as a constant of this class so a caller or a
+     * test that referred to it still can.
      */
-    public static final String DATASET_CHARSET_BEAN_NAME = "carddemoDatasetCharset";
+    public static final String DATASET_CHARSET_BEAN_NAME =
+            CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME;
 
     // =================================================================================================
     // The literals this program displays. Byte-exact, and every one of them names XREFFILE - the three
@@ -460,6 +464,13 @@ public class AccountBalanceUpdateJob {
         var xrefFile = batchConfig.datasetBinding(JOB_KEY, XREFFILE_DD_NAME);
         requireCopybookRecordLength(xrefFile.recordLength());
         this.xrefFileDatasetName = requireUsableDatasetName(xrefFile.dsname());
+        // This job's JCL names its input XREFFILE (app/jcl/READXREF.jcl:25-26); the repository it browses
+        // is bound to the CICS file name CCXREF, because the online programs address it that way. Both
+        // keys carry independent overrides in application.yml, so they can be pointed at different
+        // datasets - and a step that read a dataset its own DD statement never named would do so silently
+        // and with a correct-looking result. Proven equal here, once, so a divergence fails the context
+        // instead of a run.
+        batchConfig.requireSameDataset(JOB_KEY, XREFFILE_DD_NAME, CardXrefRepository.BASE_DD_NAME);
     }
 
     // =================================================================================================
@@ -619,10 +630,16 @@ public class AccountBalanceUpdateJob {
      * The step body: a thin adapter that resolves the {@code SYSOUT} destination and runs the program.
      *
      * <p>It holds no logic of its own on purpose. Everything the COBOL does lives in
-     * {@link #execute(SysoutSink)}, which needs neither a {@code JobLauncher} nor an application
-     * context, so every branch of the translation is reachable from a plain unit test. The tasklet
-     * itself contributes no read or write counts: {@code CBACT03C} keeps no counters, and inventing
-     * step metrics here would put numbers in the batch metadata that no legacy artefact can confirm.
+     * {@link #execute(SysoutSink, StopSignal)}, which needs neither a {@code JobLauncher} nor an
+     * application context, so every branch of the translation is reachable from a plain unit test. The
+     * tasklet itself contributes no read or write counts: {@code CBACT03C} keeps no counters, and
+     * inventing step metrics here would put numbers in the batch metadata that no legacy artefact can
+     * confirm.
+     *
+     * <p>The chunk context is read for one thing: this step execution's {@link StopSignal}, which the
+     * pass consults between records. A tasklet that runs once is checked for interruption once by the
+     * framework, at the top, so a stop requested during a full-file pass would otherwise not be seen
+     * until the pass had finished.
      *
      * <p>Not a bean. The step is the bean; a separately published tasklet would be a second handle on
      * the same body with no caller.
@@ -631,7 +648,7 @@ public class AccountBalanceUpdateJob {
      */
     public Tasklet accountBalanceUpdateTasklet() {
         return (contribution, chunkContext) -> {
-            execute(resolveSysoutSink());
+            execute(resolveSysoutSink(), StopSignal.of(chunkContext));
             return RepeatStatus.FINISHED;
         };
     }
@@ -690,51 +707,140 @@ public class AccountBalanceUpdateJob {
      *                              {@code CALL 'CEE3ABD'}
      */
     public ExecutionSummary execute(SysoutSink sysout) {
+        return execute(sysout, StopSignal.RUNNING);
+    }
+
+    /**
+     * Runs {@code CBACT03C}, yielding to the given stop signal between records.
+     *
+     * <p>The pass is identical to {@link #execute(SysoutSink)} - same reads, same pair of displayed
+     * lines per record, same order - and the signal changes nothing while no stop is pending. It exists
+     * because this program is one pass over the whole cross-reference file inside a single tasklet
+     * invocation, so the framework's interruption check at the step's repeat boundary happens once and
+     * cannot end a pass already under way. The probe is consulted between records, where the record in
+     * flight is always complete, and nothing is retried; see {@link StopSignal}.
+     *
+     * @param sysout     where the {@code DISPLAY} lines go; never {@code null}
+     * @param stopSignal the between-record cancellation probe; {@link StopSignal#RUNNING} for a caller
+     *                   outside a step; never {@code null}
+     * @return the return code and the number of records read
+     * @throws NullPointerException if {@code sysout} or {@code stopSignal} is {@code null}
+     * @throws AbendException       if the open, a read or the close reports a file status the program
+     *                              does not name
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop, which abandons the pass
+     *                              between records
+     */
+    public ExecutionSummary execute(SysoutSink sysout, StopSignal stopSignal) {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required to run " + PROGRAM_NAME
                 + ": the program's observable output is its DISPLAY lines, so there is nothing to run "
                 + "without somewhere to put them");
+        Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING outside a "
+                + "step, which is what the single-argument overload does");
 
         // :71  DISPLAY 'START OF EXECUTION OF PROGRAM CBACT03C'.
         sysout.display(START_OF_EXECUTION);
 
         // :72  PERFORM 0000-XREFFILE-OPEN.
+        // Outside the try: a failed open throws without yielding a cursor, so there would be nothing for
+        // a finally to release.
         BrowseCursor cursor = openXrefFile(sysout);
 
-        // :65  01 END-OF-FILE PIC X(01) VALUE 'N'.       - and the record area COPY CVACT03Y declares.
-        String endOfFile = NOT_AT_END_OF_FILE;
-        CardXrefRecord recordArea = null;
-        int recordsRead = 0;
+        // This run's own record of having reached :83. A local, never a field: the job is a singleton
+        // bean and per-run state on it would be shared between runs (practice B9, gate G53).
+        boolean closeIssued = false;
 
-        // :74  PERFORM UNTIL END-OF-FILE = 'Y'
-        while (!AT_END_OF_FILE.equals(endOfFile)) {
+        try {
 
-            // :75  IF END-OF-FILE = 'N'   - redundant; see this method's documentation.
-            if (NOT_AT_END_OF_FILE.equals(endOfFile)) {
+            // :65  01 END-OF-FILE PIC X(01) VALUE 'N'.   - and the record area COPY CVACT03Y declares.
+            String endOfFile = NOT_AT_END_OF_FILE;
+            CardXrefRecord recordArea = null;
+            int recordsRead = 0;
 
-                // :76  PERFORM 1000-XREFFILE-GET-NEXT   - which displays the record at :96.
-                GetNextOutcome next = getNextXrefRecord(cursor, sysout);
-                endOfFile = next.endOfFile();
-                if (next.record() != null) {
-                    recordArea = next.record();
-                    recordsRead++;
-                }
+            // :74  PERFORM UNTIL END-OF-FILE = 'Y'
+            while (!AT_END_OF_FILE.equals(endOfFile)) {
 
-                // :77  IF END-OF-FILE = 'N'
+                // NO COBOL COUNTERPART. The between-record yield to a stop request: a call rather than a
+                // condition, so it adds no arm to the translated control flow, and positioned before the
+                // read below so the record in flight is always complete. See BatchConfig.StopSignal.
+                stopSignal.checkStopRequested();
+
+                // :75  IF END-OF-FILE = 'N'   - redundant; see this method's documentation.
                 if (NOT_AT_END_OF_FILE.equals(endOfFile)) {
-                    // :78  DISPLAY CARD-XREF-RECORD   - the SECOND display of the same record area.
-                    sysout.display(displayImageOf(recordArea));
+
+                    // :76  PERFORM 1000-XREFFILE-GET-NEXT   - which displays the record at :96.
+                    GetNextOutcome next = getNextXrefRecord(cursor, sysout);
+                    endOfFile = next.endOfFile();
+                    if (next.record() != null) {
+                        recordArea = next.record();
+                        recordsRead++;
+                    }
+
+                    // :77  IF END-OF-FILE = 'N'
+                    if (NOT_AT_END_OF_FILE.equals(endOfFile)) {
+                        // :78  DISPLAY CARD-XREF-RECORD  - the SECOND display of the same record area.
+                        sysout.display(displayImageOf(recordArea));
+                    }
                 }
             }
+
+            // :83  PERFORM 9000-XREFFILE-CLOSE.
+            closeIssued = true;
+            closeXrefFile(cursor, sysout);
+
+            // :85  DISPLAY 'END OF EXECUTION OF PROGRAM CBACT03C'.
+            sysout.display(END_OF_EXECUTION);
+
+            // :87  GOBACK.   - RETURN-CODE is never moved, so the program returns zero.
+            return new ExecutionSummary(AbendException.RETURN_CODE_OK, recordsRead);
+        } finally {
+            if (!closeIssued) {
+                releaseCursor(cursor);
+            }
         }
+    }
 
-        // :83  PERFORM 9000-XREFFILE-CLOSE.
-        closeXrefFile(cursor, sysout);
-
-        // :85  DISPLAY 'END OF EXECUTION OF PROGRAM CBACT03C'.
-        sysout.display(END_OF_EXECUTION);
-
-        // :87  GOBACK.   - RETURN-CODE is never moved, so the program returns zero.
-        return new ExecutionSummary(AbendException.RETURN_CODE_OK, recordsRead);
+    /**
+     * Closes the cross-reference browse on the way out of an incomplete run, silently and only if it is
+     * still open.
+     *
+     * <p>{@code CBACT03C} abends outright without closing, and this preserves that observably. Four
+     * properties make it safe rather than merely well-intentioned:
+     *
+     * <ul>
+     *   <li><strong>It costs nothing.</strong> {@link BrowseCursor#closeBrowse()} sets a flag and returns
+     *       a status; it issues no I/O, so releasing costs no round trip on either path.</li>
+     *   <li><strong>It is reached only when {@code 9000-XREFFILE-CLOSE} did not run.</strong> The
+     *       caller's own {@code closeIssued} local is the guard, not {@link BrowseCursor#isOpen()}.
+     *       Asking the cursor would make "exactly one {@code CLOSE} per run" - which is what the single
+     *       statement at {@code :83} means - depend on the cursor tracking its own state; asking the run
+     *       makes it depend on the program's control flow, which is where the property comes from. It
+     *       also avoids a second hazard: {@code closeBrowse()} logs an error when called on a cursor
+     *       that never opened, so a release that fired regardless would manufacture a spurious error
+     *       record for a run whose open had already reported itself properly.</li>
+     *   <li><strong>It is silent.</strong> No {@code DISPLAY} is emitted; the source has no such line and
+     *       the line sequence is this program's entire observable output.</li>
+     *   <li><strong>It cannot displace the real failure.</strong> Anything raised while releasing is
+     *       swallowed, so the caller receives the exception the run was already unwinding with.</li>
+     * </ul>
+     *
+     * <p>It exists because {@link BrowseCursor} declares {@link AutoCloseable}: a pass that releases only
+     * on its normal tail rests on what the cursor happens to hold today rather than on its contract.
+     *
+     * @param cursor the cursor the open returned; never {@code null} here
+     */
+    private static void releaseCursor(BrowseCursor cursor) {
+        try {
+            cursor.closeBrowse();
+        } catch (RuntimeException cleanupFailure) {
+            // Only the failure's TYPE is logged - never the throwable and never its message. A driver
+            // composes its message around the value it refused, and a cross-reference row carries the
+            // card number and the account and customer identifiers (CWE-532); a newline in that text
+            // could forge a second log entry (CWE-117). A class name carries no data and no newline.
+            LOG.warn("Closing the " + XREFFILE_DD_NAME + " browse of " + PROGRAM_NAME + " after an "
+                    + "incomplete run failed - " + cleanupFailure.getClass().getName()
+                    + ". The run's own outcome is reported unchanged, because the run's own failure is the "
+                    + "one that matters.");
+        }
     }
 
     // =================================================================================================
@@ -863,12 +969,42 @@ public class AccountBalanceUpdateJob {
      * @return the open cursor
      * @throws AbendException if the open reports any status but {@code '00'}
      */
+    /**
+     * The cross-reference repository addressing <strong>this job's</strong>
+     * {@value #XREFFILE_DD_NAME} DD.
+     *
+     * <p>{@code CBACT03C} reads the dataset {@code app/jcl/READXREF.jcl:25-26} binds to
+     * {@code //XREFFILE DD}, and this job resolves that DD through its own view of the catalogue - the
+     * job-scoped entry first, the global one second. The injected repository resolved
+     * {@link CardXrefRepository#BASE_DD_NAME} from the global catalogue, which is the <em>online</em>
+     * name for the same dataset.
+     *
+     * <p>The finding was that nothing required the two to agree: this job validated
+     * {@value #XREFFILE_DD_NAME} in its constructor and then browsed through {@code CCXREF}, so a
+     * deployment that re-pointed {@value #XREFFILE_DD_NAME} would have read a dataset nobody asked for
+     * behind a clean start-up. Handing the resolved binding in makes the declared DD the one browsed.
+     *
+     * <p>No alternate-index binding is supplied, because {@code app/cbl/CBACT03C.cbl:29} declares one
+     * {@code SELECT} with no {@code ALTERNATE RECORD KEY} and {@code app/jcl/READXREF.jcl} declares no
+     * second DD: this program reads the base cluster sequentially and nothing else. Passing one would
+     * assert a path this program never opens.
+     *
+     * @return the repository this run browses; never {@code null}
+     * @throws IllegalStateException if neither this job nor the global catalogue declares
+     *                               {@value #XREFFILE_DD_NAME}, or the binding is unusable
+     */
+    private CardXrefRepository xrefFileRepository() {
+        return cardXrefRepository.addressing(
+                batchConfig.datasetBinding(JOB_KEY, XREFFILE_DD_NAME), XREFFILE_DD_NAME,
+                null, CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME);
+    }
+
     private BrowseCursor openXrefFile(SysoutSink sysout) {
         // :119  MOVE 8 TO APPL-RESULT.   - dead, and preserved.
         int applResult = APPL_RESULT_ASSUMED_FAILURE;
 
         // :120  OPEN INPUT XREFFILE-FILE
-        BrowseCursor cursor = cardXrefRepository.openBrowse();
+        BrowseCursor cursor = xrefFileRepository().openBrowse();
         String status = cursor.openStatus();
 
         if (FileStatus.isOk(status)) {

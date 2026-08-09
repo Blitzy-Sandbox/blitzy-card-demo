@@ -20,6 +20,7 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobDatasetBinding;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.DatasetUtilityPort;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.JdbcDatasetUtilityPort;
@@ -66,7 +67,11 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
+import org.springframework.jdbc.support.JdbcTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 
@@ -80,6 +85,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.UUID;
 
 /**
  * Unit tests for {@link StatementGenerationJobA}, the translation of {@code app/cbl/CBSTM03A.CBL}.
@@ -847,7 +853,8 @@ class StatementGenerationJobATest {
             Mockito.doReturn(htmlHandle).when(this.htmlWriter).open();
 
             this.job = new StatementGenerationJobA(subroutine, this.textWriter, this.htmlWriter,
-                    scaffolding(contracts), ASCII, new JdbcTemplate(), new PresentBean<>(sysout),
+                    scaffolding(contracts), ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER,
+                    unitOfWork(), new PresentBean<>(sysout),
                     new PresentBean<>(tiotSource), new PresentBean<>(utility));
         }
 
@@ -859,6 +866,154 @@ class StatementGenerationJobATest {
         int run() {
             return job.printAccountStatements();
         }
+    }
+
+    /**
+     * A two-character status that classifies as {@link FileStatus.Outcome#OTHER} - the {@code WHEN OTHER}
+     * arm every COBOL guard chain in the estate treats as fatal. {@code '34'} is a boundary violation,
+     * which is precisely the kind of condition a sequential output dataset reports and none of these two
+     * files' statements guards.
+     */
+    private static final String HTML_REFUSED_STATUS = "34";
+
+    /**
+     * A harness whose two output sinks can be told to refuse an operation.
+     *
+     * <p>{@code STMT-FILE} and {@code HTML-FILE} carry no {@code FILE STATUS} clause and none of their
+     * {@code OPEN}, {@code WRITE} or {@code CLOSE} statements is guarded, so a refused operation
+     * terminates the run unit. Proving that needs sinks that can refuse, which the collecting harness
+     * above deliberately cannot: it always answers {@code OK}.
+     */
+    private static final class RefusingHarness {
+
+        /** The one-based ordinal of the text record to refuse, or zero to accept every one. */
+        private final int refuseTextRecord;
+
+        /** The one-based ordinal of the HTML record to refuse, or zero to accept every one. */
+        private final int refuseHtmlRecord;
+
+        /** The two-character status the HTML sink reports from {@code open()}. */
+        private final String htmlOpenStatus;
+
+        /** What the text sink reports from {@code close()}. */
+        private final FileStatus.Outcome textCloseOutcome;
+
+        /** The two-character status the HTML sink reports from {@code close()}. */
+        private final String htmlCloseStatus;
+
+        /** How many text records the sink was offered. */
+        private int textRecordsOffered;
+
+        /** How many HTML records the sink was offered. */
+        private int htmlRecordsOffered;
+
+        /** Whether the text sink's close was reached. */
+        private boolean textClosed;
+
+        /** Whether the HTML sink's close was reached. */
+        private boolean htmlClosed;
+
+        /** The text handle, so a test can ask whether it was released. */
+        private final StatementFile textHandle;
+
+        /** The HTML handle, so a test can ask whether it was released. */
+        private final HtmlStatementFile htmlHandle;
+
+        /** Every displayed line, in order. */
+        private final CapturedSysout sysout = new CapturedSysout();
+
+        /** The job under test. */
+        private final StatementGenerationJobA job;
+
+        RefusingHarness(ScriptedSubroutine subroutine, int refuseTextRecord, int refuseHtmlRecord,
+                String htmlOpenStatus, FileStatus.Outcome textCloseOutcome, String htmlCloseStatus) {
+            this.refuseTextRecord = refuseTextRecord;
+            this.refuseHtmlRecord = refuseHtmlRecord;
+            this.htmlOpenStatus = htmlOpenStatus;
+            this.textCloseOutcome = textCloseOutcome;
+            this.htmlCloseStatus = htmlCloseStatus;
+
+            StatementTextWriter realText = new StatementTextWriter(new JdbcTemplate(), ASCII,
+                    globalBindings(), RecordImageForm.CHARACTER);
+            this.textHandle = realText.openOutput(new StatementTextWriter.RecordSink() {
+                @Override
+                public FileStatus.Outcome write(byte[] recordImage) {
+                    textRecordsOffered++;
+                    return textRecordsOffered == RefusingHarness.this.refuseTextRecord
+                            ? FileStatus.Outcome.OTHER
+                            : FileStatus.Outcome.OK;
+                }
+
+                @Override
+                public FileStatus.Outcome close() {
+                    textClosed = true;
+                    return RefusingHarness.this.textCloseOutcome;
+                }
+            });
+            StatementTextWriter spiedText = Mockito.spy(realText);
+            Mockito.doReturn(textHandle).when(spiedText).openOutput();
+
+            StatementHtmlWriter realHtml = new StatementHtmlWriter(new JdbcTemplate(), ASCII,
+                    globalBindings(), RecordImageForm.CHARACTER);
+            this.htmlHandle = realHtml.open(new StatementHtmlWriter.HtmlRecordSink() {
+                @Override
+                public String write(byte[] record) {
+                    htmlRecordsOffered++;
+                    return htmlRecordsOffered == RefusingHarness.this.refuseHtmlRecord
+                            ? HTML_REFUSED_STATUS
+                            : FileStatus.OK;
+                }
+
+                @Override
+                public String open() {
+                    return RefusingHarness.this.htmlOpenStatus;
+                }
+
+                @Override
+                public String close() {
+                    htmlClosed = true;
+                    return RefusingHarness.this.htmlCloseStatus;
+                }
+            });
+            StatementHtmlWriter spiedHtml = Mockito.spy(realHtml);
+            Mockito.doReturn(htmlHandle).when(spiedHtml).open();
+
+            this.job = new StatementGenerationJobA(subroutine, spiedText, spiedHtml,
+                    scaffolding(jobContracts()), ASCII, new JdbcTemplate(),
+                    RecordImageForm.CHARACTER, unitOfWork(), new PresentBean<>(sysout),
+                    new PresentBean<>(defaultTiot()), new PresentBean<>(new RecordingUtilityPort()));
+        }
+
+        /**
+         * Runs {@code CBSTM03A} once.
+         *
+         * @return how many statements were written
+         */
+        int run() {
+            return job.printAccountStatements();
+        }
+    }
+
+    /**
+     * A harness that refuses one text record.
+     *
+     * @param ordinal the one-based ordinal of the text record to refuse
+     * @return the harness
+     */
+    private static RefusingHarness refusingTextRecord(int ordinal) {
+        return new RefusingHarness(oneStatement(), ordinal, 0, FileStatus.OK,
+                FileStatus.Outcome.OK, FileStatus.OK);
+    }
+
+    /**
+     * A harness that refuses one HTML record.
+     *
+     * @param ordinal the one-based ordinal of the HTML record to refuse
+     * @return the harness
+     */
+    private static RefusingHarness refusingHtmlRecord(int ordinal) {
+        return new RefusingHarness(oneStatement(), 0, ordinal, FileStatus.OK,
+                FileStatus.Outcome.OK, FileStatus.OK);
     }
 
     /**
@@ -892,6 +1047,47 @@ class StatementGenerationJobATest {
     // =============================================================================================
 
     /** The job, its five steps and the three {@code COND=(0,NE)} gates. */
+    /**
+     * A real unit of work over a throwaway in-memory data source.
+     *
+     * <p>Real rather than mocked, for the reason the update services' tests give: only a real manager makes
+     * {@code persistVerb} open a boundary that a repository can detect. Here it also means the per-record
+     * REPRO durability is exercised rather than stubbed out.
+     *
+     * @return a unit of work; never {@code null}
+     */
+    private static DatasetUnitOfWork unitOfWork() {
+        return new DatasetUnitOfWork(new JdbcTransactionManager(new SimpleDriverDataSource(
+                new org.h2.Driver(), "jdbc:h2:mem:jobA-uow-" + UUID.randomUUID(), "sa", "")));
+    }
+
+    /**
+     * The default port over an unconfigured template, for the guards that never reach a data source.
+     *
+     * @return the port; never {@code null}
+     */
+    private static JdbcDatasetUtilityPort port() {
+        return new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII, RecordImageForm.CHARACTER,
+                unitOfWork());
+    }
+
+    /**
+     * A job over an arbitrary utility port, for the tests that observe which port operation a step calls.
+     *
+     * @param utility the port to inject
+     * @return the job; never {@code null}
+     */
+    private static StatementGenerationJobA jobWithPort(DatasetUtilityPort utility) {
+        return new StatementGenerationJobA(new ScriptedSubroutine(),
+                new StatementTextWriter(new JdbcTemplate(), ASCII, globalBindings(),
+                        RecordImageForm.CHARACTER),
+                new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
+                        RecordImageForm.CHARACTER),
+                scaffolding(jobContracts()), ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER,
+                unitOfWork(), new PresentBean<>(new CapturedSysout()),
+                new PresentBean<>(defaultTiot()), new PresentBean<>(utility));
+    }
+
     @Nested
     @DisplayName("The job definition, from app/jcl/CREASTMT.JCL")
     class TheJobDefinition {
@@ -1138,7 +1334,7 @@ class StatementGenerationJobATest {
         /**
          * Builds the job with one collaborator replaced by {@code null}.
          *
-         * @param absent which position to blank, 0-based over the nine constructor arguments
+         * @param absent which position to blank, 0-based over the eleven constructor arguments
          */
         private void buildWithout(int absent) {
             ScriptedSubroutine subroutine = absent == 0 ? null : new ScriptedSubroutine();
@@ -1149,18 +1345,20 @@ class StatementGenerationJobATest {
             BatchConfig scaffolding = absent == 3 ? null : scaffolding(jobContracts());
             Charset charset = absent == 4 ? null : ASCII;
             JdbcTemplate template = absent == 5 ? null : new JdbcTemplate();
+            RecordImageForm form = absent == 6 ? null : RecordImageForm.CHARACTER;
+            DatasetUnitOfWork boundary = absent == 7 ? null : unitOfWork();
             ObjectProvider<SysoutSink> sysout =
-                    absent == 6 ? null : new PresentBean<>(new CapturedSysout());
-            ObjectProvider<TiotSource> tiot = absent == 7 ? null : new PresentBean<>(defaultTiot());
+                    absent == 8 ? null : new PresentBean<>(new CapturedSysout());
+            ObjectProvider<TiotSource> tiot = absent == 9 ? null : new PresentBean<>(defaultTiot());
             ObjectProvider<DatasetUtilityPort> utility =
-                    absent == 8 ? null : new PresentBean<>(new RecordingUtilityPort());
-            new StatementGenerationJobA(subroutine, text, html, scaffolding, charset, template, sysout,
-                    tiot, utility);
+                    absent == 10 ? null : new PresentBean<>(new RecordingUtilityPort());
+            new StatementGenerationJobA(subroutine, text, html, scaffolding, charset, template, form,
+                    boundary, sysout, tiot, utility);
         }
 
         @ParameterizedTest
-        @DisplayName("every one of the nine collaborators is required")
-        @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8})
+        @DisplayName("every one of the eleven collaborators is required")
+        @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
         void everyCollaboratorIsRequired(int absent) {
             assertThatNullPointerException().isThrownBy(() -> buildWithout(absent));
         }
@@ -1173,7 +1371,8 @@ class StatementGenerationJobATest {
                             RecordImageForm.CHARACTER),
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
-                    scaffolding(jobContracts()), ASCII, new JdbcTemplate(), new AbsentBean<>(),
+                    scaffolding(jobContracts()), ASCII, new JdbcTemplate(),
+                    RecordImageForm.CHARACTER, unitOfWork(), new AbsentBean<>(),
                     new AbsentBean<>(), new AbsentBean<>());
 
             assertThat(job.sysoutSink()).isNotNull();
@@ -1224,7 +1423,8 @@ class StatementGenerationJobATest {
                             RecordImageForm.CHARACTER),
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
-                    scaffolding(jobContracts()), ASCII, new JdbcTemplate(), new AbsentBean<>(),
+                    scaffolding(jobContracts()), ASCII, new JdbcTemplate(),
+                    RecordImageForm.CHARACTER, unitOfWork(), new AbsentBean<>(),
                     new AbsentBean<>(), new AbsentBean<>());
 
             TiotImage image = job.tiotSource().read();
@@ -1257,8 +1457,8 @@ class StatementGenerationJobATest {
                             RecordImageForm.CHARACTER),
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
-                    scaffolding, ASCII, new JdbcTemplate(), new AbsentBean<>(), new AbsentBean<>(),
-                    new AbsentBean<>());
+                    scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, unitOfWork(),
+                    new AbsentBean<>(), new AbsentBean<>(), new AbsentBean<>());
 
             TiotImage image = job.tiotSource().read();
 
@@ -1551,7 +1751,8 @@ class StatementGenerationJobATest {
                             RecordImageForm.CHARACTER),
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
-                    scaffolding, ASCII, new JdbcTemplate(), new PresentBean<>(new CapturedSysout()),
+                    scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, unitOfWork(),
+                    new PresentBean<>(new CapturedSysout()),
                     new PresentBean<>(defaultTiot()), new PresentBean<>(new RecordingUtilityPort()));
         }
     }
@@ -1731,15 +1932,17 @@ class StatementGenerationJobATest {
         @DisplayName("both arguments are required")
         void bothArgumentsAreRequired() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new JdbcDatasetUtilityPort(null, ASCII));
+                    .isThrownBy(() -> new JdbcDatasetUtilityPort(null, ASCII,
+                            RecordImageForm.CHARACTER, unitOfWork()));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new JdbcDatasetUtilityPort(new JdbcTemplate(), null));
+                    .isThrownBy(() -> new JdbcDatasetUtilityPort(new JdbcTemplate(), null,
+                            RecordImageForm.CHARACTER, unitOfWork()));
         }
 
         @Test
         @DisplayName("a binding naming no dataset is refused at the point of use, not at construction")
         void anUnnamedDataset() {
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII);
+            JdbcDatasetUtilityPort port = port();
             DatasetBinding unnamed = sequential(null, 80, 8000);
 
             assertThatIllegalStateException().isThrownBy(() -> port.deleteAllRecords(unnamed))
@@ -1747,22 +1950,42 @@ class StatementGenerationJobATest {
         }
 
         @ParameterizedTest
-        @DisplayName("a value that is not a z/OS dataset name is refused")
-        @ValueSource(strings = {"../etc/passwd", "lower.case", "TOOLONGAQUALIFIER.X",
+        @DisplayName("a value that is not a z/OS dataset name is refused, by the shared grammar")
+        @ValueSource(strings = {"../etc/passwd", "TOOLONGAQUALIFIER.X",
                 "AWS..CARDDEMO", "1BAD.START",
                 "AAAAAAAA.BBBBBBBB.CCCCCCCC.DDDDDDDD.EEEEEEEE.FFFFFFFF"})
         void aMalformedDatasetName(String dsname) {
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII);
+            JdbcDatasetUtilityPort port = port();
             DatasetBinding malformed = sequential(dsname, 80, 8000);
 
+            // DatasetRelation is the one grammar this module has, so the refusal is its refusal - and it
+            // names the offending position, which a pattern match cannot.
             assertThatIllegalStateException().isThrownBy(() -> port.deleteAllRecords(malformed))
-                    .withMessageContaining("not a z/OS dataset name");
+                    .withMessageContaining("not a well-formed z/OS dataset name")
+                    .withCauseInstanceOf(IllegalArgumentException.class);
+        }
+
+        @ParameterizedTest
+        @DisplayName("a lower-case name and a generation suffix ARE addressable: configuration carries "
+                + "both and the shared grammar admits both")
+        @ValueSource(strings = {"lower.case", "AWS.M2.CARDDEMO.SYSTRAN(+1)", "Mixed.Case.Name"})
+        void aNameTheSharedGrammarAdmits(String dsname) {
+            // A second grammar used to live in this port, and it disagreed in the direction that refuses
+            // valid configuration: upper case only, and no notion of a relative-generation suffix. So a
+            // deployment declaring its names as it spells them, or binding one of the three GDG outputs,
+            // could not be addressed at all. Delegating to DatasetRelation removed the disagreement.
+            JdbcDatasetUtilityPort port = port();
+            DatasetBinding admitted = sequential(dsname, 80, 8000);
+
+            // It reaches the template, which carries no DataSource here - so it got past the grammar.
+            assertThatIllegalStateException().isThrownBy(() -> port.deleteAllRecords(admitted))
+                    .withMessageContaining("DataSource");
         }
 
         @Test
         @DisplayName("a binding whose dsname is the empty string is refused too")
         void anEmptyDatasetName() {
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII);
+            JdbcDatasetUtilityPort port = port();
             DatasetBinding empty = sequential("", 80, 8000);
 
             assertThatIllegalStateException().isThrownBy(() -> port.deleteAllRecords(empty))
@@ -1772,7 +1995,7 @@ class StatementGenerationJobATest {
         @Test
         @DisplayName("writeRecordImages refuses a null record list but accepts an empty one")
         void writeRefusesNull() {
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII);
+            JdbcDatasetUtilityPort port = port();
             DatasetBinding binding = sequential(STMTFILE_DSNAME, 80, 8000);
 
             assertThatNullPointerException()
@@ -1787,7 +2010,8 @@ class StatementGenerationJobATest {
                     StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH,
                     List.of(trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00"),
                             trnxImage(CARD_B, "TRAN000000000002", "TWO", "2.00")));
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII);
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, unitOfWork());
             DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME,
                     StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH,
                     StatementGenerationJobA.WORK_SEQUENTIAL_BLOCK_SIZE);
@@ -1810,7 +2034,8 @@ class StatementGenerationJobATest {
         @DisplayName("a short stored row is fitted to the declared width under the PIC X rule")
         void aShortStoredRow() {
             JdbcTemplate template = seededRelation(TRXFL_SEQ_DSNAME, 350, List.of("SHORT"));
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII);
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, unitOfWork());
 
             List<String> read = port.readAllRecordImages(sequential(TRXFL_SEQ_DSNAME, 350, 3500));
 
@@ -1822,7 +2047,8 @@ class StatementGenerationJobATest {
         void aRowWithNoRecordImage() {
             JdbcTemplate template = seededRelation(TRXFL_SEQ_DSNAME, 350, List.of());
             template.update("INSERT INTO \"" + TRXFL_SEQ_DSNAME + "\" VALUES (?)", (Object) null);
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII);
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, unitOfWork());
             DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME, 350, 3500);
 
             assertThatIllegalStateException()
@@ -1860,6 +2086,220 @@ class StatementGenerationJobATest {
             template.update("INSERT INTO \"" + dsname + "\" VALUES (?)", row);
         }
         return template;
+    }
+
+    /**
+     * A relation whose record image is a {@code VARBINARY} column - the shape a {@code BINARY} deployment
+     * presents.
+     *
+     * @param dsname       the dataset name, which is also the relation's delimited identifier
+     * @param recordLength the record width
+     * @return a template over the empty relation
+     */
+    private static JdbcTemplate binaryRelation(String dsname, int recordLength) {
+        org.springframework.jdbc.datasource.DriverManagerDataSource dataSource =
+                new org.springframework.jdbc.datasource.DriverManagerDataSource(
+                        "jdbc:h2:mem:stmtjobabin" + DATABASE_SEQUENCE.incrementAndGet()
+                                + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
+        dataSource.setDriverClassName("org.h2.Driver");
+        JdbcTemplate template = new JdbcTemplate(dataSource);
+        template.execute("CREATE TABLE \"" + dsname + "\" (RECORD_IMAGE VARBINARY(" + recordLength
+                + "))");
+        return template;
+    }
+
+    /**
+     * What {@code SORT} and {@code REPRO} must not do to a record: change any byte of it, hold all of them
+     * at once, or make a partial load atomic.
+     *
+     * <p>The three are one group because they are three properties of the same four utility steps, and
+     * because two of them can only be observed against a driver rather than against an in-memory port.
+     */
+    @Nested
+    @DisplayName("The utility steps move records whole, bounded, and with the JCL's failure semantics")
+    class TheUtilityStepIntegrity {
+
+        /** The EBCDIC code page a production deployment binds, where a lower-case letter is a high byte. */
+        private static final Charset EBCDIC = Charset.forName("IBM037");
+
+        @Test
+        @DisplayName("a BINARY relation round-trips a record whose bytes are above 0x7F")
+        void aBinaryRelationPreservesHighBytes() {
+            // The reason this matters: SORT and REPRO transform nothing, so a record that passes through
+            // either has to come out byte for byte. Reading a VARBINARY column with getString asks the
+            // driver to apply ITS notion of a code page to bytes carrying a mainframe's - and under
+            // IBM037 every lower-case letter, and every signed-overpunch digit, is above 0x7F.
+            String dsname = "TEST.BINARY.TRXFL";
+            JdbcTemplate template = binaryRelation(dsname, 80);
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, EBCDIC,
+                    RecordImageForm.BINARY, unitOfWork());
+            DatasetBinding binding = sequential(dsname, 80, 8000);
+            String record = "abcdefghij" + " ".repeat(70);
+
+            assertThat(port.writeRecordImages(binding, List.of(record))).isEqualTo(1);
+
+            // The stored bytes are the dataset's own, unconverted: 'a' is 0x81 in IBM037.
+            byte[] stored = template.queryForObject(
+                    "SELECT RECORD_IMAGE FROM \"" + dsname + "\"", byte[].class);
+            assertThat(stored).hasSize(80);
+            assertThat(stored[0]).isEqualTo((byte) 0x81);
+            assertThat(stored).isEqualTo(record.getBytes(EBCDIC));
+
+            // And the read decodes them in the same code page, so the round trip is the identity.
+            assertThat(port.readAllRecordImages(binding)).containsExactly(record);
+        }
+
+        @Test
+        @DisplayName("a BINARY copy moves every byte of every record unchanged")
+        void aBinaryCopyPreservesEveryByte() {
+            String source = "TEST.BINARY.SORTOUT";
+            String target = "TEST.BINARY.WORKKSDS";
+            JdbcTemplate template = binaryRelation(source, 80);
+            template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARBINARY(80))");
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, EBCDIC,
+                    RecordImageForm.BINARY, unitOfWork());
+            DatasetBinding from = sequential(source, 80, 8000);
+            DatasetBinding to = sequential(target, 80, 8000);
+            List<String> records = List.of("aaa" + " ".repeat(77), "zzz" + " ".repeat(77));
+            port.writeRecordImages(from, records);
+
+            assertThat(port.copyRecordImages(from, to)).isEqualTo(2);
+
+            // Asserted against the STORED bytes, not only against the read-back: a read and a write that
+            // corrupt symmetrically would satisfy a round-trip comparison and satisfy nothing else.
+            List<byte[]> stored = template.query("SELECT RECORD_IMAGE FROM \"" + target + "\"",
+                    (row, index) -> row.getBytes(1));
+            assertThat(stored).hasSize(2);
+            assertThat(stored.get(0)).isEqualTo(records.get(0).getBytes(EBCDIC));
+            assertThat(stored.get(1)).isEqualTo(records.get(1).getBytes(EBCDIC));
+            assertThat(port.readAllRecordImages(to)).containsExactlyElementsOf(records);
+        }
+
+        @Test
+        @DisplayName("STEP020 asks the port to COPY, not to read the whole file and then write it")
+        void step020AsksForAStreamingCopy() {
+            // The distinction is not stylistic. A read-then-write holds the source's whole contents and
+            // fails with nothing loaded; a copy holds a bounded number of records and fails with
+            // everything up to that record loaded, which is what an interrupted IDCAMS REPRO leaves.
+            RecordingUtilityPort recorder = new RecordingUtilityPort();
+            recorder.seed(TRXFL_SEQ_DSNAME, List.of("x".repeat(350)));
+            List<String> operations = new ArrayList<>();
+            DatasetUtilityPort port = new DatasetUtilityPort() {
+                @Override
+                public int deleteAllRecords(DatasetBinding binding) {
+                    return recorder.deleteAllRecords(binding);
+                }
+
+                @Override
+                public List<String> readAllRecordImages(DatasetBinding binding) {
+                    operations.add("READ " + binding.dsname());
+                    return recorder.readAllRecordImages(binding);
+                }
+
+                @Override
+                public int writeRecordImages(DatasetBinding binding, List<String> recordImages) {
+                    operations.add("WRITE " + binding.dsname());
+                    return recorder.writeRecordImages(binding, recordImages);
+                }
+
+                @Override
+                public int copyRecordImages(DatasetBinding source, DatasetBinding target) {
+                    operations.add("COPY " + source.dsname() + " -> " + target.dsname());
+                    return recorder.writeRecordImages(target, recorder.readAllRecordImages(source));
+                }
+            };
+            assertThat(jobWithPort(port).reproSortedFileIntoWorkDataset()).isEqualTo(1);
+
+            assertThat(operations)
+                    .as("one COPY, and no READ of the whole file followed by a WRITE of it")
+                    .containsExactly("COPY " + TRXFL_SEQ_DSNAME + " -> " + TRNXFILE_DSNAME);
+        }
+
+        @Test
+        @DisplayName("the OUTREC reformat is applied per record, not into a second whole-file list")
+        void theReformatIsAppliedPerRecord() {
+            // A sort must see every key before it can place the first record, so the input is held. What
+            // does not have to be held is a second, reformatted copy of all of it - so the reformat is a
+            // view, applied as each record is consumed.
+            StatementGenerationJobA subject =
+                    Mockito.spy(harness(new ScriptedSubroutine()).job);
+            List<String> input = new ArrayList<>(List.of(tranImage(CARD_A, "TRAN000000000002"),
+                    tranImage(CARD_A, "TRAN000000000001")));
+
+            List<String> reformatted = subject.sortAndReformat(input);
+
+            Mockito.verify(subject, Mockito.never()).applyOutrec(Mockito.anyString());
+            assertThat(reformatted).hasSize(2);
+            assertThat(reformatted.get(0)).startsWith(CARD_A);
+            // Consumed once, applied once per element.
+            Mockito.verify(subject, Mockito.times(1)).applyOutrec(Mockito.anyString());
+            assertThat(input)
+                    .as("the caller's list is still its own, in its own order")
+                    .containsExactly(tranImage(CARD_A, "TRAN000000000002"),
+                            tranImage(CARD_A, "TRAN000000000001"));
+        }
+
+        @Test
+        @DisplayName("a REPRO that fails part way leaves what it loaded - DISP=SHR on OUTFILE")
+        void aFailedCopyLeavesWhatItLoaded() {
+            // app/jcl/CREASTMT.JCL:59 binds OUTFILE with DISP=SHR over the cluster DELDEF01 defined: an
+            // existing dataset with no abnormal disposition to discard it. IDCAMS REPRO is not atomic
+            // against it, so neither is this. Contrast SORTOUT at :48-49, which is
+            // DISP=(NEW,CATLG,DELETE) and IS discarded whole.
+            String source = "TEST.REPRO.SOURCE";
+            String target = "TEST.REPRO.TARGET";
+            JdbcTemplate template = seededRelation(source, 80, List.of());
+            template.execute("CREATE TABLE \"" + target
+                    + "\" (RECORD_IMAGE VARCHAR(80) PRIMARY KEY)");
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, new DatasetUnitOfWork(
+                            new JdbcTransactionManager(template.getDataSource())));
+            DatasetBinding from = sequential(source, 80, 8000);
+            DatasetBinding to = sequential(target, 80, 8000);
+            // The third record repeats the first, so the target's key refuses it mid-copy.
+            port.writeRecordImages(from, List.of(record80("A"), record80("B"), record80("A")));
+
+            assertThatExceptionOfType(DataAccessException.class)
+                    .isThrownBy(() -> port.copyRecordImages(from, to));
+
+            assertThat(template.queryForList("SELECT RECORD_IMAGE FROM \"" + target + "\"", String.class))
+                    .as("the records already REPROed stay loaded, as an interrupted IDCAMS leaves them")
+                    .containsExactlyInAnyOrder(record80("A"), record80("B"));
+        }
+
+        @Test
+        @DisplayName("each copied record survives a rollback of the step's own transaction")
+        void copiedRecordsSurviveAnEnclosingRollback() {
+            String source = "TEST.REPRO.SRC2";
+            String target = "TEST.REPRO.TGT2";
+            JdbcTemplate template = seededRelation(source, 80, List.of());
+            template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARCHAR(80))");
+            DatasetUnitOfWork boundary = new DatasetUnitOfWork(
+                    new JdbcTransactionManager(template.getDataSource()));
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, boundary);
+            DatasetBinding from = sequential(source, 80, 8000);
+            DatasetBinding to = sequential(target, 80, 8000);
+            port.writeRecordImages(from, List.of(record80("A"), record80("B")));
+            TransactionTemplate step = new TransactionTemplate(
+                    new JdbcTransactionManager(template.getDataSource()));
+
+            // The enclosing template stands for the tasklet's transaction, and the exception for the
+            // step failing after the copy had run.
+            assertThatIllegalStateException().isThrownBy(() -> step.execute(status -> {
+                port.copyRecordImages(from, to);
+                throw new IllegalStateException("the step fails after the REPRO");
+            }));
+
+            assertThat(template.queryForList("SELECT RECORD_IMAGE FROM \"" + target + "\"", String.class))
+                    .as("a partial KSDS load is what DISP=SHR leaves; a rollback would erase it")
+                    .containsExactlyInAnyOrder(record80("A"), record80("B"));
+        }
+
+        /** An 80-byte record whose first character distinguishes it. */
+        private String record80(String lead) {
+            return lead + " ".repeat(79);
+        }
     }
 
     /** The prologue's substitute types. */
@@ -2459,6 +2899,133 @@ class StatementGenerationJobATest {
             assertThat(built.subroutine.calls()).endsWith("CLOSE TRNXFILE", "CLOSE XREFFILE",
                     "CLOSE CUSTFILE", "CLOSE ACCTFILE");
             Mockito.verify(built.htmlWriter).close(Mockito.any(HtmlStatementFile.class));
+        }
+
+        @Test
+        @DisplayName("L293 a refused OPEN OUTPUT on HTML-FILE terminates the run unit")
+        void aRefusedHtmlOpenTerminatesTheRunUnit() {
+            RefusingHarness built = new RefusingHarness(oneStatement(), 0, 0, HTML_REFUSED_STATUS,
+                    FileStatus.Outcome.OK, FileStatus.OK);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run)
+                    .withMessageContaining(StatementGenerationJobA.HTMLFILE_DD)
+                    .withMessageContaining("OPEN OUTPUT HTML-FILE")
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .as("an unguarded I-O condition, not a CEE3ABD site")
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR));
+
+            // Not one record was offered: the run stopped at the OPEN, which is the whole point - a run
+            // that continued would compose a hundred records and report success while writing nothing.
+            assertThat(built.htmlRecordsOffered).isZero();
+            assertThat(built.textRecordsOffered).isZero();
+            // And no SYSOUT abend banner: this file has no guard, so the source displays nothing for it.
+            assertThat(built.sysout.lines())
+                    .doesNotContain(StatementGenerationJobA.ABENDING_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("L460 a refused WRITE on STMT-FILE terminates the run unit, silently")
+        void aRefusedTextWriteTerminatesTheRunUnit() {
+            RefusingHarness built = refusingTextRecord(1);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run)
+                    .withMessageContaining(StatementGenerationJobA.STMTFILE_DD)
+                    .withMessageContaining("WRITE FD-STMTFILE-REC")
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR));
+
+            assertThat(built.textRecordsOffered)
+                    .as("the pass stops at the record the sink refused")
+                    .isEqualTo(1);
+            // app/cbl/CBSTM03A.CBL emits no DISPLAY for this file, so neither does this. The three-line
+            // banner belongs to the four GUARDED input files, and claiming it here would invent output.
+            assertThat(built.sysout.lines())
+                    .doesNotContain(StatementGenerationJobA.ABENDING_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("L508 a refused WRITE on HTML-FILE terminates the run unit, silently")
+        void aRefusedHtmlWriteTerminatesTheRunUnit() {
+            RefusingHarness built = refusingHtmlRecord(1);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run)
+                    .withMessageContaining(StatementGenerationJobA.HTMLFILE_DD)
+                    .withMessageContaining("WRITE FD-HTMLFILE-REC")
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR));
+
+            assertThat(built.htmlRecordsOffered).isEqualTo(1);
+            assertThat(built.sysout.lines())
+                    .doesNotContain(StatementGenerationJobA.ABENDING_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("L339 CLOSE names both files, so both are closed before either condition is acted on")
+        void aRefusedTextCloseStillClosesTheHtmlFile() {
+            RefusingHarness built = new RefusingHarness(oneStatement(), 0, 0, FileStatus.OK,
+                    FileStatus.Outcome.OTHER, FileStatus.OK);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run)
+                    .withMessageContaining("CLOSE STMT-FILE")
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR));
+
+            // One CLOSE statement names both files, so the second file is closed even though the first
+            // reported a condition; the reported condition is the first file's, in statement order.
+            assertThat(built.textClosed).isTrue();
+            assertThat(built.htmlClosed).isTrue();
+            assertThat(built.textHandle.isOpen()).isFalse();
+            assertThat(built.htmlHandle.isOpen()).isFalse();
+        }
+
+        @Test
+        @DisplayName("L339 a refused CLOSE on HTML-FILE terminates the run unit")
+        void aRefusedHtmlCloseTerminatesTheRunUnit() {
+            RefusingHarness built = new RefusingHarness(oneStatement(), 0, 0, FileStatus.OK,
+                    FileStatus.Outcome.OK, HTML_REFUSED_STATUS);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run)
+                    .withMessageContaining("CLOSE HTML-FILE")
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR));
+
+            assertThat(built.textClosed).isTrue();
+            assertThat(built.htmlClosed).isTrue();
+        }
+
+        @Test
+        @DisplayName("an incomplete run releases both output handles and the subroutine session")
+        void anIncompleteRunReleasesEveryHandle() {
+            RefusingHarness built = refusingTextRecord(1);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+
+            // On the mainframe the Language Environment tears a terminating run unit down. Nothing does
+            // that in a long-lived JVM, so the finally block does - silently, and without a second CLOSE.
+            assertThat(built.textHandle.isOpen())
+                    .as("STMTFILE must not stay held after the run unit terminated")
+                    .isFalse();
+            assertThat(built.htmlHandle.isOpen())
+                    .as("HTMLFILE must not stay held after the run unit terminated")
+                    .isFalse();
+            assertThat(built.htmlClosed).isTrue();
+            assertThat(built.textClosed).isTrue();
+        }
+
+        @Test
+        @DisplayName("a completed run leaves the release with nothing to do - L339 already closed both")
+        void aCompletedRunClosesBothFilesExactlyOnce() {
+            RefusingHarness built = new RefusingHarness(oneStatement(), 0, 0, FileStatus.OK,
+                    FileStatus.Outcome.OK, FileStatus.OK);
+
+            assertThat(built.run()).isEqualTo(1);
+
+            assertThat(built.textHandle.isOpen()).isFalse();
+            assertThat(built.htmlHandle.isOpen()).isFalse();
+            // The sinks' own close was reached once each; the release found both handles closed and did
+            // nothing, which is what keeps it invisible on the normal path.
+            assertThat(built.textClosed).isTrue();
+            assertThat(built.htmlClosed).isTrue();
         }
 
         @Test

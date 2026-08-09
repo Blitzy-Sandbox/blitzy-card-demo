@@ -7,6 +7,8 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.dto.UserAddRequest;
@@ -182,6 +184,20 @@ import org.springframework.web.bind.annotation.RestController;
  * @see SecUserRecord the eighty-byte {@code SEC-USER-DATA} record of {@code app/cpy/CSUSR01Y.cpy}
  * @see UserAddRequest the {@code xxxI} projection of {@code 01 COUSR1AI}
  * @see UserAddResponse the {@code xxxO} projection of {@code 01 COUSR1AO}
+ * <h2>This endpoint is unauthenticated and unauthorized - an accepted divergence (CWE-306 and CWE-862)</h2>
+ *
+ * <p>This controller adds a record to {@code USRSEC} with no authentication and no role check.
+ * Nothing here establishes who is calling or that they administer users, so this endpoint can create
+ * a security record - including an administrator one - for any caller that can reach it.
+ *
+ * <p>That is inherited from the legacy design rather than introduced here: in CICS the region controls
+ * which transactions an operator can reach and no COBOL program in {@code app/cbl} performs a check of
+ * its own. It is not remedied here because every remedy is either excluded from the migration's closed
+ * dependency set or changes an observable outcome that the parity diff compares. The full disposition -
+ * the three exposures, the evidence for each, why each remedy is unavailable, and what a deployment must
+ * do instead - is stated once in {@link SignOnService}, which owns this package's credential handling.
+ * Read it before changing anything on this path.
+
  */
 @RestController
 public class UserAddController {
@@ -454,16 +470,19 @@ public class UserAddController {
      * @param eibcalen the communication-area length; optional, derived from the payload when absent
      * @return the {@code xxxO} projection of the map the program painted, or of the screen it
      *         transferred to
-     * @throws IllegalArgumentException if {@code eibAid} is outside {@code 0}-{@code 255} or
-     *                                  {@code eibcalen} is negative
+     * @throws IllegalArgumentException if {@code eibAid} is outside {@code 0}-{@code 255}, or if
+     *                                  {@code eibcalen} is neither {@code 0} nor
+     *                                  {@value NavigationContext#COMMAREA_LENGTH} or disagrees with what
+     *                                  the payload carried
      */
     @PostMapping(path = USERS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
-    public UserAddResponse addUser(
+    public ScreenResponse<UserAddResponse> addUser(
             @Valid @RequestBody(required = false) UserAddRequest request,
             @RequestParam(name = EIBAID_PARAM, required = false) Integer eibAid,
             @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen) {
-        return mainPara(request, resolveEibAid(eibAid, request), resolveEibcalen(eibcalen, request))
-                .response();
+        ProgramState state =
+                mainPara(request, resolveEibAid(eibAid, request), resolveEibcalen(eibcalen, request));
+        return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
     // =================================================================================================
@@ -1378,32 +1397,66 @@ public class UserAddController {
     }
 
     /**
-     * Resolves {@code EIBCALEN}, the length of the communication area passed in.
+     * The {@code DFHMDF} label behind an {@code xxxL} item name - {@code FNAMEL} yields {@code FNAME}.
      *
-     * <p>The explicit {@value #EIBCALEN_PARAM} parameter wins when supplied. Otherwise the length is
-     * derived from the payload: a {@code null} {@link UserAddRequest#navigationContext()} means no
-     * communication area was passed, which is {@code EIBCALEN = 0} and selects the sign-on transfer at
-     * {@code COUSR01C:78-80}; a payload that carries one implies the full
-     * {@link NavigationContext#COMMAREA_LENGTH}.
+     * <p>Not string surgery for convenience: a BMS symbolic map names each of a field's items by
+     * suffixing the {@code DFHMDF} label, so {@code xxxL} is the label plus {@code 'L'} by the
+     * generator's own rule - {@code app/cpy-bms/COUSR01.CPY} shows every field's four items built that
+     * way. Reporting the label keeps the cursor request readable next to the payload members, which carry
+     * the same labels.
+     *
+     * @param lengthItem the {@code xxxL} item name, for example {@value #CURSOR_FNAME}
+     * @return the label; never {@code null}
+     */
+    static String dfhmdfLabel(String lengthItem) {
+        return lengthItem.substring(0, lengthItem.length() - 1);
+    }
+
+    /**
+     * Resolves {@code EIBCALEN}, the length of the communication area passed in, and refuses any
+     * statement the carrier does not support.
+     *
+     * <h4>Why a caller may not simply declare it</h4>
+     * {@code EIBCALEN} is not caller data on a real terminal: CICS sets it to the length of the area it
+     * actually passed. {@code app/cbl/COUSR01C.cbl:78} tests it against zero to decide whether the
+     * conversation had any state at all - and its zero arm transfers straight to the sign-on program -
+     * so a caller free to state it could discard state that was sent, or claim state that was not.
+     *
+     * <h4>Why the two accepted values are 0 and {@value NavigationContext#COMMAREA_LENGTH}</h4>
+     * Line 78 compares against zero and nothing else, and line 82's
+     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} reads the copybook's own
+     * {@value NavigationContext#COMMAREA_LENGTH} bytes. {@code COUSR01C} copies only
+     * {@code app/cpy/COCOM01Y.cpy} - it declares no extension group of its own, unlike its {@code CU02}
+     * and {@code CU03} siblings - so the area it is passed is exactly the copybook, and the request is
+     * in one of two states: absent, or complete at {@value NavigationContext#COMMAREA_LENGTH} bytes.
      *
      * @param eibcalen the query parameter value, or {@code null} if absent
      * @param request  the payload; may be {@code null}
-     * @return the communication-area length
-     * @throws IllegalArgumentException if {@code eibcalen} is negative
+     * @return {@code 0} or {@value NavigationContext#COMMAREA_LENGTH}
+     * @throws IllegalArgumentException if the stated value is neither length, or contradicts the carrier
      */
     static int resolveEibcalen(Integer eibcalen, UserAddRequest request) {
-        if (eibcalen != null) {
-            int value = eibcalen;
-            if (value < 0) {
-                throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter carries a "
-                        + "communication-area length and cannot be negative, but was " + value + ".");
-            }
-            return value;
+        int carried = request == null || request.navigationContext() == null
+                ? 0
+                : NavigationContext.COMMAREA_LENGTH;
+        if (eibcalen == null) {
+            return carried;
         }
-        if (request == null || request.navigationContext() == null) {
-            return 0;
+        int stated = eibcalen;
+        if (stated != 0 && stated != NavigationContext.COMMAREA_LENGTH) {
+            throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
+                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
+                    + "program is either 0 or " + NavigationContext.COMMAREA_LENGTH
+                    + ", the whole of CARDDEMO-COMMAREA, since COUSR01C declares no extension of its own.");
         }
-        return NavigationContext.COMMAREA_LENGTH;
+        if (stated != carried) {
+            throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
+                    + " but the payload carries " + (carried == 0 ? "no" : "a")
+                    + " communication area. EIBCALEN describes what arrived; it cannot contradict it, "
+                    + "because app/cbl/COUSR01C.cbl:78 uses it to decide whether the conversation had any "
+                    + "state at all.");
+        }
+        return stated;
     }
 
     // =================================================================================================
@@ -1822,6 +1875,34 @@ public class UserAddController {
          */
         public Optional<String> cursorField() {
             return Optional.ofNullable(cursorField);
+        }
+
+        /**
+         * This screen's presentation metadata, in the shared envelope every online response publishes.
+         *
+         * <p>{@code COUSR01} declares no {@code xxxC}, {@code xxxP}, {@code xxxH} or {@code xxxV} items
+         * beyond the message line, so there are no per-field quads to project and the field map is empty -
+         * an accurate empty rather than a missing one. The two things this program writes that are
+         * metadata by declaration, and that had no way to travel, are reported:
+         *
+         * <ul>
+         *   <li>{@code MOVE -1 TO xxxL} - the cursor request, named by its {@code DFHMDF} label. The
+         *       {@code xxxL} item is {@code COMP PIC S9(4)} input-group metadata and never a payload
+         *       member (gate G9).</li>
+         *   <li>{@code MOVE <colour> TO ERRMSGC OF COUSR1AO} - the colour of the message line, as its
+         *       unsigned byte value: green on the successful add and red on every refusal.</li>
+         * </ul>
+         *
+         * <p>{@code resetAllOutputFields} is {@code false}: the {@code MOVE LOW-VALUES} has already been
+         * performed on this response, so the cleared state is in the values the client receives and there
+         * is nothing left for it to repeat.
+         *
+         * @return the metadata, never {@code null}
+         */
+        public ScreenMetadata screenMetadata() {
+            return ScreenMetadata.of(cursorField().map(UserAddController::dfhmdfLabel).orElse(null),
+                    errMsgColour(),
+                    false);
         }
 
         void setCursorField(String cursorField) {

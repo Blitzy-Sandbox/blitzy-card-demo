@@ -287,6 +287,9 @@ class DalyTranRepositoryTest {
         /** The connections handed out, in order, for the prepare-time assertions. */
         private final List<Connection> connections = new ArrayList<>();
 
+        /** The statements prepared, in the same order as {@link #connections}, for the same reason. */
+        private final List<PreparedStatement> statements = new ArrayList<>();
+
         /** Column count the metadata reports. Zero models a backend presenting no record image. */
         private int columnCount = DalyTranRepository.RECORD_IMAGE_COLUMN_INDEX;
 
@@ -373,6 +376,11 @@ class DalyTranRepositoryTest {
             return List.copyOf(connections);
         }
 
+        /** @return the statements prepared so far, in order. */
+        private List<PreparedStatement> statements() {
+            return List.copyOf(statements);
+        }
+
         /**
          * The data source over this backend, built on first use.
          *
@@ -454,6 +462,7 @@ class DalyTranRepositoryTest {
             org.mockito.Mockito.doAnswer(invocation -> record("connection")).when(connection).close();
 
             connections.add(connection);
+            statements.add(statement);
             return connection;
         }
 
@@ -733,6 +742,42 @@ class DalyTranRepositoryTest {
             verify(backend.connections().get(0))
                     .prepareStatement(SELECT_SQL, ResultSet.TYPE_FORWARD_ONLY,
                             ResultSet.CONCUR_READ_ONLY);
+        }
+
+        @Test
+        @DisplayName("the cursor states a positive fetch size, so the driver buffers a page not the file")
+        void theCursorStatesAPositiveFetchSize() throws SQLException {
+            // Left unset, the fetch size is the driver's own default, and several drivers default to
+            // materialising the whole result set on the client - which is the unbounded behaviour a
+            // source-faithful sequential READ must not have. A ceiling, not a tuning parameter: AAP
+            // 0.8.6 records that this migration has no performance objective.
+            Backend backend = Backend.serving(threeRows());
+            DalyTranRepository repository = repository(backend);
+
+            try (DalytranFile file = repository.open()) {
+                assertThat(file.isOpen()).isTrue();
+            }
+
+            assertThat(DalyTranRepository.FETCH_SIZE).isPositive();
+            verify(backend.statements().get(0)).setFetchSize(DalyTranRepository.FETCH_SIZE);
+        }
+
+        @Test
+        @DisplayName("the stated fetch size changes neither the rows served nor the order they arrive")
+        void theFetchSizeChangesNeitherContentNorOrder() {
+            // The JDBC contract makes the value a hint, so this asserts the property that matters: the
+            // same three rows, in the same physical order, one per read.
+            DalyTranRepository repository = repository(Backend.serving(threeRows()));
+
+            try (DalytranFile file = repository.open()) {
+                assertThat(repository.readNext(file).dalyTran().orElseThrow().dalytranId())
+                        .isEqualTo("0000000000000001");
+                assertThat(repository.readNext(file).dalyTran().orElseThrow().dalytranId())
+                        .isEqualTo("0000000000000002");
+                assertThat(repository.readNext(file).dalyTran().orElseThrow().dalytranId())
+                        .isEqualTo("0000000000000003");
+                assertThat(repository.readNext(file).isEndOfFile()).isTrue();
+            }
         }
 
         @Test

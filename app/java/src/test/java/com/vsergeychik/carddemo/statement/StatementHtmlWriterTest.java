@@ -226,10 +226,24 @@ class StatementHtmlWriterTest {
      * @return the catalogue
      */
     private static DatasetBindings bindingsFor(final String dsname, final int recordLength) {
+        return bindingsFor(dsname, recordLength, "FB");
+    }
+
+    /**
+     * A synthetic {@code carddemo.datasets} catalogue holding only the {@code HTMLFILE} binding, with
+     * both geometry attributes the constructor cross-checks under the caller's control.
+     *
+     * @param dsname       the dataset name the binding will declare
+     * @param recordLength the record length the binding will declare
+     * @param recordFormat the record format the binding will declare, or {@code null} to omit the key
+     * @return the catalogue
+     */
+    private static DatasetBindings bindingsFor(final String dsname, final int recordLength,
+                                               final String recordFormat) {
         DatasetBindings bindings = new DatasetBindings();
         bindings.put(StatementHtmlWriter.HTMLFILE_DD_NAME, new DatasetBinding(
-                dsname, "sequential", false, "FB", StatementHtmlWriter.BLOCK_SIZE, recordLength,
-                null, null, null, null, null));
+                dsname, "sequential", false, recordFormat, StatementHtmlWriter.BLOCK_SIZE,
+                recordLength, null, null, null, null, null));
         return bindings;
     }
 
@@ -296,6 +310,46 @@ class StatementHtmlWriterTest {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> newWriter(template, 133, TEST_DSNAME))
                     .withMessageContaining("record-length is 133");
+        }
+
+        @Test
+        @DisplayName("Construction is refused when the binding declares anything but RECFM=FB, and "
+                + "says whether the key was wrong or absent (gate G20)")
+        void constructionIsRefusedForAnyOtherRecordFormat() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+
+            // FB is what makes 'every emitted record is exactly 100 bytes' true - the right-space
+            // padding of every HTML line rests on it. A variable format would leave every other number
+            // in this class unchanged, so the width check alone could never see the divergence.
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> new StatementHtmlWriter(template, StandardCharsets.US_ASCII,
+                            bindingsFor(TEST_DSNAME, StatementHtmlWriter.RECORD_LENGTH, "V"),
+                            RecordImageForm.CHARACTER))
+                    .withMessageContaining("record-format is 'V'")
+                    .withMessageContaining("RECFM=FB")
+                    .withMessageContaining("L94");
+
+            // An omitted key and a wrong value are different mistakes with different fixes, so a
+            // missing value must not be rendered as the four-letter word "null".
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> new StatementHtmlWriter(template, StandardCharsets.US_ASCII,
+                            bindingsFor(TEST_DSNAME, StatementHtmlWriter.RECORD_LENGTH, null),
+                            RecordImageForm.CHARACTER))
+                    .withMessageContaining("record-format is absent");
+        }
+
+        @Test
+        @DisplayName("The record format is accepted however configuration cases it")
+        void theRecordFormatIsAcceptedCaseInsensitively() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+
+            assertThatCode(() -> new StatementHtmlWriter(template, StandardCharsets.US_ASCII,
+                    bindingsFor(TEST_DSNAME, StatementHtmlWriter.RECORD_LENGTH, "fb"),
+                    RecordImageForm.CHARACTER)).doesNotThrowAnyException();
+            assertThatCode(() -> new StatementHtmlWriter(template, StandardCharsets.US_ASCII,
+                    bindingsFor(TEST_DSNAME, StatementHtmlWriter.RECORD_LENGTH, "FB"),
+                    RecordImageForm.CHARACTER)).doesNotThrowAnyException();
+            assertThat(StatementHtmlWriter.RECORD_FORMAT).isEqualTo("FB");
         }
 
         @Test
@@ -2024,6 +2078,104 @@ class StatementHtmlWriterTest {
                     StatementHtmlWriter.RECORD_LENGTH, shared).defaultSink();
 
             assertThat(htmlSink.insertStatement()).isEqualTo(textWriter.insertStatement());
+        }
+
+        @Test
+        @DisplayName("The open establishes the destination and empties it - one describe, one delete, "
+                + "no DDL (OPEN OUTPUT HTML-FILE, CBSTM03A.CBL:L293; CREASTMT.JCL:L92-L96)")
+        void theOpenEstablishesAndClearsTheDestination() {
+            // DISP=(NEW,CATLG,DELETE) means this run writes into an empty dataset. Before the open
+            // issued anything it reported '00' unconditionally, so an absent destination looked open
+            // and the previous run's HTML stayed in place under it.
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.open()).isEqualTo(FileStatus.OK);
+            assertThat(sink.lastFailure()).isEmpty();
+
+            verify(StatementHtmlWriterTest.this.jdbcTemplate)
+                    .execute("SELECT * FROM \"" + TEST_DSNAME + "\" WHERE 1 = 0");
+            verify(StatementHtmlWriterTest.this.jdbcTemplate)
+                    .update("DELETE FROM \"" + TEST_DSNAME + "\"");
+            // Not one data-definition statement anywhere in the pair (gate G44).
+            verify(StatementHtmlWriterTest.this.jdbcTemplate, never())
+                    .execute(org.mockito.ArgumentMatchers.contains("CREATE"));
+            verify(StatementHtmlWriterTest.this.jdbcTemplate, never())
+                    .execute(org.mockito.ArgumentMatchers.contains("DROP"));
+            verify(StatementHtmlWriterTest.this.jdbcTemplate, never())
+                    .execute(org.mockito.ArgumentMatchers.contains("TRUNCATE"));
+        }
+
+        @Test
+        @DisplayName("The close probes the destination again and clears nothing "
+                + "(CLOSE HTML-FILE, CBSTM03A.CBL:L339)")
+        void theCloseProbesAndClearsNothing() {
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.close()).isEqualTo(FileStatus.OK);
+
+            verify(StatementHtmlWriterTest.this.jdbcTemplate)
+                    .execute("SELECT * FROM \"" + TEST_DSNAME + "\" WHERE 1 = 0");
+            // A close that emptied the destination would throw the statements away at the moment the
+            // run finished writing them.
+            verify(StatementHtmlWriterTest.this.jdbcTemplate, never())
+                    .update("DELETE FROM \"" + TEST_DSNAME + "\"");
+        }
+
+        @Test
+        @DisplayName("A destination that cannot be described reports the permanent-error status from "
+                + "the open, and retains the backend's own diagnosis")
+        void aRefusedOpenReportsThePermanentErrorStatus() {
+            doThrow(new DataAccessResourceFailureException("no driver"))
+                    .when(StatementHtmlWriterTest.this.jdbcTemplate).execute(anyString());
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.open()).isEqualTo(StatementHtmlWriter.PERMANENT_ERROR_STATUS);
+            assertThat(sink.lastFailure()).isPresent();
+            // The delete is never reached: a destination that could not be described is not one this
+            // module then issues a DELETE against.
+            verify(StatementHtmlWriterTest.this.jdbcTemplate, never()).update(anyString());
+        }
+
+        @Test
+        @DisplayName("A destination that refuses the clear reports the permanent-error status too - a "
+                + "NEW generation that cannot be emptied is not open")
+        void aRefusedClearReportsThePermanentErrorStatus() {
+            when(StatementHtmlWriterTest.this.jdbcTemplate.update(anyString()))
+                    .thenThrow(new DataAccessResourceFailureException("read-only"));
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.open()).isEqualTo(StatementHtmlWriter.PERMANENT_ERROR_STATUS);
+            assertThat(sink.lastFailure()).isPresent();
+        }
+
+        @Test
+        @DisplayName("A destination that goes away mid-run reports the permanent-error status from "
+                + "the close")
+        void aRefusedCloseReportsThePermanentErrorStatus() {
+            doThrow(new DataAccessResourceFailureException("dataset dropped"))
+                    .when(StatementHtmlWriterTest.this.jdbcTemplate).execute(anyString());
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.close()).isEqualTo(StatementHtmlWriter.PERMANENT_ERROR_STATUS);
+            assertThat(sink.lastFailure()).isPresent();
+        }
+
+        @Test
+        @DisplayName("A successful open after a failure clears the retained diagnosis, as a "
+                + "successful write does")
+        void aSuccessfulOpenClearsTheRetainedFailure() {
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+            doThrow(new DataAccessResourceFailureException("transient"))
+                    .when(StatementHtmlWriterTest.this.jdbcTemplate).execute(anyString());
+            assertThat(sink.open()).isEqualTo(StatementHtmlWriter.PERMANENT_ERROR_STATUS);
+            assertThat(sink.lastFailure()).isPresent();
+
+            org.mockito.Mockito.reset(StatementHtmlWriterTest.this.jdbcTemplate);
+
+            assertThat(sink.open()).isEqualTo(FileStatus.OK);
+            assertThat(sink.lastFailure()).isEmpty();
+            assertThat(sink.close()).isEqualTo(FileStatus.OK);
+            assertThat(sink.lastFailure()).isEmpty();
         }
 
         @Test

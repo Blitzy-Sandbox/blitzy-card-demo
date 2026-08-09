@@ -9,7 +9,9 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.card.dto.CardSelectRequest.ThisProgCommarea;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.nio.charset.StandardCharsets;
@@ -1235,6 +1237,22 @@ public final class CardSelectResponse {
     private NavigationContext navigationContext;
 
     /**
+     * {@code WS-THIS-PROGCOMMAREA} - the twelve bytes {@code COMMON-RETURN} appends to the
+     * communication area at {@code app/cbl/COCRDSLC.cbl:397-400} before the
+     * {@code EXEC CICS RETURN} at {@code :402-406}.
+     *
+     * <p>Deliberately {@link CardSelectRequest.ThisProgCommarea} - the very type the paired request
+     * carries - because the area is one COBOL group and not two. The program restores it from what the
+     * caller passed and returns it unchanged, so a response that omitted it would shorten the area the
+     * next turn receives from {@value CardSelectRequest#PASSED_COMMAREA_LENGTH} bytes to
+     * {@value NavigationContext#COMMAREA_LENGTH} and lose the calling program and transaction.
+     *
+     * <p>Never {@code null}: {@link CardSelectRequest.ThisProgCommarea#initialized()} is what
+     * {@code :272} leaves in the area, and twelve spaces is a value.
+     */
+    private ThisProgCommarea thisProgCommarea = ThisProgCommarea.initialized();
+
+    /**
      * {@code CCARD-NEXT-PROG PIC X(8)} as a response member: the program the {@code XCTL} at
      * {@code app/cbl/COCRDSLC.cbl:331} would have transferred to. An opaque token.
      */
@@ -2065,6 +2083,64 @@ public final class CardSelectResponse {
     public void setCardScreenState(CardScreenState cardScreenState) {
         this.cardScreenState = Objects.requireNonNull(cardScreenState,
                 "A card screen state is required; COCRDSLC always has an initialised CC-WORK-AREA");
+    }
+
+    /**
+     * {@code WS-THIS-PROGCOMMAREA} as this response returns it - the twelve bytes
+     * {@code app/cbl/COCRDSLC.cbl:397-400} appends to the communication area.
+     *
+     * @return the trailer; never {@code null}
+     */
+    public ThisProgCommarea getThisProgCommarea() {
+        return thisProgCommarea;
+    }
+
+    /**
+     * Sets {@code WS-THIS-PROGCOMMAREA}.
+     *
+     * <p>{@code null} is normalised to {@link ThisProgCommarea#initialized()} rather than stored: the
+     * area has no absent state, and every reader would otherwise have to defend against one.
+     *
+     * @param thisProgCommarea the trailer, or {@code null} for the initialised twelve spaces
+     */
+    public void setThisProgCommarea(ThisProgCommarea thisProgCommarea) {
+        this.thisProgCommarea =
+                thisProgCommarea == null ? ThisProgCommarea.initialized() : thisProgCommarea;
+    }
+
+    /**
+     * This screen's presentation metadata, projected into the shared envelope every online response
+     * publishes: the fifteen attribute quads, keyed by {@code DFHMDF} label in copybook order, and the
+     * colour of the error line.
+     *
+     * <p>The quads are the {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} items of
+     * {@code app/cpy-bms/COCRDSL.CPY} - metadata by the copybook's own declaration, and the items
+     * {@code 1300-SETUP-SCREEN-ATTRS} and the {@code app/cpy/CSSETATY.cpy} highlight rule write into.
+     * They are not payload fields and must not be siblings of the fifteen values, but a client that
+     * cannot see them cannot repaint a field the program turned red, so they travel under
+     * {@code screenMetadata} instead of not travelling at all.
+     *
+     * <p>{@code messageColour} is {@code ERRMSGC}, taken from the quads rather than stored twice.
+     * {@code cursorField} is {@code null}: {@code COCRDSLC} issues no {@code MOVE -1} to any
+     * {@code xxxL} item, so there is no cursor request to report and none is invented.
+     *
+     * @return the metadata; never {@code null}
+     */
+    @JsonIgnore
+    public ScreenMetadata screenMetadata() {
+        Map<String, ScreenMetadata.FieldMetadata> quads = new LinkedHashMap<>();
+        for (ScreenField field : ScreenField.values()) {
+            FieldAttributes quad = attributes.get(field);
+            quads.put(field.dfhmdfLabel(),
+                    ScreenMetadata.FieldMetadata.of(quad.getColour(),
+                            quad.getPs(),
+                            quad.getHilight(),
+                            quad.getValidn()));
+        }
+        return ScreenMetadata.of(null,
+                attributes.get(ScreenField.ERRMSG).getColour(),
+                false,
+                quads);
     }
 
     /**

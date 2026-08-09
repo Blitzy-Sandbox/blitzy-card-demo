@@ -80,24 +80,29 @@ class DataSourceConfigWiringTest {
         }
 
         @Test
-        @DisplayName("The JdbcTemplate is built over the supplied DataSource with nothing tuned")
+        @DisplayName("The JdbcTemplate is built over the supplied DataSource, bounded but not tuned")
         void theJdbcTemplateIsBuiltOverTheSuppliedDataSource() {
             DataSourceProperties properties = new DataSourceProperties();
             properties.setUrl(H2_URL);
             DataSourceConfig config = new DataSourceConfig();
             DataSource dataSource = config.dataSource(properties);
 
-            JdbcTemplate template = config.jdbcTemplate(dataSource);
+            JdbcTemplate template = config.jdbcTemplate(dataSource, "45");
 
-            // Nothing is tuned on it, deliberately: a template that silently capped rows or timed
-            // out would change observable behaviour rather than preserve it. Compared against a bare
-            // instance rather than against literals, so the assertion states "untouched" rather than
-            // restating whatever Spring's own defaults happen to be.
+            // The row-shaping settings are untouched, deliberately: a template that silently capped
+            // rows or fetched in pages would change what a program reads, and a truncated browse is a
+            // short file. Compared against a bare instance rather than against literals, so the
+            // assertion states "untouched" rather than restating whatever Spring's own defaults are.
             JdbcTemplate untouched = new JdbcTemplate();
             assertThat(template.getDataSource()).isSameAs(dataSource);
             assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
             assertThat(template.getMaxRows()).isEqualTo(untouched.getMaxRows());
-            assertThat(template.getQueryTimeout()).isEqualTo(untouched.getQueryTimeout());
+
+            // The one thing that IS configured. A bare template reports -1, which means "leave the
+            // driver's own default alone" and is unbounded for a driver that has none, so the
+            // assertion is two-sided: the configured bound is carried, and it is not the bare value.
+            assertThat(template.getQueryTimeout()).isEqualTo(45);
+            assertThat(template.getQueryTimeout()).isNotEqualTo(untouched.getQueryTimeout());
         }
     }
 

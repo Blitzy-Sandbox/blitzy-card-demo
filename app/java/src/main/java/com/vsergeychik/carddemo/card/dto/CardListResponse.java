@@ -14,6 +14,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.nio.charset.Charset;
@@ -1500,6 +1501,21 @@ public final class CardListResponse {
      */
     private NavigationContext navigationContext;
 
+    /**
+     * The {@code DFHMDF} label the last {@code MOVE -1 TO xxxL OF CCRDLIAI} aimed the 3270 cursor at, or
+     * {@code null} when this invocation aimed it nowhere.
+     *
+     * <p>Not a payload member and never serialised directly: the {@code -1} marker is moved into the
+     * <em>input</em> group {@code CCRDLIAI} [{@code app/cbl/COCRDLIC.cbl:770}, {@code :874}, {@code :879},
+     * {@code :885}], and {@link CardListRequest.FieldMetadata} rejects a negative length by construction
+     * because CICS reports {@code 0} for a field the operator did not touch. The request side therefore
+     * has no representable home for it. It travels out under
+     * {@link ScreenMetadata#cursorField()} instead, which is the whole point of the envelope: a client
+     * that cannot see where the cursor was aimed cannot place it, and inventing a payload field to carry
+     * it would break the {@code xxxI}-only rule the DTOs are built on (gate G9).
+     */
+    private String cursorField;
+
     // =================================================================================================
     // Construction.
     // =================================================================================================
@@ -1534,6 +1550,7 @@ public final class CardListResponse {
         this.pageCursor = PageCursor.initialised();
         this.cardScreenState = new CardScreenState();
         this.navigationContext = NavigationContext.empty();
+        this.cursorField = null;
     }
 
     /**
@@ -1557,6 +1574,7 @@ public final class CardListResponse {
         this.pageCursor = other.pageCursor;
         this.cardScreenState = new CardScreenState(other.cardScreenState);
         this.navigationContext = other.navigationContext;
+        this.cursorField = other.cursorField;
     }
 
     /**
@@ -3031,6 +3049,64 @@ public final class CardListResponse {
             snapshot.put(entry.getKey(), new FieldAttributes(entry.getValue()));
         }
         return Collections.unmodifiableMap(snapshot);
+    }
+
+    /**
+     * The {@code DFHMDF} label the cursor was last aimed at on this invocation, or {@code null} when it
+     * was aimed nowhere.
+     *
+     * @return the label, or {@code null}
+     */
+    @JsonIgnore
+    public String getCursorField() {
+        return cursorField;
+    }
+
+    /**
+     * Records where {@code MOVE -1 TO xxxL OF CCRDLIAI} aimed the cursor, so
+     * {@link #screenMetadata()} can publish it.
+     *
+     * @param cursorField the {@code DFHMDF} label, or {@code null} for no request
+     */
+    public void setCursorField(String cursorField) {
+        this.cursorField = cursorField;
+    }
+
+    /**
+     * This screen's presentation metadata, projected into the shared envelope every online response
+     * publishes: the 45 attribute quads keyed by {@code DFHMDF} label in copybook order, the colour of the
+     * error line, and the field the cursor was aimed at.
+     *
+     * <p>The quads are the {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} items of
+     * {@code app/cpy-bms/COCRDLI.CPY} - metadata by the copybook's own declaration, and the items
+     * {@code 1200-SETUP-ARRAY-ATTRIBS}, {@code 1300-SETUP-SCREEN-ATTRS} and the
+     * {@code app/cpy/CSSETATY.cpy} highlight rule write into. They are not payload fields and must not be
+     * siblings of the 45 values, but a client that cannot see them cannot repaint a field the program
+     * turned red, so they travel under {@code screenMetadata} rather than not travelling at all.
+     *
+     * <p>{@code messageColour} is {@code ERRMSGC}, read from the quads rather than stored twice.
+     * {@code cursorField} is the {@code MOVE -1} target described on {@link #getCursorField()}.
+     * {@code resetAllOutputFields} is {@code false}: {@code MOVE LOW-VALUES TO CCRDLIAO}
+     * [{@code app/cbl/COCRDLIC.cbl:643}] is performed on this object by {@link #moveLowValuesToMap()}, so
+     * the cleared state is already in the payload the client receives and there is nothing left for the
+     * client to repeat.
+     *
+     * @return the metadata; never {@code null}
+     */
+    @JsonIgnore
+    public ScreenMetadata screenMetadata() {
+        Map<String, ScreenMetadata.FieldMetadata> quads = new LinkedHashMap<>();
+        for (Map.Entry<String, FieldAttributes> entry : attributes.entrySet()) {
+            FieldAttributes quad = entry.getValue();
+            quads.put(entry.getKey(), ScreenMetadata.FieldMetadata.of(quad.colour(),
+                    quad.ps(),
+                    quad.highlight(),
+                    quad.validn()));
+        }
+        // The label is derived from the item name rather than written as a literal, so a rename of the
+        // error line cannot leave this reading an attribute quad that no longer exists.
+        FieldAttributes errorLine = attributes.get(mapField(ERRMSGO_ITEM).screenFieldPrefix());
+        return ScreenMetadata.of(cursorField, errorLine.colour(), false, quads);
     }
 
     /**

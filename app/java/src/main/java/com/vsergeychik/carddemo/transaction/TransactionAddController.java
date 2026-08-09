@@ -11,8 +11,11 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.TransactionRepository.ReadResult;
 import com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest;
 import com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest.Ct01Info;
@@ -27,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -35,7 +39,8 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -192,21 +197,39 @@ public final class TransactionAddController {
     public static final String TRANSACT_FILE_NAME = TransactionRepository.CICS_FILE_NAME;
 
     /**
-     * The path this screen is reached at: {@code POST /api/transactions/view}.
+     * The path this screen is reached at: {@code GET /api/transactions/{tranId}}.
      *
-     * <p><strong>POST, not GET.</strong> One call is one execution of {@code COTRN01C}, and the
-     * request carries the 218-byte communication area, the attention identifier and all 21 screen
-     * fields - a body no query string can carry. The in-package precedent is the same: the
-     * {@code CORPT00C} screen is a {@code POST} with a request body.
+     * <h4>A read, expressed as a read</h4>
+     * {@code COTRN01C} looks a transaction up and paints it. It writes nothing: its only file
+     * operation is {@code EXEC CICS READ} at {@code :217-224}, and there is no {@code WRITE},
+     * {@code REWRITE} or {@code DELETE} anywhere in the program. The route therefore has to be a
+     * {@code GET} on the transaction being read. An earlier revision exposed it as
+     * {@code POST /api/transactions/view}, which asserted two things that are not true of this
+     * program - that the call changes something, and that {@code view} is a resource - and made the
+     * public contract a command rather than the record it reads.
      *
-     * <p><strong>The path says "view" because the source views</strong> (rule R1, practice B4). It
-     * deliberately does not say "add", which would assert on the HTTP surface a behaviour this
-     * program does not have - see the R-B block on this class. It also cannot collide: the
-     * {@code CT00} transaction list owns {@code GET /api/transactions} and the {@code CT02} add
-     * screen owns {@code POST /api/transactions}, so neither shares a method-and-path pair with
-     * this one.
+     * <h4>Why the identity is in the URI and the screen is in the body</h4>
+     * {@code TRNIDIN} is this map's one input-capable field and the {@code RIDFLD} of the read, so it
+     * is the resource's identity and belongs in the path. Everything else - the 218-byte
+     * communication area, the attention identifier and the twenty output items a client echoes back -
+     * is conversation state, and it travels in the body, which is what keeps this screen free of
+     * server-side session state (rule R6, gate G37). The same shape is already the module's
+     * convention for a detail read: {@code GET /api/cards/{cardNum}} binds
+     * {@code CardSelectRequest} the identical way.
+     *
+     * <h4>No collision</h4>
+     * {@code CT00} owns {@code GET /api/transactions} - a different path, because a template variable
+     * is a segment - and {@code CT02} owns {@code POST /api/transactions}, a different method. This
+     * route shares a method-and-path pair with neither.
+     *
+     * <p>The Agent Action Plan leaves the {@code CT01} and {@code CT02} paths unstated in section
+     * 0.3.9, naming only the pair and the swap caveat, so the path is derived here from the
+     * conventions the plan does fix for its siblings rather than invented.
      */
-    public static final String TRANSACTION_VIEW_PATH = "/api/transactions/view";
+    public static final String TRANSACTION_DETAIL_PATH = "/api/transactions/{tranId}";
+
+    /** The path variable that carries the transaction id: the {@code RIDFLD} of the read. */
+    public static final String TRAN_ID_VARIABLE = "tranId";
 
     // =============================================================================================
     // Navigation targets - the three program names the source moves into CDEMO-TO-PROGRAM.
@@ -238,6 +261,15 @@ public final class TransactionAddController {
 
     /** {@code WS-MESSAGE PIC X(80) VALUE SPACES} - {@code :38}. */
     public static final int WS_MESSAGE_LENGTH = 80;
+
+    /**
+     * The highest code point an attention identifier can hold: {@code U+00FF}.
+     *
+     * <p>{@code EIBAID} is one byte, so the whole AID space is {@code U+0000} to {@code U+00FF} and a
+     * character above it is not an AID at all. Stated as a constant so
+     * {@link #eibAidOf(String)} and its tests read the same bound.
+     */
+    public static final char MAX_AID_CODE_POINT = 0x00FF;
 
     /**
      * The character count of {@code WS-TRAN-AMT PIC +99999999.99} - {@code :49}.
@@ -305,6 +337,14 @@ public final class TransactionAddController {
 
     /** The digit positions {@code WS-RESP-CD} and {@code WS-REAS-CD} display - {@code :43-44}. */
     public static final int WS_RESP_CD_DIGITS = 9;
+
+    /**
+     * What the unit of work {@link #mainPara(TransactionAddRequest)} opens is doing, used only to name
+     * the boundary in a failure. It names the paragraph and the program, because that is what a reader
+     * comparing the two systems will be holding.
+     */
+    private static final String UNIT_OF_WORK_DESCRIPTION =
+            "MAIN-PARA (app/cbl/COTRN01C.cbl:86-139)";
 
     // =============================================================================================
     // Message literals, byte for byte as the source writes them. Each is moved into WS-MESSAGE
@@ -381,24 +421,40 @@ public final class TransactionAddController {
     private final FixedWidthCodec codec;
 
     /**
-     * Wires the program's two collaborators, rendering images in
+     * The CICS task boundary, made explicit. {@code :269-278} reads the transaction record with the
+     * {@code UPDATE} option, which takes the record lock {@code UPDATEMODEL(LOCKING)} declares for
+     * {@value #TRANSACT_FILE_NAME}, and in CICS that lock is held until the task's implicit syncpoint
+     * at {@code EXEC CICS RETURN}. {@link #mainPara(TransactionAddRequest)} therefore runs inside one
+     * unit of work, which is what a task is, and {@link #readTransactFile(ProgramState)} takes its lock
+     * inside that.
+     */
+    private final DatasetUnitOfWork unitOfWork;
+
+    /**
+     * Wires the program's three collaborators, rendering images in
      * {@link #DEFAULT_WORKING_STORAGE_CHARSET}.
      *
      * @param transactionRepository the {@code TRANSACT} dataset; must not be {@code null}
      * @param clock                 the clock {@code FUNCTION CURRENT-DATE} reads; must not be
      *                              {@code null}
-     * @throws NullPointerException if either argument is {@code null}
+     * @param unitOfWork            the CICS task boundary one execution runs inside; must not be
+     *                              {@code null}
+     * @throws NullPointerException if any argument is {@code null}
      */
     @Autowired
-    public TransactionAddController(TransactionRepository transactionRepository, Clock clock) {
-        this(transactionRepository, clock, DEFAULT_WORKING_STORAGE_CHARSET);
+    public TransactionAddController(TransactionRepository transactionRepository,
+                                    Clock clock,
+                                    DatasetUnitOfWork unitOfWork) {
+        this(transactionRepository, clock, unitOfWork, DEFAULT_WORKING_STORAGE_CHARSET);
     }
 
     /**
-     * Wires the program's two collaborators with an explicit code page.
+     * Wires the program's three collaborators with an explicit code page.
      *
      * @param transactionRepository the {@code TRANSACT} dataset; must not be {@code null}
      * @param clock                 the clock {@code FUNCTION CURRENT-DATE} reads; must not be
+     *                              {@code null}
+     * @param unitOfWork            the CICS task boundary one execution runs inside; must not be
      *                              {@code null}
      * @param workingStorageCharset the code page for this program's images; must not be {@code null},
      *                              and never the platform default
@@ -406,6 +462,7 @@ public final class TransactionAddController {
      */
     public TransactionAddController(TransactionRepository transactionRepository,
                                     Clock clock,
+                                    DatasetUnitOfWork unitOfWork,
                                     Charset workingStorageCharset) {
         this.transactionRepository = Objects.requireNonNull(transactionRepository,
                 "A TransactionRepository is required: app/cbl/COTRN01C.cbl:269-278 reads the "
@@ -414,6 +471,10 @@ public final class TransactionAddController {
         this.clock = Objects.requireNonNull(clock, "A Clock is required: FUNCTION CURRENT-DATE is "
                 + "read from it at app/cbl/COTRN01C.cbl:245 to build the screen's date and time "
                 + "header, and never from the wall clock, so a parity case can pin the instant");
+        this.unitOfWork = Objects.requireNonNull(unitOfWork, "A unit of work is required: "
+                + "app/cbl/COTRN01C.cbl:275 states the UPDATE option, so the read takes a record lock, "
+                + "and a lock outside a unit of work is released before the task that asked for it can "
+                + "rely on it - which is why TransactionRepository refuses to issue one there");
         Objects.requireNonNull(workingStorageCharset, "A code page is required; it is never the "
                 + "platform default");
         this.codec = new FixedWidthCodec(workingStorageCharset);
@@ -426,28 +487,99 @@ public final class TransactionAddController {
     // =============================================================================================
 
     /**
-     * {@code POST }{@value #TRANSACTION_VIEW_PATH} - CSD transaction {@value #TRANSACTION_ID},
-     * program {@value #PROGRAM_NAME}.
+     * {@code GET /api/transactions/}<code>{tranId}</code> - CSD transaction
+     * {@value #TRANSACTION_ID}, program {@value #PROGRAM_NAME}.
      *
-     * <p>One request is one execution of {@code COTRN01C}: the 218-byte communication area, the key
-     * pressed and the 21 screen fields arrive in the body, and the response carries the screen to
-     * paint plus the program to go to next. Nothing is retained between calls - no session, no
-     * server-side conversation, no redirect (gate G37).
+     * <p>One request is one execution of {@code COTRN01C}: the transaction id arrives in the path, the
+     * 218-byte communication area, the key pressed and the twenty output items arrive in the body, and
+     * the response carries the screen to paint, the program to go to next and the presentation
+     * metadata. Nothing is retained between calls - no session, no server-side conversation, no
+     * redirect (gate G37).
      *
      * <p><strong>This handler reads. It does not add.</strong> See the R-B block on this class: the
      * method name follows the source's function, the class name follows the build prompt, and the two
      * are allowed to disagree in public rather than be quietly reconciled.
      *
-     * @param request the inbound screen; validated against the symbolic map's declared widths
-     * @return the outbound screen, never {@code null}
-     * @throws NullPointerException if {@code request} is {@code null}
+     * <p>An absent body is the {@code EIBCALEN = 0} state at {@code :94}: no communication area
+     * travelled, so the program cannot know who called it and transfers to
+     * {@value #SIGN_ON_PROGRAM}. That arm is reachable over HTTP for the same reason it is reachable
+     * on a terminal.
+     *
+     * @param tranId  the transaction id being viewed - the {@code RIDFLD} of the read at
+     *                {@code :217-224} and the value {@code TRNIDIN} carries; must not be {@code null}
+     * @param request the inbound screen, or {@code null} for a cold start; validated against the
+     *                symbolic map's declared widths
+     * @return the outbound screen and its presentation metadata, never {@code null}
+     * @throws NullPointerException     if {@code tranId} is {@code null}
+     * @throws IllegalArgumentException if {@code tranId} is wider than {@code TRNIDIN}, or the body's
+     *                                  {@code TRNIDIN} names a different transaction - each answered
+     *                                  {@code 400} by {@code WebConfig.CobolErrorHandler} with no
+     *                                  value echoed
      */
-    @PostMapping(path = TRANSACTION_VIEW_PATH,
-            consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public TransactionAddResponse viewTransaction(
-            @Valid @RequestBody TransactionAddRequest request) {
-        return mainPara(request).response();
+    @GetMapping(path = TRANSACTION_DETAIL_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    public ScreenResponse<TransactionAddResponse> viewTransaction(
+            @PathVariable(TRAN_ID_VARIABLE) String tranId,
+            @Valid @RequestBody(required = false) TransactionAddRequest request) {
+
+        Objects.requireNonNull(tranId, "A transaction id is required in the path: it is the RIDFLD of "
+                + "the READ at app/cbl/COTRN01C.cbl:217-224 and the value TRNIDIN carries");
+
+        ProgramState state = mainPara(bind(tranId, request));
+        return ScreenResponse.of(state.response(), state.screenMetadata());
+    }
+
+    /**
+     * Reconciles the URI's transaction id with the bound request, and refuses the two ways a caller
+     * could otherwise reach a record the URI does not name.
+     *
+     * <h4>Why an over-width value is refused rather than moved</h4>
+     * {@code MOVE} to a {@code PIC X(16)} field keeps the leading sixteen characters and discards the
+     * rest, so a seventeen-character path id would have been truncated and <em>that</em> transaction
+     * read - a URI addressing a record it does not name, and one no operator could have typed, because
+     * a 3270 field physically cannot accept more characters than it declares. The COBOL move is
+     * faithful for a value that fits; for one that does not there is nothing faithful to reproduce, so
+     * the request is refused at the boundary before any padding and any repository call.
+     *
+     * <h4>Why the path wins, and how the body still gets a say</h4>
+     * {@code TRNIDIN} is both the resource's identity and the one field on this map the operator types
+     * into. When the two agree there is nothing to decide. When the body leaves it blank - spaces or
+     * {@code LOW-VALUES}, which {@code :147} treats alike - the path supplies it, which is how a client
+     * re-sends a screen it painted from a URI. When the body names a <em>different</em> transaction the
+     * two statements of identity contradict each other, and answering one of them silently would be a
+     * guess; it is refused instead.
+     *
+     * @param tranId  the path variable; must not be {@code null}
+     * @param request the bound body, or {@code null} for a cold start
+     * @return the request to execute, with {@code TRNIDIN} set from the path; never {@code null}
+     * @throws IllegalArgumentException if the path value is wider than {@code TRNIDIN}, or the body
+     *                                  states a different transaction
+     */
+    TransactionAddRequest bind(String tranId, TransactionAddRequest request) {
+        if (tranId.length() > TransactionAddRequest.TRNIDIN_LENGTH) {
+            throw new IllegalArgumentException("The transaction id in the path is " + tranId.length()
+                    + " characters, but TRNIDIN is TRNIDINI PIC X("
+                    + TransactionAddRequest.TRNIDIN_LENGTH + ") and TRAN-ID is PIC X("
+                    + TransactionAddRequest.TRNIDIN_LENGTH + "). Padding it would keep the leading "
+                    + TransactionAddRequest.TRNIDIN_LENGTH + " characters and read a different "
+                    + "transaction than the one the URI names.");
+        }
+
+        // A cold start has no body at all, which is exactly EIBCALEN = 0: a fresh request carries no
+        // communication area, so mainPara takes the :94 arm and transfers to the sign-on program.
+        TransactionAddRequest received = request == null
+                ? new TransactionAddRequest()
+                : new TransactionAddRequest(request);
+
+        String stated = received.getTrnidin();
+        if (!isSpacesOrLowValues(stated)
+                && !codec.movePicX(stated, TransactionAddRequest.TRNIDIN_LENGTH)
+                        .equals(codec.movePicX(tranId, TransactionAddRequest.TRNIDIN_LENGTH))) {
+            throw new IllegalArgumentException("The request body states a transaction id that is not "
+                    + "the one the path addresses. TRNIDIN is the resource's identity here, so the two "
+                    + "cannot disagree; send the field as spaces to let the path supply it.");
+        }
+        received.setTrnidin(codec.movePicX(tranId, TransactionAddRequest.TRNIDIN_LENGTH));
+        return received;
     }
 
     // =============================================================================================
@@ -484,6 +616,14 @@ public final class TransactionAddController {
      * from the transaction list with a selection performs the read and paints the detail, arriving
      * without one paints an empty screen - so both are covered by tests (gate G38).
      *
+     * <p><strong>One call is one CICS task, and therefore one unit of work.</strong> The whole body
+     * runs inside {@link DatasetUnitOfWork#execute(String, java.util.function.Supplier)}, which joins a
+     * caller's boundary rather than nesting a second one. That is what lets {@code :275}'s
+     * {@code UPDATE} option take a real record lock - {@link TransactionRepository} refuses to issue
+     * {@code FOR UPDATE} outside a unit of work - and the commit on the way out is the task's implicit
+     * syncpoint at {@code EXEC CICS RETURN}. The program contains no write of any kind, so there is
+     * nothing for a rollback to back out and no arm of the source asks for one.
+     *
      * @param request the inbound screen; must not be {@code null}
      * @return the state at the moment the task returned to CICS or transferred, never {@code null}
      * @throws NullPointerException if {@code request} is {@code null}
@@ -492,6 +632,27 @@ public final class TransactionAddController {
         Objects.requireNonNull(request, "A request is required: COTRN01C is driven entirely by its "
                 + "communication area, the EIBAID and the received map, all of which travel in it");
 
+        // The argument is checked before the boundary opens: an argument defect is the caller's, not
+        // the dataset's, and opening a transaction to reject one would take a connection from the pool
+        // to accomplish nothing.
+        return unitOfWork.execute(UNIT_OF_WORK_DESCRIPTION, () -> mainParaUnderLock(request));
+    }
+
+    /**
+     * The body of {@code MAIN-PARA}, run inside the unit of work
+     * {@link #mainPara(TransactionAddRequest)} opens.
+     *
+     * <p>Separate from the public method for one reason: {@link #readTransactFile(ProgramState)} takes
+     * a record lock and refuses to run outside a unit of work, so the boundary has to be open before
+     * the first statement of this method executes - and on the first-entry path with a selection
+     * carried across, the read happens before the screen is ever sent. Keeping the boundary in the
+     * caller also keeps this method a plain translation of lines 86 to 139, with no transaction
+     * handling interleaved with the arms.
+     *
+     * @param request the inbound screen, already checked for {@code null}
+     * @return the state at the moment the task returned to CICS or transferred, never {@code null}
+     */
+    private ProgramState mainParaUnderLock(TransactionAddRequest request) {
         ProgramState state = new ProgramState(codec);
 
         state.setErrFlagOff();                                                            // L88
@@ -706,17 +867,21 @@ public final class TransactionAddController {
      *  END-EXEC.
      * }</pre>
      *
-     * <p><strong>The source specifies {@code UPDATE} and this calls the plain read. The discrepancy
-     * is recorded rather than hidden</strong> (practice B4). {@code UPDATE} at {@code :275} requests
-     * the record under the lock {@code UPDATEMODEL(LOCKING)} declares for this file, and a lock is
-     * only meaningful if it can become a change - yet nothing in the estate rewrites or deletes a
-     * transaction record, and this program least of all: it contains no write of any kind. Taking a
-     * lock here would also require an open unit of work, which
-     * {@link TransactionRepository#readForUpdateByTranId(String)} rightly refuses to proceed without,
-     * so a read-only screen would have to open a transaction purely to satisfy a lock it never uses.
-     * The plain {@link TransactionRepository#readByTranId(String)} is therefore called - which is
-     * also the form the migration plan's brief for this file names - and the repository's own
-     * documentation reaches the same conclusion for the same reason.
+     * <p><strong>The source specifies {@code UPDATE}, so this takes the lock.</strong>
+     * {@link TransactionRepository#readForUpdateByTranId(String)} is called, not the plain read:
+     * {@code UPDATE} at {@code :275} requests the record under the lock
+     * {@code UPDATEMODEL(LOCKING)} declares for this file, and which read a program issues is
+     * observable behaviour rather than an optimisation - a locking read serialises against a concurrent
+     * updater of the same record and a plain read does not. Reproducing the option the source states is
+     * the whole of the instruction; deciding that the lock is unnecessary because this program never
+     * writes would be substituting a judgement for the source's, and would leave the two systems
+     * behaving differently under exactly the concurrency the {@code UPDATE} option exists to handle.
+     *
+     * <p>The lock needs a unit of work to be held in, and it has one:
+     * {@link #mainPara(TransactionAddRequest)} opens the boundary around the whole execution, which is
+     * what a CICS task is. A caller reaching this method directly - a parity case, for instance - must
+     * do the same, because the repository refuses to issue {@code FOR UPDATE} with nothing to hold the
+     * lock.
      *
      * <p>The three arms are the source's, in the source's order (gate G30, gate G47):
      * {@code DFHRESP(NORMAL)} continues; {@code DFHRESP(NOTFND)} reports
@@ -726,12 +891,15 @@ public final class TransactionAddController {
      * source wrote for unexpected conditions.
      *
      * @param state the per-request working storage; must not be {@code null}
-     * @throws NullPointerException if {@code state} is {@code null}
+     * @throws NullPointerException  if {@code state} is {@code null}
+     * @throws IllegalStateException if no unit of work is open, because {@code :275}'s {@code UPDATE}
+     *                               option cannot take a lock that nothing would hold
      */
     public void readTransactFile(ProgramState state) {
         requireState(state);
 
-        ReadResult result = transactionRepository.readByTranId(state.tranId());              // L269-278
+        // L269-278, UPDATE included: the locking read, inside the unit of work mainPara opened.
+        ReadResult result = transactionRepository.readForUpdateByTranId(state.tranId());
         state.setReadResult(result);
         // ifPresent, never orElse: WS-RESP-CD is PIC S9(09) COMP VALUE ZEROS and the command is the
         // only thing that writes it. Where the repository reports no CICS condition - an artefact of
@@ -1210,14 +1378,43 @@ public final class TransactionAddController {
      * raised the interrupt. {@code DFHNULL} matches none of the program's four named values and so
      * takes the {@code WHEN OTHER} arm, which is where an unrecognised key belongs.
      *
+     * <h4>Why a character above {@code U+00FF} is refused</h4>
+     * {@code EIBAID} is one byte, and every {@code DFHAID} token is a character whose code point is
+     * that byte - so the whole of the AID space is {@code U+0000} to {@code U+00FF}. A narrowing cast
+     * of anything wider keeps only the low eight bits, which means a character that is not an AID at
+     * all would be read as one: {@code U+01F3} and {@code U+00F3} both narrow to {@code 0xF3}, and
+     * {@code 0xF3} is {@code DFHPF3}, the key this program transfers on at {@code :115}. A caller
+     * sending the first could reach the PF3 arm without pressing PF3. The value is therefore refused
+     * rather than folded, which is the same rule the sibling screens apply to their numeric AID
+     * parameters over the range {@code 0}-{@code 255}.
+     *
+     * <p>A value longer than one character is likewise refused: {@code aid} projects a one-byte item,
+     * and a surrogate pair - the only way a Java {@code String} carries a code point above
+     * {@code U+FFFF} - is two characters of which the first alone is meaningless.
+     *
      * @param aid the one-character attention identifier from the payload, possibly {@code null}
      * @return the raw {@code EIBAID} byte
+     * @throws IllegalArgumentException if {@code aid} is longer than
+     *                                  {@value TransactionAddRequest#AID_LENGTH} character or its
+     *                                  character is above {@code U+00FF}
      */
     public static byte eibAidOf(String aid) {
         if (aid == null || aid.isEmpty()) {
             return CicsAid.DFHNULL;
         }
-        return (byte) aid.charAt(0);
+        if (aid.length() > TransactionAddRequest.AID_LENGTH) {
+            throw new IllegalArgumentException("The attention identifier is " + aid.length()
+                    + " characters, but EIBAID is one byte and every DFHAID token holds exactly one "
+                    + "character. Send a single character whose code point is the AID byte.");
+        }
+        char aidCharacter = aid.charAt(0);
+        if (aidCharacter > MAX_AID_CODE_POINT) {
+            throw new IllegalArgumentException("The attention identifier is a character above "
+                    + "U+00FF, but EIBAID is one byte, so the whole of the AID space is U+0000 to "
+                    + "U+00FF. Narrowing it would keep only the low eight bits and could match a "
+                    + "named key the terminal never presented.");
+        }
+        return (byte) aidCharacter;
     }
 
     /**
@@ -1833,6 +2030,51 @@ public final class TransactionAddController {
          */
         public boolean cursorRequested() {
             return cursorField != null;
+        }
+
+        /**
+         * This screen's presentation metadata, in the shared envelope every online response publishes.
+         *
+         * <p>Three things this execution produces are metadata by declaration rather than payload, and
+         * before this envelope existed none of them had any way to travel:
+         *
+         * <ul>
+         *   <li>the {@code MOVE -1 TO TRNIDINL} cursor request, an {@code xxxL} item. The Agent Action
+         *       Plan's section 0.3.9 is explicit that {@code xxxL} is validation and highlight metadata
+         *       and not a payload member, so it is reported here and not smuggled into a projection of
+         *       {@code xxxI} and {@code xxxO} items;</li>
+         *   <li>the {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} quad of each of the
+         *       twenty-one fields, which is what {@code app/cpy/CSSETATY.cpy} writes
+         *       {@link BmsAttributes#DFHRED} into when a field is in error;</li>
+         *   <li>the colour of the message line, read from {@code ERRMSGC} rather than restated, so a
+         *       rename cannot silently leave this pointing at a field that no longer exists.</li>
+         * </ul>
+         *
+         * <p>Each quad is published as four unsigned {@code 0}-{@code 255} values, because an attribute
+         * byte with the high bit set - {@link BmsAttributes#DFHRED} is {@code 0xF2} - is a negative
+         * {@code byte} in Java and publishing {@code -14} would misstate it. The map is keyed by the
+         * {@code DFHMDF} label, which is the name the mapset gives the field.
+         *
+         * <p>{@code resetAllOutputFields} is {@code false}: {@code MOVE LOW-VALUES TO COTRN1AO} at
+         * {@code :101} has already been applied to the response being published, so the client is not
+         * being asked to clear anything a second time.
+         *
+         * @return the metadata; never {@code null}
+         */
+        public ScreenMetadata screenMetadata() {
+            Map<ScreenField, TransactionAddResponse.AttributeQuad> quads = response.attributeItems();
+            Map<String, ScreenMetadata.FieldMetadata> fields = new LinkedHashMap<>();
+            for (Map.Entry<ScreenField, TransactionAddResponse.AttributeQuad> quad : quads.entrySet()) {
+                fields.put(quad.getKey().baseName(), ScreenMetadata.FieldMetadata.of(
+                        quad.getValue().colour(),
+                        quad.getValue().programmedSymbols(),
+                        quad.getValue().highlight(),
+                        quad.getValue().validation()));
+            }
+            return ScreenMetadata.of(cursorField == null ? null : cursorField.baseName(),
+                    response.attributes(ScreenField.ERRMSGO).colour(),
+                    false,
+                    fields);
         }
 
         /**

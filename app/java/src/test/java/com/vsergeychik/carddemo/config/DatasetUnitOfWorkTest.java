@@ -175,6 +175,134 @@ class DatasetUnitOfWorkTest {
         }
     }
 
+    /**
+     * Proves the second boundary: one batch verb, persisted on its own.
+     *
+     * <p>Batch is not online, and the difference is recorded in the file definitions rather than in the
+     * programs. Every {@code FILE} in {@code app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)}
+     * ({@code :9}, {@code :21}, {@code :33}, {@code :46}, {@code :59}, {@code :72}, {@code :84},
+     * {@code :96}), and {@code CBACT04C} issues no syncpoint of any kind. Its {@code REWRITE} at
+     * {@code app/cbl/CBACT04C.cbl:356} is therefore permanent the moment it returns, and the abend at
+     * {@code :632} does not take it back.
+     *
+     * <p>That is the opposite of {@link Boundary}'s obligation, which is why it needs its own entry point
+     * rather than a flag. {@code execute} joins whatever transaction encloses it, because a CICS task has
+     * one syncpoint; {@code persistVerb} deliberately does not, because a JCL step has none. Enclosing a
+     * batch verb in a chunk transaction and letting a later failure roll it back would revert an account
+     * whose cycle amounts had been zeroed along with it - and the operator's re-run would then post its
+     * interest a second time.
+     */
+    @Nested
+    @DisplayName("The per-verb boundary a RECOVERY(NONE) batch write depends on")
+    class VerbBoundary {
+
+        /** A table to write into, so a commit and a rollback are observable rather than asserted. */
+        private JdbcTemplate seeded(DataSource dataSource) {
+            JdbcTemplate template = new JdbcTemplate(dataSource);
+            template.execute("CREATE TABLE VERBS (ID INT)");
+            return template;
+        }
+
+        @Test
+        @DisplayName("a body runs inside a transaction, and its value is returned")
+        void aBodyRunsInsideATransaction() {
+            DatasetUnitOfWork unitOfWork = unitOfWork(singleConnection());
+
+            assertThat(DatasetUnitOfWork.active()).isFalse();
+            assertThat(unitOfWork.persistVerb("REWRITE FD-ACCTFILE-REC",
+                    () -> DatasetUnitOfWork.active() ? "inside" : "outside")).isEqualTo("inside");
+            assertThat(DatasetUnitOfWork.active()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a verb commits even though the boundary around it rolls back - RECOVERY(NONE)")
+        void aVerbCommitsIndependentlyOfAnEnclosingBoundary() {
+            DataSource dataSource = singleConnection();
+            JdbcTemplate template = seeded(dataSource);
+            DatasetUnitOfWork unitOfWork = unitOfWork(dataSource);
+
+            // The enclosing boundary stands for the chunk transaction. The verb inside it stands for
+            // 1050-UPDATE-ACCOUNT's REWRITE, and the exception for the abend at CBACT04C:632.
+            assertThatIllegalStateException().isThrownBy(() -> unitOfWork.execute("a chunk", () -> {
+                unitOfWork.persistVerb("REWRITE FD-ACCTFILE-REC",
+                        () -> template.update("INSERT INTO VERBS VALUES (1)"));
+                throw new IllegalStateException("the abend that follows the rewrite");
+            }));
+
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM VERBS", Integer.class))
+                    .as("the REWRITE app/cbl/CBACT04C.cbl:356 already performed must survive the abend")
+                    .isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a verb that fails rolls back only itself, leaving earlier verbs committed")
+        void aFailingVerbRollsBackOnlyItself() {
+            DataSource dataSource = singleConnection();
+            JdbcTemplate template = seeded(dataSource);
+            DatasetUnitOfWork unitOfWork = unitOfWork(dataSource);
+
+            unitOfWork.persistVerb("the first REWRITE",
+                    () -> template.update("INSERT INTO VERBS VALUES (1)"));
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> unitOfWork.persistVerb("the second REWRITE", () -> {
+                        template.update("INSERT INTO VERBS VALUES (2)");
+                        throw new IllegalStateException("the second write is refused");
+                    }));
+
+            assertThat(template.queryForList("SELECT ID FROM VERBS ORDER BY ID", Integer.class))
+                    .as("each verb is its own unit: the first stands, the second does not")
+                    .containsExactly(1);
+        }
+
+        @Test
+        @DisplayName("a verb name and a body are both required, so a failed write can name itself")
+        void bothArgumentsAreRequired() {
+            DatasetUnitOfWork unitOfWork = unitOfWork(singleConnection());
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> unitOfWork.persistVerb(null, () -> null))
+                    .withMessageContaining("verb name is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> unitOfWork.persistVerb("REWRITE FD-ACCTFILE-REC", null))
+                    .withMessageContaining("body is required");
+        }
+
+        @Test
+        @DisplayName("a disposition survives the failure that triggered it - it is the initiator's work")
+        void aDispositionIsIndependentOfTheFailureThatTriggeredIt() {
+            DataSource dataSource = singleConnection();
+            JdbcTemplate template = seeded(dataSource);
+            DatasetUnitOfWork unitOfWork = unitOfWork(dataSource);
+            template.update("INSERT INTO VERBS VALUES (1)");
+
+            // MVS applies a DD's abnormal disposition AFTER the step, outside anything the step did. A
+            // disposition enrolled in the step's own transaction would be undone by the very failure that
+            // triggered it, leaving exactly the partial output it exists to remove.
+            assertThatIllegalStateException().isThrownBy(() -> unitOfWork.execute("a chunk", () -> {
+                unitOfWork.persistDisposition("DISP=(NEW,CATLG,DELETE)",
+                        () -> template.update("DELETE FROM VERBS"));
+                throw new IllegalStateException("the abend that triggered the disposition");
+            }));
+
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM VERBS", Integer.class))
+                    .as("the discard must not be rolled back by the abend that called for it")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("a disposition name and a body are both required")
+        void aDispositionNeedsBothArguments() {
+            DatasetUnitOfWork unitOfWork = unitOfWork(singleConnection());
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> unitOfWork.persistDisposition(null, () -> null))
+                    .withMessageContaining("disposition name is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> unitOfWork.persistDisposition("DISP=(NEW,CATLG,DELETE)", null))
+                    .withMessageContaining("body is required");
+        }
+    }
+
     @Nested
     @DisplayName("The precondition a locking read enforces")
     class Precondition {

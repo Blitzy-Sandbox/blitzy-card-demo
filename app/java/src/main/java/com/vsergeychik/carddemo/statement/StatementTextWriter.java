@@ -192,6 +192,19 @@ public class StatementTextWriter {
     public static final int RECORD_LENGTH = 80;
 
     /**
+     * The record format the creating JCL step declares: {@code FB}, fixed blocked, from
+     * {@code DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)} at {@code app/jcl/CREASTMT.JCL:L89}.
+     *
+     * <p>Checked against configuration at construction, for the same reason
+     * {@value #RECORD_LENGTH} is. {@code FB} is what makes "every record is exactly
+     * {@value #RECORD_LENGTH} bytes" true: it is the attribute every space-padded
+     * {@code MOVE} to a {@code PIC X(80)} line depends on, and a variable format would make that
+     * padding meaningless while leaving every other number in this class unchanged - a divergence no
+     * width check would catch. Gate <strong>G20</strong>.
+     */
+    public static final String RECORD_FORMAT = "FB";
+
+    /**
      * The block size declared by the creating JCL step: {@code 8000}, from
      * {@code DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)} at {@code app/jcl/CREASTMT.JCL:L89}.
      *
@@ -779,13 +792,37 @@ public class StatementTextWriter {
         FileStatus.Outcome write(byte[] recordImage);
 
         /**
+         * Prepares the destination, mirroring {@code OPEN OUTPUT STMT-FILE} at
+         * {@code app/cbl/CBSTM03A.CBL:L293}.
+         *
+         * <p>Called exactly once, by {@link StatementFile}'s constructor, and its answer is published as
+         * {@link StatementFile#openOutcome()}. <strong>Publishing it is the point.</strong>
+         * {@code CBSTM03A} declares no {@code FILE STATUS} for this file and tests nothing after the
+         * open, so the statement job does not branch on the outcome - and inventing a branch it does not
+         * have would be a behaviour change. What the outcome does do is make an unusable destination
+         * <em>observable</em>: it is logged where it happens and is readable by the caller and by a test,
+         * instead of surfacing as eighty identical write failures with no first cause.
+         *
+         * <p>Defaulted to {@link FileStatus.Outcome#OK} because a sink that holds nothing - the in-memory
+         * collector a test supplies - has nothing to prepare. The {@link JdbcTemplate}-backed default
+         * overrides it, because the generation the run writes into does have to be established.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination is ready, or
+         *         {@link FileStatus.Outcome#OTHER} otherwise. <strong>Never {@code null}</strong>, for the
+         *         same reason {@link #write(byte[])} is never {@code null}
+         */
+        default FileStatus.Outcome open() {
+            return FileStatus.Outcome.OK;
+        }
+
+        /**
          * Releases whatever the sink holds, mirroring {@code CLOSE STMT-FILE} at
          * {@code app/cbl/CBSTM03A.CBL:L339}.
          *
          * <p>Defaulted to {@link FileStatus.Outcome#OK} because a sink that holds nothing - the
-         * in-memory collector a test supplies, and the {@link JdbcTemplate}-backed default, which
-         * borrows a pooled connection per record and returns it immediately - has nothing to
-         * release.
+         * in-memory collector a test supplies - has nothing to release. The
+         * {@link JdbcTemplate}-backed default overrides it, because a destination that has gone away
+         * part-way through a statement run is something a close can still discover.
          *
          * @return {@link FileStatus.Outcome#OK} when the sink closed cleanly, or
          *         {@link FileStatus.Outcome#OTHER} otherwise. <strong>Never {@code null}</strong>, for
@@ -1259,7 +1296,8 @@ public class StatementTextWriter {
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if no binding is configured for {@value #DD_NAME}, which the
      *                               catalogue itself reports, or if the configured record length is
-     *                               not {@value #RECORD_LENGTH}
+     *                               not {@value #RECORD_LENGTH}, or if the configured record format
+     *                               is not {@value #RECORD_FORMAT}
      */
     public StatementTextWriter(
             JdbcTemplate jdbcTemplate,
@@ -1291,6 +1329,14 @@ public class StatementTextWriter {
                     + " in application.yml; a record width is copybook-fixed and must never be "
                     + "overridden per profile.");
         }
+        if (!RECORD_FORMAT.equalsIgnoreCase(binding.recordFormat())) {
+            throw new IllegalStateException("carddemo.datasets." + DD_NAME + " declares record-format "
+                    + describeConfiguredRecordFormat() + ", but app/jcl/CREASTMT.JCL:L89 declares "
+                    + "RECFM=" + RECORD_FORMAT + " on the STEP040 step that creates the dataset. Fixed "
+                    + "blocked is what makes every statement record exactly " + RECORD_LENGTH
+                    + " bytes, so it is required rather than assumed. Set record-format to "
+                    + RECORD_FORMAT + " in application.yml.");
+        }
 
         // Null and empty are separated from malformed so this reads the same way round as the sibling
         // HTML writer's check, and so the only exception caught here is the one the grammar raises
@@ -1309,6 +1355,20 @@ public class StatementTextWriter {
         }
         this.relation = resolved;
         this.datasetRefusal = refusal;
+    }
+
+    /**
+     * Renders the configured record format for the constructor's diagnostic, distinguishing an omitted
+     * key from a wrong value.
+     *
+     * <p>They are different mistakes with different fixes - one is "the key is missing", the other is
+     * "the key says {@code F}" - and a message that rendered {@code null} as the text {@code "null"}
+     * would read as though the value were the four-letter word.
+     *
+     * @return {@code "absent"} when no record format is configured, or the configured value in quotes
+     */
+    private String describeConfiguredRecordFormat() {
+        return binding.recordFormat() == null ? "absent" : "'" + binding.recordFormat() + "'";
     }
 
     /**
@@ -1361,7 +1421,8 @@ public class StatementTextWriter {
      */
     public StatementFile openOutput() {
         return new StatementFile(new JdbcRecordSink(jdbcTemplate, insertStatement(), recordImageForm,
-                codec.charset()));
+                codec.charset(), requireRelation().describeStatement(),
+                requireRelation().deleteAll()));
     }
 
     /**
@@ -1424,6 +1485,16 @@ public class StatementTextWriter {
      *                               the parity harness do
      */
     String insertStatement() {
+        return requireRelation().insertRecordImage();
+    }
+
+    /**
+     * The resolved relation, or a refusal naming the configuration that could not be addressed.
+     *
+     * @return the relation; never {@code null}
+     * @throws IllegalStateException if the configured name is not a well-formed z/OS dataset name
+     */
+    private DatasetRelation requireRelation() {
         if (relation == null) {
             throw new IllegalStateException("carddemo.datasets." + DD_NAME + ".dsname cannot be "
                     + "addressed as a dataset, so no statement can be composed for it and the default "
@@ -1433,7 +1504,7 @@ public class StatementTextWriter {
                     + "is refused here rather than at startup. The grammar's own verdict is attached.",
                     datasetRefusal);
         }
-        return relation.insertRecordImage();
+        return relation;
     }
 
     /**
@@ -1472,19 +1543,91 @@ public class StatementTextWriter {
         private final Charset charset;
 
         /**
+         * A read-only statement that resolves and describes the destination without transferring any of
+         * it - the probe both {@link #open()} and {@link #close()} use.
+         */
+        private final String describeStatement;
+
+        /**
+         * Empties the destination, which is what {@code DISP=(NEW,CATLG,DELETE)} means for a relation
+         * that already exists. Issued by {@link #open()} and nowhere else.
+         */
+        private final String clearStatement;
+
+        /**
          * Creates the sink.
          *
-         * @param jdbcTemplate     the template that issues the insert
-         * @param statement        the parameterised statement
-         * @param recordImageForm  how a record image crosses JDBC in this deployment
-         * @param charset          the dataset code page
+         * @param jdbcTemplate      the template that issues the insert
+         * @param statement         the parameterised statement
+         * @param recordImageForm   how a record image crosses JDBC in this deployment
+         * @param charset           the dataset code page
+         * @param describeStatement the read-only probe {@link #open()} and {@link #close()} issue
+         * @param clearStatement    the statement {@link #open()} issues to establish an empty generation
          */
         JdbcRecordSink(JdbcTemplate jdbcTemplate, String statement, RecordImageForm recordImageForm,
-                       Charset charset) {
+                       Charset charset, String describeStatement, String clearStatement) {
             this.jdbcTemplate = jdbcTemplate;
             this.statement = statement;
             this.recordImageForm = recordImageForm;
             this.charset = charset;
+            this.describeStatement = describeStatement;
+            this.clearStatement = clearStatement;
+        }
+
+        /**
+         * Establishes the generation this run writes into: {@code OPEN OUTPUT STMT-FILE} at
+         * {@code app/cbl/CBSTM03A.CBL:L293}, over a dataset {@code app/jcl/CREASTMT.JCL:L87-L91}
+         * declares {@code DISP=(NEW,CATLG,DELETE)} with {@code LRECL=80 BLKSIZE=8000}.
+         *
+         * <p>The <strong>describe</strong> resolves the DD name to a real destination and fails if it
+         * cannot - read-only, its predicate false on every row, so nothing is transferred. The
+         * <strong>clear</strong> is what {@code NEW} means: the run writes into an empty generation, so
+         * the previous run's statements are not part of this one, and a run that produces no statement
+         * still leaves the empty dataset the JCL created rather than nothing at all. No data-definition
+         * statement is issued (gate G44).
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination is established, or
+         *         {@link FileStatus.Outcome#OTHER} when it could not be
+         */
+        @Override
+        public FileStatus.Outcome open() {
+            try {
+                jdbcTemplate.execute(describeStatement);
+                jdbcTemplate.update(clearStatement);
+                return FileStatus.Outcome.OK;
+            } catch (DataAccessException refused) {
+                LOG.error("Could not establish the " + DD_NAME + " generation for output - "
+                        + BackendDiagnostic.of(refused).describe()
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " to the caller");
+                return FileStatus.Outcome.OTHER;
+            }
+        }
+
+        /**
+         * Confirms the destination survived the run: {@code CLOSE STMT-FILE} at
+         * {@code app/cbl/CBSTM03A.CBL:L339}.
+         *
+         * <p>Nothing is buffered - each record was inserted as it was written - so what a close can
+         * still discover is that the destination is no longer there: a relation dropped, revoked or
+         * unreachable part-way through the run. The same read-only describe {@link #open()} used answers
+         * that.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination is still addressable, or
+         *         {@link FileStatus.Outcome#OTHER} when it is not
+         */
+        @Override
+        public FileStatus.Outcome close() {
+            try {
+                jdbcTemplate.execute(describeStatement);
+                return FileStatus.Outcome.OK;
+            } catch (DataAccessException refused) {
+                LOG.error("Could not confirm the " + DD_NAME + " destination on close - "
+                        + BackendDiagnostic.of(refused).describe()
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " to the caller");
+                return FileStatus.Outcome.OTHER;
+            }
         }
 
         /**
@@ -1564,6 +1707,12 @@ public class StatementTextWriter {
         /** Whether the dataset is still open. Set once, by {@link #closeOutput()}. */
         private boolean open;
 
+        /**
+         * What the sink reported when the destination was established - see
+         * {@link RecordSink#open()} and {@link #openOutcome()}.
+         */
+        private final FileStatus.Outcome openOutcome;
+
         /** How many records have been handed to the sink, successfully or not. */
         private int recordsWritten;
 
@@ -1577,7 +1726,28 @@ public class StatementTextWriter {
             this.sink = sink;
             this.lineArea = codec.newRecord(STATEMENT_LINES);
             this.open = true;
+            this.openOutcome = Objects.requireNonNull(sink.open(), "A record sink must report an "
+                    + "outcome for OPEN OUTPUT " + DD_NAME + "; there is no COBOL FILE STATUS meaning "
+                    + "'no answer', so a null is an implementation defect");
             initializeStatementLines();
+        }
+
+        /**
+         * What the open reported - {@code OPEN OUTPUT STMT-FILE} at
+         * {@code app/cbl/CBSTM03A.CBL:L293}.
+         *
+         * <p>Published rather than acted upon. {@code CBSTM03A} declares no {@code FILE STATUS} for this
+         * file and tests nothing after the open, so the statement job does not branch on it and this
+         * class does not either - inventing a branch the COBOL does not have would be a behaviour
+         * change. What the outcome buys is that an unusable destination is <em>observable</em>: it is
+         * logged where it happened and readable here, rather than surfacing as eighty identical write
+         * failures with no first cause.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination was established, or
+         *         {@link FileStatus.Outcome#OTHER} when it was not; never {@code null}
+         */
+        public FileStatus.Outcome openOutcome() {
+            return openOutcome;
         }
 
         // -----------------------------------------------------------------------------------------

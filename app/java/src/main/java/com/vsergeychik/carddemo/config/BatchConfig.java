@@ -12,13 +12,18 @@ import java.util.stream.Stream;
 import javax.sql.DataSource;
 
 import com.vsergeychik.carddemo.common.AbendException;
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionException;
 import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.StepExecution;
@@ -27,14 +32,24 @@ import org.springframework.batch.core.job.DefaultJobParametersValidator;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.job.flow.FlowExecutionStatus;
 import org.springframework.batch.core.job.flow.JobExecutionDecider;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.scope.context.ChunkContext;
+import org.springframework.batch.core.step.StepInterruptionPolicy;
+import org.springframework.batch.core.step.ThreadStepInterruptionPolicy;
 import org.springframework.batch.core.step.builder.SimpleStepBuilder;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.builder.TaskletStepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.ExitCodeExceptionMapper;
+import org.springframework.boot.ExitCodeGenerator;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -51,7 +66,7 @@ import org.springframework.util.StringUtils;
  * read from configuration.
  *
  * <h2>What this class owns</h2>
- * <p>Five things, and nothing else:
+ * <p>Six things, and nothing else:
  * <ol>
  *   <li>the single {@link PlatformTransactionManager} the whole module shares - see
  *       {@link #transactionManager(DataSource)};</li>
@@ -68,7 +83,11 @@ import org.springframework.util.StringUtils;
  *       {@code 12};</li>
  *   <li>{@link JobContracts}, the job-keyed catalogue bound from the {@code carddemo.jobs}
  *       configuration prefix, including the job-first resolution of a DD name that
- *       {@code DataSourceConfig} deliberately leaves to this class.</li>
+ *       {@code DataSourceConfig} deliberately leaves to this class;</li>
+ *   <li>{@link StopSignal}, the between-record cancellation probe a long single-pass tasklet
+ *       consults, and {@link StopRequestedException}, the abandoned pass it reports - see
+ *       {@link StopSignal} for why a tasklet that runs once needs one and why nothing in this
+ *       module retries a legacy write.</li>
  * </ol>
  *
  * <p>It launches nothing, schedules nothing and creates nothing in a database. Those three
@@ -274,6 +293,16 @@ public class BatchConfig {
     public static final String PARM_DATE_PARAMETER = "parmDate";
 
     /**
+     * The identifying job parameter {@link #jclRunIdentityIncrementer()} adds so that each launch is a
+     * new job instance: {@code run.id}, the name {@link RunIdIncrementer} uses.
+     *
+     * <p>Named here so a launcher, a test or an operator reading batch metadata can tell the run
+     * identity apart from a business parameter at a glance. It carries no meaning beyond "this is a
+     * different submission of the same JCL", which is exactly what it stands in for.
+     */
+    public static final String RUN_IDENTITY_PARAMETER = "run.id";
+
+    /**
      * The fixed width of {@value #PARM_DATE_PARAMETER}, in characters: <strong>10</strong>.
      *
      * <p>Not a convention and not a maximum - it is the declared width of the COBOL field the value
@@ -409,6 +438,16 @@ public class BatchConfig {
     private final JobContracts jobContracts;
 
     /**
+     * The one run-identity incrementer every job shares - see {@link #jclRunIdentityIncrementer()}.
+     *
+     * <p>{@code final} and, being a {@link RunIdIncrementer}, without mutable state of its own: it
+     * derives the next value from the parameters it is handed rather than counting internally. An
+     * instance field rather than a static one, so this configuration owns it and nothing in the module
+     * holds shared mutable state (practice B9, gate G53).
+     */
+    private final JobParametersIncrementer runIdentityIncrementer = new RunIdIncrementer();
+
+    /**
      * The global DD-name catalogue owned by {@code DataSourceConfig}, consulted whenever a job
      * declares no override of its own for a DD name.
      */
@@ -470,26 +509,93 @@ public class BatchConfig {
     }
 
     /**
-     * A job builder already bound to the auto-configured job repository and carrying the shared
-     * abend listener.
+     * A job builder already bound to the auto-configured job repository, carrying the shared abend
+     * listener, and carrying this module's <strong>run-identity and restart policy</strong>.
      *
      * <p>This is the seam that keeps Spring Batch plumbing out of the job classes: a job class
      * calls {@code batchConfig.job("...")} and continues with the flow it needs. Because the
-     * listener is attached here, the return-code contract of gate G35 holds for every job by
-     * construction rather than by each author remembering to opt in.
+     * listener and the policy are attached here, the return-code contract of gate G35 and the
+     * lifecycle contract below hold for every job by construction rather than by each author
+     * remembering to opt in.
+     *
+     * <h2>Every launch is a whole fresh run, because that is what submitting JCL is</h2>
+     * <p>A Spring Batch job's identity is its name plus its <em>identifying</em> job parameters, and
+     * a job instance may be executed successfully only once. Eight of the nine jobs in this estate
+     * take no parameter at all - {@code app/jcl/READACCT.jcl:L22} and its three siblings are bare
+     * {@code EXEC PGM=} steps, and {@code app/jcl/POSTTRAN.jcl:L23} likewise - so without an identity
+     * of their own each would have exactly one instance for all time: the second submission of
+     * {@code READACCT} would be refused as already complete. On the mainframe the same JCL is
+     * submitted again whenever the work needs doing again, so {@link #jclRunIdentityIncrementer()}
+     * supplies a per-launch identity and every submission is a new instance.
+     *
+     * <p>What the incrementer adds is a <em>run identity</em> and nothing else. No business value is
+     * invented to work around Batch's identity rules - inventing one would make a fabricated value
+     * part of the job's contract, and {@link JobContracts} exists precisely to stop that. The one
+     * genuine parameter in the estate, {@value #PARM_DATE_PARAMETER}, is unaffected: it travels
+     * beside the run identity, exactly as {@code PARM='2022071800'} travels on the {@code EXEC}
+     * statement.
+     *
+     * <h2>No job is restartable, because not one of them has restart state</h2>
+     * <p>Spring Batch 5's {@code JobBuilder} leaves {@code restartable} true by default, which means a
+     * failed or stopped execution can be resumed: completed steps are skipped and a failed chunk step
+     * resumes from its last commit point. Neither behaviour has a counterpart here, and both are
+     * unsafe:
+     * <ul>
+     *   <li><strong>Nothing stores a checkpoint.</strong> {@code CBACT04C} commits per chunk while
+     *       accumulating interest per account and stores nothing in the execution context - its own
+     *       {@code open(ExecutionContext)} says so - so resuming it would re-apply account rewrites and
+     *       re-write interest transactions already posted. The COBOL has no restart logic to
+     *       reproduce; it is submitted again from the top.</li>
+     *   <li><strong>Skipping a completed step would skip real work.</strong> {@code TRANREPT} and
+     *       {@code CREASTMT} are multi-step jobs whose early steps unload, sort and load the data the
+     *       later steps read. A resubmission on the mainframe re-runs every step; a Batch restart that
+     *       skipped the unload would report a fresh run over stale intermediate data.</li>
+     * </ul>
+     * <p>So {@code preventRestart()} is applied to every job. A failed execution is never resumed; the
+     * job is launched again, which - because of the incrementer above - is a new instance that runs
+     * every step from the beginning. That is exactly the JCL contract, and it is applied uniformly
+     * rather than per job because the property it rests on ("no program stores restart state") is a
+     * property of all twenty-eight translated programs.
      *
      * <p>A fresh builder is returned on every call - builders are single-use, mutable and must never
      * be shared or cached.
      *
      * @param jobName the job name, which is also its identity in the batch metadata; must be
      *                non-null and non-blank
-     * @return a new job builder bound to the shared repository and listener
+     * @return a new job builder bound to the shared repository, the shared listener, the run-identity
+     *         incrementer and the non-restartable policy
      * @throws IllegalArgumentException if {@code jobName} is {@code null}, empty or blank
      */
     public JobBuilder job(String jobName) {
         Assert.hasText(jobName, "A job name is required to build a job");
         return new JobBuilder(jobName, jobRepositoryProvider.getObject())
-                .listener(abendExitStatusJobListener());
+                .listener(abendExitStatusJobListener())
+                .incrementer(jclRunIdentityIncrementer())
+                .preventRestart();
+    }
+
+    /**
+     * The module's run-identity strategy: one new job instance per launch, and no invented business
+     * value.
+     *
+     * <p>{@link RunIdIncrementer} adds a single identifying {@code Long} parameter named
+     * {@value #RUN_IDENTITY_PARAMETER}, one greater than the previous run's. That is the whole of it -
+     * it names no dataset, no date and no business quantity, so a job's declared parameter contract in
+     * {@code carddemo.jobs} still describes everything the COBOL program receives.
+     *
+     * <p>Published as a bean so a launcher can apply it explicitly and a test can assert the very
+     * instance the builder attached, rather than a second one that happens to behave the same way. One
+     * instance is held for the life of this configuration rather than built per call: the incrementer
+     * has no mutable state of its own - it derives the next value from the parameters it is handed - so
+     * sharing it is safe, and sharing it is what makes {@link #job(String)} attach the same object
+     * whether it is reached through the container's proxy or by a direct call from a unit test.
+     *
+     * @return the shared incrementer
+     * @see #job(String)
+     */
+    @Bean
+    public JobParametersIncrementer jclRunIdentityIncrementer() {
+        return runIdentityIncrementer;
     }
 
     /**
@@ -525,6 +631,22 @@ public class BatchConfig {
      * input, accumulators carried across records, and writes emitted in the order the program emits
      * them. Seven of the nine jobs are built this way; see {@link JobContracts} for why the count is
      * nine.
+     *
+     * <p><strong>One transaction around the step is the right default, and it is not right for every
+     * write inside it.</strong> Whether a failed step leaves its output behind is declared by each DD's
+     * disposition, not by the step, and the two disagree across this estate: {@code SYSTRAN} and
+     * {@code SORTOUT} are {@code DISP=(NEW,CATLG,DELETE)} and are discarded whole, so this transaction is
+     * exactly what they want, while {@code ACCTFILE} is {@code DISP=SHR} over a {@code RECOVERY(NONE)}
+     * cluster and {@code REPRO}'s {@code OUTFILE} is {@code DISP=SHR} too - both keep what was written up
+     * to the failure. A write of the second kind is persisted through
+     * {@link DatasetUnitOfWork#persistVerb(String, java.util.function.Supplier)}, which opens its own
+     * boundary so this one cannot take it back. This builder is deliberately left alone rather than
+     * weakened for those cases, because the seven jobs that share it need the transaction it provides.
+     *
+     * <p>Because a tasklet runs the whole pass in one invocation, the framework's own interruption
+     * check - which happens between invocations - happens once, at the top. A tasklet whose pass is
+     * long therefore consults {@link StopSignal} between records itself; see that interface for the
+     * mechanism and for why no write is ever retried.
      *
      * @param stepName the step name; must be non-null and non-blank
      * @param tasklet  the step body; must be non-null
@@ -744,6 +866,413 @@ public class BatchConfig {
     }
 
     /**
+     * The launcher that turns one process invocation into one JCL job submission, and its
+     * {@code RETURN-CODE} into the process exit code.
+     *
+     * <p><strong>Why a launcher of our own exists at all.</strong> Spring Boot's own
+     * {@code JobLauncherApplicationRunner} is disabled here - {@code spring.batch.job.enabled} is
+     * {@code false} in both profiles, so no job ever runs merely because a context refreshed - and its
+     * companion exit-code generator reports {@code BatchStatus.ordinal()}, which is {@code 5} for a
+     * failed execution. Five is not a JCL return code. {@code app/cbl/CBACT01C.cbl:L173} and its eight
+     * siblings abend with {@code 8} or {@code 12}, {@code CSUTLDTC} ends with
+     * {@code MOVE WS-SEVERITY-N TO RETURN-CODE}, and gate G35 requires exactly {@code 0}, {@code 4},
+     * {@code 8} or {@code 12} to reach the operating system, because on the mainframe that value is
+     * what the next job's {@code COND} test reads.
+     *
+     * <p><strong>It only exists when it is asked for.</strong> The bean is conditional on
+     * {@value JclJobLauncher#JOB_NAME_PROPERTY}, so a process started to serve the online transactions
+     * - or a test that builds the context - has no launcher at all and launches nothing. Supplying the
+     * property is the equivalent of submitting one {@code EXEC PGM=} step:
+     * {@code java -jar carddemo.jar --carddemo.batch.job-name=accountBalanceJob}.
+     *
+     * @param jobRegistryProvider  resolves the requested {@link Job} bean by name, lazily, so a job
+     *                             whose own configuration is broken fails when it is asked for rather
+     *                             than making this bean impossible to create
+     * @param jobLauncherProvider  the auto-configured launcher, resolved lazily for the same reason
+     * @param jobName              the requested job's bean name
+     * @return the launcher
+     */
+    @Bean
+    @ConditionalOnProperty(name = JclJobLauncher.JOB_NAME_PROPERTY)
+    public JclJobLauncher jclJobLauncher(ObjectProvider<Job> jobRegistryProvider,
+            ObjectProvider<JobLauncher> jobLauncherProvider,
+            @Value("${" + JclJobLauncher.JOB_NAME_PROPERTY + "}") String jobName) {
+        return new JclJobLauncher(jobRegistryProvider, jobLauncherProvider, this, jobName);
+    }
+
+    /**
+     * Launches exactly one job and carries its {@code RETURN-CODE} out to the operating system.
+     *
+     * <p>Two halves, and both are needed:
+     * <ul>
+     *   <li>as an {@link ApplicationRunner} it launches the named job once, after the context has
+     *       refreshed, with the parameters that job's contract declares plus the run identity
+     *       {@link #jclRunIdentityIncrementer()} supplies;</li>
+     *   <li>as an {@link ExitCodeGenerator} it reports {@link #returnCodeOf(ExitStatus)} of the
+     *       execution that finished, so a caller using {@code SpringApplication.exit(..)} reads the
+     *       same value.</li>
+     * </ul>
+     *
+     * <p><strong>How the code actually reaches the shell.</strong> A non-zero return code is also
+     * raised as a {@link JclReturnCodeException}, which is itself an {@link ExitCodeGenerator}. Spring
+     * Boot registers that code as the application's exit code while the exception propagates out of
+     * {@code SpringApplication.run}, which is the same framework seam
+     * {@link #abendExitCodeMapper()} relies on for an abend. Zero is <em>not</em> raised - a job that
+     * returned zero completed, and terminating the JVM through an exception would be reporting a
+     * failure that did not happen.
+     *
+     * <p>Every piece of state is per-instance and written once, on the single runner callback; nothing
+     * is static (practice B9).
+     */
+    public static final class JclJobLauncher implements ApplicationRunner, ExitCodeGenerator {
+
+        /**
+         * The property that names the job to submit, and whose presence is the only thing that brings
+         * this launcher into existence.
+         */
+        public static final String JOB_NAME_PROPERTY = "carddemo.batch.job-name";
+
+        /** Resolves the requested {@link Job} bean, lazily. */
+        private final ObjectProvider<Job> jobProvider;
+
+        /** The auto-configured launcher, resolved lazily. */
+        private final ObjectProvider<JobLauncher> jobLauncherProvider;
+
+        /** Supplies the requested job's declared parameter contract and the run identity. */
+        private final BatchConfig batchConfig;
+
+        /** The requested job's bean name, exactly as configured. */
+        private final String jobName;
+
+        /**
+         * The return code of the execution that finished, or {@link #NO_MAPPED_EXIT_CODE} until one
+         * has. Not volatile and not synchronised: the runner callback and the exit-code read both
+         * happen on the main thread, in that order, and a batch job is submitted once per process.
+         */
+        private int returnCode = NO_MAPPED_EXIT_CODE;
+
+        /**
+         * @param jobProvider         resolves the requested {@link Job} bean
+         * @param jobLauncherProvider resolves the auto-configured {@link JobLauncher}
+         * @param batchConfig         supplies the parameter contract and the run identity
+         * @param jobName             the requested job's bean name; must hold text
+         * @throws IllegalArgumentException if {@code jobName} holds no text
+         */
+        JclJobLauncher(ObjectProvider<Job> jobProvider, ObjectProvider<JobLauncher> jobLauncherProvider,
+                BatchConfig batchConfig, String jobName) {
+            this.jobProvider = Objects.requireNonNull(jobProvider, "A Job provider is required to "
+                    + "resolve the job named by " + JOB_NAME_PROPERTY);
+            this.jobLauncherProvider = Objects.requireNonNull(jobLauncherProvider, "A JobLauncher "
+                    + "provider is required; Spring Boot's batch auto-configuration declares the "
+                    + "single instance this module uses");
+            this.batchConfig = Objects.requireNonNull(batchConfig, "The batch configuration is "
+                    + "required to read the requested job's declared parameter contract");
+            Assert.hasText(jobName, JOB_NAME_PROPERTY + " must name the job to submit");
+            this.jobName = jobName;
+        }
+
+        /**
+         * Submits the job, once, and records its return code.
+         *
+         * @param arguments the process arguments, which are deliberately not read: a job's parameters
+         *                  are its contract in {@code carddemo.jobs}, not free text from a command line
+         * @throws JclReturnCodeException if the job's return code is not zero
+         * @throws JobExecutionException  if the launcher itself refuses the submission - an instance
+         *                                that already ran to completion, or parameters its validator
+         *                                rejected. Both are configuration or operating errors and are
+         *                                reported rather than translated into a return code the COBOL
+         *                                never set
+         */
+        @Override
+        public void run(ApplicationArguments arguments) throws JobExecutionException {
+            Job job = jobProvider.getObject();
+            JobParameters parameters = batchConfig.contract(contractKeyOf(job)).jobParameters();
+            JobParameters submitted = batchConfig.jclRunIdentityIncrementer().getNext(parameters);
+            JobExecution execution = jobLauncherProvider.getObject().run(job, submitted);
+            this.returnCode = returnCodeOf(execution.getExitStatus());
+            if (returnCode != JCL_RETURN_CODE_ZERO) {
+                throw new JclReturnCodeException(job.getName(), returnCode,
+                        execution.getExitStatus().getExitCode());
+            }
+        }
+
+        /**
+         * The return code the finished execution reported.
+         *
+         * @return {@code 0}, {@code 4}, {@code 8}, {@code 12} or whatever numeric code a step set;
+         *         {@link #NO_MAPPED_EXIT_CODE} before the job has run
+         */
+        @Override
+        public int getExitCode() {
+            return returnCode;
+        }
+
+        /**
+         * The requested job's bean name.
+         *
+         * @return the name, exactly as configured
+         */
+        public String jobName() {
+            return jobName;
+        }
+
+        /**
+         * The {@code carddemo.jobs} key whose contract belongs to a job bean.
+         *
+         * <p>Resolved by matching the job's own name against each declared contract's job-name form
+         * rather than by a second lookup table, so a job renamed in one place cannot silently pick up
+         * another's parameters.
+         *
+         * @param job the job about to be launched
+         * @return the contract key
+         * @throws IllegalStateException if no declared contract names this job
+         */
+        private String contractKeyOf(Job job) {
+            String name = job.getName();
+            return batchConfig.jobContracts.keySet().stream()
+                    .filter(key -> name.equals(jobBeanNameOf(key)))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(JOB_NAME_PROPERTY + " named '"
+                            + jobName + "', which resolved to the job '" + name + "', but no entry "
+                            + "under carddemo.jobs declares it. A job's parameters are its contract, "
+                            + "so a job with no contract has none to submit - correct "
+                            + JOB_NAME_PROPERTY + ", or declare the job."));
+        }
+    }
+
+    /**
+     * The bean name a {@code carddemo.jobs} key's job is published under: {@code transaction-report-job}
+     * becomes {@code transactionReportJob}.
+     *
+     * <p>The two spellings exist because a configuration key is kebab-case by convention while a bean
+     * name is a Java identifier, and each job class declares its own pair of constants. This derives one
+     * from the other so the launcher needs no third list to fall out of step with.
+     *
+     * @param jobKey the configuration key; must be non-null
+     * @return the corresponding job bean name
+     */
+    static String jobBeanNameOf(String jobKey) {
+        Objects.requireNonNull(jobKey, "A job key is required to derive a job bean name");
+        StringBuilder beanName = new StringBuilder(jobKey.length());
+        boolean capitaliseNext = false;
+        for (int index = 0; index < jobKey.length(); index++) {
+            char character = jobKey.charAt(index);
+            if (character == '-') {
+                capitaliseNext = true;
+            } else if (capitaliseNext) {
+                beanName.append(Character.toUpperCase(character));
+                capitaliseNext = false;
+            } else {
+                beanName.append(character);
+            }
+        }
+        return beanName.toString();
+    }
+
+    /**
+     * A job that finished with a non-zero {@code RETURN-CODE}, raised so that the code reaches the
+     * operating system.
+     *
+     * <p>It carries the code as an {@link ExitCodeGenerator}, which is what Spring Boot reads while the
+     * exception propagates out of {@code SpringApplication.run}. The message names the job, the return
+     * code and the exit status text the step set, so an operator reading the process log sees the same
+     * three facts a JCL job log would show.
+     */
+    public static final class JclReturnCodeException extends RuntimeException
+            implements ExitCodeGenerator {
+
+        /** Serialisation identity; this type is never serialised, and the field states that it is fixed. */
+        private static final long serialVersionUID = 1L;
+
+        /** The {@code RETURN-CODE} the job reported. */
+        private final int returnCode;
+
+        /**
+         * @param jobName    the job that ran
+         * @param returnCode its return code, which is never zero here
+         * @param exitCode   the exit status text the job carried, quoted verbatim
+         */
+        JclReturnCodeException(String jobName, int returnCode, String exitCode) {
+            super("Job '" + jobName + "' ended with RETURN-CODE " + returnCode + " (exit status '"
+                    + exitCode + "'). On the mainframe this is the value the next job step's COND "
+                    + "test reads, so it is carried out as the process exit code unchanged.");
+            this.returnCode = returnCode;
+        }
+
+        /**
+         * The return code, which is also the process exit code.
+         *
+         * @return the code the job reported
+         */
+        @Override
+        public int getExitCode() {
+            return returnCode;
+        }
+    }
+
+    /**
+     * The between-record cancellation probe a long single-pass tasklet consults, so that a stop
+     * requested while it is running is honoured before the next record rather than after the last one.
+     *
+     * <h2>Why a tasklet needs one at all</h2>
+     * <p>Spring Batch already bounds cancellation at a step's own repeat boundary: {@code TaskletStep}
+     * consults its {@link org.springframework.batch.core.step.StepInterruptionPolicy} before each
+     * <em>invocation</em> of the tasklet. Every tasklet in this module returns
+     * {@link org.springframework.batch.repeat.RepeatStatus#FINISHED} after exactly one invocation,
+     * because each migrated program performs exactly one pass - so that check happens once, at the
+     * top, and a stop requested a minute into a full-file pass would not be seen until the pass had
+     * finished. Nothing was wrong with the framework's policy; the pass simply never yields to it.
+     * This interface is that yield point, and it deliberately reuses the framework's own policy rather
+     * than reimplementing the test it performs.
+     *
+     * <h2>What it does, and what it must never do</h2>
+     * <p>{@link #checkStopRequested()} either returns, meaning carry on, or throws
+     * {@link StopRequestedException}. It does not return a flag and it does not ask the caller to
+     * branch, which is deliberate twice over: a call at the top of a record loop reads as one
+     * statement, and there is no arm of an {@code if} for a translation to get wrong or a coverage
+     * report to show as half-taken.
+     *
+     * <p>The call belongs <strong>between</strong> records - at the top of a loop body, before the
+     * next read - and nowhere else. Placed there, the record in flight is always complete: it has been
+     * read, processed and written, or it has not been started. Placed mid-record it could abandon a
+     * COBOL paragraph half-performed, which is a state the legacy program cannot be in.
+     *
+     * <p><strong>Nothing here retries anything, and nothing may be made to.</strong> A retried legacy
+     * write is a duplicate record: these programs write with {@code WRITE} and {@code REWRITE} against
+     * datasets that carry no idempotency key, so a second attempt at a write that may already have
+     * landed is a data defect, not a recovery. A stop ends the pass; it never replays part of it.
+     *
+     * <h2>How a stop is reported</h2>
+     * <p>{@link StopRequestedException} is unchecked - so it travels out through call chains that
+     * declare no checked exception, which is what lets the probe sit deep inside a translated
+     * paragraph - and its cause is always the framework's own
+     * {@link JobInterruptedException}. That is not decoration: {@code AbstractStep} maps a failure
+     * that <em>is</em> or whose <em>cause is</em> a {@code JobInterruptedException} to
+     * {@link org.springframework.batch.core.BatchStatus#STOPPED} and {@link ExitStatus#STOPPED}, so a
+     * cancelled pass is reported as stopped by the framework itself, with no translation seam anywhere
+     * in this module and no {@code catch} in any tasklet.
+     *
+     * <p>Being reported as stopped rather than complete is the whole point. {@code STOPPED} carries no
+     * numeric exit code, so {@link #returnCodeOf(ExitStatus)} yields {@link #NO_JCL_RETURN_CODE},
+     * {@link JclJobLauncher} raises {@link JclReturnCodeException}, and the process exits non-zero. A
+     * cancelled run therefore cannot be mistaken for a run that completed, which is exactly the risk a
+     * partial pass carries: the output dataset holds some of the records, and only the job status says
+     * so.
+     *
+     * @see #of(ChunkContext)
+     * @see StopRequestedException
+     */
+    @FunctionalInterface
+    public interface StopSignal {
+
+        /**
+         * The signal that never stops anything.
+         *
+         * <p>For every caller that is not inside a running step: the parity harness, a unit test
+         * driving a program directly, and the no-argument overload each translated program keeps so
+         * that its existing callers are unchanged. A program run this way behaves exactly as it did
+         * before this probe existed, which is what makes the probe additive rather than a change to
+         * any pass.
+         */
+        StopSignal RUNNING = () -> {
+            // Nothing to check: no step is running, so no stop can have been requested.
+        };
+
+        /**
+         * Yields to a pending stop request, or returns so the caller may read its next record.
+         *
+         * @throws StopRequestedException if this step has been asked to stop, or its thread has been
+         *                                interrupted
+         */
+        void checkStopRequested();
+
+        /**
+         * The probe for the step execution a tasklet is running inside.
+         *
+         * @param chunkContext the framework's chunk context, as handed to
+         *                     {@link Tasklet#execute(org.springframework.batch.core.StepContribution,
+         *                     ChunkContext)}; must be non-null
+         * @return a probe over that step execution; never {@code null}
+         * @throws NullPointerException if {@code chunkContext} is {@code null}
+         */
+        static StopSignal of(ChunkContext chunkContext) {
+            Objects.requireNonNull(chunkContext, "A chunk context is required to observe a stop "
+                    + "request; the framework supplies one to every tasklet");
+            return of(chunkContext.getStepContext().getStepExecution());
+        }
+
+        /**
+         * The probe for a step execution.
+         *
+         * <p>The test itself is the framework's - a {@link ThreadStepInterruptionPolicy}, which is what
+         * {@code TaskletStep} uses by default - so a stop requested through
+         * {@code JobOperator.stop()}, which sets {@code terminateOnly} on the step execution, and a
+         * thread interruption are both honoured, and both are honoured on exactly the terms the
+         * framework already applies at a step's repeat boundary. Reproducing that test here by hand
+         * would let the two drift.
+         *
+         * <p>The policy instance is per probe rather than shared. It holds no state, but a probe is
+         * created once per step execution and consulted once per record, so there is nothing to gain
+         * from sharing one and a static field would be state this module does not keep (practice B9).
+         *
+         * @param stepExecution the step execution to observe; must be non-null
+         * @return a probe over it; never {@code null}
+         * @throws NullPointerException if {@code stepExecution} is {@code null}
+         */
+        static StopSignal of(StepExecution stepExecution) {
+            Objects.requireNonNull(stepExecution, "A step execution is required to observe a stop "
+                    + "request");
+            StepInterruptionPolicy policy = new ThreadStepInterruptionPolicy();
+            return () -> {
+                try {
+                    policy.checkInterrupted(stepExecution);
+                } catch (JobInterruptedException stopRequested) {
+                    throw new StopRequestedException(stepExecution.getStepName(), stopRequested);
+                }
+            };
+        }
+    }
+
+    /**
+     * A pass abandoned between records because its step was asked to stop.
+     *
+     * <p>Unchecked, so it travels out of a translated paragraph that declares no checked exception,
+     * and carrying the framework's {@link JobInterruptedException} as its cause, so
+     * {@code AbstractStep} reports the step as
+     * {@link org.springframework.batch.core.BatchStatus#STOPPED} rather than failed. See
+     * {@link StopSignal} for why both of those matter.
+     *
+     * <p>The message says plainly what the dataset state is, because that is the one thing an operator
+     * has to know and the one thing a status alone does not tell them: the records already written are
+     * written, and nothing was rolled back on their behalf beyond whatever transaction the step itself
+     * was holding. It also states that no write is retried, so nobody reads a stop as a recoverable
+     * position to resume from - these jobs are non-restartable by construction, and a rerun is a fresh
+     * pass over the whole input, exactly as resubmitting a cancelled JCL job is.
+     */
+    public static final class StopRequestedException extends RuntimeException {
+
+        /** Serialisation identity; this type is never serialised, and the field states that it is fixed. */
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * @param stepName    the step that was asked to stop
+         * @param interrupted the framework's own interruption, kept as the cause so the step is
+         *                    reported as stopped rather than failed; must be non-null
+         */
+        StopRequestedException(String stepName, JobInterruptedException interrupted) {
+            super("Step '" + stepName + "' was asked to stop, so its pass was abandoned between "
+                    + "records rather than part way through one. The record in flight was complete; "
+                    + "records already written stay written, and NO write is retried - a retried "
+                    + "COBOL WRITE or REWRITE would be a duplicate record, because these datasets "
+                    + "carry no idempotency key. This job is not restartable: rerun it, which is a "
+                    + "fresh pass over the whole input, exactly as resubmitting a cancelled JCL job "
+                    + "is.", Objects.requireNonNull(interrupted, "The framework's interruption is "
+                            + "required as the cause: it is what makes the step report as STOPPED "
+                            + "rather than FAILED"));
+        }
+    }
+
+    /**
      * Validates the whole job-contract graph against the dataset catalogue, once, at startup.
      *
      * <p>A bean rather than a method on {@link JobContracts}, for one reason: the checks that matter
@@ -940,6 +1469,75 @@ public class BatchConfig {
      */
     public DatasetBinding datasetBinding(String jobKey, String ddName) {
         return contract(jobKey).datasetBinding(ddName, datasetBindings);
+    }
+
+    /**
+     * Requires that a job's JCL DD name and the DD name of the repository it reads through resolve to
+     * the same dataset, and returns that dataset's name.
+     *
+     * <p><strong>Why this gate exists.</strong> The repositories in this module are singletons bound at
+     * construction to the CICS file names - {@code CARDDAT}, {@code CCXREF} - because the online programs
+     * address them that way. The batch programs address the same datasets under their own DD names:
+     * {@code CARDFILE} in {@code app/jcl/READCARD.jcl:L25-L26}, {@code XREFFILE} in
+     * {@code app/jcl/READXREF.jcl:L25-L26} and again in {@code app/jcl/INTCALC.jcl:L29-L30},
+     * {@code XREFFIL1} over the alternate-index path in {@code app/jcl/INTCALC.jcl:L31-L32}, and
+     * {@code CARDXREF} in {@code app/jcl/TRANREPT.jcl:L67-L68}. So a batch job resolves one DD name for
+     * its own contract while its reads travel through a repository bound to another.
+     *
+     * <p>Every one of those keys carries an <em>independent</em> environment override in
+     * {@code application.yml}, so the two can be pointed at different datasets. The shipped defaults
+     * agree, which is precisely what makes the divergence dangerous: it would not appear in any test, and
+     * a job would read a dataset its own JCL never named - silently, and with a correct-looking result.
+     * A COBOL step cannot do this, because the DD statement <em>is</em> the binding.
+     *
+     * <p>So the two are compared, once, at startup, and a mismatch fails the context rather than a run.
+     * That is the strictest outcome available without inventing a second repository per DD name, which
+     * would duplicate the base cluster and its alternate-index path and violate gate G45.
+     *
+     * <p>Comparison is exact. Dataset names arrive from configuration in the upper case the estate uses
+     * and are compared verbatim, because two spellings that differ at all are two names, and this method
+     * has no authority to decide that a deployment meant them to be one.
+     *
+     * <p><strong>Both sides come from configuration, and neither from a repository instance.</strong>
+     * That is deliberate. The two facts in question are {@code carddemo.datasets.<jclDd>.dsname} and
+     * {@code carddemo.datasets.<repositoryDd>.dsname}, so comparing the keys compares exactly the thing
+     * that can diverge. Asking the repository to echo its own binding back would add no information -
+     * every repository resolves its key from this same catalogue and fails its own construction if the
+     * key is absent - while making this gate depend on a collaborator being real, which would put mock
+     * plumbing into every test of every job that happens to be wired near one.
+     *
+     * <p>The job's DD is resolved job-first, so a job-scoped alias counts: {@code TRANSACT} in
+     * {@code app/jcl/INTCALC.jcl} is aliased to the {@code SYSTRAN} generation, and this gate proves that
+     * alias is present rather than assuming it - remove it and the interest job would write to the
+     * transaction master. The repository's DD is resolved from the global catalogue, because that is where
+     * a repository reads it.
+     *
+     * <p>Where a step and its repository address a dataset under <em>one</em> key - {@code TCATBALF} and
+     * {@code DISCGRP} do - the two sides are the same binding and the comparison cannot fail. Calling it
+     * there is still worth its line: it proves the key is declared at all, which is the other half of what
+     * this gate is for, and it keeps the list of a step's datasets complete rather than selective.
+     *
+     * @param jobKey            the kebab-case job key
+     * @param jclDdName         the DD name the job's own JCL step declares
+     * @param repositoryDdName  the DD name the repository this job reads through is bound to
+     * @return the dataset name both keys resolve to; never blank
+     * @throws IllegalStateException if either DD name is undeclared, or the two resolve to different
+     *                               datasets
+     */
+    public String requireSameDataset(String jobKey, String jclDdName, String repositoryDdName) {
+        String jclDsname = datasetBinding(jobKey, jclDdName).dsname();
+        String repositoryDsname = datasetBindings.binding(repositoryDdName).dsname();
+        if (!jclDsname.equals(repositoryDsname)) {
+            throw new IllegalStateException("Job " + jobKey + " declares DD " + jclDdName
+                    + ", which resolves to dataset " + jclDsname + ", but it reads through the "
+                    + repositoryDdName + " repository binding, which resolves to " + repositoryDsname
+                    + ". A batch step reads what its DD statement names, so these must be the same "
+                    + "dataset. Point carddemo.datasets." + jclDdName + ".dsname and carddemo.datasets."
+                    + repositoryDdName + ".dsname at one dataset, or give job " + jobKey + " a "
+                    + "job-scoped binding for " + jclDdName + " that matches. Refusing to start rather "
+                    + "than read a dataset this job's JCL never named.");
+        }
+        return jclDsname;
     }
 
     /**
@@ -1401,6 +1999,7 @@ public class BatchConfig {
                         + "a dataset of its own, so it has to say where it lives - there is no global "
                         + "entry for it to inherit a location from.");
             }
+            requireDatasetNameGrammar(jobKey, ddName, override.dsname());
             if (override.recordLength() <= 0) {
                 throw new IllegalStateException(invalidJob(jobKey) + " its inline dataset for DD "
                         + "name '" + ddName + "' declares record-length " + override.recordLength()
@@ -1413,6 +2012,45 @@ public class BatchConfig {
                         + "name '" + ddName + "' declares block-size " + override.blockSize()
                         + ". Transcribe the JCL DCB verbatim: 0 means system-determined, exactly as "
                         + "BLKSIZE=0 asks, but no DCB declares a negative block size.");
+            }
+        }
+
+        /**
+         * Requires a job-scoped dsname to be a well-formed z/OS dataset name, at startup.
+         *
+         * <p>A dsname is not free text and it is not a location. Every dataset in this module is
+         * reached through JDBC, so its name becomes a <em>delimited SQL identifier</em>, and
+         * {@link DatasetRelation#requireDatasetName(String)} is the module's single authority on the
+         * grammar that identifier has to satisfy - dot-separated qualifiers of one to eight characters,
+         * 44 characters at most, with an optional generation suffix.
+         *
+         * <p>Checked here rather than left to the point of use because the point of use is a
+         * <em>constructor</em>. {@code TransactionReportJob} resolves its {@code TRANFILE} binding while
+         * the bean is being built and {@code StatementGenerationJobA}'s utility steps resolve theirs the
+         * moment a step runs, so a filesystem path in a job-scoped override does not fail the one test
+         * that uses that dataset - it fails the whole context, or it fails a step deep inside a job,
+         * with a message about SQL identifiers rather than about configuration. Startup is the last
+         * cheap place to say which key is wrong.
+         *
+         * <p>The global catalogue's own validation makes the same check for
+         * {@code carddemo.datasets.<DD>.dsname}; this closes the job-scoped half of the same gap, which
+         * is the half no global override can reach.
+         *
+         * @param jobKey the configuration key, quoted in the diagnostic
+         * @param ddName the DD name the override is declared under
+         * @param dsname the declared dataset name; already known to hold text
+         * @throws IllegalStateException if the name is not a well-formed z/OS dataset name
+         */
+        private void requireDatasetNameGrammar(String jobKey, String ddName, String dsname) {
+            try {
+                DatasetRelation.requireDatasetName(dsname);
+            } catch (IllegalArgumentException notADatasetName) {
+                throw new IllegalStateException(invalidJob(jobKey) + " its inline dataset for DD "
+                        + "name '" + ddName + "' declares dsname '" + dsname + "', which is not a "
+                        + "z/OS dataset name. A dsname becomes a delimited SQL identifier, so a "
+                        + "filesystem path or a classpath URL can never be read - state the dataset "
+                        + "name here and bind the storage behind it in the profile's own way.",
+                        notADatasetName);
             }
         }
 

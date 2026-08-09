@@ -868,7 +868,13 @@ class CardSelectRequestTest {
             request.setNavigationContext(NavigationContext.empty().withPgmEnter());
             assertThat(request.isEnter()).isTrue();
             assertThat(request.isReenter()).isFalse();
-            assertThat(request.commareaLength()).isEqualTo(NavigationContext.COMMAREA_LENGTH);
+            // The reported length is the WHOLE area the program reads - CARDDEMO-COMMAREA plus the
+            // twelve-byte WS-THIS-PROGCOMMAREA - because app/cbl/COCRDSLC.cbl:274-278 reads
+            // DFHCOMMAREA(1:160) and DFHCOMMAREA(161:12), not the first 160 bytes alone.
+            assertThat(request.commareaLength())
+                    .isEqualTo(CardSelectRequest.PASSED_COMMAREA_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH
+                            + CardSelectRequest.ThisProgCommarea.RECORD_LENGTH);
 
             request.setNavigationContext(NavigationContext.empty().withPgmReenter());
             assertThat(request.isEnter()).isFalse();
@@ -1489,21 +1495,28 @@ class CardSelectRequestTest {
                 ConstraintViolation<CardSelectRequest> violation = violations.iterator().next();
                 assertThat(violation.getPropertyPath()).hasToString(
                         field.label().toLowerCase(Locale.ROOT));
+                // The message states the declared width and nothing else. It used to carry the
+                // symbolic-map item, its PICTURE clause and the copybook line the width was read from,
+                // which is provenance for a maintainer rather than a correction for a caller: handed
+                // out one rejected field at a time it becomes an inventory of this module's copybooks
+                // and their line numbers. That provenance is still on the member's Javadoc, and the
+                // field's own copybookLine() is still asserted against the copybook elsewhere in this
+                // class - it simply no longer travels to whoever sent the request.
                 assertThat(violation.getMessage())
-                        .contains(field.label())
-                        .contains("PIC X(" + field.length() + ")")
-                        .contains("app/cpy-bms/COCRDSL.CPY:" + field.copybookLine());
+                        .isEqualTo("must be at most " + field.length() + " characters")
+                        .doesNotContain("PIC X(")
+                        .doesNotContain("app/cpy-bms/COCRDSL.CPY");
             }
         }
     }
 
     @Nested
-    @DisplayName("The JSON projection - fifteen fields and two carriers, nothing else")
+    @DisplayName("The JSON projection - fifteen fields and three carriers, nothing else")
     class JsonProjection {
 
         @Test
-        @DisplayName("exactly seventeen members, with no metadata and no derived condition")
-        void exactlySeventeenMembers() throws Exception {
+        @DisplayName("exactly eighteen members, with no metadata and no derived condition")
+        void exactlyEighteenMembers() throws Exception {
             ObjectMapper mapper = new ObjectMapper();
             CardSelectRequest request = new CardSelectRequest();
             request.setCardsid(FIXTURE_CARD_NUMBER);
@@ -1513,14 +1526,37 @@ class CardSelectRequestTest {
             JsonNode json = mapper.readTree(mapper.writeValueAsString(request));
             List<String> members = new ArrayList<>();
             json.fieldNames().forEachRemaining(members::add);
+            // Fifteen xxxI items plus three conversation carriers: CC-WORK-AREA, the 160-byte
+            // CARDDEMO-COMMAREA, and the 12-byte WS-THIS-PROGCOMMAREA of app/cbl/COCRDSLC.cbl:200-203,
+            // which :277-278 restores from the passed area and :398-400 appends back onto it.
             assertThat(members).containsExactlyInAnyOrder("trnname", "title01", "curdate", "pgmname",
                     "title02", "curtime", "acctsid", "cardsid", "crdname", "crdstcd", "expmon",
-                    "expyear", "infomsg", "errmsg", "fkeys", "cardScreenState", "navigationContext");
+                    "expyear", "infomsg", "errmsg", "fkeys", "cardScreenState", "navigationContext",
+                    "thisProgCommarea");
             assertThat(json.has("metadata")).isFalse();
             assertThat(json.has("enter")).isFalse();
             assertThat(json.has("reenter")).isFalse();
             assertThat(json.has("value")).isFalse();
             assertThat(json.get("cardsid").asText()).isEqualTo("0500024453765740");
+        }
+
+        @Test
+        @DisplayName("the trailer has no absent state: a null one becomes the initialised twelve spaces")
+        void theTrailerIsNeverNull() {
+            CardSelectRequest request = new CardSelectRequest();
+
+            request.setThisProgCommarea(null);
+
+            assertThat(request.getThisProgCommarea())
+                    .as("01 WS-THIS-PROGCOMMAREA is storage; INITIALIZE at app/cbl/COCRDSLC.cbl:272 "
+                            + "leaves it as spaces, and there is no third state for a reader to defend "
+                            + "against")
+                    .isEqualTo(CardSelectRequest.ThisProgCommarea.initialized());
+            assertThat(request.getThisProgCommarea().toImage(ASCII_CODEC)).hasSize(12).isBlank();
+
+            request.setThisProgCommarea(
+                    new CardSelectRequest.ThisProgCommarea("COCRDLIC", "CCLI"));
+            assertThat(request.getThisProgCommarea().caFromProgram()).isEqualTo("COCRDLIC");
         }
 
         @Test
@@ -1661,8 +1697,8 @@ class CardSelectRequestTest {
                         .isFalse();
             }
             assertThat(json.size())
-                    .as("fifteen xxxI items plus the two conversation-state carriers")
-                    .isEqualTo(17);
+                    .as("fifteen xxxI items plus the three conversation-state carriers")
+                    .isEqualTo(18);
 
             // Counted, though: 12 + 15 x 4 = 72 bytes of FILLER inside the 504-byte image, and the
             // image is still exactly 504 because the spans are emitted rather than skipped.
@@ -1966,9 +2002,13 @@ class CardSelectRequestTest {
 
             CardSelectRequest request = new CardSelectRequest();
             request.setNavigationContext(NavigationContext.empty());
-            assertThat(request.commareaLength()).isEqualTo(160);
+            // 160 for CARDDEMO-COMMAREA itself, and 172 for the area the program reads: :274-275 takes
+            // DFHCOMMAREA(1:160) and :276-278 takes DFHCOMMAREA(161:12), so the passed area is the
+            // commarea followed by WS-THIS-PROGCOMMAREA and EIBCALEN describes both.
+            assertThat(request.commareaLength()).isEqualTo(172);
             assertThat(request.getNavigationContext().toFixedWidth(ASCII_CODEC)).hasSize(160);
             assertThat(request.getNavigationContext().toFixedWidth(EBCDIC_CODEC)).hasSize(160);
+            assertThat(request.getThisProgCommarea().toImage(ASCII_CODEC)).hasSize(12);
 
             // And with no area carried, EIBCALEN is zero rather than 160 - which is the other arm of
             // that same disjunct, not an error.
@@ -2081,7 +2121,8 @@ class CardSelectRequestTest {
             assertThat(received.isReenter())
                     .as("re-entry is recovered from the payload, not from a session")
                     .isTrue();
-            assertThat(received.commareaLength()).isEqualTo(160);
+            assertThat(received.commareaLength())
+                    .isEqualTo(CardSelectRequest.PASSED_COMMAREA_LENGTH);
             assertThat(received.getNavigationContext()).isEqualTo(sent.getNavigationContext());
             assertThat(received.getCardScreenState().getCcCardNum())
                     .isEqualTo(sent.getCardScreenState().getCcCardNum());

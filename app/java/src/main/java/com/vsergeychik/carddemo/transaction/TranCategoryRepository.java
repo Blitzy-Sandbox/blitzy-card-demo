@@ -462,6 +462,30 @@ public class TranCategoryRepository {
     private final DatasetRelation relation;
 
     /**
+     * The keyed-read statement, resolved by {@link #open()} and reused until {@link #close()}.
+     *
+     * <p><strong>Why this is cached and not recomposed per read.</strong> Composing it needs the
+     * record-image column's name, which is discovered by describing the dataset - one round trip.
+     * {@code CBTRN03C} performs {@code 1500-C-LOOKUP-TRANCATG} <em>once per report line</em>
+     * ({@code app/cbl/CBTRN03C.cbl:195}), so describing the dataset before each of those lookups doubles
+     * the query count of the report's entire detail loop, and the extra query answers a question that
+     * cannot have changed: the relation was described at {@code OPEN INPUT} and stays open until
+     * {@code CLOSE}. The source has one {@code READ} per line and this class now issues one too.
+     *
+     * <p>{@code volatile} and never {@code static}: this is instance state on a singleton whose methods
+     * may be entered from several threads, and the value published is an immutable {@link String}, so it
+     * is safe to read without a lock and recomposing it would yield the same text. A {@code static}
+     * cache would be shared mutable state across datasets and is exactly what practice B9 and gate G53
+     * forbid.
+     *
+     * <p>{@code null} until an {@link #open()} succeeds and again after a {@link #close()}, which is
+     * what makes a read after a close describe the dataset afresh rather than reuse a statement over a
+     * relation that may since have been de-allocated. That is the same lifecycle
+     * {@link TranTypeRepository} keeps, and the two classes are deliberately identical in it.
+     */
+    private volatile String keyedReadStatement;
+
+    /**
      * Assembles the repository from the module's shared {@link JdbcTemplate}, the DD-name-keyed dataset
      * catalogue, the explicitly named dataset code page and the deployment's record-image
      * representation.
@@ -883,6 +907,33 @@ public class TranCategoryRepository {
     }
 
     /**
+     * The keyed-read statement, resolving and caching it on first use.
+     *
+     * <p>Reads {@link #keyedReadStatement} once into a local so a concurrent {@link #close()} cannot
+     * turn a non-{@code null} check into a {@code null} dereference, which is the standard shape for a
+     * lazily published {@code volatile}.
+     *
+     * <p>Resolving here rather than only in {@link #open()} keeps this class usable exactly as
+     * {@code CBTRN03C} uses it while not depending on the caller having opened first: a read on an
+     * unopened dataset describes it, composes the statement and proceeds, which is what the previous
+     * behaviour did on every call. The difference is that it now happens once instead of once per report
+     * line.
+     *
+     * @return the composed keyed-read statement; never {@code null}
+     * @throws DataAccessException   if the dataset cannot be described
+     * @throws IllegalStateException if the dataset presents no usable record-image column
+     */
+    private String keyedReadStatement() {
+        String resolved = this.keyedReadStatement;
+        if (resolved != null) {
+            return resolved;
+        }
+        String composed = resolveKeyedStatement();
+        this.keyedReadStatement = composed;
+        return composed;
+    }
+
+    /**
      * Closes the {@code TRANCATG} dataset, reporting only the resulting file status: the Java form of
      * {@code 9400-TRANCATG-CLOSE} ({@code app/cbl/CBTRN03C.cbl:587-603}).
      *
@@ -895,11 +946,23 @@ public class TranCategoryRepository {
      * dataset is de-allocated - so the same probe as {@link #open()} is used. That also keeps both of
      * the COBOL's symmetric guards reachable rather than leaving one of them dead.
      *
+     * <p>What this method does do is <strong>forget what the open learned</strong>: the composed keyed
+     * statement is discarded, so a read after a close describes the dataset again rather than reuse a
+     * statement over a relation that may since have been de-allocated. The forgetting happens whether
+     * the probe succeeded or failed, because the dataset is closed either way - hence the
+     * {@code finally} rather than a test of the status, which also means there is no branch here and no
+     * path on which a stale statement survives.
+     *
      * @return {@link FileStatus#OK} when the dataset is still describable, otherwise
      *         {@link #PERMANENT_ERROR_STATUS}; never {@code null}, always two characters
      */
     public String close() {
-        return probeDatasetAvailability("CLOSE");
+        try {
+            return probeDatasetAvailability("CLOSE");
+        } finally {
+            this.keyedReadStatement = null;
+            this.relation.forgetRecordImageColumn();
+        }
     }
 
     /**
@@ -944,17 +1007,23 @@ public class TranCategoryRepository {
      * @return {@link FileStatus#OK} or {@link #PERMANENT_ERROR_STATUS}
      */
     private String probeDatasetAvailability(String cobolOperation) {
-        ResultSetExtractor<String> describe = resultSet -> {
-            ResultSetMetaData metaData = resultSet.getMetaData();
-            return metaData == null || metaData.getColumnCount() < RECORD_IMAGE_COLUMN_INDEX
-                    ? PERMANENT_ERROR_STATUS
-                    : FileStatus.OK;
-        };
         try {
-            String status = jdbcTemplate.query(relation.describeStatement(), describe);
-            // A template that yields no status at all has told us nothing, and "nothing" is not success.
-            // Reported as a permanent error, exactly as an unusable dataset is.
-            return status == null ? PERMANENT_ERROR_STATUS : status;
+            // The probe and the statement resolution are the same round trip, deliberately: the describe
+            // establishes that the dataset is addressable AND names the record-image column the keyed
+            // read is composed over, so an OPEN INPUT that succeeds leaves nothing left to discover and
+            // the report's per-line lookups issue one query each rather than two.
+            this.keyedReadStatement = resolveKeyedStatement();
+            return FileStatus.OK;
+        } catch (IllegalStateException unusable) {
+            // The relation resolved but presents nothing at the record-image position, so there is no
+            // record to read and no statement that could be composed over it. Reported as a permanent
+            // error, exactly as an absent dataset is - reporting success on a relation this repository
+            // cannot read would hand the report job a lookup table it never actually opened. The message
+            // is this module's own text and carries no value the driver supplied, so it is safe to log.
+            LOG.error("Could not " + cobolOperation + " the " + DD_NAME + " dataset: "
+                    + unusable.getMessage() + "; reporting file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
+            return PERMANENT_ERROR_STATUS;
         } catch (DataAccessException translated) {
             // The COBOL keeps no more than the status - it displays the rendered status and abends - so
             // the status is the whole of what is RETURNED. What the backend said is not thrown away with
@@ -1084,7 +1153,10 @@ public class TranCategoryRepository {
     private ReadResult readByKeyImage(String keyImage) {
         String statement;
         try {
-            statement = resolveKeyedStatement();
+            // Resolved once by open() and reused here. Only an unopened dataset - or one read after a
+            // close - reaches the backend from this line, and then only for the one describe that names
+            // the record-image column.
+            statement = keyedReadStatement();
         } catch (DataAccessException unreachable) {
             return ReadResult.other(PERMANENT_ERROR_STATUS, logRefusal(unreachable, "describe the "
                     + DD_NAME + " dataset '" + relation.dsname() + "' to read it by key"));

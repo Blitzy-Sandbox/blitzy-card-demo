@@ -8,6 +8,8 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
@@ -28,6 +30,7 @@ import java.nio.charset.Charset;
 import java.time.Clock;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -674,10 +677,16 @@ public class TransactionMenuController {
      * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
      */
     @GetMapping(path = TRANSACTIONS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
-    public TransactionListResponse getTransactions(
+    public ScreenResponse<TransactionListResponse> getTransactions(
             @Valid @RequestBody(required = false) TransactionListRequest request,
             @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
-        return listTransactions(request, resolveEibAid(request, eibaid));
+        // The work area is created here rather than inside the two-argument overload so that the two
+        // values COTRN00C sets which are presentation metadata - the MOVE -1 cursor request and
+        // WS-SEND-ERASE-FLG - are still reachable when the envelope is built. Neither is a payload
+        // member and neither ever becomes one, which is exactly why they need the envelope to travel.
+        WorkArea ws = new WorkArea();
+        TransactionListResponse painted = listTransactions(request, resolveEibAid(request, eibaid), ws);
+        return ScreenResponse.of(painted, ws.screenMetadata(painted));
     }
 
     /**
@@ -2403,6 +2412,51 @@ public class TransactionMenuController {
         /** @return how many times the cursor was placed. */
         public int cursorPositions() {
             return cursorPositions;
+        }
+
+        /**
+         * This screen's presentation metadata, in the shared envelope every online response publishes.
+         *
+         * <p>Three things this execution produces are metadata by declaration rather than payload, and
+         * before this envelope existed none of them had any way to travel:
+         *
+         * <ul>
+         *   <li>the {@code MOVE -1 TO TRNIDINL} cursor request, an {@code xxxL} item. The Agent Action
+         *       Plan's section 0.3.9 is explicit that {@code xxxL} is validation and highlight metadata
+         *       and not a payload member, so it is reported here rather than smuggled into a projection
+         *       of {@code xxxI} and {@code xxxO} items;</li>
+         *   <li>the {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} quad of every field,
+         *       which is what {@code app/cpy/CSSETATY.cpy} writes {@link BmsAttributes#DFHRED} into
+         *       when a field is in error;</li>
+         *   <li>{@code WS-SEND-ERASE-FLG}, which chooses between {@code SEND ... ERASE} and a
+         *       {@code SEND} without it at {@code :533-549}. {@code ERASE} clears the screen before
+         *       painting, and that is the same instruction to a client: repaint rather than merge.</li>
+         * </ul>
+         *
+         * <p>The message colour is read from {@code ERRMSGC} rather than restated, so a rename cannot
+         * silently leave this pointing at a field that no longer exists. Each quad is published as four
+         * unsigned {@code 0}-{@code 255} values, because an attribute byte with the high bit set -
+         * {@link BmsAttributes#DFHRED} is {@code 0xF2} - is a negative {@code byte} in Java and
+         * publishing {@code -14} would misstate it.
+         *
+         * @param painted the response this run produced; must not be {@code null}
+         * @return the metadata; never {@code null}
+         * @throws NullPointerException if {@code painted} is {@code null}
+         */
+        public ScreenMetadata screenMetadata(TransactionListResponse painted) {
+            Objects.requireNonNull(painted, "A painted screen is required to read its attribute quads");
+            Map<String, ScreenMetadata.FieldMetadata> fields = new LinkedHashMap<>();
+            for (Map.Entry<String, TransactionListResponse.FieldAttributes> quad
+                    : painted.allAttributes().entrySet()) {
+                fields.put(quad.getKey(), ScreenMetadata.FieldMetadata.of(quad.getValue().colour(),
+                        quad.getValue().programmedSymbols(),
+                        quad.getValue().highlight(),
+                        quad.getValue().validation()));
+            }
+            return ScreenMetadata.of(cursorField,
+                    painted.attributesOf(TransactionListResponse.ERRMSG).colour(),
+                    isSendEraseYes(),
+                    fields);
         }
 
         /** @return how many times the screen was sent. */

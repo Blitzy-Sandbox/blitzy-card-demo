@@ -286,25 +286,47 @@ import java.util.Objects;
  *                  no-key-resolved state
  */
 public record ReportRequestRequest(
-        @Size(max = TRNNAME_LENGTH, message = "TRNNAMEI is declared PIC X(4)") String trnname,
-        @Size(max = TITLE01_LENGTH, message = "TITLE01I is declared PIC X(40)") String title01,
-        @Size(max = CURDATE_LENGTH, message = "CURDATEI is declared PIC X(8)") String curdate,
-        @Size(max = PGMNAME_LENGTH, message = "PGMNAMEI is declared PIC X(8)") String pgmname,
-        @Size(max = TITLE02_LENGTH, message = "TITLE02I is declared PIC X(40)") String title02,
-        @Size(max = CURTIME_LENGTH, message = "CURTIMEI is declared PIC X(8)") String curtime,
-        @Size(max = MONTHLY_LENGTH, message = "MONTHLYI is declared PIC X(1)") String monthly,
-        @Size(max = YEARLY_LENGTH, message = "YEARLYI is declared PIC X(1)") String yearly,
-        @Size(max = CUSTOM_LENGTH, message = "CUSTOMI is declared PIC X(1)") String custom,
-        @Size(max = SDTMM_LENGTH, message = "SDTMMI is declared PIC X(2)") String sdtmm,
-        @Size(max = SDTDD_LENGTH, message = "SDTDDI is declared PIC X(2)") String sdtdd,
-        @Size(max = SDTYYYY_LENGTH, message = "SDTYYYYI is declared PIC X(4)") String sdtyyyy,
-        @Size(max = EDTMM_LENGTH, message = "EDTMMI is declared PIC X(2)") String edtmm,
-        @Size(max = EDTDD_LENGTH, message = "EDTDDI is declared PIC X(2)") String edtdd,
-        @Size(max = EDTYYYY_LENGTH, message = "EDTYYYYI is declared PIC X(4)") String edtyyyy,
-        @Size(max = CONFIRM_LENGTH, message = "CONFIRMI is declared PIC X(1)") String confirm,
-        @Size(max = ERRMSG_LENGTH, message = "ERRMSGI is declared PIC X(78)") String errmsg,
+        @Size(max = TRNNAME_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String trnname,
+        @Size(max = TITLE01_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String title01,
+        @Size(max = CURDATE_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String curdate,
+        @Size(max = PGMNAME_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String pgmname,
+        @Size(max = TITLE02_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String title02,
+        @Size(max = CURTIME_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String curtime,
+        @Size(max = MONTHLY_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String monthly,
+        @Size(max = YEARLY_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String yearly,
+        @Size(max = CUSTOM_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String custom,
+        @Size(max = SDTMM_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String sdtmm,
+        @Size(max = SDTDD_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String sdtdd,
+        @Size(max = SDTYYYY_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String sdtyyyy,
+        @Size(max = EDTMM_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String edtmm,
+        @Size(max = EDTDD_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String edtdd,
+        @Size(max = EDTYYYY_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String edtyyyy,
+        @Size(max = CONFIRM_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String confirm,
+        @Size(max = ERRMSG_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String errmsg,
         NavigationContext navigationContext,
-        @Size(max = AID_LENGTH, message = "EIBAID is carried as a PIC X(5) token") String aid) {
+        @Size(max = AID_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String aid) {
+
+    /**
+     * The message every width constraint above declares, and the only text a rejected field publishes.
+     *
+     * <p>{@code {max}} is the constraint's own declared bound, interpolated by the validator, so the
+     * sentence states the width without restating the number - and the width of a field a caller sends
+     * is already part of the published contract, so naming it discloses nothing.
+     *
+     * <p><strong>What it deliberately does not say.</strong> These messages used to name the
+     * symbolic-map item and its {@code PICTURE} clause - {@code "SDTYYYYI is declared PIC X(4)"} - and
+     * the estate's other request DTOs went further and named the copybook path and line the width was
+     * read from. That is provenance written for the engineer maintaining the field, and its place is
+     * the Javadoc above, where it remains in full. It is not text to hand an unauthenticated caller
+     * one rejected field at a time: it publishes the module's copybook inventory, its line numbers and
+     * its internal naming conventions, which together describe the shape of the estate behind the API.
+     *
+     * <p>{@code config/WebConfig}'s error advice does not forward a validator message at all - it maps
+     * the constraint's code and bound onto its own fixed sentence, so nothing declared here can reach a
+     * caller by accident. This constant matches that sentence exactly, so the two agree if a future
+     * consumer of Bean Validation does surface a message directly.
+     */
+    public static final String PUBLIC_LENGTH_MESSAGE = "must be at most {max} characters";
 
     // =================================================================================================
     // Identity of the screen this payload projects. Every literal is verbatim: the mapset and map

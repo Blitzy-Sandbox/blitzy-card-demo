@@ -8,8 +8,10 @@ import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardUpdateRecord;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.ChangeAction;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.DetailGroup;
 import com.vsergeychik.carddemo.card.model.CardRecord;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -49,6 +51,25 @@ import org.springframework.stereotype.Service;
  * requires this specific comparison, on these specific six fields, in this specific order. The card
  * number and the account identifier are deliberately <em>not</em> compared, because the COBOL does not
  * compare them.
+ *
+ * <p><strong>The comparison only means something inside a unit of work.</strong> In CICS the read at
+ * {@code :1427} takes a record lock that the task holds until its implicit syncpoint, so the six-field
+ * comparison and the rewrite at {@code :1477} both run under it and no one else can change the record
+ * in between. {@link #writeProcessing} therefore runs its whole body inside
+ * {@link DatasetUnitOfWork#execute(String, java.util.function.Supplier)} - joining a caller's unit of
+ * work rather than nesting a second one - and that is not optional:
+ * {@link CardRepository#readForUpdateByCardNumber(String)} calls
+ * {@link DatasetUnitOfWork#requireActive(String, String)} and refuses to issue {@code FOR UPDATE}
+ * outside one. Run without the boundary, the sequence would read, satisfy itself that nobody had
+ * changed the record, and then write over whatever is there now - the exact interleaving
+ * {@code 9300-CHECK-CHANGE-IN-REC} exists to prevent, reintroduced by the transport. The check would
+ * still pass; it would simply no longer mean anything.
+ *
+ * <p>Unlike {@code app/cbl/COACTUPC.cbl}'s two-record equivalent, {@code 9200-WRITE-PROCESSING} issues
+ * <strong>no</strong> {@code EXEC CICS SYNCPOINT ROLLBACK} anywhere: it rewrites one record, so a
+ * failed rewrite leaves nothing to back out and {@code :1488-1492} simply sets
+ * {@code LOCKED-BUT-UPDATE-FAILED}. The unit of work here therefore always commits on the way out,
+ * which is the task's implicit syncpoint, and no rollback path is invented for it.
  *
  * <h2>COBOL reference modification is 1-based; this is the highest off-by-one risk in the file</h2>
  * <p>{@code app/cbl/COCRDUPC.cbl:1505-1507} slices the record's ten-byte date three times. The
@@ -332,29 +353,50 @@ public class CardUpdateService {
     private static final char SPACE = ' ';
 
     /**
-     * The one collaborator: the card master, reached only through its repository. {@code final}, and
-     * the only instance field this class has.
+     * What the unit of work {@link #writeProcessing} opens is doing, used only to name the boundary in
+     * a failure. It names the paragraph rather than the method, because the paragraph is what a reader
+     * comparing the two systems will be holding.
+     */
+    private static final String UNIT_OF_WORK_DESCRIPTION =
+            "9200-WRITE-PROCESSING (app/cbl/COCRDUPC.cbl:1420-1496)";
+
+    /**
+     * The card master, reached only through its repository. {@code final}.
      */
     private final CardRepository cardRepository;
 
     /**
+     * The CICS task boundary, made explicit: the span within which the read-for-update at
+     * {@code app/cbl/COCRDUPC.cbl:1427} holds its lock, the six-field comparison at {@code :1498-1523}
+     * runs, and the rewrite at {@code :1477} lands. {@code final}.
+     */
+    private final DatasetUnitOfWork unitOfWork;
+
+    /**
      * Creates the service.
      *
-     * <p>Constructor injection, one collaborator, no field injection and no {@code JdbcTemplate}
+     * <p>Constructor injection, two collaborators, no field injection and no {@code JdbcTemplate}
      * (practice B9). It follows that a unit test needs nothing more than
-     * {@code new CardUpdateService(mock(CardRepository.class))} to reach every branch below - no
-     * Spring context, no {@code MockMvc}, no {@code JobLauncher} (gate G51). The code page is not a
-     * constructor argument, because it belongs to the caller's {@link FixedWidthCodec} and is passed
-     * per call; pinning one here would defeat {@code carddemo.charset.dataset}.
+     * {@code new CardUpdateService(mock(CardRepository.class), unitOfWork)} to reach every branch
+     * below - no Spring context, no {@code MockMvc}, no {@code JobLauncher} (gate G51). The code page
+     * is not a constructor argument, because it belongs to the caller's {@link FixedWidthCodec} and is
+     * passed per call; pinning one here would defeat {@code carddemo.charset.dataset}.
      *
      * @param cardRepository the {@code CARDDAT} repository, which owns the read-for-update lock and
      *                       the full-width rewrite
-     * @throws NullPointerException if {@code cardRepository} is {@code null}
+     * @param unitOfWork     the CICS task boundary the whole paragraph runs inside, without which the
+     *                       repository refuses to take the lock the comparison depends on
+     * @throws NullPointerException if {@code cardRepository} or {@code unitOfWork} is {@code null}
      */
-    public CardUpdateService(CardRepository cardRepository) {
+    public CardUpdateService(CardRepository cardRepository, DatasetUnitOfWork unitOfWork) {
         this.cardRepository = Objects.requireNonNull(cardRepository,
                 "A CARDDAT repository is required: 9200-WRITE-PROCESSING both reads the card record "
                         + "for update and rewrites it, and neither goes anywhere but through it");
+        this.unitOfWork = Objects.requireNonNull(unitOfWork,
+                "A unit of work is required: the read-for-update at app/cbl/COCRDUPC.cbl:1427 takes a "
+                        + "record lock that must be held through 9300-CHECK-CHANGE-IN-REC and the "
+                        + "rewrite at :1477, and CardRepository refuses to issue FOR UPDATE outside "
+                        + "one");
     }
 
     // =================================================================================================
@@ -381,7 +423,8 @@ public class CardUpdateService {
      *       KEYLENGTH(LENGTH OF WS-CARD-RID-CARDNUM) INTO(CARD-RECORD) LENGTH(LENGTH OF CARD-RECORD)
      *       RESP RESP2} becomes {@link CardRepository#readForUpdateByCardNumber(String)}. The lock is
      *       the point of the {@code UPDATE} option: the record must not change between being read and
-     *       being rewritten.</li>
+     *       being rewritten. All seven steps run inside the one unit of work this method opens, which
+     *       is what lets the lock survive to step 6 - see this class's documentation.</li>
      *   <li><strong>{@code :1441-1449} Could we lock it?</strong>
      *       <pre>
      *       IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)
@@ -460,6 +503,41 @@ public class CardUpdateService {
         requireGroup(oldDetails, DetailGroup.OLD, "CCUP-OLD-DETAILS", "1503-1509");
         requireGroup(newDetails, DetailGroup.NEW, "CCUP-NEW-DETAILS", "1461-1475");
 
+        // The arguments are checked before the boundary opens: an argument defect is the caller's, not
+        // the dataset's, and opening a transaction to reject one would take a connection from the pool
+        // to accomplish nothing.
+        //
+        // Everything after this point is one unit of work, because in CICS it is one task. There is no
+        // rollback arm to model - this paragraph rewrites a single record, so :1488-1492 has nothing to
+        // back out and issues no SYNCPOINT ROLLBACK - so the boundary commits on every path, which is
+        // the task's implicit syncpoint at EXEC CICS RETURN, including on the arms that wrote nothing.
+        return unitOfWork.execute(UNIT_OF_WORK_DESCRIPTION,
+                () -> writeProcessingUnderLock(workArea, oldDetails, newDetails, returnMessage, codec));
+    }
+
+    /**
+     * The body of {@code 9200-WRITE-PROCESSING}, run inside the unit of work
+     * {@link #writeProcessing} opens.
+     *
+     * <p>Separate from the public method for one reason: {@link CardRepository#readForUpdateByCardNumber}
+     * refuses to run outside a unit of work, so the boundary has to be open before the first statement
+     * of this method executes. Keeping the boundary in the caller also keeps this method a plain
+     * translation of the paragraph, with no transaction handling interleaved with the seven steps.
+     *
+     * <p>Every argument is already validated.
+     *
+     * @param workArea      the {@code CVCRD01Y} work area, as {@link #writeProcessing} received it
+     * @param oldDetails    {@code CCUP-OLD-DETAILS}, the snapshot the screen was painted from
+     * @param newDetails    {@code CCUP-NEW-DETAILS}, what the user typed
+     * @param returnMessage the current content of {@code WS-RETURN-MSG}
+     * @param codec         the codec carrying the code page and the pad and truncate rules
+     * @return the paragraph's outcome, never {@code null}
+     */
+    private WriteResult writeProcessingUnderLock(CardScreenState workArea,
+                                                 CardDetails oldDetails,
+                                                 CardDetails newDetails,
+                                                 String returnMessage,
+                                                 FixedWidthCodec codec) {
         // Step 1, :1425. MOVE CC-CARD-NUM TO WS-CARD-RID-CARDNUM. X(16) into X(16), so the move is
         // width-preserving; it is still routed through the codec so the receiver's declared width is
         // named at the call site rather than assumed. The commented-out MOVE CC-ACCT-ID-N TO
@@ -1442,6 +1520,38 @@ public class CardUpdateService {
          */
         public boolean isDataWasChangedBeforeUpdate() {
             return outcome == WriteOutcome.DATA_WAS_CHANGED_BEFORE_UPDATE;
+        }
+
+        /**
+         * A diagnostic rendering that withholds the staged card verification value.
+         *
+         * <p>The generated record rendering printed {@code cardUpdateCvvCdImage} verbatim whenever staging
+         * had happened, which put a live CVV into any log line that rendered a result (CWE-532) - while the
+         * sibling {@link CardDetails} and {@link CardUpdateRecord} renderings were already careful to
+         * redact exactly that field. This closes the one hole they left.
+         *
+         * <p>The staged record delegates to {@link CardUpdateRecord}'s own override, so it stays as safe
+         * as it already was. The message is escaped to a single line rather than interpolated, because it
+         * is screen text a caller supplied and a CR or LF among it would forge a second line (CWE-117).
+         * The outcome, the flags and the two response codes disclose nothing and stay.
+         *
+         * <p>{@link #cardUpdateCvvCdImage()} is untouched: the parity surface is the accessor and the
+         * byte image, and this rendering has no COBOL counterpart.
+         *
+         * @return the rendering; never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "WriteResult[outcome=" + outcome
+                    + ", inputError=" + inputError
+                    + ", returnMessage=" + DiagnosticText.singleLine(returnMessage)
+                    + ", oldDetails=" + oldDetails
+                    + ", cardUpdateRecord=" + cardUpdateRecord
+                    + ", cardUpdateCvvCdImage="
+                    + cardUpdateCvvCdImage.map(DiagnosticText::omitted).orElse(DiagnosticText.ABSENT)
+                    + ", failedOperation=" + failedOperation.map(DiagnosticText::singleLine)
+                            .orElse(DiagnosticText.ABSENT)
+                    + ", resp=" + resp + ", resp2=" + resp2 + ']';
         }
     }
 }

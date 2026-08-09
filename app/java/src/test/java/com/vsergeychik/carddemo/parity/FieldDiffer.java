@@ -7,7 +7,9 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.parity.ParityCase.DatasetChannel;
 import com.vsergeychik.carddemo.parity.ParityCase.EmittedMessage;
+import com.vsergeychik.carddemo.parity.ParityCase.ExpectedDataset;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedRecord;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedResponse;
 import com.vsergeychik.carddemo.parity.ParityCase.Redaction;
@@ -322,9 +324,11 @@ public final class FieldDiffer {
         List<Diff> diffs = new ArrayList<>();
 
         compareChannel(parityCase.expectedWrites(), fingerprint.writes(), WRITES_CHANNEL,
-            parityCase.normalisations(), diffs);
+            parityCase.normalisations(), datasetExpectationsOn(parityCase, DatasetChannel.WRITES),
+            diffs);
         compareChannel(parityCase.expectedFinalState(), fingerprint.finalState(),
-            FINAL_STATE_CHANNEL, parityCase.normalisations(), diffs);
+            FINAL_STATE_CHANNEL, parityCase.normalisations(),
+            datasetExpectationsOn(parityCase, DatasetChannel.FINAL_STATE), diffs);
         compareResponse(parityCase.expectedResponse(), fingerprint.response(), diffs);
         compareReturnCode(parityCase, fingerprint, diffs);
         compareMessages(parityCase, fingerprint, diffs);
@@ -354,10 +358,20 @@ public final class FieldDiffer {
                                 Map<String, DatasetOutput> observed,
                                 String channel,
                                 List<ParityCase.DatasetNormalisation> normalisations,
+                                List<ExpectedDataset> datasetExpectations,
                                 List<Diff> diffs) {
         // Expected row indices per dataset, in first-appearance order, built during the first pass
         // and consumed by the second so the two cannot disagree.
         Map<String, Set<Integer>> expectedRows = new LinkedHashMap<>();
+
+        // A dataset named by a dataset-level expectation is a dataset the case IS about, even when it
+        // pins no row of it - so it is entered here with an empty row set. Two things follow, and both
+        // are the point of the entry: the dataset is no longer reported as one the case never mentions,
+        // which is what a legitimately empty output used to be reported as, and any row it does hold is
+        // still reported as unaccounted for, so a row count is never a substitute for reading bytes.
+        for (ExpectedDataset expectation : datasetExpectations) {
+            expectedRows.computeIfAbsent(expectation.dataset(), key -> new LinkedHashSet<>());
+        }
 
         for (ExpectedRecord expectation : expectations) {
             expectedRows.computeIfAbsent(expectation.dataset(), key -> new LinkedHashSet<>())
@@ -365,7 +379,94 @@ public final class FieldDiffer {
             compareExpectedRecord(observed, expectation, channel, normalisations, diffs);
         }
 
+        compareDatasetExpectations(datasetExpectations, observed, channel, diffs);
         reportUnexpectedOutput(observed, expectedRows, channel, diffs);
+    }
+
+    /**
+     * Compares each dataset-level expectation against the observed channel: the dataset's existence
+     * first, then its row count, then its declared width when the case pins one.
+     *
+     * <p>Independent of the row comparison, deliberately. A row-driven scan cannot see a dataset that
+     * holds zero rows - there is no row to iterate to - so "the unit opened this output and wrote
+     * nothing to it" is unreachable from the row side however carefully it is written. Comparing the
+     * dataset itself is the only way to assert it, and it is a real behaviour: a job that creates its
+     * reject file and rejects nothing is not the same as a job that never opened it, and a
+     * {@code COND} gate downstream reacts to the difference.
+     *
+     * <p>Existence is checked first and stops the comparison for that dataset. A count and a width
+     * asserted against a dataset that does not exist would be two more differences saying the same
+     * thing as the first.
+     *
+     * @param datasetExpectations the case's dataset-level expectations for this channel
+     * @param observed            what the unit produced on this channel, keyed by dataset
+     * @param channel             the channel name, quoted in the failure text
+     * @param diffs               the accumulator every difference is appended to
+     */
+    private static void compareDatasetExpectations(List<ExpectedDataset> datasetExpectations,
+                                                   Map<String, DatasetOutput> observed,
+                                                   String channel,
+                                                   List<Diff> diffs) {
+        for (ExpectedDataset expectation : datasetExpectations) {
+            String dataset = expectation.dataset();
+            DatasetOutput output = observed.get(dataset);
+            if (output == null) {
+                diffs.add(new Diff(dataset, Diff.NOT_APPLICABLE, DATASET_SCOPE_FIELD,
+                    Diff.NOT_APPLICABLE, Diff.NOT_APPLICABLE,
+                    expectation.rowCount() + " row(s)", null, DiffKind.MISSING_DATASET,
+                    "the case expects dataset " + dataset + " on the " + channel + " channel with "
+                        + expectation.rowCount() + " row(s), and the fingerprint carries "
+                        + describeDatasetKeys(observed) + ". A dataset-level expectation asserts that "
+                        + "the dataset itself was opened or created, which is the one statement no row "
+                        + "expectation can make: a dataset holding no row has no row to address. Report "
+                        + "the dataset through the recorder - openedWithoutWriting for an output that "
+                        + "was created and never written to - rather than leaving it out of the "
+                        + "fingerprint."));
+                continue;
+            }
+            if (output.rowCount() != expectation.rowCount()) {
+                diffs.add(new Diff(dataset, Diff.NOT_APPLICABLE, DATASET_SCOPE_FIELD,
+                    Diff.NOT_APPLICABLE, Diff.NOT_APPLICABLE,
+                    expectation.rowCount() + " row(s)",
+                    output.rowCount() + " row(s)", DiffKind.DATASET_ROW_COUNT_MISMATCH,
+                    "dataset " + dataset + " holds " + output.rowCount() + " row(s) on the " + channel
+                        + " channel where the case expects exactly " + expectation.rowCount()
+                        + ". Counted once for the dataset: this is a different finding from a row whose "
+                        + "bytes are wrong, and an expected count of zero is the assertion that the "
+                        + "dataset exists and produced nothing."));
+            }
+            Integer expectedWidth = expectation.recordLength();
+            if (expectedWidth != null && output.layout().recordLength() != expectedWidth) {
+                diffs.add(new Diff(dataset, Diff.NOT_APPLICABLE, DATASET_SCOPE_FIELD,
+                    Diff.NOT_APPLICABLE, expectedWidth, Integer.toString(expectedWidth),
+                    Integer.toString(output.layout().recordLength()),
+                    DiffKind.DATASET_WIDTH_MISMATCH,
+                    "dataset " + dataset + " was reported on the " + channel + " channel with a "
+                        + output.layout().recordLength() + "-byte layout where the case expects "
+                        + expectedWidth + ". The dataset's declared width is the only width an empty "
+                        + "dataset has, so pinning it is how a case pins the identity of an output it "
+                        + "expects to be empty - a 430-byte reject file and a 133-byte report are not "
+                        + "interchangeable just because both are empty."));
+            }
+        }
+    }
+
+    /**
+     * The dataset-level expectations a case declares for one channel, in declaration order.
+     *
+     * @param parityCase the case
+     * @param channel    the channel to select
+     * @return the matching expectations, empty when the case declares none for that channel
+     */
+    private static List<ExpectedDataset> datasetExpectationsOn(ParityCase parityCase,
+                                                               DatasetChannel channel) {
+        List<ExpectedDataset> selected = new ArrayList<>();
+        for (ExpectedDataset expectation : parityCase.expectedDatasets()) {
+            if (expectation.channel() == channel) {
+                selected.add(expectation);
+            }
+        }
+        return selected;
     }
 
     /**
@@ -392,14 +493,17 @@ public final class FieldDiffer {
 
         DatasetOutput output = observed.get(dataset);
         if (output == null) {
-            diffs.add(missingRecord(dataset, rowIndex, expectation, channel,
+            // No layout is known here: the unit produced nothing for this dataset, so there is no
+            // DatasetOutput to take one from. The expectation's image is still masked, by the
+            // dataset-and-width rule alone.
+            diffs.add(missingRecord(dataset, rowIndex, expectation, null, channel,
                 "the unit wrote no record at all to dataset " + dataset + " on the " + channel
                     + " channel: the fingerprint carries " + describeDatasetKeys(observed)));
             return;
         }
 
         if (!output.hasRow(rowIndex)) {
-            diffs.add(missingRecord(dataset, rowIndex, expectation, channel,
+            diffs.add(missingRecord(dataset, rowIndex, expectation, output.layout(), channel,
                 "dataset " + dataset + " holds " + output.rowCount() + " row(s), so there is no row "
                     + "at 0-based index " + rowIndex));
             return;
@@ -428,6 +532,102 @@ public final class FieldDiffer {
         Set<String> comparedFields =
             compareNamedFields(expectation, layout, addressable, record, channel, diffs);
         compareRecordImage(expectation, layout, addressable, record, comparedFields, channel, diffs);
+        requireCompleteCoverage(expectation, layout, addressable, comparedFields, channel, diffs);
+    }
+
+    /**
+     * Reports an expectation that leaves part of the record it addresses unasserted.
+     *
+     * <p>This is the check that makes "the diff count is zero" mean what it says. Every other
+     * comparison here answers "does what the case pinned match?", and answering yes says nothing at all
+     * about the bytes the case did not pin. A case pinning two fields of a 300-byte account row leaves
+     * 289 bytes unchecked; the {@code FILLER} span could be zeroes instead of spaces, a monetary field
+     * could be off by a factor of ten, and the count would still be zero.
+     *
+     * <p>An expectation is complete in one of exactly two ways, and one of them is required:
+     * <ul>
+     *   <li>it pins {@code expectedBytes}, which is the whole record by definition - and is also how a
+     *       case proves the total width and therefore that {@code FILLER} was emitted at all; or</li>
+     *   <li>its named fields between them cover every byte of the record.</li>
+     * </ul>
+     *
+     * <p>Coverage is computed <strong>per byte</strong> rather than per span, which is what makes it
+     * correct in the presence of the two things a span-counting check would get wrong. A
+     * {@code REDEFINES} overlay covers the same bytes as the span it redefines, so pinning either one
+     * covers those bytes and pinning both is not required - {@code CVCRD01Y}'s
+     * {@code CC-ACCT-ID}/{@code CC-ACCT-ID-N} pair is a real instance. And a {@code FILLER} span is
+     * bytes like any other, so a record whose every other field is pinned is still incomplete until the
+     * {@code FILLER} is - which is precisely the span most likely to be wrong and least likely to be
+     * noticed.
+     *
+     * <p>Reported as <strong>one</strong> difference for the record, naming every uncovered span with
+     * its offset and length, because "this expectation does not assert enough" is one defect in one
+     * fixture however many spans it left out.
+     *
+     * @param expectation    the expectation being evaluated
+     * @param layout         the record's layout, named in the failure text
+     * @param addressable    every span keyed by its addressing name, in copybook order
+     * @param comparedFields the names the field pass actually compared
+     * @param channel        the channel name, quoted in the failure text
+     * @param diffs          the accumulator every difference is appended to
+     */
+    private static void requireCompleteCoverage(ExpectedRecord expectation,
+                                                RecordLayout layout,
+                                                Map<String, FieldSpan> addressable,
+                                                Set<String> comparedFields,
+                                                String channel,
+                                                List<Diff> diffs) {
+        if (expectation.expectedBytes() != null) {
+            return;
+        }
+        boolean[] covered = new boolean[layout.recordLength()];
+        for (String fieldName : comparedFields) {
+            FieldSpan span = addressable.get(fieldName);
+            if (span == null) {
+                continue;
+            }
+            int end = Math.min(span.offset() + span.length(), covered.length);
+            for (int index = span.offset(); index < end; index++) {
+                covered[index] = true;
+            }
+        }
+
+        List<String> uncovered = new ArrayList<>();
+        int uncoveredBytes = 0;
+        for (Map.Entry<String, FieldSpan> entry : addressable.entrySet()) {
+            FieldSpan span = entry.getValue();
+            int missing = 0;
+            int end = Math.min(span.offset() + span.length(), covered.length);
+            for (int index = span.offset(); index < end; index++) {
+                if (!covered[index]) {
+                    missing++;
+                }
+            }
+            if (missing > 0) {
+                uncovered.add(entry.getKey() + " (offset " + span.offset() + ", length "
+                    + span.length() + ')');
+                uncoveredBytes += missing;
+            }
+        }
+        if (uncovered.isEmpty()) {
+            return;
+        }
+
+        diffs.add(new Diff(expectation.dataset(), expectation.rowIndex(), RECORD_SCOPE_FIELD, 0,
+            layout.recordLength(), layout.recordLength() + " byte(s) accounted for",
+            (layout.recordLength() - uncoveredBytes) + " byte(s) accounted for",
+            DiffKind.INCOMPLETE_EXPECTATION,
+            "the " + channel + " expectation accounts for only "
+                + (layout.recordLength() - uncoveredBytes) + " of " + describeLayout(layout)
+                + "'s " + layout.recordLength() + " byte(s), leaving " + uncoveredBytes
+                + " unasserted in: " + String.join(", ", uncovered)
+                + ". A byte no expectation covers is a byte that can be wrong while the diff count is "
+                + "zero, and the spans that go unpinned are the ones hardest to notice - a FILLER "
+                + "written as zeroes instead of spaces, or a monetary span out by a factor of ten. "
+                + "Complete the expectation either way: pin \"expectedBytes\" with the whole record "
+                + "image, which also proves the total width and therefore that every FILLER was "
+                + "emitted, or name the remaining fields in \"fields\". A REDEFINES overlay covers the "
+                + "same bytes as the span it redefines, so pinning either one of a pair is enough."));
     }
 
     /**
@@ -472,7 +672,8 @@ public final class FieldDiffer {
                 }
                 byte[] extra = output.row(rowIndex);
                 diffs.add(new Diff(dataset, rowIndex, RECORD_SCOPE_FIELD, Diff.NOT_APPLICABLE,
-                    extra.length, null, Redaction.maskRecordImage(dataset, imageOf(extra)),
+                    extra.length, null,
+                    maskImageOf(dataset, output.layout(), imageOf(extra)),
                     DiffKind.EXTRA_RECORD,
                     "the unit wrote " + output.rowCount() + " row(s) to dataset " + dataset
                         + " but the case expects " + expected.size() + ": the " + channel + " row at "
@@ -1138,6 +1339,12 @@ public final class FieldDiffer {
 
     /**
      * Compares one scalar response field, treating absent and present as distinct.
+     *
+     * <p>Rendered through {@link Redaction} like every other value, even though the scalars this
+     * method compares - a program name, a mapset, a map, a cursor field, a termination - are all
+     * unclassified and therefore render verbatim. Routing them anyway is the point: the policy is
+     * applied at every rendering site rather than at the sites someone remembered, so classifying a
+     * new field later takes one edit in one place and cannot miss a caller.
      */
     private static void compareResponseScalar(String fieldName,
                                               String expected,
@@ -1147,7 +1354,8 @@ public final class FieldDiffer {
         if (Objects.equals(expected, actual)) {
             return;
         }
-        diffs.add(responseDiff(fieldName, expected, actual, DiffKind.RESPONSE_MISMATCH,
+        diffs.add(responseDiff(fieldName, Redaction.maskFieldValue(fieldName, expected),
+            Redaction.maskFieldValue(fieldName, actual), DiffKind.RESPONSE_MISMATCH,
             "response field '" + fieldName + "' differs. It carries " + meaning + '.'));
     }
 
@@ -1167,7 +1375,12 @@ public final class FieldDiffer {
             if (Objects.equals(entry.getValue(), actualValue)) {
                 continue;
             }
-            diffs.add(responseDiff("navigation." + field, entry.getValue(), actualValue,
+            // Masked by field name like every other value the differ renders. The commarea is where
+            // the account, card, customer and user identifiers travel between transactions, so this
+            // rendering is one of the two places a single missed call would put them into a build log.
+            diffs.add(responseDiff("navigation." + field,
+                Redaction.maskFieldValue(field, entry.getValue()),
+                Redaction.maskFieldValue(field, actualValue),
                 actual.containsKey(field)
                     ? DiffKind.RESPONSE_MISMATCH
                     : DiffKind.FIELD_ABSENT_IN_FINGERPRINT,
@@ -1181,7 +1394,8 @@ public final class FieldDiffer {
             if (expected.containsKey(field)) {
                 continue;
             }
-            diffs.add(responseDiff("navigation." + field, null, entry.getValue(),
+            diffs.add(responseDiff("navigation." + field, null,
+                Redaction.maskFieldValue(field, entry.getValue()),
                 DiffKind.RESPONSE_MISMATCH,
                 "the response carries the CARDDEMO-COMMAREA field " + field + ", which the case does "
                     + "not pin. A commarea field the case says nothing about is a field nobody has "
@@ -1454,10 +1668,12 @@ public final class FieldDiffer {
     private static Diff missingRecord(String dataset,
                                       int rowIndex,
                                       ExpectedRecord expectation,
+                                      RecordLayout layout,
                                       String channel,
                                       String reason) {
         return new Diff(dataset, rowIndex, RECORD_SCOPE_FIELD, Diff.NOT_APPLICABLE,
-            Diff.NOT_APPLICABLE, summariseExpectation(expectation), null, DiffKind.MISSING_RECORD,
+            Diff.NOT_APPLICABLE, summariseExpectation(expectation, layout), null,
+            DiffKind.MISSING_RECORD,
             "no " + channel + " record was found to compare against: " + reason
                 + ". This counts as one difference for the record rather than one per field, because "
                 + "the fields of a record that was never produced are not independently wrong - they "
@@ -1492,14 +1708,71 @@ public final class FieldDiffer {
 
     /**
      * Summarises what an expectation pinned, for the {@code expected} side of a record-level
-     * difference: the whole record image where the case pins one - with any credential span masked -
+     * difference: the whole record image where the case pins one - with every classified span masked -
      * and the list of field names it pins otherwise.
+     *
+     * @param expectation the expectation being summarised
+     * @param layout      the layout of the dataset it addresses, or {@code null} when the unit
+     *                    produced nothing for that dataset and no layout is therefore known
      */
-    private static String summariseExpectation(ExpectedRecord expectation) {
+    private static String summariseExpectation(ExpectedRecord expectation, RecordLayout layout) {
         if (expectation.expectedBytes() != null) {
-            return Redaction.maskRecordImage(expectation.dataset(), expectation.expectedBytes());
+            return maskImageOf(expectation.dataset(), layout, expectation.expectedBytes());
         }
         return "{" + String.join(", ", expectation.fields().keySet()) + "}";
+    }
+
+    /**
+     * Masks every classified span of a record image before it is rendered.
+     *
+     * <p>Two rules, applied in that order, because each closes what the other cannot:
+     * <ul>
+     *   <li>The <strong>layout-driven</strong> pass masks every span whose name
+     *       {@link Redaction} classifies - the password, the customer and user names, the address, the
+     *       social-security number, the account and card identifiers - wherever the copybook puts them,
+     *       in any dataset. It is available whenever the unit produced something for the dataset,
+     *       which is when a record image is rendered at all.</li>
+     *   <li>The <strong>dataset-and-width</strong> pass is {@link Redaction#maskRecordImage} and is
+     *       kept because it handles the one shape the layout cannot: an image whose width disagrees
+     *       with the copybook, where every offset past the shortfall addresses the wrong bytes. That is
+     *       not a hypothetical width here - a {@code MISSING_RECORD} rendering prints whatever width a
+     *       fixture author typed, and an {@code EXTRA_RECORD} rendering prints whatever width the unit
+     *       wrote, which for a truncation defect is exactly the wrong one.</li>
+     * </ul>
+     * Both preserve the rendered length, so composing them cannot shift a byte and a width difference
+     * stays diagnosable.
+     *
+     * <p>With <strong>no layout at all</strong> - the {@code MISSING_RECORD} case where the unit
+     * produced nothing for the dataset, so there is no output to take one from - neither pass can
+     * locate a span, and the image is rendered as its length and a digest by
+     * {@link Redaction#maskUnlocatedImage(String)}. Guessing that such an image is harmless would be
+     * wrong for almost every dataset here: a customer row is names, an address and a social-security
+     * number, an account, card or cross-reference row leads with an identifier, and a security-user row
+     * carries the legacy plaintext password.
+     */
+    private static String maskImageOf(String dataset, RecordLayout layout, String image) {
+        if (layout == null) {
+            return Redaction.maskUnlocatedImage(image);
+        }
+        return Redaction.maskRecordImage(dataset, Redaction.maskImage(image, redactionSpans(layout)));
+    }
+
+    /**
+     * Projects a layout's addressable spans onto the shape {@link Redaction} masks by.
+     *
+     * <p>Built from {@link #addressableSpans(RecordLayout)}, which is the same view the comparison
+     * itself addresses fields through - {@code REDEFINES} overlays under their own names and
+     * {@code FILLER} spans under their ordinal names - so a span that can be compared can be masked,
+     * with no second opinion about where a field sits.
+     */
+    private static List<Redaction.Span> redactionSpans(RecordLayout layout) {
+        Map<String, FieldSpan> addressable = addressableSpans(layout);
+        List<Redaction.Span> spans = new ArrayList<>(addressable.size());
+        for (Map.Entry<String, FieldSpan> entry : addressable.entrySet()) {
+            FieldSpan span = entry.getValue();
+            spans.add(new Redaction.Span(entry.getKey(), span.offset(), span.length()));
+        }
+        return spans;
     }
 
     /** Names a layout by its shape, so a width failure identifies which layout disagreed. */
@@ -1765,6 +2038,43 @@ public final class FieldDiffer {
          * text can mean anything.
          */
         MESSAGE_CHANNEL_MISMATCH,
+
+        /**
+         * A record expectation does not account for every byte of the record it addresses.
+         *
+         * <p>The one difference that is about the <em>expectation</em> rather than about the output. A
+         * case that pins two fields of a 300-byte account row has left 289 bytes unasserted, and a
+         * comparison that reported nothing would report a diff count of zero over a record it barely
+         * looked at. Reported per record, naming every span nothing accounted for.
+         */
+        INCOMPLETE_EXPECTATION,
+
+        /**
+         * A dataset the case expects on a channel is absent from the fingerprint entirely.
+         *
+         * <p>Distinct from {@link #MISSING_RECORD}, which is about a row. This is the assertion that the
+         * dataset itself was opened or created - the one statement no row expectation can make, because
+         * a dataset that exists and holds no row has no row to address.
+         */
+        MISSING_DATASET,
+
+        /**
+         * A dataset holds a different number of rows than the case expects on that channel.
+         *
+         * <p>Counted once for the dataset. It is what makes "created and left empty" assertable, and it
+         * is not the same finding as an unaccounted row: a count can be wrong while every row the case
+         * does pin is right.
+         */
+        DATASET_ROW_COUNT_MISMATCH,
+
+        /**
+         * A dataset reports a different record width than the case expects on that channel.
+         *
+         * <p>Distinct from {@link #RECORD_WIDTH_MISMATCH}, which measures one row against its layout.
+         * This measures the layout the unit reported for the whole dataset, which is the only width an
+         * empty dataset has.
+         */
+        DATASET_WIDTH_MISMATCH,
 
         /** The unit emitted a different number of lines than the case expects. */
         MESSAGE_COUNT_MISMATCH

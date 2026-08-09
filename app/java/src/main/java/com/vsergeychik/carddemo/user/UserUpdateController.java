@@ -5,12 +5,17 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.dto.UserUpdateRequest;
+import com.vsergeychik.carddemo.user.dto.UserUpdateRequest.Cu02Info;
 import com.vsergeychik.carddemo.user.dto.UserUpdateResponse;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 import jakarta.validation.Valid;
@@ -158,6 +163,21 @@ import org.springframework.web.bind.annotation.RestController;
  * @see SecUserRepository#rewrite(SecUserRecord)
  * @see UserUpdateRequest
  * @see UserUpdateResponse
+ * <h2>This endpoint is unauthenticated and unauthorized - an accepted divergence (CWE-306, CWE-862 and CWE-522)</h2>
+ *
+ * <p>This controller amends a record in {@code USRSEC} and paints the existing password onto the screen with no authentication and no role check.
+ * Nothing here establishes who is calling or that they administer users. This screen additionally
+ * returns the stored password, because {@code app/cbl/COUSR02C.cbl:169} moves
+ * {@code SEC-USR-PWD} into {@code PASSWDI} and the parity diff compares that field.
+ *
+ * <p>That is inherited from the legacy design rather than introduced here: in CICS the region controls
+ * which transactions an operator can reach and no COBOL program in {@code app/cbl} performs a check of
+ * its own. It is not remedied here because every remedy is either excluded from the migration's closed
+ * dependency set or changes an observable outcome that the parity diff compares. The full disposition -
+ * the three exposures, the evidence for each, why each remedy is unavailable, and what a deployment must
+ * do instead - is stated once in {@link SignOnService}, which owns this package's credential handling.
+ * Read it before changing anything on this path.
+
  */
 @RestController
 public class UserUpdateController {
@@ -208,6 +228,13 @@ public class UserUpdateController {
 
     /** {@code WS-TRANID PIC X(04) VALUE 'CU02'} - line 37. Sent at 302, stored at 255, returned at 136. */
     public static final String WS_TRANID = "CU02";
+
+    /**
+     * The query-parameter name carrying {@code EIBCALEN}.
+     *
+     * <p>Named once so the handler signature, the two refusal messages and every test agree on it.
+     */
+    public static final String EIBCALEN_PARAM = "eibcalen";
 
     /** Declared width of {@code WS-MESSAGE PIC X(80)} - line 38. Two wider than {@code ERRMSGO}. */
     public static final int WS_MESSAGE_LENGTH = 80;
@@ -379,177 +406,6 @@ public class UserUpdateController {
                 "A Clock is required: POPULATE-HEADER-INFO reads FUNCTION CURRENT-DATE at line 298 on "
                         + "every send, and reading a clock inline would make every parity case "
                         + "non-deterministic");
-    }
-
-    // =================================================================================================
-    // CDEMO-CU02-INFO - app/cbl/COUSR02C.cbl:50-58. This program's own 34-byte commarea extension.
-    // =================================================================================================
-
-    /**
-     * {@code 05 CDEMO-CU02-INFO} - the thirty-four bytes this program appends to
-     * {@code CARDDEMO-COMMAREA}, declared in its own working storage at lines 50-58:
-     *
-     * <pre>
-     * 05 CDEMO-CU02-INFO.
-     *    10 CDEMO-CU02-USRID-FIRST     PIC X(08).
-     *    10 CDEMO-CU02-USRID-LAST      PIC X(08).
-     *    10 CDEMO-CU02-PAGE-NUM        PIC 9(08).
-     *    10 CDEMO-CU02-NEXT-PAGE-FLG   PIC X(01) VALUE 'N'.
-     *    10 CDEMO-CU02-USR-SEL-FLG     PIC X(01).
-     *    10 CDEMO-CU02-USR-SELECTED    PIC X(08).
-     * </pre>
-     *
-     * <p>These six items are <strong>not</strong> in {@code app/cpy/COCOM01Y.cpy}. They belong to this
-     * program's local area, which is why they are here and not on {@link NavigationContext}: that type
-     * is exactly {@value NavigationContext#COMMAREA_LENGTH} bytes and is shared by all seventeen
-     * controllers, so widening it for one program's private extension would change the area every other
-     * program receives.
-     *
-     * <p><strong>The program reads exactly one of them and writes none.</strong>
-     * {@link #usrSelected()} is tested at lines 99-100 and consumed at 101-102; the other five are
-     * restored from {@code DFHCOMMAREA} at line 94 and handed back unchanged at line 137. That
-     * pass-through is behaviour: dropping the group would shorten the returned area from
-     * {@value UserUpdateController#PASSED_COMMAREA_LENGTH} bytes to
-     * {@value NavigationContext#COMMAREA_LENGTH} and change what the next program in a chain receives -
-     * {@code COUSR00C}, the user list, is what populates these fields and what reads them back.
-     *
-     * <p>A record, so it is immutable and can be shared safely.
-     *
-     * @param usridFirst   {@code CDEMO-CU02-USRID-FIRST PIC X(08)}, line 51 - carried, never read here
-     * @param usridLast    {@code CDEMO-CU02-USRID-LAST PIC X(08)}, line 52 - carried, never read here
-     * @param pageNum      {@code CDEMO-CU02-PAGE-NUM PIC 9(08)}, line 53 - carried, never read here
-     * @param nextPageFlg  {@code CDEMO-CU02-NEXT-PAGE-FLG PIC X(01)}, line 54, whose {@code 88}-levels
-     *                     at 55-56 are {@code NEXT-PAGE-YES 'Y'} and {@code NEXT-PAGE-NO 'N'} - carried,
-     *                     never read here
-     * @param usrSelFlg    {@code CDEMO-CU02-USR-SEL-FLG PIC X(01)}, line 57 - carried, never read here
-     * @param usrSelected  {@code CDEMO-CU02-USR-SELECTED PIC X(08)}, line 58 - <strong>the one item
-     *                     this program reads</strong>, at lines 99-102
-     */
-    public record Cu02Info(String usridFirst,
-                           String usridLast,
-                           int pageNum,
-                           String nextPageFlg,
-                           String usrSelFlg,
-                           String usrSelected) {
-
-        /** Declared width of {@code CDEMO-CU02-USRID-FIRST}: {@code PIC X(08)}. */
-        public static final int USRID_FIRST_LENGTH = 8;
-
-        /** Declared width of {@code CDEMO-CU02-USRID-LAST}: {@code PIC X(08)}. */
-        public static final int USRID_LAST_LENGTH = 8;
-
-        /** Declared digits of {@code CDEMO-CU02-PAGE-NUM}: {@code PIC 9(08)}, unsigned. */
-        public static final int PAGE_NUM_DIGITS = 8;
-
-        /** Declared width of {@code CDEMO-CU02-NEXT-PAGE-FLG}: {@code PIC X(01)}. */
-        public static final int NEXT_PAGE_FLG_LENGTH = 1;
-
-        /** Declared width of {@code CDEMO-CU02-USR-SEL-FLG}: {@code PIC X(01)}. */
-        public static final int USR_SEL_FLG_LENGTH = 1;
-
-        /** Declared width of {@code CDEMO-CU02-USR-SELECTED}: {@code PIC X(08)}. */
-        public static final int USR_SELECTED_LENGTH = 8;
-
-        /**
-         * The group's total width: 8 + 8 + 8 + 1 + 1 + 8 = <strong>34</strong> bytes.
-         *
-         * <p>Added to {@value NavigationContext#COMMAREA_LENGTH} this gives the
-         * {@value UserUpdateController#PASSED_COMMAREA_LENGTH}-byte area line 94 restores.
-         */
-        public static final int LENGTH = USRID_FIRST_LENGTH + USRID_LAST_LENGTH + PAGE_NUM_DIGITS
-                + NEXT_PAGE_FLG_LENGTH + USR_SEL_FLG_LENGTH + USR_SELECTED_LENGTH;
-
-        /** {@code 88 NEXT-PAGE-YES VALUE 'Y'} - line 55. */
-        public static final String NEXT_PAGE_YES = "Y";
-
-        /** {@code 88 NEXT-PAGE-NO VALUE 'N'} - line 56, and the field's own {@code VALUE} at line 54. */
-        public static final String NEXT_PAGE_NO = "N";
-
-        /**
-         * Renders every character item at its declared width and rejects a negative page number.
-         *
-         * <p>A {@code null} becomes that item's run of spaces, because a COBOL {@code PIC X} item has no
-         * absent state, and a value of any other length is put through the alphanumeric {@code MOVE}
-         * rule so the direction of any truncation is the one COBOL uses. {@code CDEMO-CU02-PAGE-NUM} is
-         * {@code PIC 9(08)} - an unsigned picture with no sign position - so a negative value has no
-         * representation in it and is refused rather than silently stored.
-         *
-         * @throws IllegalArgumentException if {@code pageNum} is negative or needs more than
-         *                                  {@value #PAGE_NUM_DIGITS} digits
-         */
-        public Cu02Info {
-            usridFirst = image(usridFirst, USRID_FIRST_LENGTH);
-            usridLast = image(usridLast, USRID_LAST_LENGTH);
-            nextPageFlg = image(nextPageFlg, NEXT_PAGE_FLG_LENGTH);
-            usrSelFlg = image(usrSelFlg, USR_SEL_FLG_LENGTH);
-            usrSelected = image(usrSelected, USR_SELECTED_LENGTH);
-            if (pageNum < 0) {
-                throw new IllegalArgumentException("CDEMO-CU02-PAGE-NUM is PIC 9(" + PAGE_NUM_DIGITS
-                        + "), an unsigned picture with no sign position, so " + pageNum
-                        + " has no representation in it");
-            }
-            if (pageNum >= (int) Math.pow(10, PAGE_NUM_DIGITS)) {
-                throw new IllegalArgumentException("CDEMO-CU02-PAGE-NUM is PIC 9(" + PAGE_NUM_DIGITS
-                        + ") and cannot hold " + pageNum + "; a numeric MOVE would drop its high-order "
-                        + "digits and the result would still look plausible");
-            }
-        }
-
-        /**
-         * The group as a freshly initialised area: spaces in the five character items, zero in the page
-         * number, and {@code 'N'} in {@code CDEMO-CU02-NEXT-PAGE-FLG}.
-         *
-         * <p>The {@code 'N'} is not a convention chosen here - it is the {@code VALUE 'N'} clause on
-         * line 54, which is what a cold start sees before line 94 overwrites the area. The other five
-         * items declare no {@code VALUE} and so begin as spaces and zero.
-         *
-         * @return the initial extension group, never {@code null}
-         */
-        public static Cu02Info initial() {
-            return new Cu02Info(SPACE.repeat(USRID_FIRST_LENGTH),
-                    SPACE.repeat(USRID_LAST_LENGTH),
-                    0,
-                    NEXT_PAGE_NO,
-                    SPACE.repeat(USR_SEL_FLG_LENGTH),
-                    SPACE.repeat(USR_SELECTED_LENGTH));
-        }
-
-        /**
-         * The six items keyed by the name {@code app/cbl/COUSR02C.cbl:51-58} spells, in declaration
-         * order.
-         *
-         * <p>The group is not in {@code app/cpy/COCOM01Y.cpy}, so it has no fixed-width layout of its own
-         * to deserialise and these six names are reachable no other way. A field-by-field comparison of
-         * the returned communication area needs them - the area this program hands back is
-         * {@value UserUpdateController#PASSED_COMMAREA_LENGTH} bytes and 34 of them are these - so they
-         * are projected here rather than left to be reassembled from six separate accessors.
-         *
-         * <p>{@code CDEMO-CU02-PAGE-NUM} is rendered as its {@code PIC 9(08)} image - zero-filled to eight
-         * digits - because that is the form it occupies in the area, not as a decimal string.
-         *
-         * @return an unmodifiable, declaration-ordered map of the six item names to their images
-         */
-        public Map<String, String> fieldImages() {
-            Map<String, String> images = new LinkedHashMap<>();
-            images.put("CDEMO-CU02-USRID-FIRST", usridFirst);
-            images.put("CDEMO-CU02-USRID-LAST", usridLast);
-            images.put("CDEMO-CU02-PAGE-NUM", PICTURE_RULES.movePic9(pageNum, PAGE_NUM_DIGITS));
-            images.put("CDEMO-CU02-NEXT-PAGE-FLG", nextPageFlg);
-            images.put("CDEMO-CU02-USR-SEL-FLG", usrSelFlg);
-            images.put("CDEMO-CU02-USR-SELECTED", usrSelected);
-            return Collections.unmodifiableMap(images);
-        }
-
-        /**
-         * Applies the alphanumeric {@code MOVE} rule, treating {@code null} as the item's spaces.
-         *
-         * @param value  the supplied value, or {@code null} for an item that was not supplied
-         * @param length the item's declared width
-         * @return an image of exactly {@code length} characters
-         */
-        private static String image(String value, int length) {
-            return PICTURE_RULES.movePicX(value == null ? "" : value, length);
-        }
     }
 
     // =================================================================================================
@@ -728,63 +584,60 @@ public class UserUpdateController {
      * repository for which no lock exists and none is needed. Keeping the annotation at the HTTP
      * boundary is what lets the seam stay callable with no infrastructure at all.
      *
-     * @param userId       the resource identity; the value moved into {@code USRIDIN} and thence into
-     *                     {@code SEC-USR-ID}. Rendered to {@code PIC X(08)} by the alphanumeric
-     *                     {@code MOVE} rule, so a longer value is truncated on the right exactly as
-     *                     COBOL would truncate it
-     * @param request      the twelve {@code xxxI} items, the communication area and the resolved
-     *                     {@code EIBAID} token; validated against the symbolic map's declared widths
-     * @param eibcalen     {@code EIBCALEN}, optional. Absent it is inferred:
-     *                     {@value #PASSED_COMMAREA_LENGTH} when the payload carried a communication
-     *                     area, {@value #NO_COMMAREA_LENGTH} when it did not - which is the cold start
-     *                     line 90 tests for
-     * @param usridFirst   {@code CDEMO-CU02-USRID-FIRST}, optional; carried through untouched
-     * @param usridLast    {@code CDEMO-CU02-USRID-LAST}, optional; carried through untouched
-     * @param pageNum      {@code CDEMO-CU02-PAGE-NUM}, optional, defaulting to zero; carried through
-     * @param nextPageFlg  {@code CDEMO-CU02-NEXT-PAGE-FLG}, optional, defaulting to
-     *                     {@value Cu02Info#NEXT_PAGE_NO} as its {@code VALUE} clause declares
-     * @param usrSelFlg    {@code CDEMO-CU02-USR-SEL-FLG}, optional; carried through untouched
-     * @param usrSelected  {@code CDEMO-CU02-USR-SELECTED}, optional - the row the user list selected,
-     *                     tested at lines 99-100 and consumed at 101-102
-     * @return the painted screen: the twelve {@code xxxO} values, the navigation triple and the
-     *         communication area, all in the body so that nothing is retained server-side
-     * @throws NullPointerException if {@code userId} or {@code request} is {@code null}
+     * <h4>The identity in the path is refused rather than truncated</h4>
+     * {@code USRIDIN} is {@code PIC X(08)}, and an alphanumeric {@code MOVE} keeps the leading eight
+     * characters. Rendering an over-long path value through that rule would make
+     * {@code PUT /api/users/USER0001EXTRA} address {@code USER0001} - a URI updating a record it does
+     * not name, and one no operator could have produced, because a 3270 field physically cannot accept
+     * more characters than it declares. The {@code MOVE} is faithful for a value that fits; for one that
+     * does not there is nothing faithful to reproduce, so the request is refused at the boundary before
+     * any repository call and before the read-for-update takes a lock.
+     *
+     * <h4>The extension travels in the body, not in query parameters</h4>
+     * The six items of {@code 05 CDEMO-CU02-INFO} are communication-area storage
+     * [{@code app/cbl/COUSR02C.cbl:50-58}] that line 94 restores from {@code DFHCOMMAREA} together with
+     * the 160 bytes in front of it, and line 260 hands back on the {@code XCTL}. They are conversation
+     * state, so they travel with the conversation - in the request body as
+     * {@link UserUpdateRequest#cu02Info()} and back out on the response - rather than as six query
+     * parameters a caller composes by hand (rule R6).
+     *
+     * @param userId   the resource identity; the value that occupies {@code USRIDIN} and thence
+     *                 {@code SEC-USR-ID}. At most {@value UserUpdateRequest#USRIDIN_LENGTH} characters
+     * @param request  the twelve {@code xxxI} items, the communication area, its 34-byte extension and
+     *                 the resolved {@code EIBAID} token; validated against the symbolic map's declared
+     *                 widths
+     * @param eibcalen {@code EIBCALEN}, optional. Absent it is derived from the carrier; stated it must
+     *                 be {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH} and must agree
+     *                 with what the payload actually carried
+     * @return the painted screen and its metadata: the twelve {@code xxxO} values, the navigation
+     *         triple, the communication area and its extension, all in the body so that nothing is
+     *         retained server-side
+     * @throws NullPointerException     if {@code userId} or {@code request} is {@code null}
+     * @throws IllegalArgumentException if {@code userId} is wider than {@code USRIDIN}, or if
+     *                                  {@code eibcalen} is neither length or disagrees with the carrier
      */
     @PutMapping(path = "/api/users/{userId}",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     @Transactional
-    public UserUpdateResponse updateUser(
+    public ScreenResponse<UserUpdateResponse> updateUser(
             @PathVariable("userId") String userId,
             @Valid @RequestBody UserUpdateRequest request,
-            @RequestParam(name = "eibcalen", required = false) Integer eibcalen,
-            @RequestParam(name = "usridFirst", required = false) String usridFirst,
-            @RequestParam(name = "usridLast", required = false) String usridLast,
-            @RequestParam(name = "pageNum", required = false) Integer pageNum,
-            @RequestParam(name = "nextPageFlg", required = false) String nextPageFlg,
-            @RequestParam(name = "usrSelFlg", required = false) String usrSelFlg,
-            @RequestParam(name = "usrSelected", required = false) String usrSelected) {
+            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen) {
 
         Objects.requireNonNull(userId, "A user id is required: it is the RIDFLD of the READ at line 322 "
                 + "and of the REWRITE's held record at line 360");
         Objects.requireNonNull(request, "A request is required: COUSR02C is entered with a terminal "
                 + "input area, and an absent one is spaces rather than nothing");
+        requireIdentityFits(userId);
 
-        Cu02Info cu02Info = new Cu02Info(usridFirst,
-                usridLast,
-                pageNum == null ? 0 : pageNum,
-                nextPageFlg == null ? Cu02Info.NEXT_PAGE_NO : nextPageFlg,
-                usrSelFlg,
-                usrSelected);
-
-        int commareaLength = eibcalen != null
-                ? eibcalen
-                : (request.hasNavigationContext() ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH);
+        Cu02Info cu02Info = request.cu02Info();
+        int commareaLength = resolveEibcalen(eibcalen, request);
 
         // The binding rule, applied in exactly one place: the path variable is the identity, so it is
-        // what occupies the USRIDIN slot of the terminal input area. Rendered through the alphanumeric
-        // MOVE rule, so a longer value is truncated on the right as COBOL would truncate it, and the
-        // other eleven items travel exactly as the payload delivered them.
+        // what occupies the USRIDIN slot of the terminal input area. It has already been required to fit,
+        // so the MOVE below only pads; the other eleven items travel exactly as the payload delivered
+        // them.
         UserUpdateRequest received = new UserUpdateRequest(request.trnName(),
                 request.title01(),
                 request.curDate(),
@@ -798,10 +651,77 @@ public class UserUpdateController {
                 request.usrType(),
                 request.errMsg(),
                 request.navigationContext(),
-                request.aid());
+                request.aid(),
+                cu02Info);
 
-        return handle(received, commareaLength, resolveAttentionIdentifier(request.aid()), cu02Info)
-                .response();
+        ProgramState state =
+                handle(received, commareaLength, resolveAttentionIdentifier(request.aid()), cu02Info);
+        return ScreenResponse.of(state.response(), state.screenMetadata());
+    }
+
+    /**
+     * Requires the path identity to fit {@code USRIDIN PIC X(08)}, refusing it rather than truncating.
+     *
+     * @param userId the path variable
+     * @throws IllegalArgumentException if it is wider than
+     *                                  {@value UserUpdateRequest#USRIDIN_LENGTH} characters
+     */
+    static void requireIdentityFits(String userId) {
+        if (userId.length() > UserUpdateRequest.USRIDIN_LENGTH) {
+            throw new IllegalArgumentException("The user id in the path is " + userId.length()
+                    + " characters, but USRIDIN is USRIDINI PIC X("
+                    + UserUpdateRequest.USRIDIN_LENGTH + ") and SEC-USR-ID is PIC X("
+                    + UserUpdateRequest.USRIDIN_LENGTH + "). Padding it would keep the leading "
+                    + UserUpdateRequest.USRIDIN_LENGTH + " characters and address a different user "
+                    + "than the one the URI names.");
+        }
+    }
+
+    /**
+     * Resolves {@code EIBCALEN} from the stated value and the carrier, and refuses any statement the
+     * carrier does not support.
+     *
+     * <h4>Why a caller may not simply declare it</h4>
+     * {@code EIBCALEN} is not caller data on a real terminal: CICS sets it to the length of the area it
+     * actually passed. Line 90 tests it against zero to decide whether the conversation had any state at
+     * all - and its zero arm transfers straight to the sign-on program - so a caller free to state it
+     * could discard state that was sent, or claim state that was not. A negative value could do neither
+     * faithfully.
+     *
+     * <h4>Why the two accepted values are 0 and {@value #PASSED_COMMAREA_LENGTH}</h4>
+     * Line 90 compares against zero and nothing else, and the only other thing the program does with the
+     * area is {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} at line 94, which reads the 160
+     * bytes of the copybook plus the 34 of {@code 05 CDEMO-CU02-INFO}. The projected request carries
+     * exactly those two areas, so it is in one of exactly two states: absent, or complete at
+     * {@value #PASSED_COMMAREA_LENGTH} bytes.
+     *
+     * @param eibcalen the stated value, or {@code null}
+     * @param request  the bound request, whose commarea presence is the carrier
+     * @return {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH}
+     * @throws IllegalArgumentException if the stated value is neither length, or contradicts the carrier
+     */
+    static int resolveEibcalen(Integer eibcalen, UserUpdateRequest request) {
+        int carried = request.hasNavigationContext()
+                ? PASSED_COMMAREA_LENGTH
+                : NO_COMMAREA_LENGTH;
+        if (eibcalen == null) {
+            return carried;
+        }
+        int stated = eibcalen;
+        if (stated != NO_COMMAREA_LENGTH && stated != PASSED_COMMAREA_LENGTH) {
+            throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
+                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
+                    + "program is either " + NO_COMMAREA_LENGTH + " or " + PASSED_COMMAREA_LENGTH
+                    + ", CARDDEMO-COMMAREA plus CDEMO-CU02-INFO.");
+        }
+        if (stated != carried) {
+            throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
+                    + " but the payload carries " + (carried == NO_COMMAREA_LENGTH ? "no" : "a")
+                    + " communication area. EIBCALEN describes what arrived; it cannot contradict it, "
+                    + "because app/cbl/COUSR02C.cbl:90 uses it to decide whether the conversation had "
+                    + "any state at all.");
+        }
+        return stated;
     }
 
     /**
@@ -2398,24 +2318,39 @@ public class UserUpdateController {
         // ---------------------------------------------------------------------------------------------
 
         /**
-         * The screen buffer as {@code COUSR2AO}, plus the navigation triple and the communication area.
+         * The screen buffer as {@code COUSR2AO}, plus the navigation triple, the communication area and
+         * its thirty-four-byte extension.
          *
-         * <p>Exactly the sixteen members {@link UserUpdateResponse} declares and nothing else: no colour
-         * byte, no {@code xxxL}, no {@code FILLER} and no concurrency token. The three navigation members
-         * follow the two things the program actually did:
+         * <p>Exactly the seventeen members {@link UserUpdateResponse} declares and nothing else: no
+         * colour byte, no {@code xxxL}, no {@code FILLER} and no concurrency token. The presentation
+         * metadata travels beside the response in {@link #screenMetadata()}, not inside it.
+         *
+         * <h4>What the navigation triple says, and why it changed</h4>
+         * The triple answers "where is the client, and where does it go next" - the question a stateless
+         * client has to ask, since there is no terminal holding a screen for it.
          *
          * <ul>
-         *   <li>{@link UserUpdateResponse#nextProgram()} names the {@code XCTL} target when one was
-         *       issued, and is spaces otherwise - the program returned with a {@code TRANSID} instead;</li>
-         *   <li>{@link UserUpdateResponse#nextMapset()} and {@link UserUpdateResponse#nextMap()} are
-         *       {@code CDEMO-LAST-MAPSET} and {@code CDEMO-LAST-MAP} <strong>echoed straight out of the
-         *       communication area</strong>. That is a pass-through and not a decision:
-         *       {@code COUSR02C} never writes either field, so whatever the calling program left there -
-         *       {@code COUSR02} and {@code COUSR2A} when the user list transferred here, spaces on a cold
-         *       start - is what travels back out. Naming this screen's own mapset instead would invent a
-         *       value the program does not produce, and would differ on the cold-start path where the
-         *       area was never restored at all.</li>
+         *   <li>On a transfer ({@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)}, lines 258-261)
+         *       {@link UserUpdateResponse#nextProgram()} names the target and the two map members are
+         *       <strong>spaces</strong>: the {@code XCTL} names no mapset and no map, so which screen the
+         *       target will paint is genuinely not known here, and publishing a guess - or this screen's
+         *       own map - would state something the source does not.</li>
+         *   <li>On every other path the program reaches
+         *       {@code EXEC CICS RETURN TRANSID(WS-TRANID)} at 135-138 having sent
+         *       {@code MAP('COUSR2A') MAPSET('COUSR02')} (lines 272-278 and 285-291). The triple therefore
+         *       names {@value UserUpdateController#WS_PGMNAME},
+         *       {@link UserUpdateResponse#MAPSET_NAME} and {@link UserUpdateResponse#MAP_NAME} - the
+         *       screen the client is now looking at, taken from the {@code SEND} statements themselves
+         *       rather than from the caller's leftovers.</li>
          * </ul>
+         *
+         * <p>These three members are <strong>not</strong> {@code DFHMDF} fields and not commarea fields:
+         * {@code COUSR02C} copies no {@code CVCRD01Y}, so it has no {@code CCARD-NEXT-PROG} of its own.
+         * They are a projection of navigation, which is why redefining what they say costs no parity.
+         * {@code CDEMO-LAST-MAPSET} and {@code CDEMO-LAST-MAP} remain observable and byte-identical
+         * inside {@link UserUpdateResponse#navigationContext()}, which still carries the whole
+         * {@value NavigationContext#COMMAREA_LENGTH}-byte area exactly as the program leaves it -
+         * including the fact that {@code COUSR02C} never writes either field.
          *
          * <p>Values are handed over at their full declared widths, so nothing is padded or trimmed on the
          * way out.
@@ -2436,9 +2371,44 @@ public class UserUpdateController {
                     usrType,
                     errMsg,
                     commarea,
-                    nextProgram,
-                    commarea.lastMapset(),
-                    commarea.lastMap());
+                    transferred ? nextProgram : PICTURE_RULES.movePicX(WS_PGMNAME,
+                            UserUpdateResponse.NEXT_PROGRAM_LENGTH),
+                    transferred
+                            ? SPACE.repeat(UserUpdateResponse.NEXT_MAPSET_LENGTH)
+                            : UserUpdateResponse.MAPSET_NAME,
+                    transferred
+                            ? SPACE.repeat(UserUpdateResponse.NEXT_MAP_LENGTH)
+                            : UserUpdateResponse.MAP_NAME,
+                    cu02Info);
+        }
+
+        /**
+         * This screen's presentation metadata, in the shared envelope every online response publishes.
+         *
+         * <p>{@code COUSR02} declares no {@code xxxC}, {@code xxxP}, {@code xxxH} or {@code xxxV} items,
+         * so there are no per-field quads to project and the field map is empty - an accurate empty, not a
+         * missing one. What this screen does have is the two things it writes that are metadata by
+         * declaration and had no way to travel:
+         *
+         * <ul>
+         *   <li>{@code MOVE -1 TO xxxL} - the cursor request. The {@code xxxL} item is
+         *       {@code COMP PIC S9(4)} input-group metadata and never a payload member (gate G9), so the
+         *       field it names is reported here by its {@code DFHMDF} label. Five fields are ever named;
+         *       see {@link ScreenField}.</li>
+         *   <li>{@code MOVE DFHRED TO ERRMSGC OF COUSR2AO} - the colour of the error line, reported as
+         *       its unsigned byte value.</li>
+         * </ul>
+         *
+         * <p>{@code resetAllOutputFields} is {@code false}: {@code MOVE LOW-VALUES TO COUSR2AO} at line 97
+         * has already been performed on this response, so the cleared state is in the twelve values the
+         * client receives and there is nothing left for it to repeat.
+         *
+         * @return the metadata, never {@code null}
+         */
+        public ScreenMetadata screenMetadata() {
+            return ScreenMetadata.of(cursorField().map(Enum::name).orElse(null),
+                    errMsgColour,
+                    false);
         }
 
         /**
@@ -2481,15 +2451,35 @@ public class UserUpdateController {
          *
          * @return the rendering, never {@code null}
          */
+        /**
+         * A diagnostic rendering that names the user without disclosing their identity.
+         *
+         * <p>The password was already withheld, and the rest was not: the user id, both names, the error
+         * and working messages and the cursor field were printed verbatim, so any log line rendering this
+         * state carried a named person (CWE-532), and every one of those items is text a caller typed - a
+         * CR or LF among it forges a second log line (CWE-117).
+         *
+         * <p>The user id is masked to its last four characters, which is enough to tell one session from
+         * another; the two names are described by length only, which is what a width or padding
+         * investigation actually needs; and every retained text field is escaped to a single line. The
+         * counts, codes, flags and mnemonics disclose nothing and stay as they were.
+         *
+         * <p>Note that the blank password still renders as its escaped self rather than as
+         * {@code [redacted]}, because "the field is spaces" is exactly what a reader needs to know there
+         * and spaces disclose nothing - the original behaviour, kept, with the escape added.
+         *
+         * @return the rendering; never {@code null}
+         */
         @Override
         public String toString() {
-            return "ProgramState[usrIdIn=" + usrIdIn
-                    + ", fName=" + fName
-                    + ", lName=" + lName
-                    + ", passwd=" + (isSpacesOrLowValues(passwd) ? passwd : NavigationContext.REDACTED)
-                    + ", usrType=" + usrType
-                    + ", errMsg=" + errMsg
-                    + ", wsMessage=" + wsMessage
+            return "ProgramState[usrIdIn=" + SensitiveDiagnostics.maskIdentifier(usrIdIn)
+                    + ", fName=" + SensitiveDiagnostics.describeText(fName)
+                    + ", lName=" + SensitiveDiagnostics.describeText(lName)
+                    + ", passwd=" + (isSpacesOrLowValues(passwd)
+                            ? DiagnosticText.singleLine(passwd) : NavigationContext.REDACTED)
+                    + ", usrType=" + DiagnosticText.singleLine(usrType)
+                    + ", errMsg=" + DiagnosticText.singleLine(errMsg)
+                    + ", wsMessage=" + DiagnosticText.singleLine(wsMessage)
                     + ", wsErrFlg=" + wsErrFlg
                     + ", wsUsrModified=" + wsUsrModified
                     + ", wsRespCd=" + wsRespCd

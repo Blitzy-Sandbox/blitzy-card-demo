@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.vsergeychik.carddemo.card.dto.CardScreenState;
+import com.vsergeychik.carddemo.common.DiagnosticText;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
@@ -2421,13 +2423,31 @@ public final class AccountUpdateRequest {
      *
      * @return a diagnostic rendering of the whole request
      */
+    /**
+     * A diagnostic rendering that discloses nothing a log must not hold.
+     *
+     * <p>Every field goes through {@link DiagnosticText#screenField(String, String)}, which decides from
+     * the {@code DFHMDF} label itself: an account, card or customer identifier is masked to its last four
+     * characters, a credential or personal item - {@code ACSTSSN}, {@code ACSGOVT}, {@code ACSEFT},
+     * {@code ACSTDOB}, the name fields - is withheld entirely, and everything else is escaped to a single
+     * line. Deciding from the label rather than from a list held here means the next field added to the
+     * mapset is treated correctly without anyone remembering to classify it.
+     *
+     * <p><strong>Nothing about the parity surface changes.</strong> The JSON payload, every accessor and
+     * every fixed-width image method are untouched; this is a Java-only rendering with no COBOL
+     * counterpart, so withholding from it costs no observable behaviour. What it prevents is a log line
+     * carrying a customer's social security number (CWE-532) or a field value whose embedded CR or LF
+     * forges a second log line (CWE-117).
+     *
+     * @return the rendering; never {@code null}
+     */
     @Override
     public String toString() {
         StringBuilder rendered = new StringBuilder("AccountUpdateRequest[");
         for (ScreenField field : ScreenField.values()) {
             rendered.append(field.label())
                     .append("='")
-                    .append(value(field))
+                    .append(DiagnosticText.screenField(field.label(), value(field)))
                     .append("' ")
                     .append(metadata.get(field))
                     .append(", ");
@@ -4088,6 +4108,35 @@ public final class AccountUpdateRequest {
                     area.readString(base + CURR_CYC_DEBIT_OFFSET, MONEY_LENGTH),
                     area.readString(base + GROUP_ID_OFFSET, GROUP_ID_LENGTH));
         }
+
+        /**
+         * A diagnostic rendering that discloses no balance and no identifier in full.
+         *
+         * <p>The generated record rendering printed every component verbatim, which put the account
+         * identifier, the current balance, both credit limits and both cycle amounts into any log line
+         * that rendered a snapshot (CWE-532), and let a value carrying CR or LF forge a second line
+         * (CWE-117). The identifier is masked to its last four characters and every monetary item is
+         * withheld; the dates, the status flag and the group id carry no personal data and stay.
+         *
+         * <p>Accessors and {@code readFrom} are untouched: this rendering has no COBOL counterpart, so
+         * withholding from it costs no observable behaviour.
+         *
+         * @return the rendering; never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "AcctSnapshot[acctIdX=" + SensitiveDiagnostics.maskIdentifier(acctIdX)
+                    + ", activeStatus=" + DiagnosticText.singleLine(activeStatus)
+                    + ", currBal=" + DiagnosticText.omitted(currBal)
+                    + ", creditLimit=" + DiagnosticText.omitted(creditLimit)
+                    + ", cashCreditLimit=" + DiagnosticText.omitted(cashCreditLimit)
+                    + ", openDate=" + DiagnosticText.singleLine(openDate)
+                    + ", expiraionDate=" + DiagnosticText.singleLine(expiraionDate)
+                    + ", reissueDate=" + DiagnosticText.singleLine(reissueDate)
+                    + ", currCycCredit=" + DiagnosticText.omitted(currCycCredit)
+                    + ", currCycDebit=" + DiagnosticText.omitted(currCycDebit)
+                    + ", groupId=" + DiagnosticText.singleLine(groupId) + ']';
+        }
     }
 
     /**
@@ -4627,6 +4676,44 @@ public final class AccountUpdateRequest {
                     area.readString(base + EFT_ACCOUNT_ID_OFFSET, EFT_ACCOUNT_ID_LENGTH),
                     area.readString(base + PRI_HOLDER_IND_OFFSET, PRI_HOLDER_IND_LENGTH),
                     area.readString(base + FICO_SCORE_OFFSET, FICO_SCORE_LENGTH));
+        }
+
+        /**
+         * A diagnostic rendering that discloses no identity data.
+         *
+         * <p>The generated record rendering printed the customer's full name, all three address lines,
+         * both telephone numbers, the social security number, the government-issued identifier, the date
+         * of birth and the EFT account identifier verbatim - the most sensitive rendering in the module
+         * (CWE-532), and every one of those fields is free text that could forge a log line (CWE-117).
+         *
+         * <p>The credentials and the date of birth are withheld entirely. The name, address and telephone
+         * fields are described by length only, which is what a reader diagnosing a width or padding
+         * problem actually needs and is all they need. The customer identifier is masked to its last four
+         * characters, and the state, country, holder indicator and FICO score - none of which identifies
+         * anybody on its own - are escaped to a single line.
+         *
+         * @return the rendering; never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "CustSnapshot[custIdX=" + SensitiveDiagnostics.maskIdentifier(custIdX)
+                    + ", firstName=" + SensitiveDiagnostics.describeText(firstName)
+                    + ", middleName=" + SensitiveDiagnostics.describeText(middleName)
+                    + ", lastName=" + SensitiveDiagnostics.describeText(lastName)
+                    + ", addrLine1=" + SensitiveDiagnostics.describeText(addrLine1)
+                    + ", addrLine2=" + SensitiveDiagnostics.describeText(addrLine2)
+                    + ", addrLine3=" + SensitiveDiagnostics.describeText(addrLine3)
+                    + ", addrStateCd=" + DiagnosticText.singleLine(addrStateCd)
+                    + ", addrCountryCd=" + DiagnosticText.singleLine(addrCountryCd)
+                    + ", addrZip=" + SensitiveDiagnostics.describeText(addrZip)
+                    + ", phoneNum1=" + SensitiveDiagnostics.describeText(phoneNum1)
+                    + ", phoneNum2=" + SensitiveDiagnostics.describeText(phoneNum2)
+                    + ", ssnX=" + DiagnosticText.omitted(ssnX)
+                    + ", govtIssuedId=" + DiagnosticText.omitted(govtIssuedId)
+                    + ", dobYyyyMmDd=" + DiagnosticText.omitted(dobYyyyMmDd)
+                    + ", eftAccountId=" + DiagnosticText.omitted(eftAccountId)
+                    + ", priHolderInd=" + DiagnosticText.singleLine(priHolderInd)
+                    + ", ficoScoreX=" + DiagnosticText.singleLine(ficoScoreX) + ']';
         }
     }
 
@@ -5414,6 +5501,21 @@ public final class AccountUpdateRequest {
             return new Details(group,
                     AcctSnapshot.readFrom(area, base + ACCT_DATA_OFFSET),
                     CustSnapshot.readFrom(area, base + CUST_DATA_OFFSET));
+        }
+
+        /**
+         * A diagnostic rendering that delegates to the two snapshots' own safe renderings.
+         *
+         * <p>The generated record rendering recursed into both components, so the whole of
+         * {@link AcctSnapshot} and {@link CustSnapshot} reached the log through it. Naming them
+         * explicitly means each is rendered by its own override rather than by the generated one, and a
+         * component added here later cannot slip past unclassified.
+         *
+         * @return the rendering; never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "Details[group=" + group + ", acct=" + acct + ", cust=" + cust + ']';
         }
     }
 

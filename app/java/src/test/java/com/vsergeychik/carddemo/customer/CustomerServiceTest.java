@@ -7,7 +7,9 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.customer.CustomerRepository.CustomerFile;
 import com.vsergeychik.carddemo.customer.CustomerService.Execution;
+import com.vsergeychik.carddemo.customer.CustomerService.PrintStreamSysoutSink;
 import com.vsergeychik.carddemo.customer.CustomerService.Sysout;
+import com.vsergeychik.carddemo.customer.CustomerService.SysoutSink;
 import com.vsergeychik.carddemo.customer.CustomerService.WorkingStorage;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
@@ -22,8 +24,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -725,6 +729,94 @@ class CustomerServiceTest {
     }
 
     // =============================================================================================
+    // Handle release. CBCUS01C has no statement for this: CEE3ABD ends a z/OS task and the operating
+    // system reclaims its open files, whereas an AbendException ends one step inside a JVM that keeps
+    // running. The release is therefore invisible - it must add no line and change no status.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("Handle release - silent, idempotent, and only what the open acquired")
+    class HandleRelease {
+
+        @Test
+        @DisplayName("a fatal read releases the browse without displaying anything extra")
+        void aFatalReadReleasesTheBrowse() {
+            CustomerRepository repository = Mockito.mock(CustomerRepository.class);
+            CustomerFile file = Mockito.mock(CustomerFile.class);
+            Mockito.when(repository.datasetCharset()).thenReturn(ASCII);
+            Mockito.when(repository.openInput()).thenReturn(file);
+            Mockito.when(file.openStatus()).thenReturn(FileStatus.OK);
+            Mockito.when(file.closeFile()).thenReturn(FileStatus.OK);
+            Mockito.when(file.readNext()).thenReturn(CustomerRepository.ReadResult.of("35"));
+            Sysout sink = new Sysout();
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> new CustomerService(repository).readAndPrintCustomerFile(sink));
+
+            Mockito.verify(file).closeFile();
+            assertThat(sink.lines())
+                    .as("the release is not a second CLOSE: no close message, no END banner")
+                    .doesNotContain(CustomerService.ERROR_CLOSING_CUSTOMER_FILE,
+                            CustomerService.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("a clean run closes exactly once - the release finds the file already closed")
+        void aCleanRunClosesOnce() {
+            CustomerRepository repository = Mockito.mock(CustomerRepository.class);
+            CustomerFile file = Mockito.mock(CustomerFile.class);
+            Mockito.when(repository.datasetCharset()).thenReturn(ASCII);
+            Mockito.when(repository.openInput()).thenReturn(file);
+            Mockito.when(file.openStatus()).thenReturn(FileStatus.OK);
+            Mockito.when(file.readNext())
+                    .thenReturn(CustomerRepository.ReadResult.of(FileStatus.END_OF_FILE));
+            Mockito.when(file.closeFile()).thenAnswer(invocation -> {
+                Mockito.when(file.isClosed()).thenReturn(true);
+                return FileStatus.OK;
+            });
+
+            Execution execution = new CustomerService(repository).readAndPrintCustomerFile();
+
+            Mockito.verify(file).closeFile();
+            assertThat(execution.recordsRead()).isZero();
+            assertThat(execution.sysout()).containsExactly(CustomerService.START_OF_EXECUTION,
+                    CustomerService.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("a failed open leaves nothing to release, and no close is attempted")
+        void aFailedOpenReleasesNothing() {
+            CustomerRepository repository = Mockito.mock(CustomerRepository.class);
+            CustomerFile file = Mockito.mock(CustomerFile.class);
+            Mockito.when(repository.datasetCharset()).thenReturn(ASCII);
+            Mockito.when(repository.openInput()).thenReturn(file);
+            Mockito.when(file.openStatus()).thenReturn("39");
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> new CustomerService(repository).readAndPrintCustomerFile());
+
+            Mockito.verify(file, Mockito.never()).closeFile();
+        }
+
+        @Test
+        @DisplayName("a release that itself fails does not replace the abend the caller needs")
+        void aFailingReleaseDoesNotMaskTheAbend() {
+            CustomerRepository repository = Mockito.mock(CustomerRepository.class);
+            CustomerFile file = Mockito.mock(CustomerFile.class);
+            Mockito.when(repository.datasetCharset()).thenReturn(ASCII);
+            Mockito.when(repository.openInput()).thenReturn(file);
+            Mockito.when(file.openStatus()).thenReturn(FileStatus.OK);
+            Mockito.when(file.readNext()).thenReturn(CustomerRepository.ReadResult.of("35"));
+            Mockito.when(file.closeFile())
+                    .thenThrow(new DataAccessResourceFailureException("the gateway dropped the browse"));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> new CustomerService(repository).readAndPrintCustomerFile())
+                    .satisfies(abend -> assertThat(abend.getReturnCode()).isEqualTo(12));
+        }
+    }
+
+    // =============================================================================================
     // The status ladder - L94-L103 - and the WHEN OTHER arm. Gate G47.
     // =============================================================================================
 
@@ -1343,4 +1435,166 @@ class CustomerServiceTest {
             }
         }
     }
+    /**
+     * DBP-05. Streaming SYSOUT: the production shape, which emits every line and keeps none of them.
+     *
+     * <p>The finding was that the complete {@code CBCUS01C} SYSOUT was retained in an {@code ArrayList}
+     * and copied, with two 500-character records per customer and no record ceiling on the dataset. The
+     * fix adds a streaming destination; what these tests have to establish is that adding it changed
+     * nothing observable, because the emitted sequence <em>is</em> the parity contract.
+     */
+    @Nested
+    @DisplayName("DBP-05: a streaming sink emits everything and retains nothing")
+    class StreamingSysout {
+
+        @Test
+        @DisplayName("the streamed sequence is byte-identical to the captured one, in the same order")
+        void theStreamedSequenceIsTheCapturedSequence() {
+            List<String> captured = service(seeded(fixtureRows())).readAndPrintCustomerFile().sysout();
+
+            List<String> streamed = new ArrayList<>();
+            service(seeded(fixtureRows())).readAndPrintCustomerFileTo(streamed::add);
+
+            // Not "has the same size" and not "contains the same elements": exactly equal, in order.
+            // Every banner, every image and the preserved L96/L78 duplicate pair, byte for byte.
+            assertThat(streamed).containsExactlyElementsOf(captured);
+            assertThat(streamed).hasSize(FIXTURE_LINE_COUNT);
+        }
+
+        @Test
+        @DisplayName("the duplicate display of L96 then L78 survives streaming")
+        void theDuplicateDisplaySurvivesStreaming() {
+            List<String> streamed = new ArrayList<>();
+            service(seeded(fixtureRows())).readAndPrintCustomerFileTo(streamed::add);
+
+            List<String> records = streamed.subList(1, streamed.size() - 1);
+            assertThat(records).hasSize(FIXTURE_RECORDS * CustomerService.DISPLAYS_PER_RECORD);
+            for (int pair = 0; pair < FIXTURE_RECORDS; pair++) {
+                assertThat(records.get(pair * 2))
+                        .as("record %d's two displays must still be byte-identical and adjacent", pair)
+                        .isEqualTo(records.get(pair * 2 + 1));
+            }
+        }
+
+        @Test
+        @DisplayName("nothing is retained: lines() refuses rather than answering 'nothing was emitted'")
+        void nothingIsRetained() {
+            List<String> streamed = new ArrayList<>();
+            Sysout sink = new Sysout(streamed::add);
+
+            service(seeded(fixtureRows())).readAndPrintCustomerFileTo(streamed::add);
+
+            assertThat(sink.retains()).isFalse();
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(sink::lines)
+                    .withMessageContaining("kept none of them");
+        }
+
+        @Test
+        @DisplayName("the counters stay answerable while streaming, because they are counters")
+        void theCountersStayAnswerable() {
+            List<String> streamed = new ArrayList<>();
+            Sysout sink = new Sysout(streamed::add);
+
+            sink.display(CustomerService.START_OF_EXECUTION);
+            sink.displayCustomerRecord("x".repeat(FIVE_HUNDRED));
+            sink.displayCustomerRecord("x".repeat(FIVE_HUNDRED));
+
+            assertThat(sink.lineCount()).isEqualTo(3);
+            assertThat(sink.recordImageCount()).isEqualTo(CustomerService.DISPLAYS_PER_RECORD);
+            assertThat(streamed).hasSize(3);
+        }
+
+        @Test
+        @DisplayName("a capturing sink still retains, so every existing caller is unaffected")
+        void aCapturingSinkStillRetains() {
+            Sysout sink = new Sysout();
+
+            assertThat(sink.retains()).isTrue();
+            assertThat(sink.lines()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the Execution-returning overload refuses a streaming sink instead of failing later")
+        void theCapturingOverloadRefusesAStreamingSink() {
+            CustomerService subject = service(seeded(fixtureRows()));
+            Sysout streaming = new Sysout(line -> { });
+
+            // Refused up front. Letting it run would emit all 102 lines and only then discover, at the
+            // Execution construction, that there is no sequence to build one from - after the side effect.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> subject.readAndPrintCustomerFile(streaming))
+                    .withMessageContaining("readAndPrintCustomerFileTo(SysoutSink)");
+        }
+
+        @Test
+        @DisplayName("an abend still streams its error text, its status line and ABENDING PROGRAM")
+        void anAbendStillStreamsItsThreeLines() {
+            CustomerService subject = service(refusingTheFirstDescribe(seeded(fixtureRows())));
+            List<String> streamed = new ArrayList<>();
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> subject.readAndPrintCustomerFileTo(streamed::add));
+
+            assertThat(streamed).containsExactly(
+                    CustomerService.START_OF_EXECUTION,
+                    CustomerService.ERROR_OPENING_CUSTFILE,
+                    FileStatus.toDisplayLine(CustomerRepository.PERMANENT_ERROR_STATUS),
+                    CustomerService.ABENDING_PROGRAM);
+            assertThat(streamed).doesNotContain(CustomerService.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("the standard-output sink writes one undecorated line per DISPLAY")
+        void theStandardOutputSinkIsUndecorated() {
+            ByteArrayOutputStream captured = new ByteArrayOutputStream();
+            SysoutSink sink = new PrintStreamSysoutSink(new PrintStream(captured, true, ASCII));
+
+            sink.write(CustomerService.START_OF_EXECUTION);
+            sink.write(CustomerService.END_OF_EXECUTION);
+
+            // No timestamp, no severity, no logger name, no trimming - a parity case compares these bytes.
+            assertThat(captured.toString(ASCII)).isEqualTo(
+                    CustomerService.START_OF_EXECUTION + System.lineSeparator()
+                            + CustomerService.END_OF_EXECUTION + System.lineSeparator());
+        }
+
+        @Test
+        @DisplayName("a trailing space in an emitted line reaches the destination intact")
+        void trailingSpaceIsPreserved() {
+            List<String> streamed = new ArrayList<>();
+            String image = "A".repeat(FIVE_HUNDRED - 3) + "   ";
+
+            new Sysout(streamed::add).displayCustomerRecord(image);
+
+            assertThat(streamed).containsExactly(image);
+            assertThat(streamed.get(0)).hasSize(FIVE_HUNDRED).endsWith("   ");
+        }
+
+        @Test
+        @DisplayName("a streaming sink and the streaming entry point each need a destination")
+        void aDestinationIsRequired() {
+            assertThatNullPointerException().isThrownBy(() -> new Sysout((SysoutSink) null));
+            assertThatNullPointerException().isThrownBy(
+                    () -> service(seeded(fixtureRows())).readAndPrintCustomerFileTo(null));
+        }
+
+        @Test
+        @DisplayName("the standard-output sink refuses a missing stream and a missing line")
+        void thePrintStreamSinkGuardsItsArguments() {
+            assertThatNullPointerException().isThrownBy(() -> new PrintStreamSysoutSink(null));
+            assertThatNullPointerException().isThrownBy(
+                    () -> CustomerService.standardOutputSysoutSink().write(null));
+        }
+
+        @Test
+        @DisplayName("the SYSOUT=* default is a sink over the standard output stream")
+        void theDefaultIsOverStandardOutput() {
+            SysoutSink sink = CustomerService.standardOutputSysoutSink();
+
+            assertThat(sink).isInstanceOf(PrintStreamSysoutSink.class);
+            assertThat(((PrintStreamSysoutSink) sink).stream()).isSameAs(System.out);
+        }
+    }
+
 }

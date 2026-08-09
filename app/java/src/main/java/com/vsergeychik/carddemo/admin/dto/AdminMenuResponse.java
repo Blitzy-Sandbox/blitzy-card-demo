@@ -3,6 +3,7 @@ package com.vsergeychik.carddemo.admin.dto;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import jakarta.validation.constraints.Size;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -739,9 +740,49 @@ public record AdminMenuResponse(
 
     // =================================================================================================
     // Derived views. Every one of these is computed from the members rather than stored beside them, so
-    // every one is @JsonIgnore: the wire format carries the twenty screen fields, the communication
-    // area, the three navigation members, the message colour and the repaint flag - and nothing else.
+    // every one is @JsonIgnore: the JSON object this record serialises to carries the twenty screen
+    // fields, the communication area and the three navigation members - and nothing else.
+    //
+    // The message colour and the repaint flag are members of this record but are NOT members of that
+    // object: both are @JsonIgnore, because neither is a DFHMDF field. They are presentation metadata,
+    // which the Agent Action Plan's section 0.3.9 keeps separate from the 1:1 field projection - and
+    // separate is not the same as absent. They reach the client through {@link #screenMetadata()},
+    // which a handler publishes beside this screen in a ScreenResponse envelope.
     // =================================================================================================
+
+    /**
+     * This screen's presentation metadata, in the shared envelope every online response publishes.
+     *
+     * <p>Two things {@code COADM01C} produces are metadata by declaration rather than payload, and both
+     * are members of this record that no JSON member of it carries:
+     *
+     * <ul>
+     *   <li>{@link #messageColour()} - {@code ERRMSGC OF COADM1AO}. The mapset declares
+     *       {@code COLOR=RED} on {@code ERRMSG}, and line 148's {@code MOVE DFHGREEN TO ERRMSGC}
+     *       overrides it on the coming-soon path alone, so the byte genuinely varies and a client that
+     *       cannot see it cannot render the message as the program intended;</li>
+     *   <li>{@link #resetAllOutputFields()} - {@code MOVE LOW-VALUES TO COADM1AO} at line 89, true on
+     *       the first-entry path alone. It is the same instruction to a client as to a terminal: clear
+     *       what is rendered before painting what follows.</li>
+     * </ul>
+     *
+     * <p>The field map is <strong>empty, and accurately so</strong>. {@code app/cpy-bms/COADM01.CPY}
+     * declares no {@code xxxC}, {@code xxxP}, {@code xxxH} or {@code xxxV} item beyond the message
+     * line's, so there are no per-field attribute quads for this screen to publish - an empty map rather
+     * than a missing one. Nor is any cursor named: {@code app/cbl/COADM01C.cbl} contains no
+     * {@code MOVE -1 TO <field>L} at all, so this program makes no cursor request and reporting a field
+     * would invent one.
+     *
+     * <p>The colour is published as an unsigned {@code 0}-{@code 255} value, because an attribute byte
+     * with the high bit set - {@link BmsAttributes#DFHRED} is {@code 0xF2} - is a negative {@code byte}
+     * in Java and publishing {@code -14} would misstate it.
+     *
+     * @return the metadata; never {@code null}
+     */
+    @JsonIgnore
+    public ScreenMetadata screenMetadata() {
+        return ScreenMetadata.of(null, messageColour, resetAllOutputFields);
+    }
 
     /**
      * The twelve menu lines in map order, positionally aligned with {@link #OPTION_LINE_FIELDS}.

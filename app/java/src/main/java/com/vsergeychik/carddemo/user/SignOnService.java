@@ -52,6 +52,57 @@ import org.springframework.stereotype.Service;
  * {@link SignOnInput#toString()}, which a record's generated {@code toString} would otherwise print in
  * full.
  *
+ * <h2>The endpoints themselves are unauthenticated and unauthorized, and that is an accepted
+ * divergence rather than an oversight</h2>
+ *
+ * <p>This is the authoritative note for the whole {@code user} package; the four administration
+ * controllers point here rather than each restating it. Three exposures exist and all three are
+ * inherited from the legacy design:
+ *
+ * <ul>
+ *   <li><strong>No authentication (CWE-306).</strong> {@link UserAddController},
+ *       {@link UserUpdateController}, {@link UserDeleteController} and {@link UserMenuController}
+ *       expose the {@code USRSEC} maintenance transactions with nothing that establishes who is
+ *       calling. In CICS these are separate transactions reached only after {@code COSGN00C} has run
+ *       and only from {@code COADM01C}'s menu, and the region - not the program - is what enforces
+ *       that: no COBOL program in {@code app/cbl} contains an authentication check of its own.</li>
+ *   <li><strong>No authorization (CWE-862).</strong> Nothing verifies that the caller is an
+ *       administrator. {@code COSGN00C} decides an operator's destination from
+ *       {@code SEC-USR-TYPE} - {@code app/cbl/COSGN00C.cbl:232} transfers an administrator to
+ *       {@code COADM01C} and {@code :237} a regular user to {@code COMEN01C} - but that is
+ *       <em>navigation</em>, not enforcement: the transaction remains reachable directly, and the
+ *       AAP's own translation of those two transfers is a role field on the sign-on response, with
+ *       the client choosing where to go.</li>
+ *   <li><strong>The stored password is returned to the caller (CWE-522).</strong>
+ *       {@code app/cbl/COUSR02C.cbl:169} is {@code MOVE SEC-USR-PWD TO PASSWDI OF COUSR2AI} - the
+ *       update screen is painted with the existing password so the operator can see and amend it.
+ *       {@link UserUpdateController} reproduces that field, because the symbolic map declares it and
+ *       a field-for-field diff compares it.</li>
+ * </ul>
+ *
+ * <p><strong>Why none of the three is fixed here.</strong> Every available remedy is either excluded
+ * from the migration or changes an observable outcome:
+ *
+ * <ul>
+ *   <li>Spring Security, JWT and BCrypt are <em>named exclusions</em> from the migration's closed
+ *       dependency set, and the acceptance gates go further than merely omitting them: the gate
+ *       covering authentication requires that no filter chain be present, so adding one would fail
+ *       the build rather than pass it.</li>
+ *   <li>Suppressing the echoed password would change the bytes of a screen field that the parity
+ *       diff compares, turning a passing case into a failing one.</li>
+ *   <li>Adding a role check would change which requests succeed - the definition of a behaviour
+ *       change in a migration whose brief is "no changed business rules".</li>
+ * </ul>
+ *
+ * <p><strong>What a deployment must therefore do.</strong> These endpoints inherit the CICS
+ * assumption that something outside the program controls reachability, and that assumption has to be
+ * honoured by whatever now sits in the region's place: the {@code user} endpoints must not be exposed
+ * to an untrusted network, and access to them belongs to the deployment's own perimeter -
+ * authenticating gateway, network policy, or the equivalent. Closing these three properly is a
+ * deliberate decision about the legacy system, taken with {@code USRSEC}, its loader and the
+ * {@code COUSR02C} screen contract in scope. It is not a side effect of a translation, and it is
+ * recorded here rather than silently carried so that it stays visible to whoever operates the result.
+ *
  * <h2>No state survives a call</h2>
  *
  * <p>{@code WS-ERR-FLG}, {@code WS-MESSAGE}, {@code WS-USER-ID}, {@code WS-USER-PWD} and

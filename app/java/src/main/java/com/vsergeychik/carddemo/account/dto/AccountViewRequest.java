@@ -3,6 +3,7 @@ package com.vsergeychik.carddemo.account.dto;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.card.dto.CardScreenState;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import jakarta.validation.constraints.Size;
@@ -2605,13 +2606,31 @@ public final class AccountViewRequest {
      *
      * @return a single-line rendering of every field, both carriers and all 37 metadata holders
      */
+    /**
+     * A diagnostic rendering that discloses nothing a log must not hold.
+     *
+     * <p>Every field goes through {@link DiagnosticText#screenField(String, String)}, which decides from
+     * the {@code DFHMDF} label itself: an account, card or customer identifier is masked to its last four
+     * characters, a credential or personal item - {@code ACSTSSN}, {@code ACSGOVT}, {@code ACSEFT},
+     * {@code ACSTDOB}, the name fields - is withheld entirely, and everything else is escaped to a single
+     * line. Deciding from the label rather than from a list held here means the next field added to the
+     * mapset is treated correctly without anyone remembering to classify it.
+     *
+     * <p><strong>Nothing about the parity surface changes.</strong> The JSON payload, every accessor and
+     * every fixed-width image method are untouched; this is a Java-only rendering with no COBOL
+     * counterpart, so withholding from it costs no observable behaviour. What it prevents is a log line
+     * carrying a customer's social security number (CWE-532) or a field value whose embedded CR or LF
+     * forges a second log line (CWE-117).
+     *
+     * @return the rendering; never {@code null}
+     */
     @Override
     public String toString() {
         StringBuilder rendered = new StringBuilder("AccountViewRequest[");
         for (ScreenField field : ScreenField.values()) {
             rendered.append(field.label())
                     .append("='")
-                    .append(value(field))
+                    .append(DiagnosticText.screenField(field.label(), value(field)))
                     .append("' ")
                     .append(metadata.get(field))
                     .append(", ");

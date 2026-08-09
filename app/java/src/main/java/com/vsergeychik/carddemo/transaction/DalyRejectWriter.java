@@ -18,11 +18,13 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementSetter;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.Charset;
+import java.sql.PreparedStatement;
 import java.util.Objects;
 
 /**
@@ -710,12 +712,15 @@ public final class DalyRejectWriter {
          * the one paragraph of the three whose guard chain - the
          * {@code 'ERROR OPENING DALY REJECTS FILE'} arm at {@code L302} - had no outcome to branch on.
          *
-         * <p>Defaulted to {@link FileStatus.Outcome#OK} for the same reason {@link #close()} is: a sink
-         * that holds nothing - the in-memory collector a test supplies, and the
-         * {@link JdbcTemplate}-backed default, which borrows a pooled connection per record rather than
-         * holding one open - has nothing to prepare. A sink that does hold something, such as one
-         * writing to a file or a queue, overrides this and reports whether the destination could be
-         * established.
+         * <p>Defaulted to {@link FileStatus.Outcome#OK} because an in-memory collector - what a unit test
+         * and the parity harness supply - has no destination outside the process and so nothing that
+         * could refuse to be established. Every sink that does address something outside the process
+         * overrides this and reports whether that destination could be reached, the
+         * {@link JdbcTemplate}-backed default included: it borrows a pooled connection per record rather
+         * than holding one open, but the relation it will insert into either exists for this run or does
+         * not, and that is an open-time fact. Leaving it defaulted there was a parity defect, because it
+         * made {@code L302} reachable only through a write - and a run whose input is entirely clean
+         * writes no reject at all.
          *
          * @return {@link FileStatus.Outcome#OK} when the destination is ready, or
          *         {@link FileStatus.Outcome#OTHER} otherwise. <strong>Never {@code null}</strong>, for
@@ -988,7 +993,8 @@ public final class DalyRejectWriter {
      */
     public RejectsFile openOutput() {
         return new RejectsFile(new JdbcRecordSink(jdbcTemplate, insertStatement(), recordImageForm,
-                codec.charset()));
+                codec.charset(), requireRelation().describeStatement(),
+                requireRelation().deleteAll()));
     }
 
     /**
@@ -1054,6 +1060,21 @@ public final class DalyRejectWriter {
      *                               parity harness do
      */
     String insertStatement() {
+        return requireRelation().insertRecordImage();
+    }
+
+    /**
+     * The resolved relation, or a refusal naming the configuration that could not be addressed.
+     *
+     * <p>Refused when a sink is actually built rather than at startup, for the reason the constructor
+     * records: a profile may legitimately bind this DD name to something no JDBC statement can address,
+     * and a fixture-backed profile, every unit test and the parity harness all write through
+     * {@link #openOutput(RecordSink)} instead and never reach this.
+     *
+     * @return the relation; never {@code null}
+     * @throws IllegalStateException if the configured name is not a dataset name
+     */
+    private DatasetRelation requireRelation() {
         if (relation == null) {
             throw new IllegalStateException("carddemo.datasets." + DD_NAME + ".dsname cannot be "
                     + "addressed as a dataset, so no statement can be composed for it and the default "
@@ -1063,7 +1084,7 @@ public final class DalyRejectWriter {
                     + "is refused here rather than at startup. The grammar's own verdict is attached.",
                     datasetRefusal);
         }
-        return relation.insertRecordImage();
+        return relation;
     }
 
     /**
@@ -1072,7 +1093,9 @@ public final class DalyRejectWriter {
      *
      * <p>Immutable and stateless, so it is safe to hold and safe to share; the pooled connection is
      * borrowed and returned inside each call, which is why {@link RecordSink#close()} has nothing to do
-     * and is left defaulted.
+     * and is left defaulted. {@link RecordSink#open()} is <em>not</em> left defaulted: holding no
+     * connection is not the same as having no destination, and whether the configured relation can be
+     * addressed at all is what {@code OPEN OUTPUT} answers.
      *
      * <p>The record image is bound through the injected {@link RecordImageForm} - the module's single
      * authority on whether a record image crosses JDBC as characters or as bytes. The code page decision
@@ -1094,19 +1117,98 @@ public final class DalyRejectWriter {
         private final Charset charset;
 
         /**
+         * A read-only statement that resolves and describes the destination without transferring any of
+         * it - the probe both {@link #open()} and {@link #close()} use.
+         */
+        private final String describeStatement;
+
+        /**
+         * Empties the destination, which is what {@code DISP=(NEW,CATLG,DELETE)} means for a relation
+         * that already exists. Issued by {@link #open()} and nowhere else.
+         */
+        private final String clearStatement;
+
+        /**
          * Creates the sink.
          *
-         * @param jdbcTemplate    the template that issues the insert
-         * @param statement       the parameterised statement
-         * @param recordImageForm how a record image crosses JDBC in this deployment
-         * @param charset         the dataset code page
+         * @param jdbcTemplate      the template that issues the insert
+         * @param statement         the parameterised statement
+         * @param recordImageForm   how a record image crosses JDBC in this deployment
+         * @param charset           the dataset code page
+         * @param describeStatement the read-only probe {@link #open()} and {@link #close()} issue
+         * @param clearStatement    the statement {@link #open()} issues to establish an empty generation
          */
         JdbcRecordSink(JdbcTemplate jdbcTemplate, String statement, RecordImageForm recordImageForm,
-                       Charset charset) {
+                       Charset charset, String describeStatement, String clearStatement) {
             this.jdbcTemplate = jdbcTemplate;
             this.statement = statement;
             this.recordImageForm = recordImageForm;
             this.charset = charset;
+            this.describeStatement = describeStatement;
+            this.clearStatement = clearStatement;
+        }
+
+        /**
+         * Establishes the generation this run writes into: {@code OPEN OUTPUT DALYREJS-FILE} in
+         * {@code 0300-DALYREJS-OPEN}, over a dataset {@code app/jcl/POSTTRAN.jcl:L34-L38} declares
+         * {@code DISP=(NEW,CATLG,DELETE)} on {@code DALYREJS(+1)}.
+         *
+         * <p>Two statements, and each reproduces something the COBOL open does. The
+         * <strong>describe</strong> resolves the DD name to a real destination and fails if it cannot -
+         * read-only, its predicate false on every row, so nothing is transferred - which is how an
+         * absent, unreachable or refused destination is reported once at the open rather than record by
+         * record. The <strong>clear</strong> is what {@code NEW} means: the run writes into an empty
+         * generation, so the previous run's rejects are not part of it, and a run that rejects nothing
+         * still leaves an empty rejects dataset behind rather than none at all. Nothing touches the
+         * relation's definition - this module issues no data-definition statement anywhere (gate G44).
+         *
+         * <p>A failure is the arm the caller's guard chain already has: it sets {@code APPL-RESULT} to
+         * 12 and abends, exactly as a failed {@code OPEN} does.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination is established, or
+         *         {@link FileStatus.Outcome#OTHER} when it could not be
+         */
+        @Override
+        public FileStatus.Outcome open() {
+            try {
+                jdbcTemplate.execute(describeStatement);
+                jdbcTemplate.update(clearStatement);
+                return FileStatus.Outcome.OK;
+            } catch (DataAccessException refused) {
+                LOG.error("Could not establish the " + DD_NAME + " generation for output - "
+                        + BackendDiagnostic.of(refused).describe()
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " to the caller, which is the arm that sets APPL-RESULT to 12");
+                return FileStatus.Outcome.OTHER;
+            }
+        }
+
+        /**
+         * Confirms the destination survived the run: {@code CLOSE DALYREJS-FILE} in
+         * {@code 9300-DALYREJS-CLOSE}.
+         *
+         * <p>There is nothing buffered to flush - each record was inserted as it was written, through a
+         * connection borrowed and returned per record - so what a close can still discover is that the
+         * destination is no longer there: a relation dropped, revoked or unreachable part-way through a
+         * run. The same read-only describe {@link #open()} used answers that. A close that could not
+         * fail would leave the COBOL's own close-failure arm unreachable, which is exactly what its
+         * guard chain says must not be true.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the destination is still addressable, or
+         *         {@link FileStatus.Outcome#OTHER} when it is not
+         */
+        @Override
+        public FileStatus.Outcome close() {
+            try {
+                jdbcTemplate.execute(describeStatement);
+                return FileStatus.Outcome.OK;
+            } catch (DataAccessException refused) {
+                LOG.error("Could not confirm the " + DD_NAME + " destination on close - "
+                        + BackendDiagnostic.of(refused).describe()
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " to the caller, which is the arm that sets APPL-RESULT to 12");
+                return FileStatus.Outcome.OTHER;
+            }
         }
 
         /**
@@ -1128,6 +1230,7 @@ public final class DalyRejectWriter {
          * @return {@link FileStatus.Outcome#OK}, or {@link FileStatus.Outcome#OTHER} when the write was
          *         rejected
          */
+
         @Override
         public FileStatus.Outcome write(byte[] recordImage) {
             PreparedStatementSetter binder = parameters -> recordImageForm.bindImage(parameters,

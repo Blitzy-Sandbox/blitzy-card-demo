@@ -335,6 +335,11 @@ public final class DiagnosticText {
      */
     private static final String[] WITHHELD_LABEL_BASES = {
         "ACSTSSN", "ACTSSN", "ACSGOVT", "ACSEFT", "ACSTDOB", "DOB",
+        // ACSFNAM, ACSMNAM and ACSLNAM are the account screens' own spelling of the three name fields.
+        // They do not START with FNAME, MNAME or LNAME, so the three bases below them do not match these
+        // labels and the customer's name rendered in full until they were added. The COUSR list screens
+        // use the shorter FNAMEnn and LNAMEnn, which is why both spellings have to be present.
+        "ACSFNAM", "ACSMNAM", "ACSLNAM",
         "FNAME", "MNAME", "LNAME", "CRDNAME", "CVV", "ACRDLIM", "EXP",
     };
 

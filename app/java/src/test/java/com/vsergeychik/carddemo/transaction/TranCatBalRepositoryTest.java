@@ -16,6 +16,7 @@ import com.vsergeychik.carddemo.transaction.TranCatBalRepository.WriteResult;
 import com.vsergeychik.carddemo.transaction.model.TranCatBalRecord;
 import com.vsergeychik.carddemo.transaction.model.TranCatBalRecord.TranCatKey;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -23,6 +24,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -192,13 +194,47 @@ class TranCatBalRepositoryTest {
     /** The category code the fixture uses throughout. */
     private static final int FIXTURE_CAT_CD = 1;
 
+
     /**
-     * Distinguishes the in-memory database each seeded test uses, so no two tests share a relation.
+     * Every in-memory database this test created, so the teardown can dispose of all of them.
      *
-     * <p>A counter rather than a random or time-derived name, so a run is reproducible.
+     * <p>An instance field, populated only by this test's own helpers: nothing is shared between tests
+     * and no static holds it (gate G53, practice B9).
      */
-    private static final java.util.concurrent.atomic.AtomicInteger DATABASE_SEQUENCE =
-            new java.util.concurrent.atomic.AtomicInteger();
+    private final List<DataSource> createdDatabases = new ArrayList<>();
+
+    /**
+     * Drops and shuts down every database this test created.
+     *
+     * <p>{@code DB_CLOSE_DELAY=-1} is what makes the seed usable at all - without it each connection
+     * {@code DriverManagerDataSource} opens would get its own empty database - and it is also what keeps
+     * every one of them alive for the rest of the JVM once the test that made it has finished. Over a
+     * suite this size that is hundreds of live schemas held to the end of the run, each one still
+     * addressable by name; and a name that outlives its test is a name a later test could reach, which
+     * is the shared state the per-test database exists to avoid. Dropping the objects and shutting the
+     * database down closes both, and it frees the name for reuse - which is why the ordinal below can
+     * restart at zero for each test instead of needing a counter that outlives one.
+     */
+    @AfterEach
+    void disposeCreatedDatabases() {
+        for (DataSource created : createdDatabases) {
+            JdbcTemplate template = new JdbcTemplate(created);
+            template.execute("DROP ALL OBJECTS");
+            template.execute("SHUTDOWN");
+        }
+        createdDatabases.clear();
+    }
+
+    /**
+     * Distinguishes the in-memory databases one test creates, so no two of them share a relation.
+     *
+     * <p>An instance field rather than a static counter. A static counter is mutable static state,
+     * which gate G53 and practice B9 forbid, and it is only what a static counter buys - a name unique
+     * across the whole run - that made it tempting. {@link #disposeCreatedDatabases()} removes the need:
+     * each database is shut down when its test ends, so the name is free again and a per-test ordinal
+     * is enough. It is also still a counter rather than a random value, so a run stays reproducible.
+     */
+    private int databaseOrdinal;
 
     // =============================================================================================
     // Fixtures and helpers.
@@ -248,7 +284,7 @@ class TranCatBalRepositoryTest {
      * @param rows the record images to insert, in the order given
      * @return a template over the seeded relation
      */
-    private static JdbcTemplate seeded(List<String> rows) {
+    private JdbcTemplate seeded(List<String> rows) {
         return seeded(rows, FIFTY);
     }
 
@@ -262,7 +298,7 @@ class TranCatBalRepositoryTest {
      * @param columnWidth the declared width of the record-image column
      * @return a template over the seeded relation
      */
-    private static JdbcTemplate seeded(List<String> rows, int columnWidth) {
+    private JdbcTemplate seeded(List<String> rows, int columnWidth) {
         JdbcTemplate template = new JdbcTemplate(seededDataSource(columnWidth));
         for (String row : rows) {
             template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", row);
@@ -276,11 +312,12 @@ class TranCatBalRepositoryTest {
      * @param columnWidth the declared width of the record-image column
      * @return the data source over the created relation
      */
-    private static DataSource seededDataSource(int columnWidth) {
+    private DataSource seededDataSource(int columnWidth) {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:tcatbalrepo" + DATABASE_SEQUENCE.incrementAndGet()
+                "jdbc:h2:mem:tcatbalrepo" + (++databaseOrdinal)
                         + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
         dataSource.setDriverClassName("org.h2.Driver");
+        createdDatabases.add(dataSource);
         new JdbcTemplate(dataSource).execute("CREATE TABLE \"" + TEST_DSNAME + "\" ("
                 + RECORD_IMAGE_COLUMN + " VARCHAR(" + columnWidth + "))");
         return dataSource;
@@ -543,7 +580,7 @@ class TranCatBalRepositoryTest {
      * @param rows the record images to seed
      * @return a template whose probe reports no count
      */
-    private static JdbcTemplate countReportingNothing(List<String> rows) {
+    private JdbcTemplate countReportingNothing(List<String> rows) {
         DataSource dataSource = seededDataSource(FIFTY);
         JdbcTemplate seeding = new JdbcTemplate(dataSource);
         for (String row : rows) {
@@ -2188,6 +2225,29 @@ class TranCatBalRepositoryTest {
     @Nested
     @DisplayName("no schema - no DDL, no mapping, no alternate index, no hard-coded dataset name")
     class SchemaAbsence {
+
+        @Test
+        @DisplayName("a test's database is disposed of when the test ends, name and schema alike")
+        void aTestsDatabaseIsDisposedOf() {
+            // DB_CLOSE_DELAY=-1 is required for the seed to work at all and, left alone, keeps every
+            // database this suite ever created alive and addressable by name until the JVM exits. That
+            // is not a leak in the abstract: a name that outlives its test is a name another test can
+            // reach, and per-test isolation then depends on nobody ever reusing one.
+            DataSource created = seededDataSource(FIFTY);
+
+            assertThat(new JdbcTemplate(created).queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class))
+                    .as("the relation exists while the test is using it")
+                    .isZero();
+
+            disposeCreatedDatabases();
+
+            assertThatExceptionOfType(BadSqlGrammarException.class)
+                    .as("and afterwards the schema is gone, so the name addresses nothing a later "
+                            + "test could see")
+                    .isThrownBy(() -> new JdbcTemplate(created).queryForObject(
+                            "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class));
+        }
 
         @Test
         @DisplayName("no object-relational mapping is declared anywhere - gate G44")

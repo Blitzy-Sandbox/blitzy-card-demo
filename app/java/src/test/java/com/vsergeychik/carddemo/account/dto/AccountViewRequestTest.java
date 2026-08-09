@@ -1336,8 +1336,13 @@ class AccountViewRequestTest {
         }
 
         @Test
-        @DisplayName("the rendering names every field by its DFHMDF label and hides nothing")
-        void theRenderingNamesEveryFieldAndHidesNothing() {
+        @DisplayName("the rendering names every field by its DFHMDF label and discloses none of the "
+                + "sensitive ones")
+        void theRenderingNamesEveryFieldAndDisclosesNothingSensitive() {
+            // The payload is the parity surface and it is untouched - the accessors below still answer
+            // exactly what was set, which is what a parity case reads and what COACTVWC puts on the 3270.
+            // The Java rendering has no COBOL counterpart at all, so publishing a social security number
+            // through it bought nothing and risked a log holding one (CWE-532).
             AccountViewRequest request = new AccountViewRequest();
             request.setAcstssn("078-05-1120");
             request.setAcstdob("1970-01-01");
@@ -1350,15 +1355,29 @@ class AccountViewRequestTest {
                 assertThat(rendered).as("%s is named", label).contains(label + "='");
             }
             assertThat(rendered)
-                    .contains("078-05-1120")
-                    .contains("1970-01-01")
-                    .contains("GOVT-ID-0099")
-                    .contains("00000000011")
-                    .doesNotContain("[REDACTED]")
-                    .doesNotContain("[redacted]")
-                    .doesNotContain("<omitted>")
+                    .doesNotContain("078-05-1120")
+                    .doesNotContain("1970-01-01")
+                    .doesNotContain("GOVT-ID-0099")
+                    // The account key is masked to its last four characters rather than withheld, so one
+                    // record is still distinguishable from another.
+                    .doesNotContain("00000000011")
+                    .contains("0011")
                     .contains("cardScreenState=")
                     .contains("navigationContext=");
+
+            // Unchanged: every value is still readable through its accessor.
+            assertThat(request.getAcstssn()).startsWith("078-05-1120");
+            assertThat(request.getAcsgovt()).startsWith("GOVT-ID-0099");
+        }
+
+        @Test
+        @DisplayName("no field value can forge a second log line")
+        void noFieldValueCanForgeALogLine() {
+            // CWE-117. A screen field holds whatever a caller supplied, control characters included.
+            AccountViewRequest request = new AccountViewRequest();
+            request.setTrnname("CAVW\r\nINJECTED");
+
+            assertThat(request.toString()).doesNotContain("\n").doesNotContain("\r");
         }
 
         @Test

@@ -22,6 +22,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.nio.charset.Charset;
@@ -2182,6 +2183,134 @@ class CardListResponseTest {
             assertThat(body.toString()).doesNotContain("REDACTED");
             assertThat(response.getCrdnum1o()).isEqualTo("4111111111111111");
             assertThat(response.getCardsido()).isEqualTo("4111111111111111");
+        }
+    }
+
+    // =================================================================================================
+
+    /**
+     * The presentation metadata this response publishes, which is the whole of finding F3 for this
+     * screen: the 45 attribute quads and the {@code MOVE -1} cursor request exist in the COBOL, are
+     * written by three paragraphs, and had no way at all to reach a client.
+     *
+     * <p>They are not payload members - {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} are
+     * metadata by {@code app/cpy-bms/COCRDLI.CPY}'s own declaration, and the {@code -1} marker is moved
+     * into the <em>input</em> group {@code CCRDLIAI} - so they travel in the shared
+     * {@link ScreenMetadata} envelope beside the screen rather than as siblings of the 45 values.
+     */
+    @Nested
+    @DisplayName("ScreenMetadata - the 45 quads and the cursor request, published beside the screen")
+    class Metadata {
+
+        @Test
+        @DisplayName("every one of the 45 quads is projected, keyed by DFHMDF label in copybook order")
+        void allFortyFiveQuadsAreProjected() {
+            CardListResponse response = new CardListResponse();
+
+            ScreenMetadata metadata = response.screenMetadata();
+
+            assertThat(metadata.fields()).hasSize(CardListResponse.PAYLOAD_FIELD_COUNT);
+            assertThat(metadata.fields().keySet())
+                    .containsExactlyElementsOf(response.fieldAttributesSnapshot().keySet());
+            assertThat(metadata.fields()).containsKeys("ACCTSID", "CARDSID", "ERRMSG", "CRDSEL1",
+                    "CRDSTP2");
+            // CRDSTP1 does not exist on this map - row one has no hidden selection-type field - so it
+            // must not appear here either.
+            assertThat(metadata.fields()).doesNotContainKey("CRDSTP1");
+        }
+
+        @Test
+        @DisplayName("an initialised response projects LOW-VALUES, which is 0 in every quad")
+        void theInitialisedStateIsAllZeroes() {
+            ScreenMetadata metadata = new CardListResponse().screenMetadata();
+
+            assertThat(metadata.fields().values())
+                    .allSatisfy(quad -> assertThat(quad)
+                            .isEqualTo(new ScreenMetadata.FieldMetadata(0, 0, 0, 0)));
+            assertThat(metadata.messageColour()).isZero();
+            assertThat(metadata.cursorField()).isNull();
+            assertThat(metadata.resetAllOutputFields()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a quad the COBOL wrote is projected as its UNSIGNED byte value")
+        void aWrittenQuadIsProjectedUnsigned() {
+            CardListResponse response = new CardListResponse();
+            response.fieldAttributes("ACCTSID").setColour(BmsAttributes.DFHRED);
+            response.fieldAttributes("ACCTSID").setPs(BmsAttributes.DFHBMPRO);
+            response.fieldAttributes("ERRMSG").setColour(BmsAttributes.DFHRED);
+
+            ScreenMetadata metadata = response.screenMetadata();
+
+            // DFHRED is 0xF2, which is -14 as a signed Java byte. 242 is the value a client can act on.
+            assertThat(metadata.fields().get("ACCTSID").colour()).isEqualTo(242);
+            assertThat(metadata.fields().get("ACCTSID").protection())
+                    .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRO));
+            // messageColour is ERRMSGC read from the quads, not a second copy of it.
+            assertThat(metadata.messageColour()).isEqualTo(242);
+        }
+
+        @Test
+        @DisplayName("the MOVE -1 cursor request travels, because no payload field can carry it")
+        void theCursorRequestTravels() {
+            CardListResponse response = new CardListResponse();
+            assertThat(response.getCursorField()).isNull();
+
+            response.setCursorField("ACCTSID");
+
+            assertThat(response.getCursorField()).isEqualTo("ACCTSID");
+            assertThat(response.screenMetadata().cursorField()).isEqualTo("ACCTSID");
+        }
+
+        @Test
+        @DisplayName("the cursor request is copied with the response, so two responses never share it")
+        void theCursorRequestIsCopied() {
+            CardListResponse painted = new CardListResponse();
+            painted.setCursorField("CARDSID");
+
+            CardListResponse copy = new CardListResponse(painted);
+            painted.setCursorField("ACCTSID");
+
+            assertThat(copy.getCursorField()).isEqualTo("CARDSID");
+            assertThat(painted.getCursorField()).isEqualTo("ACCTSID");
+        }
+
+        @Test
+        @DisplayName("the projection is a snapshot: writing to the response afterwards changes nothing")
+        void theProjectionIsASnapshot() {
+            CardListResponse response = new CardListResponse();
+            ScreenMetadata before = response.screenMetadata();
+
+            response.fieldAttributes("ERRMSG").setColour(BmsAttributes.DFHRED);
+
+            assertThat(before.messageColour()).isZero();
+            assertThat(response.screenMetadata().messageColour()).isEqualTo(242);
+        }
+
+        @Test
+        @DisplayName("MOVE LOW-VALUES TO CCRDLIAO clears the quads, and the projection follows")
+        void clearingTheMapClearsTheQuads() {
+            CardListResponse response = new CardListResponse();
+            response.fieldAttributes("ERRMSG").setColour(BmsAttributes.DFHRED);
+
+            response.moveLowValuesToMap();
+
+            assertThat(response.screenMetadata().messageColour()).isZero();
+        }
+
+        @Test
+        @DisplayName("no metadata member reaches the payload JSON - the envelope is the only route")
+        void noQuadIsAPayloadMember() throws Exception {
+            CardListResponse response = new CardListResponse();
+            response.setCursorField("ACCTSID");
+            response.fieldAttributes("ACCTSID").setColour(BmsAttributes.DFHRED);
+
+            JsonNode json = new ObjectMapper().valueToTree(response);
+
+            assertThat(json.has("cursorField")).isFalse();
+            assertThat(json.has("screenMetadata")).isFalse();
+            assertThat(json.has("acctsidc")).isFalse();
+            assertThat(json.has("fieldAttributesSnapshot")).isFalse();
         }
     }
 

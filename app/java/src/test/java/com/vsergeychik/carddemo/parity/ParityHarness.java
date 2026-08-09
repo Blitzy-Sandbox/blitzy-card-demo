@@ -1,5 +1,7 @@
 package com.vsergeychik.carddemo.parity;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.vsergeychik.carddemo.common.AbendException;
@@ -23,19 +25,28 @@ import com.vsergeychik.carddemo.parity.ParityCase.Redaction;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.stream.Stream;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Seeds a parity case's datasets, runs the unit under test, captures what that run observably
@@ -232,14 +243,31 @@ public final class ParityHarness {
     private final FieldDiffer differ;
 
     /**
-     * The mapper case files are deserialised with.
+     * The mapper case files are deserialised with - a <strong>hardened defensive copy</strong> of
+     * whatever the caller supplied, never the caller's own instance.
      *
-     * <p>Injected rather than created per call so a caller may supply one configured its own way,
-     * and held as a field rather than a static so two harnesses cannot share one. A
-     * {@link JsonMapper} built with defaults is what {@link #usAscii()} supplies, and defaults are
-     * sufficient because {@link ParityCase} declares
-     * {@code @JsonIgnoreProperties(ignoreUnknown = false)} itself: strictness is a property of the
-     * model, not of the mapper, and therefore cannot be lost by a caller passing a lenient one.
+     * <p>It used to be the caller's instance, on the reasoning that strictness is a property of the
+     * model rather than of the mapper: {@link ParityCase} declares
+     * {@code @JsonIgnoreProperties(ignoreUnknown = false)} itself, so an unknown key fails whatever
+     * mapper reads it. That reasoning is correct as far as it goes and does not go far enough. Three
+     * things a lenient mapper accepts are invisible to the model:
+     * <ul>
+     *   <li>a <strong>duplicate key</strong>. {@code {"expectedReturnCode": 0, "expectedReturnCode":
+     *       8}} binds the last occurrence and drops the first without a word, so a case fixture can
+     *       state one expectation and assert another;</li>
+     *   <li>a <strong>trailing token</strong>. Everything after the first complete JSON value is
+     *       ignored, so a fixture whose author pasted a second case object below the first - or left a
+     *       stray fragment behind while editing - loads as the first object alone and quietly asserts
+     *       half of what it appears to;</li>
+     *   <li>an explicit <strong>{@code null} for a primitive</strong>, which binds to zero.</li>
+     * </ul>
+     * A caller could also have <em>disabled</em> {@code FAIL_ON_UNKNOWN_PROPERTIES} globally, which
+     * overrides the annotation and takes the model's own strictness away with it.
+     *
+     * <p>So the supplied mapper is {@link ObjectMapper#copy() copied} and the copy is configured here.
+     * Copying matters as much as configuring: mutating the caller's mapper would reach every other use
+     * of it in the same JVM, and reading through it unconfigured would leave the three holes above
+     * open. Held as a field rather than a static so two harnesses cannot share one.
      */
     private final ObjectMapper mapper;
 
@@ -265,8 +293,8 @@ public final class ParityHarness {
         this.differ = Objects.requireNonNull(differ, "A FieldDiffer is required: the harness "
             + "captures the fingerprint and the differ judges it, and the differ's codec is also "
             + "where this harness's code page comes from");
-        this.mapper = Objects.requireNonNull(mapper, "An ObjectMapper is required to read a case "
-            + "file; pass JsonMapper.builder().build() for the default configuration");
+        this.mapper = harden(Objects.requireNonNull(mapper, "An ObjectMapper is required to read a "
+            + "case file; pass JsonMapper.builder().build() and it will be copied and hardened here"));
         this.clock = requireFixedClock(clock);
     }
 
@@ -368,6 +396,38 @@ public final class ParityHarness {
     }
 
     /**
+     * Copies a supplied mapper and closes, on the copy, the three holes a lenient configuration
+     * leaves open.
+     *
+     * <p>Each setting corresponds to a way a case fixture can assert less than it appears to, and each
+     * is turned on rather than assumed:
+     * <ul>
+     *   <li>{@link JsonParser.Feature#STRICT_DUPLICATE_DETECTION} - a repeated member is a fixture
+     *       stating two expectations, and binding the last silently is how the other one
+     *       disappears;</li>
+     *   <li>{@link DeserializationFeature#FAIL_ON_TRAILING_TOKENS} - anything after the first complete
+     *       value would otherwise be ignored, so half a fixture can load as a whole one;</li>
+     *   <li>{@link DeserializationFeature#FAIL_ON_UNKNOWN_PROPERTIES} - {@link ParityCase} already
+     *       asks for this per type, and enabling it here means a caller cannot have switched it off
+     *       globally;</li>
+     *   <li>{@link DeserializationFeature#FAIL_ON_NULL_FOR_PRIMITIVES} - an explicit {@code null}
+     *       against a primitive member binds zero otherwise. It closes the <em>explicit</em> null;
+     *       an <em>absent</em> member is closed in {@link ParityCase} itself, by making every
+     *       mandatory member a boxed type that arrives {@code null} and is refused.</li>
+     * </ul>
+     *
+     * @param supplied the caller's mapper, which is never mutated
+     * @return a hardened copy
+     */
+    private static ObjectMapper harden(ObjectMapper supplied) {
+        return supplied.copy()
+            .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES);
+    }
+
+    /**
      * Refuses a clock that would let the wall clock reach a fingerprint.
      *
      * <p>{@link Clock#systemUTC()} and its siblings are equal to no fixed clock and tick, so a unit
@@ -387,7 +447,99 @@ public final class ParityHarness {
                 + "date-stamped record differ between two runs of the same case, which the differ "
                 + "would correctly report as a difference and no one could act on.");
         }
-        return candidate;
+
+        // Naming the three system clocks is necessary but nowhere near sufficient, and the gap is
+        // easy to walk into by accident. Clock.offset(Clock.systemUTC(), duration) and
+        // Clock.tick(Clock.systemUTC(), duration) both tick and both are equal to none of the three
+        // named above, as is any hand-written subclass; each would pass an identity check and then
+        // stamp a different byte on every run.
+        //
+        // The exact test is the definition itself: a clock is fixed when it is equal to a
+        // Clock.fixed built from its own instant and zone. Clock.fixed's equals compares instant and
+        // zone and is satisfied by no other implementation, so the comparison is made in that
+        // direction deliberately - asking the candidate would let an implementation with a lenient
+        // equals answer for itself.
+        Clock frozen = Clock.fixed(candidate.instant(), candidate.getZone());
+        if (!frozen.equals(candidate)) {
+            throw new IllegalArgumentException("A clock that is not fixed was supplied ("
+                + candidate.getClass().getName() + "). Clock.offset and Clock.tick over a system "
+                + "clock tick, as does any custom implementation reading the wall time, and none of "
+                + "them is equal to Clock.systemUTC() - so naming the system clocks does not catch "
+                + "them. Use ParityHarness.fixedClockAt(LocalDateTime) or Clock.fixed(Instant, "
+                + "ZoneId), or let the case pin its own instant through screenRequest.pinnedClock.");
+        }
+
+        // The frozen instance is the one kept, not the candidate. Belt and braces: an implementation
+        // whose equals answers yes while its instant() still moves cannot reach a unit this way.
+        return frozen;
+    }
+
+    /**
+     * Refuses a case whose declared {@link ParityCase#unitKind()} is not the kind the adapter builds,
+     * before the unit is constructed.
+     *
+     * <p>The declaration decides real things. Only a {@code BATCH_JOB} may carry job parameters; only
+     * a {@code CONTROLLER_POJO} must declare a screen request and an expected response; a
+     * {@code COMPONENT} is a called collaborator rather than a job however its mandated class name
+     * reads, which is true of both {@code CBSTM03B} and {@code CSUTLDTC}. A case run through the wrong
+     * adapter is therefore asserting one shape's contract against another's behaviour, and the
+     * mismatch surfaces - if at all - as a puzzling difference well away from its cause.
+     *
+     * <p>Checked before seeding and before construction, so the failure names the mismatch rather than
+     * whatever the wrong adapter happened to do first.
+     *
+     * @param parityCase the case about to run
+     * @param adapterKind the kind the caller states its adapter constructs
+     * @throws IllegalArgumentException when the two disagree
+     */
+    private static void requireDeclaredUnitKind(ParityCase parityCase,
+                                                ParityCase.UnitKind adapterKind) {
+        if (parityCase.unitKind() != adapterKind) {
+            throw new IllegalArgumentException("Case " + parityCase.program() + '/'
+                + parityCase.caseId() + " declares unitKind " + parityCase.unitKind()
+                + " but is being run through an adapter that constructs a " + adapterKind
+                + ". The kind is not a label: only a BATCH_JOB may carry job parameters, only a "
+                + "CONTROLLER_POJO declares a screenRequest and an expectedResponse, and a COMPONENT "
+                + "is a called collaborator rather than a job whatever its mandated class name says. "
+                + "Fix whichever is wrong - the case's unitKind or the call site - rather than "
+                + "running one shape's case against another's adapter.");
+        }
+    }
+
+    /**
+     * Refuses a case whose declared code page is not the one this harness seeds and compares under.
+     *
+     * <p>{@link ParityCase.ScreenRequest#charset()} is a statement about the bytes the case's record
+     * images are, and it is only meaningful if something acts on it. Left unread it is worse than
+     * absent: a case declaring {@code IBM037} would be seeded and compared as {@code US-ASCII}, every
+     * value would round-trip through the same wrong code page on both sides of the comparison, and
+     * the diff count would be zero. The case would then be certifying a code page it never exercised
+     * - which for the EBCDIC datasets under {@code app/data/EBCDIC} is exactly the thing being
+     * asserted.
+     *
+     * <p>Refused rather than accommodated with a per-case codec. The codec here comes from the
+     * differ, so a per-case codec would seed under one code page and judge under another, and a case
+     * would silently compare bytes it never wrote. One harness, one code page, named at construction
+     * through {@link #forCharset(Charset)}, is the only arrangement in which the declaration and the
+     * comparison cannot disagree.
+     *
+     * @param parityCase the case about to be seeded or captured
+     * @throws IllegalArgumentException if the case declares a code page other than this harness's
+     */
+    private void requireDeclaredCharset(ParityCase parityCase) {
+        if (parityCase.screenRequest() == null || parityCase.screenRequest().charset() == null) {
+            return;
+        }
+        String declared = parityCase.screenRequest().charset();
+        if (!Charset.forName(declared).equals(charset())) {
+            throw new IllegalArgumentException("Case " + parityCase.program() + '/'
+                + parityCase.caseId() + " declares screenRequest.charset \"" + declared
+                + "\" but this harness seeds and compares under " + charset().name()
+                + ". Run it through ParityHarness.forCharset(Charset.forName(\"" + declared
+                + "\")) - the declaration is not decoration, and a case compared under a code page "
+                + "it did not declare would pass by encoding and decoding through the same wrong "
+                + "table on both sides.");
+        }
     }
 
     // =============================================================================================
@@ -425,14 +577,51 @@ public final class ParityHarness {
             "a parity case for program " + program.strip());
         ParityCase parityCase;
         try {
-            parityCase = mapper.readValue(content, ParityCase.class);
+            parityCase = readCase(content, "classpath resource " + resource);
         } catch (IOException failure) {
             throw new IllegalArgumentException("Classpath resource " + resource + " is not a "
-                + "readable ParityCase. ParityCase rejects an unknown key outright, so a typo in a "
-                + "member name fails here rather than being silently dropped and leaving the case "
-                + "asserting less than it appears to: " + failure.getMessage(), failure);
+                + "readable ParityCase. Every way a fixture can assert less than it appears to fails "
+                + "here rather than binding quietly: an unknown key, a duplicate key, a trailing "
+                + "token, and an absent or null mandatory member such as expectedReturnCode or a "
+                + "record's rowIndex. Sanitised detail: "
+                + ParityCase.Redaction.sanitiseDiagnostic(failure.getMessage()), failure);
         }
         return requireSelfConsistent(parityCase, program.strip(), caseId.strip(), resource);
+    }
+
+    /**
+     * Deserialises one case body through this harness's hardened mapper.
+     *
+     * <p>Separate from {@link #load(String, String)} because the two do different jobs: this one binds
+     * bytes to a case and lets the failure through as the {@link IOException} it is, and that one
+     * resolves a resource, calls this, and turns a failure into a message naming the file. Keeping them
+     * apart is what lets the strictness be asserted directly - a test can hand in a body with a
+     * duplicated member and read the actual reason it was refused, rather than a wrapper's paraphrase
+     * of it.
+     *
+     * @param content the case body; never {@code null}
+     * @param origin how to describe where the body came from, quoted in a failure; never {@code null}
+     * @return the deserialised, fully validated case
+     * @throws IOException if the body is not a single well-formed case object, if it carries an
+     *     unknown or duplicated member, if anything follows it, or if a mandatory member is absent or
+     *     null - {@link ParityCase}'s own constructor refuses that last one and Jackson reports it here
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public ParityCase readCase(byte[] content, String origin) throws IOException {
+        Objects.requireNonNull(content, "A case body is required to read");
+        Objects.requireNonNull(origin, "A description of where the case body came from is required, "
+            + "so a failure says which fixture to open");
+        try {
+            return mapper.readValue(content, ParityCase.class);
+        } catch (IllegalArgumentException | NullPointerException rejected) {
+            // ParityCase's own constructor refused the value. Jackson normally wraps such a rejection
+            // into a ValueInstantiationException, but a rejection raised while binding a nested member
+            // can reach here unwrapped - and an unwrapped one would escape a caller that catches only
+            // IOException, which is the contract this method publishes.
+            throw new IOException("The case body from " + origin + " was refused by ParityCase's own "
+                + "validation: " + ParityCase.Redaction.sanitiseDiagnostic(rejected.getMessage()),
+                rejected);
+        }
     }
 
     /**
@@ -444,6 +633,23 @@ public final class ParityHarness {
      * diff count is zero across all twenty cases", and a suite that quietly enumerated four of them
      * would satisfy the letter of that while proving almost nothing. A missing file is named
      * individually, so the failure says which case to write rather than only that one is absent.
+     *
+     * <h4>The set is exact, not merely sufficient</h4>
+     * <p>Presence of the twenty is necessary and is not enough. The program's case directory is
+     * enumerated and anything in it that is not one of the twenty is refused by name, because a
+     * resource this method does not read is a resource nobody is running:
+     * <ul>
+     *   <li>a {@code case21.json} - or a {@code case00.json} - is a case its author wrote and believes
+     *       is part of the gate. It is not: {@link ParityCase} validates {@code caseId} against
+     *       {@code case01}..{@code case20}, so a twenty-first case could not even load, and left in
+     *       place it silently asserts nothing;</li>
+     *   <li>a misnamed one - {@code Case07.json}, {@code case7.json}, {@code case07.JSON},
+     *       {@code case07.json.bak} - is the same defect wearing a name that looks right at a glance.
+     *       The one this repository is most exposed to is case: the source tree it derives from mixes
+     *       {@code .cbl} with {@code .CBL} and {@code .cpy} with {@code .CPY}, so a fixture named to
+     *       match a source file rather than the convention here is an easy mistake to make and an easy
+     *       one to miss.</li>
+     * </ul>
      *
      * <p>Suitable for a JUnit {@code @MethodSource} directly, because the returned list is stable,
      * ordered and independent of the file system's own ordering.
@@ -457,6 +663,7 @@ public final class ParityHarness {
      */
     public List<ParityCase> cases(String program) {
         String name = requireProgram(program);
+        requireExactCaseSet(name);
         List<ParityCase> loaded = new ArrayList<>(CASES_PER_PROGRAM);
         List<String> missing = new ArrayList<>();
         for (int ordinal = 1; ordinal <= CASES_PER_PROGRAM; ordinal++) {
@@ -504,6 +711,77 @@ public final class ParityHarness {
      */
     public static List<ParityCase> casesOf(String program) {
         return usAscii().cases(program);
+    }
+
+    /**
+     * Refuses a program whose case directory holds anything other than exactly
+     * {@code case01.json} through {@code case20.json}.
+     *
+     * <p>Every unexpected entry is named in one message rather than reported one at a time, so a
+     * directory with three strays takes one fix instead of three runs.
+     *
+     * @param program the validated program name
+     * @throws IllegalArgumentException if the directory holds a resource the set does not name
+     * @throws IllegalStateException if the directory exists but cannot be enumerated
+     */
+    private static void requireExactCaseSet(String program) {
+        Set<String> permitted = new LinkedHashSet<>();
+        for (int ordinal = 1; ordinal <= CASES_PER_PROGRAM; ordinal++) {
+            permitted.add(caseId(ordinal) + CASE_RESOURCE_EXTENSION);
+        }
+        List<String> unexpected = new ArrayList<>();
+        for (String entry : listCaseDirectory(program)) {
+            if (!permitted.contains(entry)) {
+                unexpected.add(entry);
+            }
+        }
+        if (!unexpected.isEmpty()) {
+            throw new IllegalArgumentException("Directory " + CASE_RESOURCE_ROOT + program
+                + "/ holds " + unexpected + ", which " + CASES_PER_PROGRAM + "-case enumeration will "
+                + "never read. A case file this method does not load is a case nobody runs, and it "
+                + "reads in review as though it were part of the gate. The set is exactly "
+                + caseId(1) + CASE_RESOURCE_EXTENSION + " through " + caseId(CASES_PER_PROGRAM)
+                + CASE_RESOURCE_EXTENSION + ": rename the file into the set if it is a case, or "
+                + "delete it if it is not. A twenty-first case cannot load at all, because "
+                + "ParityCase validates caseId against that exact range.");
+        }
+    }
+
+    /**
+     * Lists the file names in a program's case directory on the test classpath.
+     *
+     * <p>Resolved through the class loader rather than through a hard-coded build path, so the same
+     * code works under Maven, under an IDE and from any working directory. The directory is expected to
+     * be a real directory, which is what a test classpath is under surefire and in every IDE; a
+     * non-directory classpath entry - a jar - is refused with a message saying so rather than skipped
+     * silently, because a check that quietly does nothing is worse than no check at all.
+     *
+     * @param program the validated program name
+     * @return the file names present, or an empty set when the directory itself is absent - which the
+     *     per-case presence check that follows reports far better than this could
+     */
+    private static Set<String> listCaseDirectory(String program) {
+        URL directory = ParityHarness.class.getClassLoader()
+            .getResource(CASE_RESOURCE_ROOT + program);
+        if (directory == null) {
+            return Collections.emptySet();
+        }
+        if (!"file".equals(directory.getProtocol())) {
+            throw new IllegalStateException("The case directory " + CASE_RESOURCE_ROOT + program
+                + "/ resolves to " + directory.getProtocol() + ", which cannot be enumerated, so the "
+                + "set of case files cannot be proved exact. Run the suite against a directory-based "
+                + "test classpath - which is what Maven surefire and every IDE provide - rather than "
+                + "against a packaged archive.");
+        }
+        try (Stream<Path> entries = Files.list(Path.of(directory.toURI()))) {
+            Set<String> names = new TreeSet<>();
+            entries.forEach(entry -> names.add(entry.getFileName().toString()));
+            return names;
+        } catch (IOException | URISyntaxException failure) {
+            throw new IllegalStateException("The case directory " + CASE_RESOURCE_ROOT + program
+                + "/ could not be enumerated, so the set of case files cannot be proved exact: "
+                + ParityCase.Redaction.sanitiseDiagnostic(failure.getMessage()), failure);
+        }
     }
 
     /**
@@ -750,10 +1028,20 @@ public final class ParityHarness {
     public Map<String, SeededDataset> seed(ParityCase parityCase) {
         Objects.requireNonNull(parityCase, "A ParityCase is required to seed from: its \"inputs\" "
             + "member names every dataset the unit under test will read");
+        requireDeclaredCharset(parityCase);
         Map<String, SeededDataset> seeded = new LinkedHashMap<>();
         for (Map.Entry<String, DatasetInput> entry : parityCase.inputs().entrySet()) {
             String dataset = entry.getKey();
             DatasetInput input = entry.getValue();
+            if (input.declaredEmpty()) {
+                // A dataset that exists and holds no row. Its width comes from the declaration rather
+                // than from a row, because there is no row to measure - which is exactly why the
+                // declaration is required to carry one. Seeding it makes the difference between "the
+                // unit read an empty file and reached end-of-file on its first READ" and "the case
+                // never mentioned the dataset", and only the first of those is an assertion.
+                seeded.put(dataset, SeededDataset.empty(dataset, input.recordLength(), charset()));
+                continue;
+            }
             List<String> declared = input.inline()
                 ? input.rows()
                 : sliceFixture(readFixtureRows(input, dataset), input, dataset);
@@ -957,18 +1245,27 @@ public final class ParityHarness {
      * COBOL.
      *
      * @param parityCase the case to run; never {@code null}
+     * @param adapterKind the kind of unit the adapter constructs, checked against the case's own
+     *     {@link ParityCase#unitKind()} before the unit is reached; never {@code null}
      * @param unit how to construct and call the unit under test; never {@code null}
      * @return the decoded fingerprint of that one run, never {@code null}
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalArgumentException if {@code adapterKind} is not the kind the case declares
      * @throws IllegalStateException if the unit throws anything other than an
      *     {@link AbendException}, or if it both populates the recorder and returns an unrelated
      *     outcome
      */
-    public DecodedFingerprint run(ParityCase parityCase, ParityUnit unit) {
+    public DecodedFingerprint run(ParityCase parityCase, ParityCase.UnitKind adapterKind,
+                                 ParityUnit unit) {
         Objects.requireNonNull(parityCase, "A ParityCase is required to run: it supplies the seed, "
             + "the job parameters and the pinned clock");
+        Objects.requireNonNull(adapterKind, "The kind of unit this adapter constructs is required. "
+            + "It is stated at the call site rather than inferred so it can be checked against the "
+            + "case's own unitKind before anything runs: use ParityCase.UnitKind.BATCH_JOB, SERVICE, "
+            + "COMPONENT or CONTROLLER_POJO.");
         Objects.requireNonNull(unit, "A ParityUnit is required: it is how this harness reaches the "
             + "unit under test without a job launcher or an HTTP layer in the path");
+        requireDeclaredUnitKind(parityCase, adapterKind);
 
         Map<String, SeededDataset> seeded = seed(parityCase);
         UnitOutcome.Builder recorder = UnitOutcome.builder(codec());
@@ -986,14 +1283,58 @@ public final class ParityHarness {
             outcome = recorder.build();
             abended = OptionalInt.of(abend.getReturnCode());
         } catch (Exception failure) {
+            // The message goes through Redaction rather than into the text raw. A failure raised
+            // inside a repository routinely quotes the record it was handed, and for a customer row
+            // that is 500 bytes of names, address and social-security number, while a USRSEC row
+            // carries the legacy plaintext password - all of which an assertion message puts straight
+            // into a build log and a CI artefact (CWE-532). The throwable is still chained as the
+            // cause, so a developer running the suite locally loses nothing.
             throw new IllegalStateException("Parity case " + parityCase.program() + '/'
                 + parityCase.caseId() + " raised " + failure.getClass().getName()
                 + ", which is not an abend and is therefore a defect rather than an observation. "
                 + "The COBOL either abends - which arrives here as AbendException carrying a "
                 + "RETURN-CODE and is compared like any other expectation - or it does not throw at "
-                + "all. Message: " + failure.getMessage(), failure);
+                + "all. Sanitised message: " + Redaction.sanitiseDiagnostic(failure.getMessage()),
+                failure);
         }
+        requireForcedOutcomesConsumed(parityCase, invocation);
         return capture(parityCase, outcome, resolveReturnCode(outcome, abended));
+    }
+
+    /**
+     * Refuses a run that left a declared forced outcome unasked-for.
+     *
+     * <p>A forced outcome is how a case reaches an arm its seeded data cannot reach. Declared and
+     * never consumed, it forces nothing: the run takes the ordinary path, every expectation about that
+     * ordinary path is met, and the case passes while its description claims it exercised a
+     * {@code WHEN OTHER}. That is a false pass with a plausible-looking case file behind it, which is
+     * the hardest kind to notice - so the declaration is treated as a claim about the run and checked
+     * like one.
+     *
+     * <p>Checked on the abend path too. An abend is an observation rather than a failure here, and a
+     * forced outcome the abending run never reached forced nothing just the same.
+     *
+     * @param parityCase the case that ran
+     * @param invocation the invocation it ran through, which recorded what was consumed
+     * @throws IllegalStateException naming every unconsumed operation
+     */
+    private static void requireForcedOutcomesConsumed(ParityCase parityCase,
+                                                      Invocation invocation) {
+        List<ParityCase.RepositoryOperation> unconsumed = invocation.unconsumedForcedOutcomes();
+        if (unconsumed.isEmpty()) {
+            return;
+        }
+        List<String> keys = new ArrayList<>(unconsumed.size());
+        for (ParityCase.RepositoryOperation operation : unconsumed) {
+            keys.add(operation.key());
+        }
+        throw new IllegalStateException("Case " + parityCase.program() + '/' + parityCase.caseId()
+            + " declares forced outcome(s) for " + keys + " that nothing asked for during the run, "
+            + "so they forced nothing. A forced outcome exists to reach an arm the seeded data cannot "
+            + "reach; unconsumed, the run took the ordinary path and the case would have passed while "
+            + "claiming to have exercised the other one. Either take the outcome through "
+            + "Invocation.forcedOutcome(RepositoryOperation) at the call site it belongs to, or "
+            + "remove the declaration from the case.");
     }
 
     /**
@@ -1005,13 +1346,25 @@ public final class ParityHarness {
      * rendered. A harness that asserted would replace that with an exception carrying whatever
      * message the harness happened to choose, and the differ has already written a better one.
      *
+     * <p>Two of the differences it can return are about the <em>case</em> rather than about the run,
+     * and they are returned on the same footing as any other because they are the ones that decide
+     * whether the rest of the count means anything. An expectation that names some fields of a record
+     * and leaves the rest of its bytes unstated is reported, since answering "the fields you pinned
+     * match" says nothing about the 289 bytes of an account row that were not pinned. And a
+     * dataset-level expectation the run did not satisfy - a reject file the case says was created and
+     * left empty, at the width its JCL declares - is reported, since no row expectation can assert a
+     * dataset that holds no row.
+     *
      * @param parityCase the case whose expectations are authoritative; never {@code null}
+     * @param adapterKind the kind of unit the adapter constructs; never {@code null}
      * @param unit how to construct and call the unit under test; never {@code null}
      * @return every difference found, in the differ's fully determined traversal order
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalArgumentException if {@code adapterKind} is not the kind the case declares
      */
-    public DiffResult judge(ParityCase parityCase, ParityUnit unit) {
-        return judge(parityCase, run(parityCase, unit));
+    public DiffResult judge(ParityCase parityCase, ParityCase.UnitKind adapterKind,
+                            ParityUnit unit) {
+        return judge(parityCase, run(parityCase, adapterKind, unit));
     }
 
     /**
@@ -1052,6 +1405,7 @@ public final class ParityHarness {
      */
     private DecodedFingerprint capture(ParityCase parityCase, UnitOutcome outcome, int returnCode) {
         Objects.requireNonNull(parityCase, "A ParityCase is required to capture against");
+        requireDeclaredCharset(parityCase);
         Objects.requireNonNull(outcome, "A UnitOutcome is required to capture: a unit that wrote "
             + "nothing still reports its RETURN-CODE, so use UnitOutcome.ofReturnCode(int) rather "
             + "than passing null");
@@ -1076,7 +1430,22 @@ public final class ParityHarness {
         if (returned == null) {
             return recorder.build();
         }
-        if (recorder.hasContent() && returned != recorder.lastBuilt()) {
+        if (recorder.isSupersededBuild(returned)) {
+            // The narrow, silent case, and the reason the recorder dates its builds: the unit called
+            // build(), carried on recording, and returned the earlier object. It IS the recorder's own
+            // build, so an identity check waves it through - and everything recorded afterwards
+            // vanishes from the fingerprint. A missing write is a parity difference that no longer
+            // exists to be reported, which is the one failure this whole class is built to prevent.
+            throw new IllegalStateException("Parity case " + parityCase.program() + '/'
+                + parityCase.caseId() + " returned a UnitOutcome that Invocation.recorder().build() "
+                + "produced before " + recorder.observationsSinceBuild() + " further observation(s) "
+                + "were recorded, so those observations are not in it. Return "
+                + "recorder.build() as the last thing the unit does - or return null and let the "
+                + "harness build it, which cannot go stale - rather than holding an outcome built "
+                + "part-way through. Nothing is dropped here silently: a fingerprint missing a write "
+                + "is a difference that can no longer be reported.");
+        }
+        if (recorder.hasContent() && !recorder.isCurrentBuild(returned)) {
             throw new IllegalStateException("Parity case " + parityCase.program() + '/'
                 + parityCase.caseId() + " both wrote observations into Invocation.recorder() and "
                 + "returned a different UnitOutcome. There are exactly two ways to report a run - "
@@ -1283,17 +1652,39 @@ public final class ParityHarness {
      * platform charset; and the recorder is here because an observation made before an abend is still
      * an observation.
      *
+     * <h2>Inputs only, structurally</h2>
+     * <p>What a unit is given is exactly what the legacy program was given: seeded datasets, job
+     * parameters, the online request, a clock and a code page. What it is <em>not</em> given is any
+     * part of the expectation - not the expected writes, not the expected final state, not the
+     * expected return code, not the expected messages, not the expected response, and not the case
+     * object they hang off. A unit able to read those could report them back and pass every case
+     * while implementing nothing, and the diff count would be zero for the worst possible reason.
+     * The separation is structural rather than advisory: the constructor copies the input members out
+     * of the case and drops the reference, so there is no accessor to add and nothing to remember.
+     *
      * <p>Immutable except for the recorder, which is the point of the recorder. It is per-invocation
      * state, created by {@link ParityHarness#run(ParityCase, ParityUnit)} and unreachable from
      * anywhere else, so no two cases can see each other's observations.
      */
     public static final class Invocation {
 
-        /** The case being run, so a unit may read its screen request or its expectations if it must. */
-        private final ParityCase parityCase;
+        /** The program the case names, for a diagnostic and for a unit that dispatches on it. */
+        private final String program;
+
+        /** The case identifier, for a diagnostic. */
+        private final String caseId;
+
+        /** Which of the four shapes the case declares its unit to be. */
+        private final ParityCase.UnitKind unitKind;
 
         /** The seeded datasets, keyed by binding key, in the order the case declares them. */
         private final Map<String, SeededDataset> datasets;
+
+        /** The case's job parameters, which only a batch case carries any of. */
+        private final Map<String, String> jobParameters;
+
+        /** The online request inputs, or {@code null} for a case that declares none. */
+        private final ParityCase.ScreenRequest screenRequest;
 
         /** The pinned clock - always fixed, never a system clock. */
         private final Clock clock;
@@ -1304,10 +1695,30 @@ public final class ParityHarness {
         /** Where a unit records what it produced, so an abend loses nothing. */
         private final UnitOutcome.Builder recorder;
 
-        /** Constructed only by the harness, from state it created for this one run. */
+        /**
+         * Which forced outcomes something actually asked for.
+         *
+         * <p>Per-invocation and unreachable from anywhere else, like the recorder. Its only reader is
+         * the harness, after the unit returns.
+         */
+        private final Set<ParityCase.RepositoryOperation> consumedForcedOutcomes =
+            EnumSet.noneOf(ParityCase.RepositoryOperation.class);
+
+        /**
+         * Constructed only by the harness, from state it created for this one run.
+         *
+         * <p>The case is <strong>projected</strong> here and not retained. That is the whole point of
+         * the type: the inputs are copied out, the reference is dropped, and there is therefore no
+         * path from a unit under test to what it is about to be judged against. A field holding the
+         * case would make the separation a convention, and a convention is not a boundary.
+         */
         private Invocation(ParityCase parityCase, Map<String, SeededDataset> datasets, Clock clock,
                            FixedWidthCodec codec, UnitOutcome.Builder recorder) {
-            this.parityCase = parityCase;
+            this.program = parityCase.program();
+            this.caseId = parityCase.caseId();
+            this.unitKind = parityCase.unitKind();
+            this.jobParameters = parityCase.jobParameters();
+            this.screenRequest = parityCase.screenRequest();
             this.datasets = datasets;
             this.clock = clock;
             this.codec = codec;
@@ -1315,12 +1726,169 @@ public final class ParityHarness {
         }
 
         /**
-         * The case being run.
+         * The program the case names.
          *
-         * @return the case, never {@code null}
+         * @return the eight-character program name, never {@code null}
          */
-        public ParityCase parityCase() {
-            return parityCase;
+        public String program() {
+            return program;
+        }
+
+        /**
+         * The case identifier.
+         *
+         * @return {@code caseNN}, never {@code null}
+         */
+        public String caseId() {
+            return caseId;
+        }
+
+        /**
+         * Which of the four shapes the case declares its unit to be.
+         *
+         * <p>Already checked against the kind the caller stated before the unit was reached, so this
+         * is here to be read rather than to be verified.
+         *
+         * @return the declared kind, never {@code null}
+         */
+        public ParityCase.UnitKind unitKind() {
+            return unitKind;
+        }
+
+        /**
+         * {@code EIBCALEN} - the COMMAREA length CICS reports, which every online program tests to
+         * tell a first entry from a re-entry.
+         *
+         * @return the declared length
+         * @throws IllegalStateException if the case declares no screen request
+         */
+        public int eibcalen() {
+            return request().eibcalen();
+        }
+
+        /**
+         * The AID mnemonic the case says was pressed, for example {@code DFHPF3}.
+         *
+         * @return the mnemonic, or {@code null} when the case pins none
+         * @throws IllegalStateException if the case declares no screen request
+         */
+        public String aid() {
+            return request().aid();
+        }
+
+        /**
+         * The inbound COMMAREA fields, keyed as {@code app/cpy/COCOM01Y.cpy} names them.
+         *
+         * @return an immutable map, empty when the case passes none
+         * @throws IllegalStateException if the case declares no screen request
+         */
+        public Map<String, String> commarea() {
+            return request().commarea();
+        }
+
+        /**
+         * The inbound map fields, keyed by their symbolic-map {@code xxxI} names.
+         *
+         * @return an immutable map, empty when the case types nothing
+         * @throws IllegalStateException if the case declares no screen request
+         */
+        public Map<String, String> mapFields() {
+            return request().mapFields();
+        }
+
+        /**
+         * Whether the case declares online request inputs. Every batch case does not.
+         *
+         * @return {@code true} for a case carrying a screen request
+         */
+        public boolean hasScreenRequest() {
+            return screenRequest != null;
+        }
+
+        /**
+         * Every repository operation the case forces an outcome for, without consuming any of them.
+         *
+         * @return the declared operations in declaration order; empty when the case forces none
+         */
+        public Set<ParityCase.RepositoryOperation> declaredForcedOutcomes() {
+            return screenRequest == null
+                ? Collections.emptySet()
+                : screenRequest.forcedOutcomes().keySet();
+        }
+
+        /**
+         * Whether the case forces an outcome for one operation. Does not consume it.
+         *
+         * @param operation the repository operation; never {@code null}
+         * @return {@code true} when the case declares one
+         */
+        public boolean hasForcedOutcome(ParityCase.RepositoryOperation operation) {
+            Objects.requireNonNull(operation, "A RepositoryOperation is required to ask about a "
+                + "forced outcome");
+            return declaredForcedOutcomes().contains(operation);
+        }
+
+        /**
+         * The outcome the case forces for one operation, <strong>marking it consumed</strong>.
+         *
+         * <p>Consumption is recorded because a declared outcome that nothing asks for is a case
+         * asserting the opposite of what it says. The reason a case forces an outcome at all is to
+         * reach an arm the seeded data cannot reach - a {@code WHEN OTHER} on a {@code RESP} check, a
+         * {@code DUPKEY} on a write. If no call site asks for it the arm stays unreached, the run is
+         * the ordinary happy path, and the case passes while its own description claims otherwise.
+         * {@link ParityHarness#run(ParityCase, ParityCase.UnitKind, ParityUnit)} therefore refuses a
+         * run that left one unasked-for, which is why this is the only way to obtain one.
+         *
+         * @param operation the repository operation; never {@code null}
+         * @return the outcome to force, never {@code null}
+         * @throws IllegalArgumentException if the case forces no outcome for that operation, naming
+         *     the ones it does force
+         */
+        public ParityCase.ForcedOutcome forcedOutcome(ParityCase.RepositoryOperation operation) {
+            Objects.requireNonNull(operation, "A RepositoryOperation is required to take a forced "
+                + "outcome for");
+            ParityCase.ForcedOutcome forced = screenRequest == null
+                ? null
+                : screenRequest.forcedOutcomes().get(operation);
+            if (forced == null) {
+                throw new IllegalArgumentException("Case " + program + '/' + caseId + " forces no "
+                    + "outcome for " + operation.key() + ". It forces " + describeForced()
+                    + ". A repository that invented one here would decide the arm the case reaches, "
+                    + "which is the case's decision to make.");
+            }
+            consumedForcedOutcomes.add(operation);
+            return forced;
+        }
+
+        /** The forced-outcome operations that nothing asked for, in declaration order. */
+        private List<ParityCase.RepositoryOperation> unconsumedForcedOutcomes() {
+            List<ParityCase.RepositoryOperation> unconsumed = new ArrayList<>();
+            for (ParityCase.RepositoryOperation operation : declaredForcedOutcomes()) {
+                if (!consumedForcedOutcomes.contains(operation)) {
+                    unconsumed.add(operation);
+                }
+            }
+            return unconsumed;
+        }
+
+        /** The declared forced-outcome operations by their case-file spelling, for a message. */
+        private List<String> describeForced() {
+            List<String> keys = new ArrayList<>();
+            for (ParityCase.RepositoryOperation operation : declaredForcedOutcomes()) {
+                keys.add(operation.key());
+            }
+            return keys;
+        }
+
+        /** The screen request, or a diagnostic naming the accessor that tells a caller it is absent. */
+        private ParityCase.ScreenRequest request() {
+            if (screenRequest == null) {
+                throw new IllegalStateException("Case " + program + '/' + caseId + " declares no "
+                    + "screenRequest, so there is no AID, no EIBCALEN and no inbound COMMAREA to "
+                    + "read. Only a CONTROLLER_POJO case carries one; check hasScreenRequest() first "
+                    + "if the unit reads it only sometimes.");
+            }
+            return screenRequest;
         }
 
         /**
@@ -1346,8 +1914,8 @@ public final class ParityHarness {
             String key = requireDatasetKey(dataset, "The dataset requested from an Invocation");
             SeededDataset seeded = datasets.get(key);
             if (seeded == null) {
-                throw new IllegalArgumentException("Case " + parityCase.program() + '/'
-                    + parityCase.caseId() + " seeds no dataset " + key + ". It seeds "
+                throw new IllegalArgumentException("Case " + program + '/' + caseId
+                    + " seeds no dataset " + key + ". It seeds "
                     + datasets.keySet() + ". A unit reading a dataset the case never seeded would "
                     + "read nothing and behave as though the file were empty, so the request is "
                     + "refused instead.");
@@ -1377,7 +1945,7 @@ public final class ParityHarness {
          * @return an immutable map; empty for every other kind of unit
          */
         public Map<String, String> jobParameters() {
-            return parityCase.jobParameters();
+            return jobParameters;
         }
 
         /**
@@ -1391,8 +1959,8 @@ public final class ParityHarness {
             Objects.requireNonNull(name, "A job parameter name is required");
             String value = jobParameters().get(name);
             if (value == null) {
-                throw new IllegalArgumentException("Case " + parityCase.program() + '/'
-                    + parityCase.caseId() + " declares no job parameter \"" + name + "\". It "
+                throw new IllegalArgumentException("Case " + program + '/' + caseId
+                    + " declares no job parameter \"" + name + "\". It "
                     + "declares " + jobParameters().keySet() + ". A parameter defaulted here would "
                     + "be a value the JCL never supplied.");
             }
@@ -1451,8 +2019,9 @@ public final class ParityHarness {
          */
         @Override
         public String toString() {
-            return "Invocation[" + parityCase.program() + '/' + parityCase.caseId() + ", datasets="
-                + datasets.keySet() + ", jobParameters=" + jobParameters().keySet() + ", clock="
+            return "Invocation[" + program + '/' + caseId + ", unitKind=" + unitKind
+                + ", datasets=" + datasets.keySet() + ", jobParameters=" + jobParameters.keySet()
+                + ", screenRequest=" + (screenRequest == null ? "none" : "declared") + ", clock="
                 + clock.instant() + ']';
         }
     }
@@ -1959,6 +2528,19 @@ public final class ParityHarness {
              */
             private UnitOutcome lastBuilt;
 
+            /**
+             * How many observations have been recorded, incremented by every mutator.
+             *
+             * <p>Its only job is to date {@link #lastBuilt}. Identity alone cannot: a unit that builds
+             * an outcome, records another write, and returns the object it built earlier hands back
+             * something that <em>is</em> the recorder's own build and is also missing an observation.
+             * Comparing revisions is what tells those two apart.
+             */
+            private int revision;
+
+            /** The revision {@link #lastBuilt} was built at, or {@code -1} before the first build. */
+            private int lastBuiltRevision = -1;
+
             /** Constructed through {@link UnitOutcome#builder(FixedWidthCodec)}. */
             private Builder(FixedWidthCodec codec) {
                 this.codec = Objects.requireNonNull(codec, "A FixedWidthCodec is required to record "
@@ -1978,6 +2560,7 @@ public final class ParityHarness {
              */
             public Builder wrote(String dataset, RecordLayout layout, String image) {
                 accumulator(writes, dataset, layout, "written to").add(encode(dataset, image));
+                revision++;
                 return this;
             }
 
@@ -1995,6 +2578,7 @@ public final class ParityHarness {
                 Objects.requireNonNull(record, "A record is required to record a write to dataset "
                     + dataset);
                 accumulator(writes, dataset, layout, "written to").add(record.clone());
+                revision++;
                 return this;
             }
 
@@ -2016,6 +2600,7 @@ public final class ParityHarness {
                 for (String image : images) {
                     target.add(encode(dataset, image));
                 }
+                revision++;
                 return this;
             }
 
@@ -2029,6 +2614,7 @@ public final class ParityHarness {
              */
             public Builder openedWithoutWriting(String dataset, RecordLayout layout) {
                 accumulator(writes, dataset, layout, "written to");
+                revision++;
                 return this;
             }
 
@@ -2047,6 +2633,7 @@ public final class ParityHarness {
                 for (String image : images) {
                     target.add(encode(dataset, image));
                 }
+                revision++;
                 return this;
             }
 
@@ -2086,6 +2673,7 @@ public final class ParityHarness {
                         + "compare the case against a mixture of them.");
                 }
                 response = observed;
+                revision++;
                 return this;
             }
 
@@ -2103,6 +2691,7 @@ public final class ParityHarness {
                         + "0, 3, 4, 8, 12 and 16.");
                 }
                 returnCode = code;
+                revision++;
                 return this;
             }
 
@@ -2116,6 +2705,7 @@ public final class ParityHarness {
             public Builder message(EmittedMessage message) {
                 messages.add(Objects.requireNonNull(message, "An EmittedMessage is required; a blank "
                     + "line is an empty text on the DISPLAY_LINE channel, not a null"));
+                revision++;
                 return this;
             }
 
@@ -2162,12 +2752,50 @@ public final class ParityHarness {
             }
 
             /**
-             * The outcome the last {@link #build()} produced.
+             * The outcome the last {@link #build()} produced, <strong>if it is still current</strong>.
              *
-             * @return the outcome, or {@code null} when nothing has been built yet
+             * <p>An outcome built before a later observation was recorded is not returned, because it
+             * no longer describes what the recorder holds. Answering with it would let the harness
+             * accept a stale outcome as "the recorder's own build" and drop everything recorded after
+             * it - silently, and in exactly the shape most likely to occur: a unit that builds once,
+             * carries on, and returns the object it built earlier.
+             *
+             * @return the current build, or {@code null} when nothing has been built or the last build
+             *     has been superseded by a later observation
              */
             public UnitOutcome lastBuilt() {
-                return lastBuilt;
+                return lastBuiltRevision == revision ? lastBuilt : null;
+            }
+
+            /**
+             * Whether a candidate is this recorder's build and still describes everything it holds.
+             *
+             * @param candidate the outcome a unit returned; may be {@code null}
+             * @return {@code true} when it is the current build
+             */
+            public boolean isCurrentBuild(UnitOutcome candidate) {
+                return candidate != null && candidate == lastBuilt
+                    && lastBuiltRevision == revision;
+            }
+
+            /**
+             * Whether a candidate is this recorder's build but was superseded by a later observation.
+             *
+             * @param candidate the outcome a unit returned; may be {@code null}
+             * @return {@code true} when it is a stale build of this recorder
+             */
+            public boolean isSupersededBuild(UnitOutcome candidate) {
+                return candidate != null && candidate == lastBuilt
+                    && lastBuiltRevision != revision;
+            }
+
+            /**
+             * How many observations have been recorded since the last {@link #build()}.
+             *
+             * @return the count, or {@code 0} when the last build is current or nothing was built
+             */
+            public int observationsSinceBuild() {
+                return lastBuiltRevision < 0 ? 0 : revision - lastBuiltRevision;
             }
 
             /**
@@ -2188,6 +2816,7 @@ public final class ParityHarness {
                     left.add(accumulator.toOutput());
                 }
                 lastBuilt = UnitOutcome.of(wrote, left, response, returnCode, messages);
+                lastBuiltRevision = revision;
                 return lastBuilt;
             }
 

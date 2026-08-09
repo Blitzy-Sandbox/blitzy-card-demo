@@ -27,6 +27,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.config.WebConfig;
 
@@ -2983,6 +2984,44 @@ final class CardListControllerTest {
             mockMvc.perform(get(CardListController.CARD_LIST_PATH)
                             .param(CardListController.EIBAID_PARAM, "ENTER"))
                     .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        @DisplayName("the reply is the screen unwrapped, with its metadata beside it under screenMetadata")
+        void theEnvelopeCarriesTheMetadataBesideTheScreen() throws Exception {
+            forward(1, 2, 3);
+
+            mockMvc.perform(get(CardListController.CARD_LIST_PATH))
+                    .andExpect(status().isOk())
+                    // The screen is still at the top level, so no client field moves.
+                    .andExpect(jsonPath("$.trnnameo").value("CCLI"))
+                    .andExpect(jsonPath("$.acctsido").exists())
+                    // Finding F3: the 45 quads and the cursor request are published rather than dropped.
+                    .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.colour").exists())
+                    .andExpect(jsonPath("$.screenMetadata.fields.CRDSEL1.protection").exists())
+                    .andExpect(jsonPath("$.screenMetadata.messageColour").exists())
+                    // 1300-SETUP-SCREEN-ATTRS:885 aims the cursor at the account filter when the screen
+                    // edited cleanly, and that request now reaches the client.
+                    .andExpect(jsonPath("$.screenMetadata.cursorField").value("ACCTSID"))
+                    // And they are NOT siblings of the 45 values.
+                    .andExpect(jsonPath("$.acctsidc").doesNotExist())
+                    .andExpect(jsonPath("$.cursorField").doesNotExist());
+        }
+
+        @Test
+        @DisplayName("the handler answers the shared envelope, so every online screen has one shape")
+        void theHandlerAnswersTheSharedEnvelope() throws ReflectiveOperationException {
+            forward(1);
+
+            Method handler = CardListController.class.getDeclaredMethod("getCards",
+                    CardListRequest.class, Integer.class);
+            assertThat(handler.getReturnType()).isEqualTo(ScreenResponse.class);
+
+            ScreenResponse<CardListResponse> envelope =
+                    controller.getCards(null, Byte.toUnsignedInt(CicsAid.DFHENTER));
+            assertThat(envelope.screen()).isNotNull();
+            assertThat(envelope.screenMetadata().fields())
+                    .hasSize(CardListResponse.PAYLOAD_FIELD_COUNT);
         }
 
         @Test

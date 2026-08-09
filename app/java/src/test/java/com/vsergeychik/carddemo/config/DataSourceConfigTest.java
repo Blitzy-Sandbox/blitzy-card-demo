@@ -31,6 +31,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.env.SystemEnvironmentPropertySource;
+import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
@@ -219,6 +220,20 @@ class DataSourceConfigTest {
             RecordImageForm.FORM_PROPERTY + "=CHARACTER";
 
     /**
+     * The per-statement bound, supplied inline by the no-document slices.
+     *
+     * <p>{@value DataSourceConfig#QUERY_TIMEOUT_PROPERTY} carries no default either, for the same
+     * reason: a bound that defaulted would let a deployment which never stated one run unbounded. So a
+     * slice with no configuration document has to state it before any {@code JdbcTemplate} can be
+     * built - which is the property {@link StatementBound} asserts directly.
+     *
+     * <p>The value is arbitrary and deliberately not the shipped one, so no assertion below can pass
+     * by accidentally agreeing with {@code application.yml}.
+     */
+    private static final String QUERY_TIMEOUT_PROPERTY =
+            DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=17";
+
+    /**
      * What makes a "shipped default profile" slice actually mean the default profile.
      *
      * <p>A slice below that asks for the default profile is asking to see {@code application.yml}
@@ -341,7 +356,7 @@ class DataSourceConfigTest {
     private ApplicationContextRunner withInlinePropertiesOnly(String... inlineProperties) {
         return new ApplicationContextRunner()
                 .withUserConfiguration(DataSourceConfig.class)
-                .withPropertyValues(RECORD_IMAGE_FORM_PROPERTY)
+                .withPropertyValues(RECORD_IMAGE_FORM_PROPERTY, QUERY_TIMEOUT_PROPERTY)
                 .withPropertyValues(inlineProperties);
     }
 
@@ -1088,6 +1103,178 @@ class DataSourceConfigTest {
      * input, and production connectivity is unreachable from this build - stated here rather than
      * disguised by an invented driver class.
      */
+    /**
+     * {@value DataSourceConfig#QUERY_TIMEOUT_PROPERTY} - the per-statement bound (N-02).
+     *
+     * <p>Two properties are asserted here and they are different in kind. That the bound is
+     * <em>finite</em> is a correctness property of a run: without it a hung statement holds its pool
+     * connection, its transaction and its batch step for as long as the process lives. That the bound is
+     * <em>configured</em> is a property of this module: no number in Java decides how long a site's
+     * gateway may take, which is the same rule that keeps dataset names and code pages out of Java.
+     *
+     * <p>The decision is a static function, so most of this needs no application context at all; the
+     * context slices are here only to prove the wiring - that the value really reaches the published
+     * bean, and that an unstated one really refuses startup.
+     */
+    @Nested
+    @DisplayName("The statement bound - finite, and stated by configuration rather than by Java")
+    class StatementBound {
+
+        @Test
+        @DisplayName("a positive value is the bound, in seconds")
+        void aPositiveValueIsTheBound() {
+            assertThat(DataSourceConfig.queryTimeoutSeconds("30")).isEqualTo(30);
+            assertThat(DataSourceConfig.queryTimeoutSeconds("1")).isOne();
+        }
+
+        @ParameterizedTest(name = "\"{0}\" is read as the same bound")
+        @ValueSource(strings = { "45", " 45", "45 ", "  45  " })
+        @DisplayName("surrounding whitespace is tolerated, because a YAML value can carry it")
+        void whitespaceIsTolerated(String configured) {
+            assertThat(DataSourceConfig.queryTimeoutSeconds(configured)).isEqualTo(45);
+        }
+
+        @ParameterizedTest(name = "\"{0}\" is refused as no bound at all")
+        @ValueSource(strings = { "", "   ", "\t" })
+        @DisplayName("an absent or blank value is refused, naming the key - never read as 'no limit'")
+        void anAbsentValueIsRefused(String configured) {
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(configured))
+                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY)
+                    .withMessageContaining("is not configured")
+                    .withMessageContaining("unbounded");
+        }
+
+        @Test
+        @DisplayName("a null value is refused the same way a blank one is, because an unresolved "
+                + "environment placeholder produces one or the other")
+        void aNullValueIsRefused() {
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(null))
+                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY);
+        }
+
+        @ParameterizedTest(name = "\"{0}\" is refused as not a whole number of seconds")
+        @ValueSource(strings = { "30s", "PT30S", "thirty", "30.5", "1_000", "30000ms" })
+        @DisplayName("a value that is not a whole number is refused, and says what a whole number is")
+        void aNonNumericValueIsRefused(String configured) {
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(configured))
+                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY)
+                    .withMessageContaining("whole number of seconds")
+                    .withCauseInstanceOf(NumberFormatException.class);
+        }
+
+        @ParameterizedTest(name = "{0} is refused, because it is not a bound")
+        @ValueSource(strings = { "0", "-1", "-30" })
+        @DisplayName("zero and negative are REFUSED rather than accepted as 'no limit', which is what "
+                + "JDBC would read them as")
+        void zeroAndNegativeAreRefused(String configured) {
+            // The refusal that matters most. java.sql.Statement treats a query timeout of 0 as unlimited
+            // and JdbcTemplate treats -1 as "use the driver default", so accepting either would let a
+            // deployment reinstate unbounded statements by configuration while appearing to have set a
+            // bound - which is worse than not having the key at all.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(configured))
+                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY)
+                    .withMessageContaining("is not a bound")
+                    .withMessageContaining("java.sql.Statement treats a query timeout of 0 as "
+                            + "unlimited");
+        }
+
+        @Test
+        @DisplayName("the published template carries the configured bound, and nothing else is tuned")
+        void thePublishedTemplateCarriesTheBound() {
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=23")
+                    .run(context -> {
+                        JdbcTemplate template = context.getBean(JdbcTemplate.class);
+                        JdbcTemplate untouched = new JdbcTemplate();
+
+                        assertThat(template.getQueryTimeout()).isEqualTo(23);
+                        // Row shaping is deliberately untouched: a template that capped rows or fetched
+                        // in pages would change what a program reads, and a truncated browse is a short
+                        // file.
+                        assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
+                        assertThat(template.getMaxRows()).isEqualTo(untouched.getMaxRows());
+                    });
+        }
+
+        @Test
+        @DisplayName("the shipped default profile states a finite bound, so no deployment starts "
+                + "unbounded by omission")
+        void theShippedDefaultProfileStatesAFiniteBound() {
+            shippedDefaultProfile().run(context -> assertThat(
+                    context.getBean(JdbcTemplate.class).getQueryTimeout()).isPositive());
+        }
+
+        @Test
+        @DisplayName("the shipped test profile states one too, so neither profile defaults it")
+        void theShippedTestProfileStatesOneToo() {
+            shippedTestProfile().run(context -> assertThat(
+                    context.getBean(JdbcTemplate.class).getQueryTimeout()).isPositive());
+        }
+
+        @Test
+        @DisplayName("with the bound unstated the context refuses to start rather than running "
+                + "unbounded")
+        void anUnstatedBoundRefusesStartup() {
+            new ApplicationContextRunner()
+                    .withUserConfiguration(DataSourceConfig.class)
+                    .withPropertyValues(Stream.concat(minimalValidCatalogue(),
+                                    Stream.of(IN_MEMORY_URL_PROPERTY, RECORD_IMAGE_FORM_PROPERTY))
+                            .toArray(String[]::new))
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("a configured bound that is not a bound refuses startup rather than being ignored")
+        void aNonBoundRefusesStartup() {
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=0")
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context.getStartupFailure())
+                                .hasMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY);
+                    });
+        }
+
+        @Test
+        @DisplayName("a driver-level bound below the statement one reaches the driver through "
+                + "configuration, so no socket timeout is named in Java either")
+        void aDriverLevelBoundReachesTheDriverThroughConfiguration() {
+            // The statement timeout is the deepest bound this module can set portably; the login, connect
+            // and socket-read timeouts below it are spelled differently by every driver and this module
+            // pins no driver coordinate (R-E). The javadoc on jdbcTemplate says those are supplied under
+            // spring.datasource.hikari.data-source-properties.*, and this asserts that claim rather than
+            // leaving it as prose - a documented route that did not work would be worse than none.
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=15",
+                    "spring.datasource.hikari.data-source-properties.socketTimeout=20000",
+                    "spring.datasource.hikari.data-source-properties.loginTimeout=5")
+                    .run(context -> {
+                        HikariDataSource pool = (HikariDataSource) context.getBean(DataSource.class);
+
+                        assertThat(pool.getDataSourceProperties())
+                                .containsEntry("socketTimeout", "20000")
+                                .containsEntry("loginTimeout", "5");
+                        // And they are handed to the driver untouched: no Java source reads, renames or
+                        // validates them, because their names belong to the site's driver.
+                        assertThat(context.getBean(JdbcTemplate.class).getQueryTimeout())
+                                .isEqualTo(15);
+                    });
+        }
+
+        @Test
+        @DisplayName("the bound is still the only JdbcOperations definition, with no @Primary anywhere")
+        void thereIsStillExactlyOneTemplate() {
+            shippedDefaultProfile().run(context -> {
+                assertThat(context).hasSingleBean(JdbcTemplate.class);
+                assertThat(context.getBeanNamesForType(JdbcOperations.class)).hasSize(1);
+            });
+        }
+    }
+
     @Nested
     @DisplayName("The pool and the template - one of each, built from configuration, with the driver "
             + "supplied at deployment time")

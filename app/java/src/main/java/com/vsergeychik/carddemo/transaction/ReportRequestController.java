@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.transaction;
 
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CobolDecimal;
@@ -7,9 +8,13 @@ import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.NumericIntrinsics;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.WebConfig.JobSubmissionProperties;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestRequest;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestResponse;
@@ -20,22 +25,35 @@ import jakarta.validation.Valid;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -474,29 +492,8 @@ public class ReportRequestController {
     /** The COBOL figurative constant {@code LOW-VALUE}: the byte with every bit clear. */
     private static final char LOW_VALUE = '\u0000';
 
-    /** The decimal point {@code FUNCTION NUMVAL-C} accepts. */
-    private static final char DECIMAL_POINT = '.';
-
-    /** The digit-grouping separator {@code FUNCTION NUMVAL-C} accepts inside the integer part. */
-    private static final char DIGIT_SEPARATOR = ',';
-
-    /** The default currency sign {@code FUNCTION NUMVAL-C} accepts; no {@code CURRENCY} clause overrides it. */
-    private static final char CURRENCY_SIGN = '$';
-
-    /** The plus sign {@code FUNCTION NUMVAL-C} accepts in either the leading or the trailing position. */
-    private static final char PLUS_SIGN = '+';
-
-    /** The minus sign {@code FUNCTION NUMVAL-C} accepts in either the leading or the trailing position. */
-    private static final char MINUS_SIGN = '-';
-
-    /** The trailing credit indicator {@code FUNCTION NUMVAL-C} treats as a negative sign. */
-    private static final String CREDIT_INDICATOR = "CR";
-
-    /** The trailing debit indicator {@code FUNCTION NUMVAL-C} treats as a negative sign. */
-    private static final String DEBIT_INDICATOR = "DB";
-
     /** The value {@link #testNumvalC(String)} returns for a conforming argument. */
-    public static final int NUMVAL_CONFORMS = 0;
+    public static final int NUMVAL_CONFORMS = NumericIntrinsics.CONFORMS;
 
     // =============================================================================================
     // FUNCTION INTEGER-OF-DATE and FUNCTION DATE-OF-INTEGER - app/cbl/CORPT00C.cbl:229-230.
@@ -868,20 +865,22 @@ public class ReportRequestController {
     // =============================================================================================
 
     /**
-     * The code page in which this program's working-storage images are rendered.
+     * The code page the screen's {@code PICTURE} move rules are constructed over.
      *
-     * <p>Named explicitly and never taken from the platform: a default-encoding read is the classic way
-     * a migrated mainframe record acquires the wrong bytes. {@code US-ASCII} is chosen because the
-     * authoritative fixtures under {@code app/data/ASCII} are ASCII and because
-     * {@code TDQUEUE(JOBS)} declares {@code RECORDSIZE(80)} with {@code RECORDFORMAT(FIXED)}, which
-     * only holds when one character occupies one byte. A deployment whose internal reader expects
-     * {@code IBM037} supplies it through
-     * {@link #ReportRequestController(DateUtilityJob, JobSubmissionPort, Clock, Charset)} and
-     * {@link InternalReaderJobSubmissionPort#InternalReaderJobSubmissionPort(JobSubmissionProperties,
-     * Charset)}; the eighty-byte assertion in the port holds either way, because both code pages are
-     * single byte.
+     * <p><strong>This is a fallback for a caller that constructs the class directly, and it is not what a
+     * running application uses.</strong> Spring injects the configured dataset code page - qualified
+     * {@link CobolCharsetConfig#DATASET_CHARSET_BEAN_NAME}, which is {@code IBM037} in production and
+     * {@code US-ASCII} under the test profile - because the records this program renders are read by a
+     * mainframe internal reader and have to arrive in the code page it expects. Wiring the default here
+     * instead was a real defect: a region configured for {@code IBM037} submitted ASCII bytes, the
+     * eighty-byte geometry still held, and nothing said the content was wrong.
+     *
+     * <p>{@code US-ASCII} remains the value of this constant because the authoritative fixtures under
+     * {@code app/data/ASCII} are ASCII, and it is a legitimate code page for the queue: {@code TDQUEUE(
+     * JOBS)} declares {@code RECORDSIZE(80)} with {@code RECORDFORMAT(FIXED)}, which holds under any code
+     * page where one character occupies one byte - as both this one and {@code IBM037} do.
      */
-    public static final Charset DEFAULT_WORKING_STORAGE_CHARSET = StandardCharsets.US_ASCII;
+    private static final Charset PICTURE_RULES_CHARSET = StandardCharsets.US_ASCII;
 
     /** {@code CALL 'CSUTLDTC'} - lines 392 and 412. A {@code @Service}, never a Spring Batch job. */
     private final DateUtilityJob dateUtilityJob;
@@ -896,35 +895,27 @@ public class ReportRequestController {
     private final FixedWidthCodec codec;
 
     /**
-     * Wires the program's three collaborators, rendering images in
-     * {@link #DEFAULT_WORKING_STORAGE_CHARSET}.
+     * Wires the program's three collaborators with the code page configuration declares.
+     *
+     * <p>The charset is an explicit argument selected by bean name, not a constant: {@code IBM037} is
+     * what {@code charset.dataset} declares, and a hardwired {@code US-ASCII} here would have encoded
+     * this program's images in a code page the region does not use (practice B8, gate G46). It is the
+     * only constructor, so there is no path into this class that defaults it.
      *
      * @param dateUtilityJob    the {@code CSUTLDTC} date validator; must not be {@code null}
      * @param jobSubmissionPort the transient-data-queue replacement; must not be {@code null}
      * @param clock             the clock {@code FUNCTION CURRENT-DATE} reads; must not be {@code null}
+     * @param datasetCharset    the active dataset code page,
+     *                          {@code @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)}; must
+     *                          not be {@code null}
      * @throws NullPointerException if any argument is {@code null}
      */
     @Autowired
     public ReportRequestController(DateUtilityJob dateUtilityJob,
                                    JobSubmissionPort jobSubmissionPort,
-                                   Clock clock) {
-        this(dateUtilityJob, jobSubmissionPort, clock, DEFAULT_WORKING_STORAGE_CHARSET);
-    }
-
-    /**
-     * Wires the program's three collaborators with an explicit code page.
-     *
-     * @param dateUtilityJob         the {@code CSUTLDTC} date validator; must not be {@code null}
-     * @param jobSubmissionPort      the transient-data-queue replacement; must not be {@code null}
-     * @param clock                  the clock {@code FUNCTION CURRENT-DATE} reads; must not be
-     *                               {@code null}
-     * @param workingStorageCharset  the code page for this program's images; must not be {@code null}
-     * @throws NullPointerException if any argument is {@code null}
-     */
-    public ReportRequestController(DateUtilityJob dateUtilityJob,
-                                   JobSubmissionPort jobSubmissionPort,
                                    Clock clock,
-                                   Charset workingStorageCharset) {
+                                   @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)
+                                   Charset datasetCharset) {
         this.dateUtilityJob = Objects.requireNonNull(dateUtilityJob, "A DateUtilityJob is required: "
                 + "app/cbl/CORPT00C.cbl:392 and 412 CALL 'CSUTLDTC' to validate the custom range, and "
                 + "the tolerated message number " + CSUTLDTC_TOLERATED_MESSAGE_NUMBER + " is read from "
@@ -935,9 +926,10 @@ public class ReportRequestController {
         this.clock = Objects.requireNonNull(clock, "A Clock is required: FUNCTION CURRENT-DATE is read "
                 + "from it at lines 215, 241 and 611, and never from the wall clock, so a parity case "
                 + "can pin the instant and compare bytes");
-        Objects.requireNonNull(workingStorageCharset, "A code page is required; it is never the "
-                + "platform default");
-        this.codec = new FixedWidthCodec(workingStorageCharset);
+        Objects.requireNonNull(datasetCharset, "A code page is required: this program renders "
+                + "fixed-width images and composes eighty-byte JCL records, so the code page is stated "
+                + "explicitly by configuration and never taken from the platform or from a constant");
+        this.codec = new FixedWidthCodec(datasetCharset);
     }
 
     // =============================================================================================
@@ -960,8 +952,10 @@ public class ReportRequestController {
     @PostMapping(path = REPORTS_PATH,
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public ReportRequestResponse submitReportRequest(@Valid @RequestBody ReportRequestRequest request) {
-        return mainPara(request).response();
+    public ScreenResponse<ReportRequestResponse> submitReportRequest(
+            @Valid @RequestBody ReportRequestRequest request) {
+        ProgramState state = mainPara(request);
+        return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
     // =============================================================================================
@@ -2100,10 +2094,9 @@ public class ReportRequestController {
      *
      * <pre>{@code [+|-] [$] digits[,digits]... [.[digits]] [+|-|CR|DB]}</pre>
      *
-     * <p><strong>An argument that does not conform yields zero.</strong> COBOL leaves that case
-     * undefined, so a deterministic choice has to be made, and zero is chosen for consistency with the
-     * account date engine's {@code FUNCTION NUMVAL}, which documents the same convention for the same
-     * reason. Use {@link #testNumvalC(String)} to find out whether an argument conformed. The choice
+     * <p><strong>An argument that does not conform yields zero.</strong> The policy, and the reason it
+     * is safe, are stated once in {@link NumericIntrinsics} rather than restated here. Use
+     * {@link #testNumvalC(String)} to find out whether an argument conformed. The choice
      * does not change what this screen accepts: a non-conforming month becomes {@code "00"}, which
      * passes the class test and the {@code > '12'} comparison at lines 329 and 330 and is then rejected
      * by {@code CSUTLDTC} at line 396 with {@value #MSG_START_DATE_INVALID} - so the operator is told
@@ -2114,7 +2107,7 @@ public class ReportRequestController {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static BigDecimal numvalC(String image) {
-        return scanNumvalC(image).value();
+        return NumericIntrinsics.numvalC(image);
     }
 
     /**
@@ -2134,107 +2127,7 @@ public class ReportRequestController {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static int testNumvalC(String image) {
-        return scanNumvalC(image).errorPosition();
-    }
-
-    /**
-     * The single scan behind {@link #numvalC(String)} and {@link #testNumvalC(String)}, so the value and
-     * the verdict can never disagree.
-     *
-     * @param image the argument; must not be {@code null}
-     * @return the scan's outcome
-     * @throws NullPointerException if {@code image} is {@code null}
-     */
-    private static NumvalScan scanNumvalC(String image) {
-        Objects.requireNonNull(image, "FUNCTION NUMVAL-C requires an argument");
-
-        int length = image.length();
-        int index = skipSpaces(image, 0);
-
-        boolean negative = false;
-        boolean leadingSignSeen = false;
-        if (index < length && isSign(image.charAt(index))) {
-            negative = image.charAt(index) == MINUS_SIGN;
-            leadingSignSeen = true;
-            index = skipSpaces(image, index + ONE);
-        }
-
-        // The currency sign is what distinguishes NUMVAL-C from NUMVAL. It contributes no digit and may
-        // be followed by spaces.
-        if (index < length && image.charAt(index) == CURRENCY_SIGN) {
-            index = skipSpaces(image, index + ONE);
-        }
-
-        StringBuilder digits = new StringBuilder();
-        int fractionDigits = 0;
-        boolean decimalPointSeen = false;
-        while (index < length) {
-            char character = image.charAt(index);
-            if (isDigit(character)) {
-                digits.append(character);
-                if (decimalPointSeen) {
-                    fractionDigits++;
-                }
-                index++;
-            } else if (character == DECIMAL_POINT && !decimalPointSeen) {
-                decimalPointSeen = true;
-                index++;
-            } else if (character == DIGIT_SEPARATOR && !decimalPointSeen && digits.length() > 0
-                    && index + ONE < length && isDigit(image.charAt(index + ONE))) {
-                // A grouping comma: permitted between digits of the integer part only, and it
-                // contributes no digit of its own.
-                index++;
-            } else {
-                break;
-            }
-        }
-
-        if (digits.length() == 0) {
-            // No digit anywhere: all spaces, a bare sign, a bare currency sign or a bare decimal point.
-            // The intrinsic reports this at the length plus one rather than at a character position.
-            return NumvalScan.rejected(length + ONE);
-        }
-
-        index = skipSpaces(image, index);
-        if (index < length && !leadingSignSeen) {
-            char character = image.charAt(index);
-            if (isSign(character)) {
-                negative = character == MINUS_SIGN;
-                index = skipSpaces(image, index + ONE);
-            } else if (image.startsWith(CREDIT_INDICATOR, index)
-                    || image.startsWith(DEBIT_INDICATOR, index)) {
-                negative = true;
-                index = skipSpaces(image, index + CREDIT_INDICATOR.length());
-            }
-        }
-
-        if (index != length) {
-            return NumvalScan.rejected(index + ONE);
-        }
-
-        BigDecimal magnitude = new BigDecimal(digits.toString()).movePointLeft(fractionDigits);
-        return NumvalScan.accepted(negative ? magnitude.negate() : magnitude);
-    }
-
-    /**
-     * The outcome of one {@code FUNCTION NUMVAL-C} scan: the value and the conformance verdict together,
-     * so a caller cannot read one without the other having been derived from the same pass.
-     *
-     * @param value         the value the argument denotes, or zero when it does not conform
-     * @param errorPosition {@value #NUMVAL_CONFORMS} when it conforms, otherwise the one-based position
-     *                      of the first character in error
-     */
-    private record NumvalScan(BigDecimal value, int errorPosition) {
-
-        /** @param value the converted value */
-        static NumvalScan accepted(BigDecimal value) {
-            return new NumvalScan(value, NUMVAL_CONFORMS);
-        }
-
-        /** @param position the one-based position of the first character in error */
-        static NumvalScan rejected(int position) {
-            return new NumvalScan(BigDecimal.ZERO, position);
-        }
+        return NumericIntrinsics.testNumvalC(image);
     }
 
     /**
@@ -2326,36 +2219,11 @@ public class ReportRequestController {
     }
 
     /**
-     * Advances past a run of spaces, which {@code FUNCTION NUMVAL-C} permits between the elements of its
-     * argument.
-     *
-     * @param image the argument
-     * @param from  the index to start at
-     * @return the index of the first character at or after {@code from} that is not a space, or the
-     *         argument's length
-     */
-    private static int skipSpaces(String image, int from) {
-        int index = from;
-        while (index < image.length() && image.charAt(index) == SPACE.charAt(0)) {
-            index++;
-        }
-        return index;
-    }
-
-    /**
      * @param character the character to classify
      * @return whether it is {@code '0'} through {@code '9'}
      */
     private static boolean isDigit(char character) {
         return character >= '0' && character <= '9';
-    }
-
-    /**
-     * @param character the character to classify
-     * @return whether it is a sign {@code FUNCTION NUMVAL-C} accepts in either position
-     */
-    private static boolean isSign(char character) {
-        return character == PLUS_SIGN || character == MINUS_SIGN;
     }
 
     /**
@@ -2424,7 +2292,7 @@ public class ReportRequestController {
          * still named explicitly rather than defaulted.
          */
         private static final FixedWidthCodec PICTURE_RULES =
-                new FixedWidthCodec(DEFAULT_WORKING_STORAGE_CHARSET);
+                new FixedWidthCodec(PICTURE_RULES_CHARSET);
 
         /** {@code 01 CORPT0AI} and its {@code 01 CORPT0AO} redefinition: one screen buffer. */
         private final ReportRequestResponse response = new ReportRequestResponse();
@@ -2558,6 +2426,58 @@ public class ReportRequestController {
          */
         public ReportRequestRequest.SymbolicMapMetadata symbolicMap() {
             return symbolicMap;
+        }
+
+        /**
+         * This screen's presentation metadata, in the shared envelope every online response publishes.
+         *
+         * <p>Three things this execution produces are metadata by declaration rather than payload, and
+         * before this envelope existed none of them had any way to travel:
+         *
+         * <ul>
+         *   <li>the {@code MOVE -1 TO <field>L} cursor request, which {@code CORPT00C} issues at
+         *       twenty-two sites. The Agent Action Plan's section 0.3.9 is explicit that {@code xxxL} is
+         *       validation and highlight metadata and not a payload member, so it is reported here
+         *       rather than smuggled into a projection of {@code xxxI} and {@code xxxO} items. The field
+         *       named is the first in map declaration order whose length item holds
+         *       {@value ReportRequestRequest.FieldMetadata#CURSOR_POSITION}, which is the one the
+         *       terminal would place the cursor in;</li>
+         *   <li>the {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} quad of each of the
+         *       seventeen fields, which is what {@code app/cpy/CSSETATY.cpy} writes
+         *       {@link BmsAttributes#DFHRED} into when a field is in error;</li>
+         *   <li>the colour of the message line, read from {@code ERRMSGC} rather than restated, so a
+         *       rename cannot silently leave this pointing at a field that no longer exists.</li>
+         * </ul>
+         *
+         * <p>Each quad is published as four unsigned {@code 0}-{@code 255} values, because an attribute
+         * byte with the high bit set - {@link BmsAttributes#DFHRED} is {@code 0xF2} - is a negative
+         * {@code byte} in Java and publishing {@code -14} would misstate it. The map is keyed by the
+         * {@code DFHMDF} label.
+         *
+         * <p>{@code resetAllOutputFields} is {@code false}: where {@code MOVE LOW-VALUES TO CORPT0AO}
+         * runs it has already been applied to the response being published, so the client is not being
+         * asked to clear anything a second time.
+         *
+         * @return the metadata; never {@code null}
+         */
+        public ScreenMetadata screenMetadata() {
+            Map<String, ScreenMetadata.FieldMetadata> fields = new LinkedHashMap<>();
+            for (ReportRequestResponse.ScreenField field : ReportRequestResponse.ScreenField.values()) {
+                ReportRequestResponse.FieldAttributes quad = response.attributesOf(field);
+                fields.put(field.baseName(), ScreenMetadata.FieldMetadata.of(quad.colour(), quad.ps(),
+                        quad.hilight(), quad.validn()));
+            }
+            String cursorOn = null;
+            for (ReportRequestRequest.ScreenField field : ReportRequestRequest.ScreenField.values()) {
+                if (symbolicMap.metadata(field).cursorRequested()) {
+                    cursorOn = field.bmsName();
+                    break;
+                }
+            }
+            return ScreenMetadata.of(cursorOn,
+                    response.attributesOf(ReportRequestResponse.ScreenField.ERRMSG).colour(),
+                    false,
+                    fields);
         }
 
         /**
@@ -3355,6 +3275,24 @@ public class ReportRequestController {
         /** Diagnostics for a queue that {@code ERROROPTION(IGNORE)} forbids from abending its caller. */
         private static final Log PORT_LOG = LogFactory.getLog(InternalReaderJobSubmissionPort.class);
 
+        /**
+         * The permissions every directory this port creates is created with: {@code rwx------}.
+         *
+         * <p>Owner-only, because the destination's path is knowable - it is in a configuration file -
+         * and a knowable path in a directory anybody may enter is a path anybody may pre-create,
+         * replace or read.
+         */
+        private static final String DIRECTORY_PERMISSIONS = "rwx------";
+
+        /**
+         * The permissions the destination is created with: {@code rw-------}.
+         *
+         * <p>The records are JCL skeletons naming datasets and the submitting user, so the file is the
+         * owner's alone. Applied at creation rather than afterwards, so there is no window in which the
+         * file exists with wider permissions than it should ever have.
+         */
+        private static final String FILE_PERMISSIONS = "rw-------";
+
         /** {@code carddemo.job-submission} - the queue's name, geometry and destination. */
         private final JobSubmissionProperties properties;
 
@@ -3364,24 +3302,53 @@ public class ReportRequestController {
         /** The configured destination, resolved once; {@code null} when it could not be resolved. */
         private final Path destination;
 
-        /** The destination's directory, created on demand; {@code null} when unresolved. */
-        private final Path destinationDirectory;
-
         /** Why the destination could not be resolved, or {@code null} when it was. */
         private final RuntimeException refusal;
 
         /**
-         * Wires the port from configuration, encoding records in
-         * {@link ReportRequestController#DEFAULT_WORKING_STORAGE_CHARSET}.
+         * Serializes appends to this port's one destination.
+         *
+         * <p>A dedicated monitor rather than {@code this}, so no caller holding a reference to the port can
+         * take the lock that a record's write depends on. Held across the containment check and the open
+         * together, which is what keeps the two from being separable by a concurrent request.
+         */
+        private final Object appendLock = new Object();
+
+        /**
+         * Whether the running filesystem carries POSIX permissions, decided once at construction.
+         *
+         * <p>Job text names datasets, jobs and users, so the directories the descent creates and the file
+         * it opens are owner-only where the filesystem supports saying so - {@value #DIRECTORY_PERMISSIONS}
+         * and {@value #FILE_PERMISSIONS}. Where it does not, the platform's own default applies, because
+         * refusing to write at all would be a harsher outcome than the queue's own.
+         */
+        private final boolean posixPermissionsSupported;
+
+        /**
+         * Wires the port from configuration, encoding records in the code page
+         * {@code carddemo.job-submission.charset} declares.
+         *
+         * <p><strong>The code page comes from configuration, not from this class.</strong> It used to
+         * be {@link ReportRequestController#DEFAULT_WORKING_STORAGE_CHARSET} - the program's
+         * {@code WORKING-STORAGE} code page, hard-wired here - while the two-argument constructor that
+         * could have carried a real one was never wired to anything. A region whose internal reader
+         * consumes EBCDIC would therefore have received 80 bytes of ASCII per record and a
+         * {@code NORMAL} response for each one. Which code page a reader consumes cannot be inferred
+         * from inside this process, so it is declared, validated once by
+         * {@link JobSubmissionProperties#validate()} and read back here.
          *
          * @param properties the {@code carddemo.job-submission} binding; must not be {@code null}
          * @throws NullPointerException  if {@code properties} is {@code null}
          * @throws IllegalStateException if the configured record length is not the CSD's
          *                               {@code RECORDSIZE(80)}
+         * @throws IllegalArgumentException if the configured code page names nothing this platform
+         *                               provides
          */
-        @Autowired
         public InternalReaderJobSubmissionPort(JobSubmissionProperties properties) {
-            this(properties, DEFAULT_WORKING_STORAGE_CHARSET);
+            this(Objects.requireNonNull(properties, "The carddemo.job-submission binding is required: "
+                            + "the queue name, the record geometry, the code page and the destination "
+                            + "are configured, never written in Java"),
+                    properties.queueCharset());
         }
 
         /**
@@ -3389,12 +3356,16 @@ public class ReportRequestController {
          * whose internal reader expects EBCDIC, for instance.
          *
          * @param properties   the {@code carddemo.job-submission} binding; must not be {@code null}
-         * @param queueCharset the code page the records are encoded in; must not be {@code null}
+         * @param queueCharset the active dataset code page,
+         *                     {@code @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)}; must not
+         *                     be {@code null}
          * @throws NullPointerException  if either argument is {@code null}
          * @throws IllegalStateException if the configured record length is not the CSD's
          *                               {@code RECORDSIZE(80)}
          */
+        @Autowired
         public InternalReaderJobSubmissionPort(JobSubmissionProperties properties,
+                                              @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)
                                               Charset queueCharset) {
             this.properties = Objects.requireNonNull(properties, "The carddemo.job-submission binding is "
                     + "required: the queue name, the record geometry and the destination are configured, "
@@ -3413,12 +3384,15 @@ public class ReportRequestController {
             }
 
             Path resolved = null;
-            Path directory = null;
             RuntimeException failure = null;
             try {
                 resolved = properties.destinationPath();
-                directory = resolved.getParent();
-                if (directory == null) {
+                // The parent is required to exist as a NAME - a destination that is a filesystem root
+                // has none - because the append descends to the record's file through its parent
+                // directory. The directory itself is inspected, and created if missing, per write in
+                // appendWithinApprovedRoot, never cached here: caching a directory would cache a
+                // decision about the filesystem taken before the write it protects.
+                if (resolved.getParent() == null) {
                     throw new IllegalArgumentException("carddemo.job-submission.destination has no "
                             + "parent directory, so it names a filesystem root rather than a dataset the "
                             + "internal reader could consume");
@@ -3433,8 +3407,9 @@ public class ReportRequestController {
                 failure = notADestination;
             }
             this.destination = resolved;
-            this.destinationDirectory = directory;
             this.refusal = failure;
+            this.posixPermissionsSupported =
+                    FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
         }
 
         /**
@@ -3488,20 +3463,203 @@ public class ReportRequestController {
                 return WriteQueueOutcome.notOpen();
             }
 
-            try {
-                Files.createDirectories(destinationDirectory);
-                // CREATE, WRITE and APPEND together are DISPOSITION(MOD): the record is added to
-                // whatever the destination already holds, and nothing is ever truncated.
-                Files.write(destination, image, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
-                        StandardOpenOption.APPEND);
-            } catch (IOException cannotAppend) {
-                PORT_LOG.error("Could not append a " + properties.recordLength() + "-byte record to the "
-                        + properties.disposition() + " job-submission destination ("
-                        + cannotAppend.getClass().getName() + "); reporting RESP NOTOPEN");
-                return WriteQueueOutcome.notOpen();
+            // Serialized, and per destination. This port is a singleton bound to one configured
+            // destination, so one monitor here IS one monitor per destination.
+            //
+            // Two reasons, and both are about a record rather than about throughput. The queue is
+            // RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED), so a reader takes the destination eighty bytes
+            // at a time: a write that landed in two pieces with another request's bytes between them
+            // would not be a corrupt record, it would be two corrupt records and every record after them
+            // shifted. O_APPEND makes a single write atomic on the platforms that have it, but the
+            // java.nio.file contract promises nothing of the sort, and this module is not entitled to
+            // assume a provider. The lock also makes the element-by-element descent, the real-path
+            // re-check and the no-follow open one indivisible step, which is what keeps a concurrent
+            // request from widening the window between them.
+            synchronized (appendLock) {
+                try {
+                    appendWithinApprovedRoot(image);
+                } catch (IOException cannotAppend) {
+                    PORT_LOG.error("Could not append a " + properties.recordLength()
+                            + "-byte record to the " + properties.disposition()
+                            + " job-submission destination (" + cannotAppend.getClass().getName()
+                            + "); reporting RESP NOTOPEN");
+                    return WriteQueueOutcome.notOpen();
+                }
             }
 
             return WriteQueueOutcome.NORMAL;
+        }
+
+        /**
+         * Appends one encoded record to the destination, having first proved that every component of
+         * the path leading to it is a real directory inside the operator-provisioned root and that the
+         * record's own file is not a symbolic link.
+         *
+         * <h4>What this defends against</h4>
+         * The destination is externally supplied and the write appends in {@code DISPOSITION(MOD)}, so
+         * a wrong target does not fail - it succeeds against the wrong file. The startup validation in
+         * {@link JobSubmissionProperties#validate()} settles the <em>configuration</em>: the path is
+         * absolute, carries no {@code ".."} segment, names no read-only reference tree and resolves
+         * inside {@code approved-root}. That is pure path algebra and it cannot see the filesystem, so
+         * it cannot see a <strong>symbolic link</strong>. A link planted at
+         * {@code <root>/inreader/JOBS}, or at the {@code inreader} directory itself, satisfies every
+         * lexical test while sending eighty-byte records wherever it points (CWE-59), and a link
+         * planted between a check and an open would defeat a check made in ordinary Java file calls
+         * (CWE-367).
+         *
+         * <h4>How it is defended</h4>
+         * <ol>
+         *   <li>The approved root is resolved with {@link Path#toRealPath(LinkOption...)}, which
+         *       follows every link once and fails if the root does not exist. The root is
+         *       operator-provisioned, so its absence is a deployment fault and is reported as
+         *       {@code NOTOPEN} rather than papered over by creating it here.</li>
+         *   <li>The destination is descended one name element at a time from that real root. Each
+         *       element is inspected with {@link LinkOption#NOFOLLOW_LINKS}: an element that is a
+         *       symbolic link is refused outright, and a non-final element that exists but is not a
+         *       directory is refused too. Missing directories are created one level at a time with
+         *       {@link Files#createDirectory(Path, java.nio.file.attribute.FileAttribute...)}, never
+         *       with {@code createDirectories}, so no level escapes inspection.</li>
+         *   <li>The completed parent is re-resolved with {@code toRealPath()} and required to be
+         *       <em>identical</em> to the descended path and still inside the real root. If any
+         *       component had been swapped for a link during the descent, the resolved form would
+         *       differ and the write is refused.</li>
+         *   <li>The record's own file is opened through
+         *       {@link FileChannel#open(Path, java.util.Set, java.nio.file.attribute.FileAttribute...)}
+         *       with {@code CREATE}, {@code WRITE}, {@code APPEND} <em>and</em>
+         *       {@link LinkOption#NOFOLLOW_LINKS}. The no-follow open is atomic - the platform refuses
+         *       the open if the final component is a link, in the same operation that would have
+         *       followed it - so there is no window between deciding the leaf is safe and writing to
+         *       it. {@link Files#write} cannot be used for this: it offers no way to refuse a link.</li>
+         * </ol>
+         *
+         * <p>{@code CREATE}, {@code WRITE} and {@code APPEND} together remain
+         * {@code DISPOSITION(MOD)}: the record is added to whatever the destination already holds and
+         * nothing is ever truncated, so the emitted bytes are still byte-identical to the CICS write
+         * (gate <strong>G42</strong>). The write loop drains the buffer because
+         * {@link FileChannel#write(java.nio.ByteBuffer)} is not obliged to write it all at once, and a
+         * short write would leave a record of fewer than {@code RECORDSIZE} bytes in a
+         * {@code RECORDFORMAT(FIXED)} dataset.
+         *
+         * <p><strong>The residual limitation, stated rather than absorbed</strong> (practice
+         * <strong>B12</strong>): the platform-independent Java API exposes no directory handle, so
+         * there is no {@code openat}-relative form of step 2. The leaf is protected atomically and any
+         * substitution among the intermediate directories is detected by step 3, but a sufficiently
+         * privileged local attacker who can write inside the approved root is outside what this port
+         * can defend; the root's own permissions are the control for that, which is why it is required
+         * to be operator-provisioned rather than defaulted into a shared temporary directory.
+         *
+         * @param image the encoded record, exactly {@link JobSubmissionProperties#TDQ_RECORD_LENGTH}
+         *              bytes
+         * @throws IOException if the root cannot be resolved, if any component of the destination is a
+         *                     symbolic link or is not a directory, if the destination escapes the real
+         *                     root, or if the append itself fails
+         */
+        private void appendWithinApprovedRoot(byte[] image) throws IOException {
+            Path approvedRoot = properties.approvedRootPath();
+
+            // Asked BEFORE the root is resolved, and that order is the whole point. Resolving first and
+            // then measuring containment against the resolved root cannot fail: the root would define the
+            // tree it had been redirected into, and every path beneath it would read as "contained". So
+            // the question here is whether the configured root IS a link - /tmp/carddemo pointing at /etc
+            // - rather than whether it resolves somewhere. Only the final component is examined: an
+            // ancestor that is a link is ordinary and legitimate (/tmp is a link to /private/tmp on some
+            // platforms), and refusing it would refuse deployments that have redirected nothing.
+            //
+            // Per write rather than once at startup, because the root can be replaced between two writes
+            // (CWE-367) - which is exactly what the second write of a run has to be able to refuse.
+            if (Files.isSymbolicLink(approvedRoot)) {
+                throw new IOException("The approved root '" + approvedRoot + "' is a symbolic link, so it "
+                        + "names a directory tree other than the one the configuration reads as approved. "
+                        + "Job-submission output goes to a directory this deployment owns; relocating it "
+                        + "is a change of carddemo.job-submission.approved-root, not something a link may "
+                        + "do on its own");
+            }
+
+            Path realRoot = approvedRoot.toRealPath();
+            if (!Files.isDirectory(realRoot, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("The approved root '" + approvedRoot + "' resolves to '" + realRoot
+                        + "', which is not a directory. The root names the directory tree job-submission "
+                        + "output may go in, so it cannot resolve to a file or to a dangling link");
+            }
+
+            // The startup validation has already required strict containment, so relativizing against
+            // the configured root yields the chain of names below it and never an upward step.
+            Path below = approvedRoot.relativize(destination);
+            Path current = realRoot;
+            for (int element = 0; element < below.getNameCount(); element++) {
+                Path next = current.resolve(below.getName(element));
+                boolean last = element == below.getNameCount() - 1;
+                if (Files.exists(next, LinkOption.NOFOLLOW_LINKS)) {
+                    if (Files.isSymbolicLink(next)) {
+                        throw new IOException("Refusing to write through a symbolic link: the "
+                                + "job-submission destination's component " + (element + 1) + " of "
+                                + below.getNameCount() + " below the approved root is a link, and "
+                                + "following it would append records outside the root the deployment "
+                                + "approved");
+                    }
+                    if (!last && !Files.isDirectory(next, LinkOption.NOFOLLOW_LINKS)) {
+                        throw new IOException("Refusing to write: component " + (element + 1)
+                                + " of the job-submission destination exists but is not a directory");
+                    }
+                } else if (!last) {
+                    if (posixPermissionsSupported) {
+                        Files.createDirectory(next, PosixFilePermissions.asFileAttribute(
+                                PosixFilePermissions.fromString(DIRECTORY_PERMISSIONS)));
+                    } else {
+                        Files.createDirectory(next);
+                    }
+                }
+                current = next;
+            }
+
+            requireParentStillWithinRoot(current.getParent(), realRoot);
+
+            Set<OpenOption> options = Set.of(StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.APPEND,
+                    LinkOption.NOFOLLOW_LINKS);
+            try (FileChannel channel = posixPermissionsSupported
+                    ? FileChannel.open(current, options, PosixFilePermissions.asFileAttribute(
+                            PosixFilePermissions.fromString(FILE_PERMISSIONS)))
+                    : FileChannel.open(current, options)) {
+                ByteBuffer record = ByteBuffer.wrap(image);
+                while (record.hasRemaining()) {
+                    channel.write(record);
+                }
+            }
+        }
+
+        /**
+         * Step 3 of the write-time defence: re-resolves the directory the record is about to be written
+         * into and requires it to be the very directory the descent inspected, still inside the approved
+         * root.
+         *
+         * <p>This is the check that closes the window the descent cannot close on its own. The descent
+         * inspects each component and then moves on; between inspecting a component and opening the leaf,
+         * a local attacker with write access inside the root could replace an intermediate directory with
+         * a link. Comparing the completed parent against its own real path detects exactly that
+         * substitution - a resolved path equal to the path itself means no component was a link when the
+         * comparison was made - and the containment test then re-establishes the boundary rather than
+         * trusting the start-up validation to still hold.
+         *
+         * <p>Extracted rather than inlined so that both refusals can be driven directly. A race cannot be
+         * staged reliably from a single-threaded test, but the two states it produces can be presented as
+         * inputs, which is the difference between a guard that is believed to work and one that is known
+         * to (practice B10).
+         *
+         * @param parent   the directory the descent arrived at; must not be {@code null}
+         * @param realRoot the resolved approved root; must not be {@code null}
+         * @throws IOException if {@code parent} resolves anywhere other than itself, resolves outside
+         *                     {@code realRoot}, or no longer exists
+         */
+        static void requireParentStillWithinRoot(final Path parent, final Path realRoot)
+                throws IOException {
+            final Path resolvedParent = parent.toRealPath();
+            if (!resolvedParent.equals(parent) || !resolvedParent.startsWith(realRoot)) {
+                throw new IOException("Refusing to write: the job-submission destination's directory "
+                        + "resolves elsewhere than where it was verified, so a path component changed "
+                        + "while the record was being written");
+            }
         }
 
         /**

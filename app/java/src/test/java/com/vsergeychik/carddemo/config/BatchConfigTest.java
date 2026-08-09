@@ -1,9 +1,14 @@
 package com.vsergeychik.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
@@ -11,9 +16,12 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobContractValidator;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopRequestedException;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -24,12 +32,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
@@ -43,6 +54,8 @@ import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.support.ResourcelessJobRepository;
+import org.springframework.batch.core.scope.context.ChunkContext;
+import org.springframework.batch.core.scope.context.StepContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemWriter;
@@ -53,10 +66,12 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.ExitCodeExceptionMapper;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.batch.BatchAutoConfiguration;
 import org.springframework.boot.autoconfigure.batch.JobLauncherApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -194,6 +209,12 @@ class BatchConfigTest {
      * rather than a parameter.
      */
     private static final String REPORT_JOB = "transaction-report-job";
+
+    /** The configuration key of {@code CBACT02C}, whose JCL DD is {@code CARDFILE}. */
+    private static final String READCARD_JOB = "account-balance-reader-job";
+
+    /** The configuration key of {@code CBACT03C}, whose JCL DD is {@code XREFFILE}. */
+    private static final String READXREF_JOB = "account-balance-update-job";
 
     /**
      * The four single-DD readers, each a single ungated {@code STEP05} with no {@code PARM}:
@@ -1034,6 +1055,59 @@ class BatchConfigTest {
         }
 
         @Test
+        @DisplayName("every job the seam builds carries a run identity and refuses to be restarted")
+        void everyJobIsAFreshRunAndNeverARestart() {
+            BatchConfig config = resourcelessConfig();
+
+            Job job = config.job("accountBalanceJob")
+                    .start(config.taskletStep("STEP05", NO_OP_TASKLET).build())
+                    .build();
+
+            // A JCL job is submitted, in full, whenever the work needs doing again. Eight of the nine
+            // jobs here take no parameter at all, so without an identity of their own each would have
+            // exactly one instance for all time and a second submission would be refused as already
+            // complete. And nothing in the estate stores a checkpoint - CBACT04C commits per chunk while
+            // accumulating per account and records nothing - so resuming a failed execution would
+            // re-apply work, while skipping a completed step in TRANREPT or CREASTMT would report a
+            // fresh run over stale intermediate data.
+            assertThat(job.getJobParametersIncrementer())
+                    .as("the run identity is what makes a parameterless job submittable twice")
+                    .isSameAs(config.jclRunIdentityIncrementer());
+            assertThat(job.isRestartable())
+                    .as("a resubmission re-runs every step; it never resumes a failed execution")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the run identity is one identifying Long and nothing that resembles a business "
+                + "value")
+        void theRunIdentityIsOnlyARunIdentity() {
+            JobParametersIncrementer incrementer = resourcelessConfig().jclRunIdentityIncrementer();
+
+            JobParameters first = incrementer.getNext(new JobParameters());
+            JobParameters second = incrementer.getNext(first);
+            JobParameters besideAParm = incrementer.getNext(new JobParametersBuilder()
+                    .addString(BatchConfig.PARM_DATE_PARAMETER, "2022071800")
+                    .toJobParameters());
+
+            assertThat(first.getParameters().keySet())
+                    .containsExactly(BatchConfig.RUN_IDENTITY_PARAMETER);
+            assertThat(second.getLong(BatchConfig.RUN_IDENTITY_PARAMETER))
+                    .isGreaterThan(first.getLong(BatchConfig.RUN_IDENTITY_PARAMETER));
+            assertThat(first.getParameters().get(BatchConfig.RUN_IDENTITY_PARAMETER).isIdentifying())
+                    .as("a non-identifying value would not produce a new job instance, which is the "
+                            + "whole purpose")
+                    .isTrue();
+            // The one genuine parameter in the estate travels beside the identity, exactly as
+            // PARM='2022071800' travels on the EXEC statement.
+            assertThat(besideAParm.getString(BatchConfig.PARM_DATE_PARAMETER))
+                    .isEqualTo("2022071800");
+            assertThat(besideAParm.getParameters().keySet())
+                    .containsExactlyInAnyOrder(BatchConfig.PARM_DATE_PARAMETER,
+                            BatchConfig.RUN_IDENTITY_PARAMETER);
+        }
+
+        @Test
         @DisplayName("a fresh builder on every call, because builders are single-use and mutable")
         void everyCallReturnsAFreshBuilder() {
             BatchConfig config = resourcelessConfig();
@@ -1170,6 +1244,209 @@ class BatchConfigTest {
     }
 
     /**
+     * {@link StopSignal} and {@link StopRequestedException} - the between-record cancellation probe.
+     *
+     * <p>Two things have to hold, and they are asserted separately because they fail separately: the
+     * probe must recognise a stop on the same terms the framework's own interruption policy does, and an
+     * abandoned pass must be reported by the framework as <em>stopped</em> rather than failed. The second
+     * is asserted by running a real step, because it is a property of how {@code AbstractStep} reads the
+     * exception rather than of anything this module can assert about itself.
+     */
+    @Nested
+    @DisplayName("StopSignal - the between-record cancellation probe (N-02)")
+    class TheStopSignal {
+
+        /** The step name every probe here reports under. */
+        private static final String STEP_NAME = "STEP040";
+
+        /** @return a step execution not asked to stop */
+        private StepExecution stepExecution() {
+            return new StepExecution(STEP_NAME, new JobExecution(50L));
+        }
+
+        @Test
+        @DisplayName("RUNNING never stops anything, however many times it is asked")
+        void theRunningSignalNeverStops() {
+            assertThatNoException().isThrownBy(() -> {
+                for (int consultation = 0; consultation < 1_000; consultation++) {
+                    StopSignal.RUNNING.checkStopRequested();
+                }
+            });
+        }
+
+        @Test
+        @DisplayName("a step that has not been asked to stop is not stopped")
+        void anUnstoppedStepIsNotStopped() {
+            StopSignal signal = StopSignal.of(stepExecution());
+
+            assertThatNoException().isThrownBy(signal::checkStopRequested);
+        }
+
+        @Test
+        @DisplayName("terminateOnly - the flag JobOperator.stop() sets - stops the pass, naming the step "
+                + "and stating that no write is retried")
+        void terminateOnlyStopsThePass() {
+            StepExecution stepExecution = stepExecution();
+            stepExecution.setTerminateOnly();
+            StopSignal signal = StopSignal.of(stepExecution);
+
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(signal::checkStopRequested)
+                    .withMessageContaining(STEP_NAME)
+                    .withMessageContaining("between records")
+                    .withMessageContaining("NO write is retried")
+                    .withMessageContaining("not restartable")
+                    .withCauseInstanceOf(JobInterruptedException.class);
+        }
+
+        @Test
+        @DisplayName("a thread interruption stops the pass too, because that is the framework's other "
+                + "condition - and the flag is left where the framework can still see it")
+        void aThreadInterruptionStopsThePass() {
+            StopSignal signal = StopSignal.of(stepExecution());
+            Thread.currentThread().interrupt();
+            try {
+                assertThatExceptionOfType(StopRequestedException.class)
+                        .isThrownBy(signal::checkStopRequested)
+                        .withCauseInstanceOf(JobInterruptedException.class);
+
+                // Not cleared by the probe. The framework's own policy tests the same flag at the step's
+                // repeat boundary, and a probe that consumed it would hide the interruption from it.
+                assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            } finally {
+                // Cleared here so the flag does not leak into whatever test runs next on this thread.
+                assertThat(Thread.interrupted()).isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("the chunk context form reads through to the step execution the framework supplied")
+        void theChunkContextFormReadsThroughToTheStepExecution() {
+            StepExecution stepExecution = stepExecution();
+            ChunkContext chunkContext = new ChunkContext(new StepContext(stepExecution));
+            StopSignal signal = StopSignal.of(chunkContext);
+
+            assertThatNoException().isThrownBy(signal::checkStopRequested);
+
+            // The same probe, over the same execution: the stop is observed when it is requested, not
+            // when the probe was created, which is what makes it usable inside a running loop.
+            stepExecution.setTerminateOnly();
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(signal::checkStopRequested);
+        }
+
+        @Test
+        @DisplayName("neither factory accepts null, because a probe that could not observe anything "
+                + "would silently never stop")
+        void neitherFactoryAcceptsNull() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> StopSignal.of((ChunkContext) null))
+                    .withMessageContaining("chunk context");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> StopSignal.of((StepExecution) null))
+                    .withMessageContaining("step execution");
+        }
+
+        @Test
+        @DisplayName("a real step whose tasklet reports a stop MID-PASS ends STOPPED, not FAILED - and "
+                + "the COND gate reads it as blocking")
+        void aRealStepEndsStopped() throws JobInterruptedException {
+            // The load-bearing assertion of the whole design. StopRequestedException is unchecked, so it
+            // reaches AbstractStep as an ordinary failure; what makes the framework read it as a stop is
+            // its CAUSE being the framework's own JobInterruptedException. That is a property of the
+            // framework rather than of this module, so it is proved by running a real step through the
+            // real Step API - no launcher, no database, no job.
+            //
+            // The stop is requested from INSIDE the tasklet, on purpose. A stop already pending when the
+            // step begins is caught by TaskletStep's own interruption policy at the repeat boundary,
+            // before the tasklet is ever invoked - which is precisely the case that was already bounded
+            // and is not what N-02 is about. Flipping the flag while the pass is running is the case
+            // this probe exists for, and it is the only way to reach it.
+            ResourcelessJobRepository repository = new ResourcelessJobRepository();
+            BatchConfig config = configOver(repository, new ResourcelessTransactionManager());
+            Tasklet stops = (contribution, chunkContext) -> {
+                StopSignal signal = StopSignal.of(chunkContext);
+                signal.checkStopRequested();
+                chunkContext.getStepContext().getStepExecution().setTerminateOnly();
+                signal.checkStopRequested();
+                return RepeatStatus.FINISHED;
+            };
+            Step step = config.taskletStep(STEP_NAME, stops).build();
+
+            JobExecution jobExecution = repository.createJobExecution("statementGenerationJobA",
+                    new JobParameters());
+            StepExecution stepExecution = jobExecution.createStepExecution(STEP_NAME);
+            step.execute(stepExecution);
+
+            assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.STOPPED);
+            assertThat(stepExecution.getExitStatus().getExitCode())
+                    .isEqualTo(ExitStatus.STOPPED.getExitCode());
+            assertThat(stepExecution.getFailureExceptions())
+                    .singleElement()
+                    .isInstanceOf(StopRequestedException.class);
+
+            // STOPPED carries no numeric return code, so the COND gate treats it as blocking: a stopped
+            // step can never be mistaken for one that returned zero.
+            assertThat(BatchConfig.returnCodeOf(stepExecution.getExitStatus()))
+                    .isEqualTo(BatchConfig.NO_JCL_RETURN_CODE);
+            assertThat(BatchConfig.allPrecedingStepsReturnedZero(jobExecution)).isFalse();
+        }
+
+        @Test
+        @DisplayName("a stop already pending when the step begins is caught by the framework itself, "
+                + "before the tasklet is invoked - so the two mechanisms compose")
+        void aStopPendingAtEntryIsCaughtByTheFramework() throws JobInterruptedException {
+            // Stated as a test rather than left implicit, because it is the reason the probe is scoped to
+            // record loops and to nothing else: the step boundary is already covered.
+            ResourcelessJobRepository repository = new ResourcelessJobRepository();
+            BatchConfig config = configOver(repository, new ResourcelessTransactionManager());
+            boolean[] invoked = { false };
+            Tasklet neverReached = (contribution, chunkContext) -> {
+                invoked[0] = true;
+                return RepeatStatus.FINISHED;
+            };
+            Step step = config.taskletStep(STEP_NAME, neverReached).build();
+
+            JobExecution jobExecution = repository.createJobExecution("statementGenerationJobA",
+                    new JobParameters());
+            StepExecution stepExecution = jobExecution.createStepExecution(STEP_NAME);
+            stepExecution.setTerminateOnly();
+            step.execute(stepExecution);
+
+            assertThat(invoked[0]).isFalse();
+            assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.STOPPED);
+            assertThat(stepExecution.getFailureExceptions())
+                    .singleElement()
+                    .isInstanceOf(JobInterruptedException.class);
+        }
+
+        @Test
+        @DisplayName("a step whose tasklet is not stopped still completes, so the probe costs a "
+                + "well-behaved step nothing")
+        void anUnstoppedStepStillCompletes() throws JobInterruptedException {
+            ResourcelessJobRepository repository = new ResourcelessJobRepository();
+            BatchConfig config = configOver(repository, new ResourcelessTransactionManager());
+            Tasklet probes = (contribution, chunkContext) -> {
+                StopSignal signal = StopSignal.of(chunkContext);
+                for (int record = 0; record < 100; record++) {
+                    signal.checkStopRequested();
+                }
+                return RepeatStatus.FINISHED;
+            };
+            Step step = config.taskletStep(STEP_NAME, probes).build();
+
+            JobExecution jobExecution = repository.createJobExecution("statementGenerationJobA",
+                    new JobParameters());
+            StepExecution stepExecution = jobExecution.createStepExecution(STEP_NAME);
+            step.execute(stepExecution);
+
+            assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            assertThat(BatchConfig.returnCodeOf(stepExecution.getExitStatus()))
+                    .isEqualTo(BatchConfig.JCL_RETURN_CODE_ZERO);
+        }
+    }
+
+    /**
      * What {@link BatchConfig} refuses to declare, which is as much of its contract as what it does.
      *
      * <p>Two things go wrong at once if any of these ever appears here. Spring Boot's batch
@@ -1196,19 +1473,28 @@ class BatchConfigTest {
     class TheContractItRefusesToDeclare {
 
         @Test
-        @DisplayName("six bean methods, and these exactly - so nothing else can have crept in")
-        void exactlySixBeansAndTheseExactly() {
+        @DisplayName("eight bean methods, and these exactly - so nothing else can have crept in")
+        void exactlyEightBeansAndTheseExactly() {
             // Read from the class rather than from a list kept by hand, so a bean added later shows
             // up here whether or not anyone remembered to record it. Stating the whole set is what
             // makes this a total assertion: no initialisation script, no script populator, no
             // database initializer, no table-prefix arrangement, no task executor and no job or step
             // bean can be present without failing this.
+            //
+            // Two of the eight carry the lifecycle contract that a JCL submission implies. The
+            // incrementer supplies a per-launch run identity, without which the eight parameterless
+            // jobs would each have exactly one instance for all time; and the launcher is the only
+            // thing that submits a job at all, which is why it is conditional on being asked for.
+            // parmDateValidator() is deliberately NOT a bean - a validator is attached to one job
+            // builder, and a shared instance would invite a second job to pick up INTCALC's contract.
             assertThat(declaredBeanTypes()).containsExactlyInAnyOrder(
                     PlatformTransactionManager.class,
                     JobExecutionDecider.class,
                     StepExecutionListener.class,
                     JobExecutionListener.class,
+                    JobParametersIncrementer.class,
                     ExitCodeExceptionMapper.class,
+                    BatchConfig.JclJobLauncher.class,
                     JobContractValidator.class);
         }
 
@@ -1335,7 +1621,8 @@ class BatchConfigTest {
         }
 
         @Test
-        @DisplayName("this class is no runner and schedules nothing")
+        @DisplayName("this class is no runner, schedules nothing, and its one runner bean exists only "
+                + "when a job is explicitly asked for")
         void thisClassIsNoRunnerAndSchedulesNothing() {
             assertThat(ApplicationRunner.class.isAssignableFrom(BatchConfig.class)).isFalse();
             assertThat(CommandLineRunner.class.isAssignableFrom(BatchConfig.class)).isFalse();
@@ -1343,8 +1630,26 @@ class BatchConfigTest {
             assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods())
                     .filter(method -> method.isAnnotationPresent(Scheduled.class))
                     .toList()).isEmpty();
-            assertThat(declaredBeanTypes()).noneMatch(ApplicationRunner.class::isAssignableFrom);
-            assertThat(declaredBeanTypes()).noneMatch(CommandLineRunner.class::isAssignableFrom);
+
+            // One bean method does return a runner - the launcher that turns a process invocation into
+            // a JCL submission and its RETURN-CODE into the process exit code. What keeps "nothing runs
+            // at startup" true is that it is @ConditionalOnProperty on the job name, so a context that
+            // was not asked to submit a job does not have it at all. That is asserted rather than
+            // assumed, on the method itself, and the property is the one the launcher publishes.
+            List<Method> runnerBeans = Arrays.stream(BatchConfig.class.getDeclaredMethods())
+                    .filter(method -> method.isAnnotationPresent(Bean.class))
+                    .filter(method -> ApplicationRunner.class.isAssignableFrom(method.getReturnType())
+                            || CommandLineRunner.class.isAssignableFrom(method.getReturnType()))
+                    .toList();
+
+            assertThat(runnerBeans).hasSize(1);
+            ConditionalOnProperty condition =
+                    runnerBeans.get(0).getAnnotation(ConditionalOnProperty.class);
+            assertThat(condition)
+                    .as("a runner that existed unconditionally would launch a job on every start-up")
+                    .isNotNull();
+            assertThat(condition.name())
+                    .containsExactly(BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY);
         }
 
         @Test
@@ -1382,6 +1687,210 @@ class BatchConfigTest {
      * The job-parameter contracts, taken from the JCL: one parameter in the whole estate, and it is
      * character data.
      */
+    /**
+     * The launcher that turns one process invocation into one JCL submission, and its
+     * {@code RETURN-CODE} into the process exit code.
+     *
+     * <p>Driven by direct call against a stub launcher, with no application context and no database:
+     * what has to be proved is the mapping from a job's exit status to the process exit code, and that
+     * is a pure function of the execution the launcher was handed. Spring Boot's own batch runner
+     * reports {@code BatchStatus.ordinal()} - {@code 5} for a failure - and the whole point of this
+     * launcher is that {@code 0}, {@code 4}, {@code 8} and {@code 12} survive instead (gate G35).
+     */
+    @Nested
+    @DisplayName("The JCL job launcher - a submission in, a RETURN-CODE out")
+    class TheJclJobLauncher {
+
+        /** The bean name of a job whose contract exists, and the key that contract is declared under. */
+        private static final String JOB_BEAN_NAME = "accountBalanceJob";
+
+        /**
+         * A launcher over a job whose run reports the given exit status.
+         *
+         * @param exitStatus what the stubbed launcher's execution carries
+         * @return the launcher, ready to run
+         */
+        private BatchConfig.JclJobLauncher launcherReporting(ExitStatus exitStatus) {
+            return launcherReporting(exitStatus, JOB_BEAN_NAME);
+        }
+
+        /**
+         * A launcher over a named job whose run reports the given exit status.
+         *
+         * @param exitStatus what the stubbed launcher's execution carries
+         * @param jobName    the job bean's name
+         * @return the launcher, ready to run
+         */
+        private BatchConfig.JclJobLauncher launcherReporting(ExitStatus exitStatus, String jobName) {
+            BatchConfig config = configWithContracts();
+            Job job = mock(Job.class);
+            when(job.getName()).thenReturn(jobName);
+            JobLauncher launcher = (submitted, parameters) -> {
+                JobExecution execution = new JobExecution(1L, parameters);
+                execution.setExitStatus(exitStatus);
+                return execution;
+            };
+            return new BatchConfig.JclJobLauncher(providerOf(Job.class, job),
+                    providerOf(JobLauncher.class, launcher), config, jobName);
+        }
+
+        /** A {@link BatchConfig} whose contract catalogue is the shipped one. */
+        private BatchConfig configWithContracts() {
+            DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
+            factory.registerSingleton("jobRepository", new ResourcelessJobRepository());
+            factory.registerSingleton("transactionManager", new ResourcelessTransactionManager());
+            JobContracts contracts = new JobContracts();
+            contracts.put("account-balance-job", new JobContract("CBACT01C", List.of(),
+                    List.of(new StepContract("STEP05", "CBACT01C", false)), null, Map.of()));
+            return new BatchConfig(factory.getBeanProvider(JobRepository.class),
+                    factory.getBeanProvider(PlatformTransactionManager.class), contracts,
+                    new DatasetBindings());
+        }
+
+        /**
+         * A real {@link ObjectProvider} over one singleton, so the launcher's lazy resolution is
+         * exercised rather than bypassed.
+         *
+         * @param type      the singleton's type
+         * @param singleton the singleton
+         * @param <T>       the type
+         * @return the provider
+         */
+        private <T> ObjectProvider<T> providerOf(Class<T> type, T singleton) {
+            DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
+            factory.registerSingleton(type.getSimpleName(), singleton);
+            return factory.getBeanProvider(type);
+        }
+
+        @ParameterizedTest(name = "an exit status of {0} leaves the process exit code 0")
+        @ValueSource(strings = { "COMPLETED", "NOOP", "0" })
+        @DisplayName("a job that returned zero completes quietly - nothing is thrown and the exit code "
+                + "stays zero")
+        void aZeroReturnCodeThrowsNothing(final String exitCode) throws Exception {
+            BatchConfig.JclJobLauncher launcher = launcherReporting(new ExitStatus(exitCode));
+
+            launcher.run(new DefaultApplicationArguments());
+
+            assertThat(launcher.getExitCode()).isZero();
+            assertThat(launcher.jobName()).isEqualTo(JOB_BEAN_NAME);
+        }
+
+        @ParameterizedTest(name = "RETURN-CODE {0} reaches the process as {0}")
+        @ValueSource(strings = { "4", "8", "12" })
+        @DisplayName("a non-zero RETURN-CODE is raised as an ExitCodeGenerator, so the shell sees the "
+                + "number the COBOL set")
+        void aNonZeroReturnCodeBecomesTheProcessExitCode(final String exitCode) {
+            BatchConfig.JclJobLauncher launcher = launcherReporting(new ExitStatus(exitCode));
+
+            // Spring Boot registers the code carried by an ExitCodeGenerator exception while it
+            // propagates out of SpringApplication.run, which is the same seam abendExitCodeMapper uses.
+            // BatchStatus.ordinal() - Boot's own batch runner's answer - would report 5 for a failure,
+            // and 5 is not a JCL return code.
+            assertThatExceptionOfType(BatchConfig.JclReturnCodeException.class)
+                    .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
+                    .withMessageContaining("RETURN-CODE " + exitCode)
+                    .satisfies(raised -> assertThat(raised.getExitCode())
+                            .isEqualTo(Integer.parseInt(exitCode)));
+            assertThat(launcher.getExitCode()).isEqualTo(Integer.parseInt(exitCode));
+        }
+
+        @Test
+        @DisplayName("a framework exit status that carries no return code is still a failure, and is "
+                + "reported as one")
+        void aFrameworkFailureIsStillAFailure() {
+            BatchConfig.JclJobLauncher launcher = launcherReporting(ExitStatus.FAILED);
+
+            assertThatExceptionOfType(BatchConfig.JclReturnCodeException.class)
+                    .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
+                    .withMessageContaining("exit status 'FAILED'");
+        }
+
+        @Test
+        @DisplayName("the submitted parameters are the job's declared contract plus the run identity, "
+                + "and nothing else")
+        void theSubmittedParametersAreTheContractPlusTheRunIdentity() throws Exception {
+            BatchConfig config = configWithContracts();
+            Job job = mock(Job.class);
+            when(job.getName()).thenReturn(JOB_BEAN_NAME);
+            List<JobParameters> submitted = new ArrayList<>();
+            JobLauncher recording = (requested, parameters) -> {
+                submitted.add(parameters);
+                JobExecution execution = new JobExecution(1L, parameters);
+                execution.setExitStatus(ExitStatus.COMPLETED);
+                return execution;
+            };
+
+            new BatchConfig.JclJobLauncher(providerOf(Job.class, job),
+                    providerOf(JobLauncher.class, recording), config, JOB_BEAN_NAME)
+                    .run(new DefaultApplicationArguments("--ignored=value"));
+
+            // READACCT.jcl passes no PARM, so the only parameter is the run identity. Process arguments
+            // are deliberately not read: a job's parameters are its contract in carddemo.jobs, never
+            // free text from a command line.
+            assertThat(submitted).hasSize(1);
+            assertThat(submitted.get(0).getParameters().keySet())
+                    .containsExactly(BatchConfig.RUN_IDENTITY_PARAMETER);
+        }
+
+        @Test
+        @DisplayName("a job with no declared contract is refused, because a job's parameters ARE its "
+                + "contract")
+        void aJobWithNoContractIsRefused() {
+            BatchConfig.JclJobLauncher launcher =
+                    launcherReporting(ExitStatus.COMPLETED, "someUndeclaredJob");
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
+                    .withMessageContaining("no entry under carddemo.jobs declares it");
+        }
+
+        @Test
+        @DisplayName("the launcher needs a job name, a Job provider, a launcher provider and the "
+                + "configuration")
+        void theLauncherNeedsAllFourCollaborators() {
+            BatchConfig config = configWithContracts();
+            ObjectProvider<Job> jobs = providerOf(Job.class, mock(Job.class));
+            ObjectProvider<JobLauncher> launchers =
+                    providerOf(JobLauncher.class, (job, parameters) -> new JobExecution(1L));
+
+            assertThatNullPointerException().isThrownBy(() ->
+                    new BatchConfig.JclJobLauncher(null, launchers, config, JOB_BEAN_NAME));
+            assertThatNullPointerException().isThrownBy(() ->
+                    new BatchConfig.JclJobLauncher(jobs, null, config, JOB_BEAN_NAME));
+            assertThatNullPointerException().isThrownBy(() ->
+                    new BatchConfig.JclJobLauncher(jobs, launchers, null, JOB_BEAN_NAME));
+            assertThatIllegalArgumentException().isThrownBy(() ->
+                    new BatchConfig.JclJobLauncher(jobs, launchers, config, " "));
+        }
+
+        @Test
+        @DisplayName("the exit code is zero until a job has actually run")
+        void theExitCodeIsZeroBeforeAnyRun() {
+            assertThat(launcherReporting(ExitStatus.COMPLETED).getExitCode()).isZero();
+        }
+
+        @ParameterizedTest(name = "{0} publishes the job {1}")
+        @CsvSource({
+            "account-balance-job,accountBalanceJob",
+            "transaction-report-job,transactionReportJob",
+            "statement-generation-job-a,statementGenerationJobA",
+            "account-interest-calc-job,accountInterestCalcJob",
+            "customerfilereaderjob,customerfilereaderjob"
+        })
+        @DisplayName("a configuration key and its job bean name are two spellings of one thing")
+        void aConfigurationKeyDerivesItsJobBeanName(final String jobKey, final String beanName) {
+            assertThat(BatchConfig.jobBeanNameOf(jobKey)).isEqualTo(beanName);
+        }
+
+        @Test
+        @DisplayName("deriving a job bean name needs a key")
+        void derivingAJobBeanNameNeedsAKey() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> BatchConfig.jobBeanNameOf(null))
+                    .withMessageContaining("job key is required");
+        }
+    }
+
     @Nested
     @DisplayName("Job-parameter contracts - one PARM in the estate, and it is not a date")
     class JobParameterContracts {
@@ -1504,6 +2013,62 @@ class BatchConfigTest {
                 assertThat(config.jobContracts())
                         .hasSize(JobContracts.REQUIRED_JOBS.size())
                         .isSameAs(context.getBean(JobContracts.class));
+            });
+        }
+
+        @Test
+        @DisplayName("the shipped catalogue satisfies every batch DD / repository DD equivalence")
+        void theShippedCatalogueSatisfiesEveryDdEquivalence() {
+            // The batch programs address datasets under their own JCL DD names while the repositories are
+            // bound to the CICS file names, and every one of those keys carries an independent
+            // environment override. requireSameDataset is the gate each job runs at construction; this
+            // asserts the shipped defaults pass it, so the context starts on the configuration as
+            // delivered. It also fixes the mapping in a test, which is the only place it is stated
+            // outside the jobs themselves.
+            documentBackedRunner().run(context -> {
+                BatchConfig config = context.getBean(BatchConfig.class);
+
+                assertThat(config.requireSameDataset(READCARD_JOB, "CARDFILE", "CARDDAT")).isNotBlank();
+                assertThat(config.requireSameDataset(READXREF_JOB, "XREFFILE", "CCXREF")).isNotBlank();
+                assertThat(config.requireSameDataset(INTEREST_JOB, "TCATBALF", "TCATBALF")).isNotBlank();
+                assertThat(config.requireSameDataset(INTEREST_JOB, "ACCTFILE", "ACCTDAT")).isNotBlank();
+                assertThat(config.requireSameDataset(INTEREST_JOB, "XREFFILE", "CCXREF")).isNotBlank();
+                assertThat(config.requireSameDataset(INTEREST_JOB, "XREFFIL1", "CXACAIX")).isNotBlank();
+                // The job-scoped alias: TRANSACT is the generated-transaction output here, not the master.
+                assertThat(config.requireSameDataset(INTEREST_JOB, "TRANSACT", "SYSTRAN")).isNotBlank();
+                assertThat(config.requireSameDataset(REPORT_JOB, "CARDXREF", "CCXREF")).isNotBlank();
+                assertThat(config.requireSameDataset(REPORT_JOB, "TRANTYPE", "TRANTYPE")).isNotBlank();
+                assertThat(config.requireSameDataset(REPORT_JOB, "TRANCATG", "TRANCATG")).isNotBlank();
+            });
+        }
+
+        @Test
+        @DisplayName("two keys naming different datasets are refused, and the message names both")
+        void divergingKeysAreRefused() {
+            documentBackedRunner().run(context -> {
+                BatchConfig config = context.getBean(BatchConfig.class);
+
+                // ACCTDAT and CARDDAT are two genuinely different datasets in the shipped catalogue, so
+                // pairing them is the divergence this gate exists to catch.
+                assertThatIllegalStateException()
+                        .isThrownBy(() -> config.requireSameDataset(INTEREST_JOB, "ACCTFILE", "CARDDAT"))
+                        .withMessageContaining("ACCTFILE")
+                        .withMessageContaining("CARDDAT")
+                        .withMessageContaining(INTEREST_JOB)
+                        .withMessageContaining("Refusing to start");
+            });
+        }
+
+        @Test
+        @DisplayName("an undeclared key is refused by the same gate, naming the key to add")
+        void anUndeclaredKeyIsRefused() {
+            documentBackedRunner().run(context -> {
+                BatchConfig config = context.getBean(BatchConfig.class);
+
+                assertThatIllegalStateException()
+                        .isThrownBy(() -> config.requireSameDataset(INTEREST_JOB, "ACCTFILE",
+                                "NOSUCHDD"))
+                        .withMessageContaining("NOSUCHDD");
             });
         }
     }

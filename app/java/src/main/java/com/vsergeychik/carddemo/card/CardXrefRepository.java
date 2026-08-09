@@ -27,6 +27,7 @@ import java.util.function.Function;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
@@ -289,6 +290,30 @@ public class CardXrefRepository {
     private static final Log LOG = LogFactory.getLog(CardXrefRepository.class);
 
     public static final String BASE_DD_NAME = "CCXREF";
+
+    /**
+     * The <strong>batch</strong> DD name of the same base cluster: {@code XREFFILE}.
+     *
+     * <p>{@code app/cbl/CBACT03C.cbl:29} and {@code app/cbl/CBACT04C.cbl:34-39} both
+     * {@code ASSIGN TO XREFFILE}, and the JCL binds {@code //XREFFILE DD} over
+     * {@code CARDXREF.VSAM.KSDS} at {@code app/jcl/READXREF.jcl:25-26} and
+     * {@code app/jcl/INTCALC.jcl:29-30} - the dataset {@link #BASE_DD_NAME} addresses online.
+     *
+     * <p>A batch job must read through its own DD rather than through the CICS file name this
+     * repository resolved from the global catalogue; {@link #addressing(DatasetBinding, String)} is how
+     * it hands its resolved binding in. A key, not a dataset name (gate G46).
+     */
+    public static final String BATCH_DD_NAME = "XREFFILE";
+
+    /**
+     * The <strong>batch</strong> DD name of the alternate-index path: {@code XREFFIL1}.
+     *
+     * <p>{@code app/jcl/INTCALC.jcl:31-32} opens the same cluster a second time in the same step, over
+     * {@code CARDXREF.VSAM.AIX.PATH}, and {@code app/cbl/CBACT04C.cbl:38} declares
+     * {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID} for it. Two DD names, two access paths, one
+     * dataset - never two tables (gate G45).
+     */
+    public static final String ALTERNATE_INDEX_BATCH_DD_NAME = "XREFFIL1";
 
     /**
      * The configuration key and CICS {@code FILE} name of the <strong>alternate-index path</strong>:
@@ -564,6 +589,7 @@ public class CardXrefRepository {
      *                               describes an access-path relationship other than the one gate G45
      *                               requires
      */
+    @Autowired
     public CardXrefRepository(
             JdbcTemplate jdbcTemplate,
             DatasetBindings datasetBindings,
@@ -597,6 +623,95 @@ public class CardXrefRepository {
         this.alternateIndexRelation = DatasetRelation.of(
                 requireUsableDatasetName(ALTERNATE_INDEX_DD_NAME, alternateIndex.dsname()),
                 RECORD_LENGTH);
+    }
+
+    /**
+     * Re-binding constructor: the same repository addressing a different base cluster and path.
+     *
+     * <p>Private, and reached only through {@link #addressing(DatasetBinding, String)}. The template,
+     * the codec that carries the code page and the {@code MOVE} semantics, and the record-image form are
+     * shared, so a re-bound repository behaves identically and simply reads elsewhere.
+     *
+     * <p>{@link #statements} is not copied: its text embeds the relation identifiers, so carrying it
+     * over would send one instance's statements at another instance's dataset - the defect this exists
+     * to remove. It resolves again on first use.
+     *
+     * @param source                 the instance whose collaborators are shared
+     * @param baseRelation           the base cluster this instance addresses
+     * @param alternateIndexRelation the alternate-index path this instance addresses
+     */
+    private CardXrefRepository(CardXrefRepository source,
+                               DatasetRelation baseRelation,
+                               DatasetRelation alternateIndexRelation) {
+        this.jdbcTemplate = source.jdbcTemplate;
+        this.codec = source.codec;
+        this.recordImageForm = source.recordImageForm;
+        this.baseRelation = baseRelation;
+        this.alternateIndexRelation = alternateIndexRelation;
+    }
+
+    /**
+     * Returns this repository addressing the cross-reference cluster a caller's own DD bindings name.
+     *
+     * <p><strong>Why a batch job needs this.</strong> {@code CBACT03C} reads through the DD
+     * {@code app/jcl/READXREF.jcl:25-26} binds and {@code CBACT04C} through the pair
+     * {@code app/jcl/INTCALC.jcl:29-32} binds, and a job resolves those through its own view of the
+     * catalogue - job-scoped entry first, global second. This repository resolved
+     * {@link #BASE_DD_NAME} and {@link #ALTERNATE_INDEX_DD_NAME} from the global catalogue at
+     * construction. A job that validated one resolution and read through the other would start
+     * cleanly and then read whatever the other named.
+     *
+     * <p>Returns {@code this} when both bindings name the datasets already addressed, so the shipped
+     * configuration - where {@code XREFFILE}/{@code CCXREF} and {@code XREFFIL1}/{@code CXACAIX} are
+     * each two names for one thing - allocates nothing and shares the resolved statements.
+     *
+     * @param baseBinding           the caller's resolved base binding, normally from
+     *                              {@code BatchConfig.datasetBinding(jobKey, ddName)}
+     * @param baseDdName            the DD name the base binding was resolved for
+     * @param alternateIndexBinding the caller's resolved alternate-index binding, or {@code null} when
+     *                              the caller's JCL declares no alternate-index DD - a sequential
+     *                              reader such as {@code CBACT03C} declares only the base
+     * @param alternateIndexDdName  the DD name the alternate-index binding was resolved for; ignored
+     *                              when that binding is {@code null}
+     * @return this repository, or one addressing the given datasets; never {@code null}
+     * @throws NullPointerException  if the base binding or either DD name is {@code null}
+     * @throws IllegalStateException if a binding declares a record width other than
+     *                               {@value #RECORD_LENGTH}, or no usable dataset name
+     */
+    public CardXrefRepository addressing(DatasetBinding baseBinding,
+                                         String baseDdName,
+                                         DatasetBinding alternateIndexBinding,
+                                         String alternateIndexDdName) {
+        Objects.requireNonNull(baseDdName, "A base DD name is required: it is what a diagnostic names "
+                + "when the binding is at fault");
+        Objects.requireNonNull(alternateIndexDdName, "An alternate-index DD name is required even when "
+                + "no alternate-index binding is supplied: it is what a diagnostic would name");
+        Objects.requireNonNull(baseBinding, "A resolved base binding is required for DD name '"
+                + baseDdName + "': a batch job reads through the DD its JCL declares, not through the "
+                + "CICS file name this repository resolved at construction");
+
+        DatasetRelation rebasedBase = relationFor(baseBinding, baseDdName);
+        DatasetRelation rebasedPath = alternateIndexBinding == null
+                ? alternateIndexRelation
+                : relationFor(alternateIndexBinding, alternateIndexDdName);
+        if (rebasedBase.dsname().equals(baseRelation.dsname())
+                && rebasedPath.dsname().equals(alternateIndexRelation.dsname())) {
+            return this;
+        }
+        return new CardXrefRepository(this, rebasedBase, rebasedPath);
+    }
+
+    /**
+     * Builds the relation a binding names, after the two checks that make it addressable.
+     *
+     * @param binding the resolved binding
+     * @param ddName  the DD name it was resolved for
+     * @return the relation; never {@code null}
+     * @throws IllegalStateException if the width or the dataset name is unusable
+     */
+    private static DatasetRelation relationFor(DatasetBinding binding, String ddName) {
+        requireCopybookRecordLength(ddName, binding);
+        return DatasetRelation.of(requireUsableDatasetName(ddName, binding.dsname()), RECORD_LENGTH);
     }
 
     // =================================================================================================

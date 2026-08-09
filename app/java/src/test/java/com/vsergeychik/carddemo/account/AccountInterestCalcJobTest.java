@@ -10,17 +10,21 @@ import com.vsergeychik.carddemo.account.model.AccountRecord;
 import com.vsergeychik.carddemo.account.model.DisclosureGroupRecord;
 import com.vsergeychik.carddemo.card.CardXrefRepository;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.RecordImageForm;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
+import com.vsergeychik.carddemo.config.BatchConfig.JobDatasetBinding;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.TranCatBalRepository;
 import com.vsergeychik.carddemo.transaction.TransactionRepository;
 import com.vsergeychik.carddemo.transaction.model.TranCatBalRecord;
@@ -29,16 +33,25 @@ import com.vsergeychik.carddemo.transaction.model.TranRecord;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.job.AbstractJob;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.support.JdbcTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.io.IOException;
@@ -48,6 +61,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -55,7 +70,11 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,6 +82,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -172,6 +193,20 @@ class AccountInterestCalcJobTest {
         }
     }
 
+    /**
+     * The job-scoped override {@code application.yml} declares for this job: in {@code INTCALC.jcl} the DD
+     * name {@code TRANSACT} is the generated-transaction <em>output</em>, not the transaction master
+     * ({@code app/jcl/INTCALC.jcl:37-41}), so it aliases the {@code SYSTRAN} generation.
+     *
+     * <p>Modelled here because the job proves the alias is present at construction. Without it the step
+     * would resolve {@code TRANSACT} to the global key - the transaction master - and write its generated
+     * transactions over live data.
+     */
+    private static final Map<String, JobDatasetBinding> TRANSACT_ALIASED_TO_SYSTRAN = Map.of(
+            TransactionRepository.CICS_FILE_NAME,
+            new JobDatasetBinding(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME, null, null, false,
+                    null, null, null, null, null, null, null, null));
+
     private static DatasetBindings bindings() {
         return bindings(50, 16);
     }
@@ -189,6 +224,16 @@ class AccountInterestCalcJobTest {
         b.put(CardXrefRepository.ALTERNATE_INDEX_DD_NAME, new DatasetBinding(XREF_AIX_DS, "aix-path",
                 false, "FB", null, 50, "CVACT03Y", null, null, CardXrefRepository.BASE_DD_NAME,
                 CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD));
+        // app/jcl/INTCALC.jcl:29-32 declares //XREFFILE on the base cluster and //XREFFIL1 on the
+        // alternate-index path over it - the batch DD names for the same two things the CSD calls CCXREF
+        // and CXACAIX. The job resolves ITS OWN DDs and reads through them, so the catalogue a test wires
+        // has to declare them exactly as the JCL does.
+        b.put(CardXrefRepository.BATCH_DD_NAME, new DatasetBinding(XREF_DS, "ksds", false, "FB", null,
+                50, "CVACT03Y", null, null, null, null));
+        b.put(CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME, new DatasetBinding(XREF_AIX_DS,
+                "aix-path", false, "FB", null, 50, "CVACT03Y", null, null,
+                CardXrefRepository.BATCH_DD_NAME,
+                CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD));
         b.put(TransactionRepository.CICS_FILE_NAME, new DatasetBinding(TRANSACT_DS, "ksds", false, "FB",
                 null, 350, "CVTRA05Y", 16, null, null, null));
         b.put(TransactionRepository.INPUT_DD_NAME, new DatasetBinding(TRANSACT_DS, "ksds", false, "FB",
@@ -197,6 +242,15 @@ class AccountInterestCalcJobTest {
                 "sequential", false, "F", 0, 350, "CVTRA05Y", null, null, null, null));
         b.put(AccountInterestCalcJob.DISCGRP_DD_NAME, new DatasetBinding(DISCGRP_DS, "ksds", false, "FB",
                 null, discgrpRecordLength, "CVTRA02Y", discgrpKeyLength, null, null, null));
+        // This step's own DD names for the cross-reference need no further entries: AccountInterestCalcJob
+        // .XREFFILE_DD_NAME and .XREFFIL1_DD_NAME ARE CardXrefRepository.BATCH_DD_NAME and
+        // .ALTERNATE_INDEX_BATCH_DD_NAME - the same two configuration keys put above, which is the whole
+        // point of the job naming the JCL's DDs rather than the CSD's. Restating them here would put the
+        // same two keys into this map a second time, and the second put would win: the alternate-index
+        // entry would then say its base is CCXREF, the CSD name, contradicting the JCL and the job's own
+        // construction-time proof. They are separate configuration keys from the repository's CCXREF and
+        // CXACAIX, and the job proves at construction that each names the same dataset as its repository
+        // counterpart.
         return b;
     }
 
@@ -207,15 +261,75 @@ class AccountInterestCalcJobTest {
     }
 
     private static JobContracts contracts(StepContract step, List<JobParameterContract> parameters) {
+        return contracts(step, parameters, TRANSACT_ALIASED_TO_SYSTRAN);
+    }
+
+    /**
+     * @param step       the step contract to declare
+     * @param parameters the declared job parameters
+     * @param datasets   this job's job-scoped dataset overrides
+     * @return the contract catalogue
+     */
+    private static JobContracts contracts(StepContract step, List<JobParameterContract> parameters,
+            Map<String, JobDatasetBinding> datasets) {
         JobContracts c = new JobContracts();
         c.put(AccountInterestCalcJob.JOB_KEY, new JobContract(AccountInterestCalcJob.PROGRAM_ID,
-                parameters, List.of(step), null, Map.of()));
+                parameters, List.of(step), null, datasets));
         return c;
+    }
+
+    /**
+     * The job-scoped dataset overrides {@code application.yml} declares for this job.
+     *
+     * <p>One entry, and it is not optional. {@code app/jcl/INTCALC.jcl:37-41} declares the
+     * generated-transaction output under the DD name {@code TRANSACT} - the same eight characters as the
+     * CICS transaction master, addressing a completely different dataset - so the job resolves
+     * {@code TRANSACT} through this map and lands on {@code SYSTRAN}. Omitting it makes the job write its
+     * interest transactions into the transaction master, which is the defect the DD-mapping finding
+     * described: a declared DD that drives nothing, and an alias that nothing consumes.
+     *
+     * @return the override map, mirroring {@code carddemo.jobs.account-interest-calc-job.datasets}
+     */
+    private static Map<String, JobDatasetBinding> jobScopedDatasets() {
+        return Map.of(AccountInterestCalcJob.TRANSACT_DD_NAME,
+                new JobDatasetBinding(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME, null, null,
+                        false, null, null, null, null, null, null, null, null));
     }
 
     private static BatchConfig scaffolding(JobContracts contracts, DatasetBindings bindings) {
         return new BatchConfig(new PresentBean<>(Mockito.mock(JobRepository.class)),
                 new PresentBean<>(Mockito.mock(PlatformTransactionManager.class)), contracts, bindings);
+    }
+
+    /**
+     * A real unit of work over the same H2 data source the repositories read.
+     *
+     * <p>Real, not mocked, and for the same reason the update services' tests use a real one:
+     * {@code DatasetUnitOfWork.active()} reports what {@code TransactionSynchronizationManager} actually
+     * sees, so only a real manager makes {@code persistVerb} open a boundary that
+     * {@code AccountRepository.rewrite} can detect and take its locking read inside. A mock would leave
+     * {@code active()} false and the {@code REWRITE} would silently take the non-locking path, which is
+     * the very thing DBP-01 and DBP-13 are about.
+     *
+     * @param t the template whose data source the boundary must span
+     * @return a unit of work over that data source; never {@code null}
+     */
+    private static DatasetUnitOfWork unitOfWork(JdbcTemplate t) {
+        return new DatasetUnitOfWork(new JdbcTransactionManager(
+                Objects.requireNonNull(t.getDataSource(), "the template must carry a data source")));
+    }
+
+    /**
+     * A unit of work for the constructions whose repositories are mocks.
+     *
+     * <p>There is no data source to span, so the manager is a mock: {@code TransactionTemplate} still
+     * invokes the body and returns its value, which is all a mocked repository needs. It is deliberately
+     * not used where a real {@code REWRITE} is asserted.
+     *
+     * @return a unit of work over a mocked manager; never {@code null}
+     */
+    private static DatasetUnitOfWork mockedUnitOfWork() {
+        return new DatasetUnitOfWork(Mockito.mock(PlatformTransactionManager.class));
     }
 
     private static JdbcTemplate database() {
@@ -253,6 +367,7 @@ class AccountInterestCalcJobTest {
                 new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
+                unitOfWork(t),
                 new PresentBean<>(sysout), new PresentBean<>(FIXED));
     }
 
@@ -816,6 +931,38 @@ class AccountInterestCalcJobTest {
     }
 
     @Test
+    void anAbsentTransactionDestinationAbendsFromTheOpen() {
+        // 0400-TRANFILE-OPEN is an OPEN OUTPUT over SYSTRAN(+1) - DISP=(NEW,CATLG,DELETE) at
+        // app/jcl/INTCALC.jcl:L37-L41 - and app/cbl/CBACT04C.cbl:L318-L321 displays
+        // 'ERROR OPENING TRANSACTION FILE' and abends when it does not report '00'. This drives the
+        // whole path from configuration to abend against a real backend: the destination the deployment
+        // named is not there, so the open reports it, rather than the run proceeding to compute interest
+        // it can never write. Before the open established anything, this run reached the first
+        // COMPUTE and only then discovered the destination.
+        JdbcTemplate t = database();
+        t.execute("DROP TABLE \"" + SYSTRAN_DS + "\"");
+        seed(t, TCATBAL_DS, tcatbalImage(11L, "01", 1, "1000.00"));
+        seed(t, ACCT_DS, acctImage(11L, "0.00", "A000000000"));
+        seed(t, XREF_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(t, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(t, DISCGRP_DS, discgrpImage("A000000000", "01", 1, "12.50"));
+        CapturedSysout sysout = new CapturedSysout();
+        AccountInterestCalcJob job = job(t, bindings(), sysout);
+
+        assertThatExceptionOfType(AbendException.class)
+                .isThrownBy(() -> job.calculateInterest(PARM, sysout))
+                .satisfies(abend -> {
+                    assertThat(abend.getReturnCode()).isEqualTo(12);
+                    assertThat(abend.getProgram()).isEqualTo("CBACT04C");
+                });
+        assertThat(sysout.lines()).contains(AccountInterestCalcJob.ERROR_OPENING_TRANFILE,
+                AbendException.ABEND_DISPLAY_TEXT);
+        // Nothing was computed: the abend is at the open, which is the fifth of the five opens, so no
+        // interest line and no closing banner was ever emitted.
+        assertThat(sysout.lines()).doesNotContain(AccountInterestCalcJob.END_OF_EXECUTION);
+    }
+
+    @Test
     void aGatedOrMisnamedStepIsRefused() {
         JdbcTemplate t = database();
         DatasetBindings b = bindings();
@@ -829,6 +976,7 @@ class AccountInterestCalcJobTest {
                 new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
+                unitOfWork(t),
                 new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)));
 
         JobContracts wrongProgram = contracts(new StepContract("STEP15", "CBACT01C", false),
@@ -841,6 +989,7 @@ class AccountInterestCalcJobTest {
                 new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
+                unitOfWork(t),
                 new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)));
 
         JobContracts noParm = contracts(new StepContract("STEP15", "CBACT04C", false), List.of());
@@ -852,7 +1001,80 @@ class AccountInterestCalcJobTest {
                 new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
+                unitOfWork(t),
                 new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)));
+    }
+
+    @Test
+    @DisplayName("every DD app/jcl/INTCALC.jcl declares is proven to name the repository's own dataset")
+    void divergingStepDatasetsAreRefused() {
+        // INTCALC.jcl:25-41 declares TCATBALF, XREFFILE, XREFFIL1, ACCTFILE, DISCGRP and TRANSACT. The
+        // repositories are bound to their own keys - CCXREF and CXACAIX for the cross-reference, ACCTDAT
+        // for the account master, SYSTRAN for the generated-transaction output - and every key carries an
+        // independent override in application.yml. Each pair is proven equal at construction, so a
+        // deployment cannot point a step's DD and its repository's DD at different datasets.
+        //
+        // Two of these were worse than unchecked before: XREFFILE_DD_NAME was defined as the repository's
+        // CCXREF constant, so the job named a key its JCL never mentions, and XREFFIL1 had no constant at
+        // all.
+        // Only the DDs whose two sides are different configuration keys can diverge. TCATBALF and DISCGRP
+        // are addressed by one key from both the step and its repository, so for those the gate degenerates
+        // to a declaration check and there is nothing to point apart.
+        JdbcTemplate t = database();
+        for (String ddName : List.of(AccountInterestCalcJob.ACCTFILE_DD_NAME,
+                AccountInterestCalcJob.XREFFILE_DD_NAME,
+                AccountInterestCalcJob.XREFFIL1_DD_NAME)) {
+            DatasetBindings diverging = bindings();
+            DatasetBinding declared = diverging.binding(ddName);
+            diverging.put(ddName, new DatasetBinding("TEST.SOMETHING.ELSE", declared.organization(),
+                    declared.gdg(), declared.recordFormat(), declared.blockSize(),
+                    declared.recordLength(), declared.copybook(), declared.keyLength(),
+                    declared.keyOffset(), declared.base(), declared.alternateKey()));
+            DatasetBindings sound = bindings();
+
+            assertThatIllegalStateException()
+                    .as("DD %s must be proven against the repository it reads through", ddName)
+                    .isThrownBy(() -> new AccountInterestCalcJob(
+                            scaffolding(contracts(), diverging),
+                            new TranCatBalRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
+                            new AccountRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
+                            new CardXrefRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
+                            new TransactionRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
+                            AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, sound, ASCII,
+                                    RecordImageForm.CHARACTER),
+                            unitOfWork(t),
+                            new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)))
+                    .withMessageContaining(ddName)
+                    .withMessageContaining("TEST.SOMETHING.ELSE");
+        }
+    }
+
+    @Test
+    @DisplayName("dropping the job-scoped TRANSACT alias is refused: it would write to the master")
+    void aMissingTransactAliasIsRefused() {
+        // INTCALC.jcl:37-41 makes TRANSACT the generated-transaction OUTPUT over SYSTRAN(+1), not the
+        // transaction master. application.yml expresses that as a job-scoped alias. Without it, TRANSACT
+        // resolves to the global key - the master - and the step would write its generated transactions
+        // over live data. This proves the alias is required rather than assumed.
+        JdbcTemplate t = database();
+        DatasetBindings b = bindings();
+
+        assertThatIllegalStateException().isThrownBy(() -> new AccountInterestCalcJob(
+                scaffolding(contracts(new StepContract(AccountInterestCalcJob.STEP_NAME,
+                                AccountInterestCalcJob.PROGRAM_ID, false),
+                        List.of(new JobParameterContract(BatchConfig.PARM_DATE_PARAMETER, "string",
+                                PARM)),
+                        Map.of()), b),
+                new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
+                        RecordImageForm.CHARACTER),
+                unitOfWork(t),
+                new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)))
+                .withMessageContaining(AccountInterestCalcJob.TRANSACT_DD_NAME)
+                .withMessageContaining(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME);
     }
 
     @Test
@@ -1028,8 +1250,15 @@ class AccountInterestCalcJobTest {
 
             when(tcatbalRepository.open(TranCatBalRepository.OpenMode.INPUT)).thenReturn(tcatbalFile);
             when(accountRepository.open(AccountRepository.OpenMode.I_O)).thenReturn(accountFile);
+            // The job reads and writes through ITS OWN DDs - //XREFFILE and //XREFFIL1 at
+            // app/jcl/INTCALC.jcl:29-32, and //TRANSACT at :37-41 by way of the SYSTRAN alias - so it
+            // asks each repository for a view addressing them before it opens. A bare mock answers null
+            // to that, so the handles below would hang off instances the job never touches. Handing back
+            // the same double is what the real repositories do when the DD resolves to the dataset they
+            // already address.
+            when(xrefRepository.addressing(any(), any(), any(), any())).thenReturn(xrefRepository);
             when(xrefRepository.openBrowse()).thenReturn(xrefCursor);
-            when(transactionRepository.openOutput()).thenReturn(transactionFile);
+            when(transactionRepository.openOutput(any(), any())).thenReturn(transactionFile);
 
             when(tcatbalFile.openStatus()).thenReturn(FileStatus.OK);
             when(tcatbalFile.closeFile()).thenReturn(FileStatus.OK);
@@ -1039,6 +1268,9 @@ class AccountInterestCalcJobTest {
             when(xrefCursor.closeBrowse()).thenReturn(FileStatus.OK);
             when(transactionFile.openStatus()).thenReturn(FileStatus.OK);
             when(transactionFile.closeOutput()).thenReturn(FileStatus.OK);
+            // The TRANSACT DD's abnormal disposition, which every abend path applies. A mock that left
+            // this unstubbed would report null where the contract says a file status.
+            when(transactionFile.discardGeneration()).thenReturn(FileStatus.OK);
 
             when(tcatbalFile.readNext()).thenReturn(TranCatBalRepository.ReadResult.endOfFile());
         }
@@ -1073,6 +1305,7 @@ class AccountInterestCalcJobTest {
         AccountInterestCalcJob job() {
             return new AccountInterestCalcJob(scaffolding(contracts(), bindings()), tcatbalRepository,
                     accountRepository, xrefRepository, transactionRepository, discgrp,
+                    mockedUnitOfWork(),
                     new PresentBean<>(sysout), new PresentBean<>(FIXED));
         }
 
@@ -1086,6 +1319,99 @@ class AccountInterestCalcJobTest {
             return assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> subject.calculateInterest(PARM, sysout))
                     .actual();
+        }
+    }
+
+    // =================================================================================================
+    // The declared DDs are the DDs used - the DD-mapping finding. app/jcl/INTCALC.jcl:29-32 and :37-41.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("the DDs this job declares are the DDs it reads and writes - INTCALC.jcl:29-41")
+    class TheDeclaredDdsDriveTheIo {
+
+        @Test
+        @DisplayName("both cross-reference DDs are handed over: XREFFILE on the base, XREFFIL1 on the "
+                + "path")
+        void bothCrossReferenceDdsAreHandedOver() {
+            Doubles doubles = new Doubles().withOneRecord();
+
+            doubles.job().calculateInterest(PARM, doubles.sysout);
+
+            ArgumentCaptor<DatasetBinding> base = ArgumentCaptor.forClass(DatasetBinding.class);
+            ArgumentCaptor<DatasetBinding> path = ArgumentCaptor.forClass(DatasetBinding.class);
+            verify(doubles.xrefRepository).addressing(base.capture(),
+                    eq(AccountInterestCalcJob.XREFFILE_DD_NAME), path.capture(),
+                    eq(AccountInterestCalcJob.XREFFIL1_DD_NAME));
+            // One dataset reached two ways, never two datasets (gate G45). Which relation each names is
+            // what matters here; that the path indexes this base is CardXrefRepository's own guard.
+            assertThat(base.getValue().dsname()).isEqualTo(XREF_DS);
+            assertThat(path.getValue().dsname()).isEqualTo(XREF_AIX_DS);
+            assertThat(path.getValue().base()).isEqualTo(CardXrefRepository.BATCH_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("the DD names are the JCL's, not the CSD's")
+        void theDdNamesAreTheJclsOwn() {
+            // The finding was that this job named the CSD's online file names - CCXREF and CXACAIX -
+            // where its JCL declares XREFFILE and XREFFIL1, so the DD statements drove nothing.
+            assertThat(AccountInterestCalcJob.XREFFILE_DD_NAME).isEqualTo("XREFFILE");
+            assertThat(AccountInterestCalcJob.XREFFIL1_DD_NAME).isEqualTo("XREFFIL1");
+            assertThat(AccountInterestCalcJob.XREFFILE_DD_NAME)
+                    .isNotEqualTo(CardXrefRepository.BASE_DD_NAME);
+            assertThat(AccountInterestCalcJob.XREFFIL1_DD_NAME)
+                    .isNotEqualTo(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("the generated-transaction output is opened through TRANSACT, resolved to SYSTRAN")
+        void theOutputIsOpenedThroughTheDeclaredDd() {
+            Doubles doubles = new Doubles().withOneRecord();
+
+            doubles.job().calculateInterest(PARM, doubles.sysout);
+
+            ArgumentCaptor<DatasetBinding> output = ArgumentCaptor.forClass(DatasetBinding.class);
+            verify(doubles.transactionRepository).openOutput(output.capture(),
+                    eq(AccountInterestCalcJob.TRANSACT_DD_NAME));
+            // The alias is what makes the DD collision resolvable, and it is consumed here rather than
+            // declared and ignored: TRANSACT in, SYSTRAN out.
+            assertThat(AccountInterestCalcJob.TRANSACT_DD_NAME).isEqualTo("TRANSACT");
+            assertThat(output.getValue().dsname()).isEqualTo(SYSTRAN_DS);
+            assertThat(output.getValue().dsname()).isNotEqualTo(TRANSACT_DS);
+            verify(doubles.transactionRepository, never()).openOutput();
+        }
+
+        @Test
+        @DisplayName("both the sequential browse and the keyed alternate-index read go through the "
+                + "re-bound repository")
+        void bothAccessPathsGoThroughTheRebinding() {
+            Doubles doubles = new Doubles().withOneRecord();
+            CardXrefRepository rebound = mock(CardXrefRepository.class);
+            when(rebound.openBrowse()).thenReturn(doubles.xrefCursor);
+            when(rebound.readByAccountIdViaAltIndex(anyLong()))
+                    .thenReturn(CardXrefRepository.ReadResult.found(
+                            CardXrefRepository.BATCH_DD_NAME,
+                            new CardXrefRecord("4444333322221111", 1, 11L)));
+            when(doubles.xrefRepository.addressing(any(), any(), any(), any())).thenReturn(rebound);
+
+            doubles.job().calculateInterest(PARM, doubles.sysout);
+
+            verify(rebound).openBrowse();
+            verify(rebound, times(1)).readByAccountIdViaAltIndex(anyLong());
+            verify(doubles.xrefRepository, never()).openBrowse();
+            verify(doubles.xrefRepository, never()).readByAccountIdViaAltIndex(anyLong());
+        }
+
+        @Test
+        @DisplayName("the re-binding is asked for once per run, not once per keyed read")
+        void theRebindingHappensOncePerRun() {
+            // addressing() returns an instance whose statements resolve on first use, so asking per read
+            // would re-describe the relation for every account looked up.
+            Doubles doubles = new Doubles().withOneRecord();
+
+            doubles.job().calculateInterest(PARM, doubles.sysout);
+
+            verify(doubles.xrefRepository, times(1)).addressing(any(), any(), any(), any());
         }
     }
 
@@ -1173,7 +1499,7 @@ class AccountInterestCalcJobTest {
                     AbendException.ABEND_DISPLAY_TEXT);
             // I-O and not INPUT: the account master is rewritten on every break.
             verify(doubles.accountRepository).open(AccountRepository.OpenMode.I_O);
-            verify(doubles.transactionRepository, never()).openOutput();
+            verify(doubles.transactionRepository, never()).openOutput(any(), any());
         }
 
         @Test
@@ -1194,7 +1520,15 @@ class AccountInterestCalcJobTest {
             verify(doubles.tcatbalRepository).open(TranCatBalRepository.OpenMode.INPUT);
             verify(doubles.xrefRepository).openBrowse();
             verify(doubles.accountRepository).open(AccountRepository.OpenMode.I_O);
-            verify(doubles.transactionRepository).openOutput();
+            // The open goes through the DD this job declares - //TRANSACT at app/jcl/INTCALC.jcl:37-41 -
+            // and lands on the dataset the job-scoped SYSTRAN alias resolves it to. The no-argument open
+            // is never used, because it would address the name the repository resolved for itself from
+            // the global catalogue: the transaction MASTER, which is a different dataset entirely.
+            ArgumentCaptor<DatasetBinding> written = ArgumentCaptor.forClass(DatasetBinding.class);
+            verify(doubles.transactionRepository).openOutput(written.capture(),
+                    eq(AccountInterestCalcJob.TRANSACT_DD_NAME));
+            assertThat(written.getValue().dsname()).isEqualTo(SYSTRAN_DS);
+            verify(doubles.transactionRepository, never()).openOutput();
             // An abend leaves the CLOSE paragraphs unperformed, so none of them displayed.
             assertThat(doubles.sysout.lines())
                     .doesNotContain(AccountInterestCalcJob.END_OF_EXECUTION);
@@ -1854,21 +2188,52 @@ class AccountInterestCalcJobTest {
         }
 
         @Test
-        @DisplayName("a launcher-supplied PARM is moved into PIC X(10): padded right, truncated right")
+        @DisplayName("a launcher-supplied PARM of the declared width is taken exactly as it is")
         void aSuppliedParmDate() {
             AccountInterestCalcJob.ChunkDelegate delegate =
                     new Doubles().job().newChunkDelegate();
 
             delegate.beforeStep(stepExecution("2023010100"));
-            assertThat(delegate.parmDate()).isEqualTo("2023010100");
 
-            delegate.beforeStep(stepExecution("2023"));
-            assertThat(delegate.parmDate()).isEqualTo("2023      ")
-                    .hasSize(AccountInterestCalcJob.PARM_DATE_WIDTH);
-
-            delegate.beforeStep(stepExecution("20230101001234"));
             assertThat(delegate.parmDate()).isEqualTo("2023010100")
                     .hasSize(AccountInterestCalcJob.PARM_DATE_WIDTH);
+        }
+
+        @ParameterizedTest(name = "a {0}-character PARM is refused")
+        @ValueSource(strings = {"2023", "20230101001234", "", " "})
+        @DisplayName("a supplied PARM of any other width is REFUSED, never padded or truncated to fit")
+        void aWrongWidthParmDateIsRefused(final String supplied) {
+            AccountInterestCalcJob.ChunkDelegate delegate =
+                    new Doubles().job().newChunkDelegate();
+
+            // The value is concatenated verbatim into every generated transaction identifier
+            // (app/cbl/CBACT04C.cbl:L476-L480), so padding a short one or truncating a long one would
+            // write a whole generation of misplaced identifiers and report success. The job's attached
+            // validator rejects the launch first; this is the same rule at the point of use.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> delegate.beforeStep(stepExecution(supplied)))
+                    .withMessageContaining("needs exactly "
+                            + AccountInterestCalcJob.PARM_DATE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the job attaches the exact-width validator, so a bad launch writes nothing at all")
+        void theJobAttachesTheParmDateValidator() throws Exception {
+            Doubles doubles = new Doubles();
+            Job job = doubles.job().accountInterestCalcJob();
+
+            JobParametersValidator validator = ((AbstractJob) job).getJobParametersValidator();
+            assertThat(validator)
+                    .as("INTCALC is the one job in the estate that takes a PARM, and its width is "
+                            + "structural rather than cosmetic")
+                    .isNotNull();
+            assertThatExceptionOfType(JobParametersInvalidException.class)
+                    .isThrownBy(() -> validator.validate(new JobParametersBuilder()
+                            .addString(BatchConfig.PARM_DATE_PARAMETER, "2023")
+                            .toJobParameters()));
+            validator.validate(new JobParametersBuilder()
+                    .addString(BatchConfig.PARM_DATE_PARAMETER, PARM)
+                    .toJobParameters());
         }
 
         @Test
@@ -2062,6 +2427,575 @@ class AccountInterestCalcJobTest {
         }
     }
 
+    // =============================================================================================
+    // What a failure leaves behind, and what it must not take with it.
+    // =============================================================================================
+
+    /**
+     * Each mutating verb is persisted on its own, because the datasets are {@code RECOVERY(NONE)}.
+     *
+     * <p>Every {@code FILE} definition in {@code app/csd/CARDDEMO.CSD} carries
+     * {@code RECOVERY(NONE) FWDRECOVLOG(NO)} - {@code :9}, {@code :21}, {@code :33}, {@code :46},
+     * {@code :59}, {@code :72}, {@code :84}, {@code :96} - and {@code CBACT04C} issues no syncpoint. Its
+     * {@code REWRITE FD-ACCTFILE-REC} ({@code app/cbl/CBACT04C.cbl:356}) and its
+     * {@code WRITE FD-TRANFILE-REC} are permanent as they return, and the abend at {@code :632} does not
+     * reverse them.
+     *
+     * <p>A chunk-oriented step commits on the chunk boundary, so with a commit interval of one record the
+     * account-break rewrite, the following account's reads and that account's generated transaction all
+     * sit inside one transaction. A refusal anywhere after the rewrite would roll the rewrite back - and
+     * the rewrite is the statement that zeroes {@code ACCT-CURR-CYC-CREDIT} and
+     * {@code ACCT-CURR-CYC-DEBIT} at the same time as it adds the interest. Reverting it restores the
+     * cycle amounts too, so the operator's re-run recomputes the same interest from the same balances and
+     * posts it a second time. That is the loss these tests exist to keep unreachable.
+     *
+     * <p>The enclosing {@code TransactionTemplate} here stands in for the chunk transaction: it is what
+     * Spring Batch opens around the reader, processor and writer, and rolling it back is what a step
+     * failure does.
+     */
+    @Nested
+    @DisplayName("Each mutating verb persists on its own - RECOVERY(NONE), no chunk rollback")
+    class PerVerbPersistence {
+
+        /**
+         * Two accounts' category balances with only the first account present in {@code ACCTFILE}.
+         *
+         * <p>Reading account 22's first {@code TCATBALF} row breaks the group, which rewrites account 11
+         * ({@code 1050-UPDATE-ACCOUNT}); the very next paragraph, {@code 1100-GET-ACCT-DATA}, then fails
+         * to find account 22 and abends ({@code app/cbl/CBACT04C.cbl:372-391}). The rewrite is therefore
+         * committed and the abend follows it, which is exactly the sequence in question.
+         *
+         * @param t the database to seed
+         */
+        private void seedABreakFollowedByAFailure(JdbcTemplate t) {
+            seed(t, TCATBAL_DS, tcatbalImage(11L, "01", 1, "1000.00"));
+            seed(t, TCATBAL_DS, tcatbalImage(22L, "01", 1, "1000.00"));
+            seed(t, ACCT_DS, acctImage(11L, "0.00", "A000000000"));
+            seed(t, XREF_DS, xrefImage("4444333322221111", 1, 11L));
+            seed(t, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+            seed(t, DISCGRP_DS, discgrpImage("A000000000", "01", 1, "12.50"));
+        }
+
+        @Test
+        @DisplayName("the account-break REWRITE and the generated transaction survive a later abend")
+        void theVerbsAlreadyPerformedSurviveALaterAbend() {
+            JdbcTemplate t = database();
+            seedABreakFollowedByAFailure(t);
+            CapturedSysout sysout = new CapturedSysout();
+            AccountInterestCalcJob job = job(t, bindings(), sysout);
+            TransactionTemplate chunk =
+                    new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+
+            AbendException abend = assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> chunk.execute(status -> {
+                        job.calculateInterest(PARM, sysout);
+                        return null;
+                    }))
+                    .actual();
+
+            assertThat(sysout.lines()).contains(AccountInterestCalcJob.ERROR_READING_ACCTFILE);
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+
+            // 1050-UPDATE-ACCOUNT: ADD WS-TOTAL-INT TO ACCT-CURR-BAL, both cycle amounts zeroed, REWRITE.
+            AccountRecord rewritten = AccountRecord.decode(rows(t, ACCT_DS).get(0), ASCII);
+            assertThat(rewritten.getAcctId()).isEqualTo(11L);
+            assertThat(rewritten.getAcctCurrBal())
+                    .as("the rewrite app/cbl/CBACT04C.cbl:356 performed is permanent")
+                    .isEqualTo(new BigDecimal("10.41"));
+            assertThat(rewritten.getAcctCurrCycCredit()).isEqualTo(new BigDecimal("0.00"));
+            assertThat(rewritten.getAcctCurrCycDebit()).isEqualTo(new BigDecimal("0.00"));
+
+            // The other resource, the other disposition. 1300-B-WRITE-TX did write one 350-byte
+            // transaction before the break, and each write was durable as it completed - but TRANSACT is
+            // DISP=(NEW,CATLG,DELETE) (app/jcl/INTCALC.jcl:37), so an abended step leaves no generation.
+            assertThat(rows(t, SYSTRAN_DS))
+                    .as("DISP=(NEW,CATLG,DELETE): the generation is catalogued only on a normal end")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a run that ends normally keeps its generation - CATLG, the other disposition")
+        void aNormalEndKeepsItsGeneration() {
+            JdbcTemplate t = database();
+            seed(t, TCATBAL_DS, tcatbalImage(11L, "01", 1, "1000.00"));
+            seed(t, ACCT_DS, acctImage(11L, "0.00", "A000000000"));
+            seed(t, XREF_DS, xrefImage("4444333322221111", 1, 11L));
+            seed(t, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+            seed(t, DISCGRP_DS, discgrpImage("A000000000", "01", 1, "12.50"));
+            CapturedSysout sysout = new CapturedSysout();
+
+            job(t, bindings(), sysout).calculateInterest(PARM, sysout);
+
+            assertThat(rows(t, SYSTRAN_DS)).hasSize(1);
+            assertThat(TranRecord.decode(rows(t, SYSTRAN_DS).get(0), ASCII).tranId())
+                    .isEqualTo("2022071800000001");
+            assertThat(sysout.lines()).last().isEqualTo(AccountInterestCalcJob.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("nothing is written for the account whose read failed")
+        void theFailedAccountLeavesNoTrace() {
+            JdbcTemplate t = database();
+            seedABreakFollowedByAFailure(t);
+            CapturedSysout sysout = new CapturedSysout();
+            AccountInterestCalcJob job = job(t, bindings(), sysout);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> job.calculateInterest(PARM, sysout));
+
+            // Account 22 never reached 1300-COMPUTE-INTEREST, and the abnormal disposition removed the
+            // one transaction account 11 did generate. The account master is untouched by that
+            // disposition, because ACCTFILE is DISP=SHR over an existing dataset.
+            assertThat(rows(t, SYSTRAN_DS)).isEmpty();
+            assertThat(rows(t, ACCT_DS)).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("each verb names the paragraph and the COBOL statement it persists")
+        void theVerbsAreNamedForAttribution() {
+            // A failed write must be attributable to a paragraph, not to "a chunk", which is the whole
+            // reason persistVerb takes a name.
+            assertThat(AccountInterestCalcJob.REWRITE_ACCTFILE_VERB)
+                    .contains("1050-UPDATE-ACCOUNT")
+                    .contains("REWRITE FD-ACCTFILE-REC");
+            assertThat(AccountInterestCalcJob.WRITE_TRANFILE_VERB)
+                    .contains("WRITE FD-TRANFILE-REC");
+        }
+    }
+
+    /**
+     * The job refuses to restart, and that refusal is parity rather than policy.
+     *
+     * <p>A JCL step has no restart. An operator who re-runs {@code INTCALC} submits the job again, and
+     * that submission reads {@code TCATBALF} from the beginning and allocates a new {@code SYSTRAN}
+     * generation, because {@code app/jcl/INTCALC.jcl:37-41} declares
+     * {@code DISP=(NEW,CATLG,DELETE)} on {@code SYSTRAN(+1)}.
+     *
+     * <p>Spring Batch's restart is a different operation: it resumes the same {@code JobInstance} and
+     * skips what earlier executions committed. This program stores no position in its execution context -
+     * there is nothing in {@code CBACT04C} to store one from - so a resumed execution would re-read
+     * {@code TCATBALF} from its first record while the accounts an earlier execution had already
+     * rewritten stayed rewritten, and would post their interest a second time.
+     */
+    @Nested
+    @DisplayName("Restart is refused: a JCL step has none, and a resumed run would post twice")
+    class RestartSemantics {
+
+        @Test
+        @DisplayName("the job is not restartable")
+        void theJobIsNotRestartable() {
+            AccountInterestCalcJob subject = new Doubles().job();
+
+            assertThat(subject.accountInterestCalcJob().isRestartable())
+                    .as("app/jcl/INTCALC.jcl has no restart; a resumed run would duplicate financial work")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the step still carries the JCL step name, so the refusal changed nothing else")
+        void theStepShapeIsUnchanged() {
+            AccountInterestCalcJob subject = new Doubles().job();
+
+            assertThat(subject.accountInterestCalcJob().getName())
+                    .isEqualTo(AccountInterestCalcJob.JOB_NAME);
+            assertThat(subject.accountInterestCalcStep().getName())
+                    .isEqualTo(AccountInterestCalcJob.STEP_NAME);
+        }
+    }
+
+    /**
+     * One delegate per step execution, so two launches cannot consume each other's records.
+     *
+     * <p>A {@code Step} bean is built once, at context refresh, and every later launch uses the reader,
+     * processor and writer it was given then. A {@link ChunkDelegate} captured there would therefore be
+     * shared, and it holds the {@code PARM} the launcher supplied, the five open files, the cross-record
+     * accumulators {@code WS-TOTAL-INT} and {@code WS-LAST-ACCT-NUM}, and the two run counters. Two
+     * overlapping launches sharing one would interleave their {@code TCATBALF} reads and post one sum to
+     * whichever account broke first.
+     *
+     * <p>{@code CBACT04C} has none of that to reproduce: each {@code EXEC PGM=CBACT04C} is its own
+     * address space with its own {@code WORKING-STORAGE}, its own {@code PARM} and its own five
+     * {@code OPEN}s. One delegate per execution is that address space.
+     */
+    @Nested
+    @DisplayName("The step-execution scope - one address space per launch")
+    class TheStepExecutionScope {
+
+        /**
+         * A step execution carrying the given {@code parmDate}.
+         *
+         * @param jobExecutionId the id, so two executions are distinguishable
+         * @param parmDate       the {@code PARM} to supply
+         * @return the execution
+         */
+        private StepExecution stepExecution(long jobExecutionId, String parmDate) {
+            JobParametersBuilder parameters = new JobParametersBuilder()
+                    .addString(BatchConfig.PARM_DATE_PARAMETER, parmDate);
+            return new StepExecution(AccountInterestCalcJob.STEP_NAME,
+                    new JobExecution(jobExecutionId, parameters.toJobParameters()));
+        }
+
+        private AccountInterestCalcJob.StepScopedChunkDelegate scoped() {
+            return new AccountInterestCalcJob.StepScopedChunkDelegate(new Doubles().job());
+        }
+
+        @Test
+        @DisplayName("two concurrent executions get two delegates, each with its own PARM")
+        void twoConcurrentExecutionsGetTwoDelegates() throws Exception {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+            CyclicBarrier bothScoped = new CyclicBarrier(2);
+            Map<String, ChunkDelegate> byParm = new ConcurrentHashMap<>();
+            Map<String, String> observedParm = new ConcurrentHashMap<>();
+
+            // Each thread establishes its scope, waits until the other has established its own, and only
+            // then reads back what it is holding. A shared delegate would hand both threads whichever
+            // PARM arrived second.
+            Runnable execution = () -> {
+                String parm = "202207" + Thread.currentThread().getName();
+                subject.beforeStep(stepExecution(parm.hashCode(), parm));
+                byParm.put(parm, subject.scopedDelegate().orElseThrow());
+                try {
+                    bothScoped.await(10, TimeUnit.SECONDS);
+                } catch (Exception interrupted) {
+                    throw new IllegalStateException(interrupted);
+                }
+                observedParm.put(parm, subject.scopedDelegate().orElseThrow().parmDate());
+                subject.close();
+            };
+
+            Thread first = new Thread(execution, "1800");
+            Thread second = new Thread(execution, "1900");
+            first.start();
+            second.start();
+            first.join(20_000L);
+            second.join(20_000L);
+
+            assertThat(observedParm).containsEntry("2022071800", "2022071800")
+                    .containsEntry("2022071900", "2022071900");
+            assertThat(byParm).hasSize(2);
+            assertThat(byParm.get("2022071800"))
+                    .as("two executions must not share one WORKING-STORAGE")
+                    .isNotSameAs(byParm.get("2022071900"));
+            assertThat(subject.scopedDelegate()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the scope is empty before beforeStep and released by close")
+        void theScopeIsBoundedByBeforeStepAndClose() {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+
+            assertThat(subject.scopedDelegate()).isEmpty();
+            subject.beforeStep(stepExecution(1L, PARM));
+            assertThat(subject.scopedDelegate()).isPresent();
+            assertThat(subject.scopedDelegate().orElseThrow().parmDate()).isEqualTo(PARM);
+            subject.close();
+            assertThat(subject.scopedDelegate()).isEmpty();
+
+            // A second execution on the same thread is then free to establish its own.
+            subject.beforeStep(stepExecution(2L, "2023010100"));
+            assertThat(subject.scopedDelegate().orElseThrow().parmDate()).isEqualTo("2023010100");
+            subject.close();
+        }
+
+        @Test
+        @DisplayName("a close with no scope is a no-op, because a stream may be closed unopened")
+        void closingWithNoScopeIsHarmless() {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+
+            subject.close();
+            subject.close();
+
+            assertThat(subject.scopedDelegate()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a different execution nested inside one is refused, not silently substituted")
+        void aDifferentExecutionNestedInsideOneIsRefused() {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+            subject.beforeStep(stepExecution(1L, PARM));
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> subject.beforeStep(stepExecution(2L, "2023010100")))
+                    .withMessageContaining("already scoped to this thread")
+                    .withMessageContaining("abandon the five files it has open");
+
+            // The first execution's delegate is untouched: discarding it would abandon its open files.
+            assertThat(subject.scopedDelegate().orElseThrow().parmDate()).isEqualTo(PARM);
+            subject.close();
+        }
+
+        @Test
+        @DisplayName("the same execution arriving twice reuses its delegate: the reader is registered "
+                + "both as a stream and as a listener")
+        void theSameExecutionArrivingTwiceReusesItsDelegate() {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+            StepExecution execution = stepExecution(1L, PARM);
+
+            subject.beforeStep(execution);
+            ChunkDelegate first = subject.scopedDelegate().orElseThrow();
+            subject.beforeStep(execution);
+
+            // A second delegate here would open the five files twice and read the file twice.
+            assertThat(subject.scopedDelegate().orElseThrow()).isSameAs(first);
+            assertThat(first.parmDate()).isEqualTo(PARM);
+            subject.close();
+        }
+
+        @Test
+        @DisplayName("building the step captures no delegate: the Step bean outlives every execution")
+        void buildingTheStepCapturesNoDelegate() {
+            AccountInterestCalcJob subject = Mockito.spy(new Doubles().job());
+
+            subject.accountInterestCalcStep();
+
+            // The defect this scope exists to remove: a delegate allocated while the bean is being built
+            // is shared by every later launch, PARM, accumulators, open files and all.
+            Mockito.verify(subject, Mockito.never()).newChunkDelegate();
+        }
+
+        @Test
+        @DisplayName("a step execution is required, and every callback outside a scope names itself")
+        void callbacksOutsideAScopeAreRefused() {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+
+            assertThatNullPointerException().isThrownBy(() -> subject.beforeStep(null));
+            assertThatNullPointerException().isThrownBy(() -> subject.afterStep(null));
+
+            assertThatIllegalStateException().isThrownBy(() -> subject.open(new ExecutionContext()))
+                    .withMessageContaining("'open'");
+            assertThatIllegalStateException().isThrownBy(subject::read)
+                    .withMessageContaining("'read'");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> subject.process(TranCatBalRecord.newInstance(ASCII)))
+                    .withMessageContaining("'process'");
+            assertThatIllegalStateException().isThrownBy(() -> subject.write(new Chunk<>()))
+                    .withMessageContaining("'write'");
+        }
+
+        @Test
+        @DisplayName("update contributes nothing, in scope or out: there is no position to store")
+        void updateStoresNoPosition() {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+            ExecutionContext context = new ExecutionContext();
+
+            subject.update(context);
+            assertThat(context.isEmpty()).isTrue();
+
+            subject.beforeStep(stepExecution(1L, PARM));
+            subject.update(context);
+            assertThat(context.isEmpty())
+                    .as("a stored position is what would make a restart skip committed work")
+                    .isTrue();
+            subject.close();
+        }
+
+        @Test
+        @DisplayName("afterStep leaves the exit status alone - the job listener owns the abend's status")
+        void afterStepChangesNothing() {
+            AccountInterestCalcJob.StepScopedChunkDelegate subject = scoped();
+
+            assertThat(subject.afterStep(stepExecution(1L, PARM))).isNull();
+        }
+
+        @Test
+        @DisplayName("a job is required to scope its delegates")
+        void aJobIsRequired() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new AccountInterestCalcJob.StepScopedChunkDelegate(null));
+        }
+
+        @Test
+        @DisplayName("the scoped delegate is the one the callbacks reach, lifecycle and all")
+        void theScopedDelegateIsTheOneDriven() {
+            Doubles doubles = new Doubles();
+            AccountInterestCalcJob.StepScopedChunkDelegate subject =
+                    new AccountInterestCalcJob.StepScopedChunkDelegate(doubles.job());
+
+            subject.beforeStep(stepExecution(1L, PARM));
+            subject.open(new ExecutionContext());
+
+            // The banner of CBACT04C:181 proves the delegate's own open ran, through the router.
+            assertThat(doubles.sysout.lines()).first()
+                    .isEqualTo(AccountInterestCalcJob.START_OF_EXECUTION);
+            assertThat(subject.scopedDelegate().orElseThrow().run()).isNotNull();
+
+            subject.close();
+            assertThat(subject.scopedDelegate()).isEmpty();
+        }
+    }
+
+    /**
+     * The {@code DISCGRP} key never reaches the application log as it was read - CWE-117 and CWE-532.
+     *
+     * <p>The key is built from {@code DIS-ACCT-GROUP-ID X(10)}, {@code DIS-TRAN-TYPE-CD X(02)} and
+     * {@code DIS-TRAN-CAT-CD 9(04)} taken out of records the program reads, and a {@code PIC X} span
+     * holds whatever bytes are in the record - a carriage return and a line feed among them. Concatenated
+     * raw into a log line, such a key ends the entry early and begins one of the writer's choosing, so a
+     * forged entry can be planted in a file an operator trusts (CWE-117). The leading span also links the
+     * failure to a set of accounts, and a log file is retained longer and read more widely than the
+     * dataset it describes (CWE-532).
+     *
+     * <p>The read itself always uses the real key. Only its rendering is masked, so no diagnosis is lost:
+     * the line still names the dataset, the file status and the width.
+     */
+    @Nested
+    @DisplayName("The DISCGRP key is masked and escaped in every log line - CWE-117")
+    class DisclosureGroupLogDisclosure {
+
+        /**
+         * The logger the access path writes through.
+         *
+         * <p>Named for the nested class that holds it, not for the enclosing one: a logger name is
+         * hierarchical on dots and {@code Outer$Inner} is not a descendant of {@code Outer}, so attaching
+         * to the enclosing class would capture nothing and the assertions below would pass vacuously.
+         */
+        private ch.qos.logback.classic.Logger accessLogger() {
+            return (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(
+                    AccountInterestCalcJob.JdbcDisclosureGroupAccess.class);
+        }
+
+        /**
+         * Captures what the access path logs while a keyed read runs, with the dataset seeded by
+         * {@code seeding} and the read then made against it.
+         *
+         * @param keyImage the 16-character key to read with
+         * @param seeding  what to do to the dataset after the open and before the read
+         * @return the captured messages, in order
+         */
+        private List<String> capturedFor(String keyImage, java.util.function.Consumer<JdbcTemplate>
+                seeding) {
+            ch.qos.logback.classic.Logger logger = accessLogger();
+            ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                    new ch.qos.logback.core.read.ListAppender<>();
+            appender.start();
+            logger.addAppender(appender);
+            try {
+                JdbcTemplate t = database();
+                DisclosureGroupAccess access = AccountInterestCalcJob.carddemoDisclosureGroupAccess(
+                        t, bindings(), ASCII, RecordImageForm.CHARACTER);
+                AccountInterestCalcJob.DisclosureGroupFile file = access.open();
+                seeding.accept(t);
+                file.readByKey(keyImage);
+            } finally {
+                logger.detachAppender(appender);
+                appender.stop();
+            }
+            List<String> messages = new ArrayList<>();
+            for (ch.qos.logback.classic.spi.ILoggingEvent event : appender.list) {
+                messages.add(event.getFormattedMessage());
+            }
+            return messages;
+        }
+
+        /**
+         * Captures the arm a backend refusal takes: the dataset is gone by the time the read is issued.
+         *
+         * @param keyImage the 16-character key to read with
+         * @return the captured messages, in order
+         */
+        private List<String> capturedForARefusedRead(String keyImage) {
+            return capturedFor(keyImage,
+                    t -> t.execute("DROP TABLE \"" + DISCGRP_DS + "\""));
+        }
+
+        /**
+         * Captures the arm a present but malformed row takes: the key matches, the width does not.
+         *
+         * @param keyImage the 16-character key to read with
+         * @return the captured messages, in order
+         */
+        private List<String> capturedForAMalformedRow(String keyImage) {
+            return capturedFor(keyImage, t -> t.update(
+                    "INSERT INTO \"" + DISCGRP_DS + "\" VALUES (?)", keyImage + "0012"));
+        }
+
+        /**
+         * The rendering a logged {@code DIS-GROUP-KEY} must have.
+         *
+         * <p>Not {@link SensitiveDiagnostics#maskIdentifier(String)}, and the difference is the point.
+         * That method renders ONE identifier and reveals its last four characters. A disclosure-group key
+         * is THREE fields ({@code app/cpy/CVTRA02Y.cpy:5-8}) that do not carry the same risk:
+         * {@code DIS-ACCT-GROUP-ID X(10)} identifies an account group and is masked in full-width form,
+         * while {@code DIS-TRAN-TYPE-CD X(02)} and {@code DIS-TRAN-CAT-CD 9(04)} are classification codes
+         * from small fixed code tables that identify no account and no customer, so they stay legible -
+         * which is what lets a reader tell "no rate row for this category" from "the dataset refused the
+         * read". Masking the composite as a single identifier would have hidden the codes too and left
+         * the two arms indistinguishable.
+         *
+         * <p>Composed from the same two public helpers the production path composes, so a change to
+         * either policy fails here rather than being absorbed.
+         *
+         * @param keyImage the key the read was issued with
+         * @return the rendering the log line must carry
+         */
+        private static String expectedKeyRendering(String keyImage) {
+            int split = Math.min(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH, keyImage.length());
+            return DiagnosticText.masked(keyImage.substring(0, split))
+                    + DiagnosticText.singleLine(keyImage.substring(split));
+        }
+
+        @Test
+        @DisplayName("a refused read logs the key masked: the group id never reaches the line")
+        void aRefusedReadDisclosesNoGroupId() {
+            List<String> logged = capturedForARefusedRead("A000000000010001");
+
+            assertThat(logged).isNotEmpty();
+            assertThat(logged).allSatisfy(message -> {
+                assertThat(message).doesNotContain("A000000000010001");
+                assertThat(message).doesNotContain("A000000000");
+            });
+            assertThat(logged).anySatisfy(message -> assertThat(message)
+                    .contains("key '" + expectedKeyRendering("A000000000010001") + "'"));
+        }
+
+        @Test
+        @DisplayName("a malformed row logs the key masked too - the same policy on every arm")
+        void aMalformedRowDisclosesNoGroupId() {
+            List<String> logged = capturedForAMalformedRow("A000000000010001");
+
+            assertThat(logged).isNotEmpty();
+            assertThat(logged).allSatisfy(message -> {
+                assertThat(message).doesNotContain("A000000000010001");
+                assertThat(message).doesNotContain("A000000000");
+            });
+            assertThat(logged).anySatisfy(message -> assertThat(message)
+                    .contains("key '" + expectedKeyRendering("A000000000010001") + "'"));
+        }
+
+        @Test
+        @DisplayName("a carriage return in the key cannot split the entry into two")
+        void aControlCharacterCannotForgeAnEntry() {
+            // 16 characters, with CR LF inside the revealed tail - the only part that is not replaced.
+            String forged = "A00000000001\r\n01";
+
+            for (List<String> logged : List.of(capturedForARefusedRead(forged),
+                    capturedForAMalformedRow(forged))) {
+                assertThat(logged).isNotEmpty();
+                assertThat(logged).allSatisfy(message -> {
+                    assertThat(message).doesNotContain("\r");
+                    assertThat(message).doesNotContain("\n");
+                });
+            }
+        }
+
+        @Test
+        @DisplayName("the diagnosis survives the masking: dataset and file status remain")
+        void theDiagnosisIsStillThere() {
+            String status = FileStatus.toStatusImage(
+                    AccountInterestCalcJob.JdbcDisclosureGroupAccess.PERMANENT_ERROR_STATUS);
+
+            assertThat(capturedForARefusedRead("A000000000010001")).anySatisfy(message -> {
+                assertThat(message).contains(DISCGRP_DS);
+                assertThat(message).contains(status);
+            });
+            assertThat(capturedForAMalformedRow("A000000000010001")).anySatisfy(message -> {
+                assertThat(message).contains(DISCGRP_DS);
+                assertThat(message).contains(status);
+                assertThat(message).contains("app/cpy/CVTRA02Y.cpy");
+            });
+        }
+    }
+
     @Nested
     @DisplayName("COBOL-TS carries the offset from Greenwich in COB-REST PIC X(05)")
     class TheGreenwichOffset {
@@ -2073,7 +3007,8 @@ class AccountInterestCalcJobTest {
             AccountInterestCalcJob subject = new AccountInterestCalcJob(
                     scaffolding(contracts(), bindings()), doubles.tcatbalRepository,
                     doubles.accountRepository, doubles.xrefRepository, doubles.transactionRepository,
-                    doubles.discgrp, new PresentBean<>(doubles.sysout),
+                    doubles.discgrp, mockedUnitOfWork(),
+                    new PresentBean<>(doubles.sysout),
                     new PresentBean<>(Clock.fixed(Instant.parse("2022-07-18T12:34:56.780Z"),
                             ZoneOffset.ofHoursMinutes(-5, -30))));
 
@@ -2088,7 +3023,8 @@ class AccountInterestCalcJobTest {
             AccountInterestCalcJob subject = new AccountInterestCalcJob(
                     scaffolding(contracts(), bindings()), east.tcatbalRepository,
                     east.accountRepository, east.xrefRepository, east.transactionRepository,
-                    east.discgrp, new PresentBean<>(east.sysout),
+                    east.discgrp, mockedUnitOfWork(),
+                    new PresentBean<>(east.sysout),
                     new PresentBean<>(Clock.fixed(Instant.parse("2022-07-18T12:34:56.780Z"),
                             ZoneOffset.ofHoursMinutes(5, 45))));
 
@@ -2120,7 +3056,7 @@ class AccountInterestCalcJobTest {
             private PoisonedRunJob(Doubles doubles) {
                 super(scaffolding(contracts(), bindings()), doubles.tcatbalRepository,
                         doubles.accountRepository, doubles.xrefRepository,
-                        doubles.transactionRepository, doubles.discgrp,
+                        doubles.transactionRepository, doubles.discgrp, mockedUnitOfWork(),
                         new PresentBean<>(doubles.sysout), new PresentBean<>(FIXED));
             }
 
@@ -2213,5 +3149,130 @@ class AccountInterestCalcJobTest {
                     .doesNotContain(AccountInterestCalcJob.ERROR_REWRITING_ACCTFILE);
         }
     }
-}
 
+    // =================================================================================================
+    // CWE-117 / CWE-532: DIS-GROUP-KEY is storage-derived, so it never reaches a log line raw.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("the disclosure-group key is sanitized before it is logged")
+    class KeyDiagnostics {
+
+        /** This job's own source, for the scan below. */
+        private static String subjectSource() throws IOException {
+            Path relative = Path.of("app", "java", "src", "main", "java", "com", "vsergeychik",
+                    "carddemo", "account", "AccountInterestCalcJob.java");
+            Path candidate = Path.of("").toAbsolutePath();
+            while (candidate != null) {
+                Path resolved = candidate.resolve(relative);
+                if (Files.exists(resolved)) {
+                    return Files.readString(resolved, StandardCharsets.UTF_8);
+                }
+                candidate = candidate.getParent();
+            }
+            throw new IllegalStateException("AccountInterestCalcJob.java was not found from "
+                    + Path.of("").toAbsolutePath());
+        }
+
+        @Test
+        @DisplayName("no log statement interpolates the raw key image")
+        void noLogStatementCarriesTheRawKey() throws IOException {
+            // DIS-GROUP-KEY arrives from storage, so a control character in those bytes could break a
+            // log line in two and forge a record (CWE-117), and DIS-ACCT-GROUP-ID names the account
+            // group being priced (CWE-532). Every LOG statement that mentions the key must therefore
+            // route it through keyForDiagnostics, which masks the group and single-lines the whole.
+            //
+            // Scoped to LOG statements deliberately. Two other sites interpolate the key and MUST keep
+            // doing so: sysout.write(ACCOUNT_NOT_FOUND_PREFIX + keyImage) at L375 and L397 is the
+            // program's own DISPLAY, and its bytes are what the parity diff compares - sanitizing those
+            // would be a parity defect, not a fix. A third is an IllegalArgumentException reporting a
+            // Java caller bug, and the module never hands a throwable's message to a logger.
+            List<String> offending = new ArrayList<>();
+            for (String statement : logStatementsOf(subjectSource())) {
+                if (statement.contains("keyImage") && !statement.contains("keyForDiagnostics(keyImage)")) {
+                    offending.add(statement.replaceAll("\\s+", " ").strip());
+                }
+            }
+
+            assertThat(offending)
+                    .as("these LOG statements interpolate DIS-GROUP-KEY without sanitizing it")
+                    .isEmpty();
+        }
+
+        /**
+         * Every {@code LOG.<level>(...)} statement in the given source, each as one string.
+         *
+         * @param source the file's text
+         * @return the statements, in order
+         */
+        private static List<String> logStatementsOf(String source) {
+            List<String> statements = new ArrayList<>();
+            int from = source.indexOf("LOG.");
+            while (from >= 0) {
+                int depth = 0;
+                int index = source.indexOf('(', from);
+                int close = -1;
+                for (int scan = index; scan >= 0 && scan < source.length(); scan++) {
+                    char character = source.charAt(scan);
+                    if (character == '(') {
+                        depth++;
+                    } else if (character == ')') {
+                        depth--;
+                        if (depth == 0) {
+                            close = scan;
+                            break;
+                        }
+                    }
+                }
+                if (close < 0) {
+                    break;
+                }
+                statements.add(source.substring(from, close + 1));
+                from = source.indexOf("LOG.", close);
+            }
+            return statements;
+        }
+
+        @Test
+        @DisplayName("all three disclosure-group failure logs sanitize the key")
+        void allThreeFailureLogsSanitize() throws IOException {
+            String source = subjectSource();
+
+            assertThat(source.split("keyForDiagnostics\\(keyImage\\)", -1).length - 1)
+                    .as("the read failure, the absent image and the malformed width")
+                    .isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("the masked rendering hides the account group and keeps the classification codes")
+        void theMaskedRenderingKeepsWhatDiagnosisNeeds() {
+            // The rendering keyForDiagnostics produces, asserted through DiagnosticText so that the split
+            // point stays tied to the copybook: DIS-ACCT-GROUP-ID is X(10), then X(02) and 9(04).
+            String key = "GROUPZZZZZ" + "01" + "0002";
+            assertThat(key).hasSize(DisclosureGroupRecord.DIS_GROUP_KEY_LENGTH);
+            String masked = DiagnosticText.masked(
+                    key.substring(0, DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH))
+                    + DiagnosticText.singleLine(
+                            key.substring(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH));
+
+            assertThat(masked)
+                    .as("the group is masked but its shape survives, and the codes stay legible")
+                    .doesNotContain("GROUP")
+                    .endsWith("010002")
+                    .hasSize(DisclosureGroupRecord.DIS_GROUP_KEY_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a control character in the stored key cannot break the log line in two")
+        void aControlCharacterCannotForgeASecondRecord() {
+            String injected = "0000000001" + "0\n" + "0002";
+            String rendered = DiagnosticText.masked(injected.substring(0,
+                    DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH))
+                    + DiagnosticText.singleLine(injected.substring(
+                            DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH));
+
+            assertThat(rendered).doesNotContain("\n").doesNotContain("\r");
+        }
+    }
+
+}

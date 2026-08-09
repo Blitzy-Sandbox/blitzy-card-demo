@@ -36,6 +36,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
@@ -177,9 +178,21 @@ class StatementTextWriterTest {
      * @return a catalogue containing exactly that one binding
      */
     private static DatasetBindings bindings(int recordLength) {
+        return bindings(recordLength, "FB");
+    }
+
+    /**
+     * Builds the {@code STMTFILE} binding a test uses, with both geometry attributes the constructor
+     * cross-checks under the test's control so each can be driven either way.
+     *
+     * @param recordLength the record length to configure
+     * @param recordFormat the record format to configure, or {@code null} to omit the key
+     * @return a catalogue containing exactly that one binding
+     */
+    private static DatasetBindings bindings(int recordLength, String recordFormat) {
         DatasetBindings catalogue = new DatasetBindings();
-        catalogue.put("STMTFILE", new DatasetBinding(TEST_DSNAME, "sequential", false, "FB", 8000,
-                recordLength, null, null, null, null, null));
+        catalogue.put("STMTFILE", new DatasetBinding(TEST_DSNAME, "sequential", false, recordFormat,
+                8000, recordLength, null, null, null, null, null));
         return catalogue;
     }
 
@@ -1679,6 +1692,42 @@ class StatementTextWriterTest {
         }
 
         @Test
+        @DisplayName("a configured record format other than FB refuses to start, whether the key says "
+                + "the wrong thing or says nothing (RECFM=FB, CREASTMT.JCL:L89; gate G20)")
+        void refusesAWrongRecordFormat() {
+            // FB is what makes 'every record is exactly 80 bytes' true - it is the attribute the
+            // right-space padding of every statement line rests on. A variable-format binding would
+            // leave every other number in this class unchanged while making the padding meaningless,
+            // which is exactly the kind of divergence the width check alone cannot see.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII,
+                            bindings(EIGHTY, "V"), RecordImageForm.CHARACTER))
+                    .withMessageContaining("record-format 'V'")
+                    .withMessageContaining("RECFM=FB")
+                    .withMessageContaining("CREASTMT.JCL:L89");
+
+            // An omitted key and a wrong value are different mistakes with different fixes, so the
+            // diagnostic must not render a missing value as the four-letter word "null".
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> new StatementTextWriter(new JdbcTemplate(), ASCII,
+                            bindings(EIGHTY, null), RecordImageForm.CHARACTER))
+                    .withMessageContaining("record-format absent");
+        }
+
+        @Test
+        @DisplayName("accepts the record format however configuration cases it")
+        void acceptsTheRecordFormatCaseInsensitively() {
+            // A YAML author writing 'fb' has declared fixed blocked; refusing that would be pedantry
+            // rather than a check, and the JCL's own casing is not a contract on configuration.
+            assertThatCode(() -> new StatementTextWriter(new JdbcTemplate(), ASCII,
+                    bindings(EIGHTY, "fb"), RecordImageForm.CHARACTER))
+                    .doesNotThrowAnyException();
+            assertThatCode(() -> new StatementTextWriter(new JdbcTemplate(), ASCII,
+                    bindings(EIGHTY, "FB"), RecordImageForm.CHARACTER))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
         @DisplayName("refuses to start when no STMTFILE binding is configured at all")
         void refusesAMissingBinding() {
             DatasetBindings empty = new DatasetBindings();
@@ -1811,12 +1860,13 @@ class StatementTextWriterTest {
         @Test
         @DisplayName("still constructs under a fixture-backed binding, so the context starts (G3)")
         void stillConstructsUnderAFixtureBackedBinding() {
-            // The 'test' profile binds STMTFILE to a filesystem location. That is not a dataset name
-            // and can never become a SQL identifier - but refusing the bean outright would stop the
-            // application context from starting under the only profile this environment can run,
-            // even though every test and the parity harness supply their own sink. So construction
+            // A deployment may bind STMTFILE to something that is not a dataset name and can never
+            // become a SQL identifier - a filesystem location, for instance. Refusing the bean outright
+            // would stop the application context from starting, even though every test and the parity
+            // harness supply their own sink and never ask for the default one. So construction
             // succeeds, the geometry is still checked, and the refusal waits until something actually
-            // asks for the default sink.
+            // asks for the default sink. (The shipped 'test' profile does not do this: since the
+            // job-scoped dataset locations were corrected it names only well-formed dataset names.)
             StatementTextWriter fixtureBound = writerBoundTo("/tmp/carddemo/statement.txt");
 
             assertThat(fixtureBound.recordLength()).isEqualTo(EIGHTY);
@@ -1840,6 +1890,7 @@ class StatementTextWriterTest {
                 PreparedStatement statement = Mockito.mock(PreparedStatement.class);
                 Mockito.when(dataSource.getConnection()).thenReturn(connection);
                 Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+                Mockito.when(connection.createStatement()).thenReturn(Mockito.mock(Statement.class));
 
                 StatementTextWriter writer = new StatementTextWriter(new JdbcTemplate(dataSource),
                         ASCII, bindings(EIGHTY), form);
@@ -1886,18 +1937,103 @@ class StatementTextWriterTest {
             // raises an unchecked type outside the DataAccessException family, which the sink
             // deliberately does not catch: reporting it as a failed write would make every record
             // abend with a misleading reason instead of failing once, clearly.
-            StatementFile file = writer().openOutput();
+            StatementTextWriter subject = writer();
 
-            assertThatIllegalStateException()
-                    .isThrownBy(() -> file.writeLine(StatementLine.ST_LINE0));
+            // The open is now the first statement the sink issues, so that is where the defect
+            // surfaces - once, at the top of the run, rather than once per statement line.
+            assertThatIllegalStateException().isThrownBy(subject::openOutput);
         }
 
         @Test
-        @DisplayName("closes cleanly, because the pooled connection is released per record")
-        void closesCleanly() {
-            StatementFile file = writer().openOutput();
+        @DisplayName("closes cleanly when the destination is still there, because the pooled "
+                + "connection is released per record and nothing is left to flush")
+        void closesCleanly() throws SQLException {
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
 
+            StatementTextWriter subject = new StatementTextWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(EIGHTY), RecordImageForm.CHARACTER);
+            StatementFile file = subject.openOutput();
+
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
             assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+        }
+
+        @Test
+        @DisplayName("the open establishes the generation and empties it - one describe, one delete "
+                + "(OPEN OUTPUT STMT-FILE, CBSTM03A.CBL:L293; CREASTMT.JCL:L87-L91)")
+        void theOpenEstablishesAndClearsTheGeneration() throws SQLException {
+            // DISP=(NEW,CATLG,DELETE) means this run writes into an empty dataset: the describe
+            // resolves the destination and transfers nothing, and the delete is what NEW means. A run
+            // that did not clear would leave last month's statements interleaved with this month's.
+            // Neither statement defines anything (gate G44).
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            PreparedStatement insert = Mockito.mock(PreparedStatement.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(insert);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+
+            StatementTextWriter subject = new StatementTextWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(EIGHTY), RecordImageForm.CHARACTER);
+            StatementFile file = subject.openOutput();
+
+            String describe = "SELECT * FROM \"" + TEST_DSNAME + "\" WHERE 1 = 0";
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+            Mockito.verify(plain).execute(describe);
+            Mockito.verify(plain).executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
+            Mockito.verifyNoInteractions(insert);
+
+            // The close probes again and clears nothing: exactly one DELETE for the whole run.
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            Mockito.verify(plain, Mockito.times(2)).execute(describe);
+            Mockito.verify(plain, Mockito.times(1))
+                    .executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
+        }
+
+        @Test
+        @DisplayName("a destination that cannot be opened is reported by the open, and by the close, "
+                + "rather than silently reported as OK")
+        void aRefusedOpenIsReported() throws SQLException {
+            // CBSTM03A declares no FILE STATUS for STMT-FILE, so the job branches on neither outcome -
+            // but the outcome must still be the truth, because it is what an operator reads and what a
+            // caller that does guard could act on. Reporting '00' over a dataset that is not there is
+            // the one answer that cannot be right.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Mockito.when(dataSource.getConnection())
+                    .thenThrow(new SQLException("dataset unavailable"));
+
+            StatementTextWriter subject = new StatementTextWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(EIGHTY), RecordImageForm.CHARACTER);
+            StatementFile file = subject.openOutput();
+
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
+        @DisplayName("a destination that goes away mid-run is reported by the close "
+                + "(CLOSE STMT-FILE, CBSTM03A.CBL:L339)")
+        void aRefusedCloseIsReported() throws SQLException {
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+            Mockito.when(plain.execute(Mockito.anyString()))
+                    .thenReturn(true)
+                    .thenThrow(new SQLException("dataset dropped"));
+
+            StatementTextWriter subject = new StatementTextWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(EIGHTY), RecordImageForm.CHARACTER);
+            StatementFile file = subject.openOutput();
+
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
         }
     }
 

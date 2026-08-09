@@ -10,14 +10,17 @@ import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.DatasetRelation.KeySpan;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.RecordImageForm;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.TranCatBalRepository;
 import com.vsergeychik.carddemo.transaction.TranCatBalRepository.TranCatBalFile;
 import com.vsergeychik.carddemo.transaction.TransactionRepository;
@@ -27,6 +30,7 @@ import com.vsergeychik.carddemo.transaction.model.TranRecord;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
@@ -242,6 +246,16 @@ import java.util.Optional;
 @Configuration(AccountInterestCalcJob.CONFIGURATION_BEAN_NAME)
 public class AccountInterestCalcJob {
 
+    /**
+     * The program's own logger, distinct from the one {@link JdbcDisclosureGroupAccess} keeps.
+     *
+     * <p>It carries exactly one kind of line: a report that the {@code TRANSACT} DD's abnormal
+     * disposition could not be applied. That deliberately does not go to {@code SYSOUT}, because
+     * {@code CBACT04C} emits no such line and {@code SYSOUT} is compared byte for byte - the disposition
+     * is the JCL's work, not the program's.
+     */
+    private static final Log LOG = LogFactory.getLog(AccountInterestCalcJob.class);
+
     // =================================================================================================
     // Identity: the COBOL program, the configuration key, the Spring Batch names and the DD names.
     // =================================================================================================
@@ -270,6 +284,27 @@ public class AccountInterestCalcJob {
      */
     public static final int CHUNK_SIZE = 1;
 
+    /**
+     * Names the {@code REWRITE} of {@code 1050-UPDATE-ACCOUNT} in a persistence failure.
+     *
+     * <p>The paragraph and the verb, so a diagnostic says which of the program's two writes could not be
+     * persisted without the reader having to infer it from a stack trace.
+     */
+    static final String REWRITE_ACCTFILE_VERB = "1050-UPDATE-ACCOUNT REWRITE FD-ACCTFILE-REC";
+
+    /** Names the {@code WRITE} of {@code 1300-B-WRITE-TX} in a persistence failure. */
+    static final String WRITE_TRANFILE_VERB = "1300-B-WRITE-TX WRITE FD-TRANFILE-REC";
+
+    /**
+     * Names the {@code TRANSACT} DD's abnormal disposition for attribution in a diagnostic.
+     *
+     * <p>Not a COBOL statement. {@code app/jcl/INTCALC.jcl:37} declares
+     * {@code DISP=(NEW,CATLG,DELETE)}, whose third positional is what the initiator applies when the step
+     * ends abnormally.
+     */
+    static final String TRANSACT_ABNORMAL_DISPOSITION =
+            "app/jcl/INTCALC.jcl:37 TRANSACT DISP=(NEW,CATLG,DELETE) abnormal disposition";
+
     /** {@code TCATBALF} - the driving browse ({@code app/jcl/INTCALC.jcl:27-28}). */
     public static final String TCATBALF_DD_NAME = TranCatBalRepository.DD_NAME;
 
@@ -287,12 +322,27 @@ public class AccountInterestCalcJob {
     /**
      * {@code XREFFILE} - the cross-reference base cluster ({@code app/jcl/INTCALC.jcl:29-30}).
      *
-     * <p>{@code app/jcl/INTCALC.jcl:31-32} opens the <em>same</em> dataset a second time as
-     * {@code XREFFIL1} over its alternate-index path, and {@code app/cbl/CBACT04C.cbl:38} declares
-     * {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID} for it. Two access paths, one dataset: one
-     * repository with a second finder, never two tables (gate G45).
+     * <p>The DD name this step's own JCL declares, spelled as the JCL spells it. It is deliberately
+     * <em>not</em> {@link CardXrefRepository#BASE_DD_NAME}: that constant is {@code CCXREF}, the CICS
+     * file name the online programs address, and it is a different configuration key with its own
+     * independent override. Naming the repository's key here made this job resolve, validate and report
+     * a binding its JCL never mentions - so a deployment that pointed the two keys at different datasets
+     * would have had this job read the wrong one with nothing saying so. The two are now proven equal at
+     * construction instead, by {@code BatchConfig.requireSameDataset}.
      */
-    public static final String XREFFILE_DD_NAME = CardXrefRepository.BASE_DD_NAME;
+    public static final String XREFFILE_DD_NAME = CardXrefRepository.BATCH_DD_NAME;
+
+    /**
+     * {@code XREFFIL1} - the alternate-index path over the same cluster
+     * ({@code app/jcl/INTCALC.jcl:31-32}).
+     *
+     * <p>{@code app/cbl/CBACT04C.cbl:38} declares {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID}, and
+     * {@code 1500-A-LOOKUP-XREF} reads through it. It is a second access path over the dataset
+     * {@link #XREFFILE_DD_NAME} names, never a second dataset (gate G45), and it is declared here
+     * because this job resolves it and hands it to the repository - the alias is a configuration key,
+     * so it has to be consumed to have any effect at all.
+     */
+    public static final String XREFFIL1_DD_NAME = CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME;
 
     /**
      * {@code TRANSACT} - the generated-transaction output ({@code app/jcl/INTCALC.jcl:37-41}).
@@ -638,6 +688,30 @@ public class AccountInterestCalcJob {
     private final DisclosureGroupAccess disclosureGroupAccess;
 
     /**
+     * The persistence boundary for this program's two mutating verbs and for its output's disposition.
+     *
+     * <p>Reached only through {@link DatasetUnitOfWork#persistVerb(String, java.util.function.Supplier)}
+     * and {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)} - never
+     * through {@code execute}, which is the online task boundary - and that is the point.
+     * {@code CBACT04C} is a non-CICS batch program: it issues no syncpoint, and every dataset it touches
+     * is defined {@code RECOVERY(NONE)} ({@code app/csd/CARDDEMO.CSD:9} and siblings). So its
+     * {@code REWRITE} at {@code app/cbl/CBACT04C.cbl:356} and its {@code WRITE} at {@code :500} are each
+     * durable the moment they complete, and the abend at {@code :632} does not take them back.
+     *
+     * <p>Left to the step's own chunk transaction they would be undone instead - and specifically, an
+     * account whose interest had been posted and whose cycle amounts had been zeroed would revert, so a
+     * re-run would post that interest a second time. That is a financial difference, which is why this
+     * boundary is here rather than inherited.
+     *
+     * <p>The step's two datasets then part company, which is what per-resource persistence means:
+     * {@code ACCTFILE} is {@code DISP=SHR} over an existing dataset and keeps every rewrite, while
+     * {@code TRANSACT} is {@code DISP=(NEW,CATLG,DELETE)} ({@code app/jcl/INTCALC.jcl:37}) and loses its
+     * whole generation if the step abends. The second is applied through {@code persistDisposition},
+     * because a disposition is the initiator's work and must outlive the failure that called for it.
+     */
+    private final DatasetUnitOfWork unitOfWork;
+
+    /**
      * The dataset code page, stated explicitly and never taken from the platform.
      *
      * <p>Taken from the account repository, which resolves it from
@@ -681,6 +755,8 @@ public class AccountInterestCalcJob {
      * @param cardXrefRepository    {@code XREFFILE} and its alternate-index path; required
      * @param transactionRepository {@code TRANSACT}, the generated-transaction output; required
      * @param disclosureGroupAccess {@code DISCGRP}, the rate lookup; required
+     * @param unitOfWork            the persistence boundary this program's two mutating verbs commit
+     *                              through, one verb at a time; required
      * @param sysoutSinkProvider    the {@code SYSOUT} destination; may resolve to no bean, in which case
      *                              the process's standard output is used in the dataset code page
      * @param clockProvider         the clock behind {@code FUNCTION CURRENT-DATE}; may resolve to no
@@ -696,6 +772,7 @@ public class AccountInterestCalcJob {
             CardXrefRepository cardXrefRepository,
             TransactionRepository transactionRepository,
             DisclosureGroupAccess disclosureGroupAccess,
+            DatasetUnitOfWork unitOfWork,
             ObjectProvider<SysoutSink> sysoutSinkProvider,
             ObjectProvider<Clock> clockProvider) {
 
@@ -716,6 +793,11 @@ public class AccountInterestCalcJob {
                 + "output, written sequentially at RECFM=F LRECL=" + TranRecord.RECORD_LENGTH);
         this.disclosureGroupAccess = Objects.requireNonNull(disclosureGroupAccess, "The disclosure group "
                 + "access path is required: without a rate there is no interest to compute");
+        this.unitOfWork = Objects.requireNonNull(unitOfWork, "A dataset unit of work is required: this "
+                + "program's REWRITE at app/cbl/CBACT04C.cbl:356 and its WRITE at :500 are each durable "
+                + "the moment they complete, because the program issues no syncpoint and every dataset "
+                + "it touches is RECOVERY(NONE), so each is persisted on its own rather than left to a "
+                + "chunk transaction a later abend would roll back");
         Objects.requireNonNull(sysoutSinkProvider, "A SYSOUT sink provider is required; it may resolve "
                 + "to no bean, in which case the standard output stream is used");
         Objects.requireNonNull(clockProvider, "A clock provider is required; it may resolve to no bean, "
@@ -727,6 +809,44 @@ public class AccountInterestCalcJob {
         this.clock = clockProvider.getIfAvailable(Clock::systemDefaultZone);
         this.stepContract = requireUngatedStep(batchConfig);
         this.declaredParmDate = requireDeclaredParmDate(batchConfig);
+        requireStepDatasets(batchConfig);
+    }
+
+    /**
+     * Proves that every DD name {@code app/jcl/INTCALC.jcl:25-41} declares resolves to the dataset the
+     * repository that reads it is actually bound to.
+     *
+     * <p><strong>Why this is not ceremony.</strong> This step names five input DDs and one output DD, and
+     * before this check not one of them was resolved against configuration here. Two were worse than
+     * unresolved: {@link #XREFFILE_DD_NAME} was defined as {@code CardXrefRepository.BASE_DD_NAME} - the
+     * CICS file name {@code CCXREF}, a different configuration key with its own independent override - so
+     * the job named, and would have reported, a binding its JCL never mentions; and
+     * {@link #XREFFIL1_DD_NAME} had no constant at all, so the alternate-index path this step explicitly
+     * opens a second time was never checked in any form.
+     *
+     * <p>{@code XREFFILE} and {@code XREFFIL1} are two access paths over one dataset, so they are proven
+     * against the base cluster and the alternate-index path respectively - which is also what keeps this
+     * from becoming a second repository per DD name and duplicating the cluster (gate G45).
+     *
+     * <p>The output DD is checked the same way, because {@code TRANSACT} is a genuine collision in this
+     * estate: it is a CICS file in the online programs and a {@code DISP=(NEW,CATLG,DELETE)} generation
+     * in {@code app/jcl/INTCALC.jcl:37-41}. The repository keeps separate keys for exactly that reason,
+     * and this proves the step is writing through the one its JCL declares.
+     *
+     * @param scaffolding the batch scaffolding holding the contracts and the DD catalogue
+     * @throws IllegalStateException if any DD is undeclared, or resolves to a different dataset from the
+     *                               repository that reads or writes it
+     */
+    private static void requireStepDatasets(BatchConfig scaffolding) {
+        scaffolding.requireSameDataset(JOB_KEY, TCATBALF_DD_NAME, TranCatBalRepository.DD_NAME);
+        // The account repository binds to the CICS file name, because the online programs address it that
+        // way; ACCTFILE is this step's own DD name and a separate configuration key.
+        scaffolding.requireSameDataset(JOB_KEY, ACCTFILE_DD_NAME, AccountRepository.CICS_FILE_NAME);
+        scaffolding.requireSameDataset(JOB_KEY, XREFFILE_DD_NAME, CardXrefRepository.BASE_DD_NAME);
+        scaffolding.requireSameDataset(JOB_KEY, XREFFIL1_DD_NAME,
+                CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+        scaffolding.requireSameDataset(JOB_KEY, TRANSACT_DD_NAME,
+                TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME);
     }
 
     /**
@@ -832,17 +952,43 @@ public class AccountInterestCalcJob {
     // =================================================================================================
 
     /**
-     * The job {@code app/jcl/INTCALC.jcl} submits: one step, no gate.
+     * The job {@code app/jcl/INTCALC.jcl} submits: one step, no gate, and one validated parameter.
      *
      * <p>{@code spring.batch.job.enabled} is {@code false} in {@code application.yml}, so publishing this
      * bean does not run it. It runs when something deliberately launches it, exactly as it ran only when
      * JCL submitted {@code STEP15}.
+     *
+     * <h2>Why the parameter validator is attached here, and only here</h2>
+     * <p>This is the one job in the estate that takes a {@code PARM}
+     * ({@code app/jcl/INTCALC.jcl:L22}, {@code PARM='2022071800'}), and that {@code PARM} is character
+     * data which {@code app/cbl/CBACT04C.cbl:L476-L480} concatenates <em>verbatim</em> into every
+     * transaction identifier the job generates. A launcher-supplied value of the wrong width is
+     * therefore not a cosmetic problem: nine characters shift the generated suffix left in every
+     * identifier written, eleven push it off the end of the {@code PIC X(16)} field, and neither would
+     * fail at run time. {@link BatchConfig#parmDateValidator()} rejects any width but
+     * {@link BatchConfig#PARM_DATE_WIDTH} <em>before the job starts</em>, so a bad launch produces no
+     * records at all rather than a full generation of subtly wrong ones.
+     *
+     * <p>The validator checks the width and nothing else. It does not parse the value as a date,
+     * reformat it, or default it - all three would corrupt the identifiers just as surely (rule R1,
+     * gate G29).
      *
      * @return the job; never {@code null}
      */
     @Bean
     public Job accountInterestCalcJob() {
         return batchConfig.job(JOB_NAME)
+                // Restart is refused, and that is a parity decision rather than a policy one. A JCL step
+                // has no restart: an operator who re-runs INTCALC submits the job again, which is a NEW
+                // run over the whole TCATBALF file that writes a NEW SYSTRAN generation
+                // (app/jcl/INTCALC.jcl:37-41 is DISP=(NEW,CATLG,DELETE)). Spring Batch's restart is a
+                // different thing entirely - it resumes the SAME JobInstance from the item after the last
+                // commit - and this program stores no position in its execution context, so a resumed run
+                // would re-read TCATBALF from the beginning while the accounts it had already rewritten
+                // stayed rewritten. Every account before the failure point would have its interest posted
+                // a second time. Refusing the restart is what keeps that from being reachable at all.
+                .preventRestart()
+                .validator(batchConfig.parmDateValidator())
                 .start(accountInterestCalcStep())
                 .build();
     }
@@ -858,12 +1004,17 @@ public class AccountInterestCalcJob {
      * lets a launcher's own {@value BatchConfig#PARM_DATE_PARAMETER} reach the program, since
      * {@code beforeStep} is invoked before the stream is opened.
      *
-     * <p>A fresh delegate is built on every call, so two steps never share a position or an accumulator.
+     * <p>The reader, processor, writer, stream and listener registered here are all one
+     * {@link StepScopedChunkDelegate}, which builds a fresh {@link ChunkDelegate} for each step execution
+     * rather than closing over one. A {@code Step} bean is built once and then launched as often as the
+     * operator launches the job, so a delegate captured here would be shared by every execution -
+     * including two that overlap. {@code CBACT04C} has no such sharing to reproduce: each JCL submission
+     * is its own address space with its own {@code WORKING-STORAGE} and its own five open files.
      *
      * @return the step; never {@code null}
      */
     public Step accountInterestCalcStep() {
-        ChunkDelegate delegate = newChunkDelegate();
+        StepScopedChunkDelegate delegate = new StepScopedChunkDelegate(this);
         SimpleStepBuilder<TranCatBalRecord, RecordOutcome> builder =
                 batchConfig.chunkStep(stepContract.name(), CHUNK_SIZE);
         builder.reader(delegate).processor(delegate).writer(delegate).stream(delegate);
@@ -895,6 +1046,33 @@ public class AccountInterestCalcJob {
      */
     public JobParameters jobParameters() {
         return batchConfig.contract(JOB_KEY).jobParameters();
+    }
+
+    /**
+     * The cross-reference repository addressing <strong>this job's</strong> two cross-reference DDs.
+     *
+     * <p>{@code app/jcl/INTCALC.jcl} STEP15 opens the cross-reference cluster twice in one step:
+     * {@code //XREFFILE} on the base KSDS at {@code :29-30} and {@code //XREFFIL1} on the
+     * alternate-index path at {@code :31-32}. {@code app/cbl/CBACT04C.cbl:34-39} is one {@code SELECT}
+     * with an {@code ALTERNATE RECORD KEY}, so both are read - the base sequentially by
+     * {@code 1050-GET-NEXT-XREF} and the path by key in {@code 1500-A-LOOKUP-XREF}.
+     *
+     * <p>Both are resolved through this job's own view of the catalogue and handed to the repository, so
+     * the DDs the JCL declares are the ones read. The injected repository resolved the <em>online</em>
+     * names {@code CCXREF} and {@code CXACAIX} from the global catalogue; the finding was that this job
+     * named the JCL's DDs and then read through those instead, which made the JCL's DD statements
+     * decorative.
+     *
+     * <p>Resolved per call rather than held, because this class keeps no I/O state (practice B9), and
+     * the repository returns itself when both bindings name the datasets it already addresses.
+     *
+     * @return the repository this run reads the cross-reference through; never {@code null}
+     * @throws IllegalStateException if either DD is unconfigured, or a binding is unusable
+     */
+    private CardXrefRepository xrefFileRepository() {
+        return cardXrefRepository.addressing(
+                batchConfig.datasetBinding(JOB_KEY, XREFFILE_DD_NAME), XREFFILE_DD_NAME,
+                batchConfig.datasetBinding(JOB_KEY, XREFFIL1_DD_NAME), XREFFIL1_DD_NAME);
     }
 
     /**
@@ -1015,6 +1193,7 @@ public class AccountInterestCalcJob {
      */
     public long calculateInterest(String parmDate, SysoutSink sysout) {
         InterestCalculationRun run = newRun(parmDate, sysout);
+        boolean normalEnd = false;
         try {
             // DISPLAY 'START OF EXECUTION OF PROGRAM CBACT04C'.                                     L181
             run.sysout().write(START_OF_EXECUTION);
@@ -1051,12 +1230,22 @@ public class AccountInterestCalcJob {
             run.sysout().write(END_OF_EXECUTION);
 
             // GOBACK. RETURN-CODE is untouched on a normal end.                                     L232
+            normalEnd = true;
             return run.workingStorage().recordCount();
         } finally {
             // An abend leaves the COBOL CLOSE paragraphs unperformed - which is why the closes above are
             // inside the try and not here. This releases the handles without emitting anything, so a
             // failed run's SYSOUT ends at the abend exactly as the mainframe's would.
-            run.release();
+            //
+            // A run that did not reach GOBACK also has the TRANSACT DD's abnormal disposition applied:
+            // app/jcl/INTCALC.jcl:37 is DISP=(NEW,CATLG,DELETE), so the generation is catalogued only on a
+            // normal end and is deleted otherwise. The account rewrites are untouched either way, because
+            // ACCTFILE is DISP=SHR over an existing dataset.
+            if (normalEnd) {
+                run.release();
+            } else {
+                run.releaseAbnormally();
+            }
         }
     }
 
@@ -1240,6 +1429,20 @@ public class AccountInterestCalcJob {
          */
         private BrowseCursor xrefFile;
 
+        /**
+         * The cross-reference repository this execution reads through, resolved once at the open.
+         *
+         * <p>Resolved once and held for the run rather than per read, and that is not only an efficiency
+         * point: {@link CardXrefRepository#addressing} hands back an instance whose statements resolve
+         * against its own relation on first use, so asking for a fresh one per record would re-describe
+         * the relation on every record of a 50-record browse. One open, one resolution - which is also
+         * what {@code OPEN INPUT XREF-FILE} at {@code app/cbl/CBACT04C.cbl:254} does.
+         *
+         * <p>{@code null} until {@link #xreffileOpen()} has run, which is the state before the program's
+         * own open.
+         */
+        private CardXrefRepository xrefRepository;
+
         /** {@code DISCGRP-FILE}, {@code OPEN INPUT} at {@code app/cbl/CBACT04C.cbl:272}. */
         private DisclosureGroupFile discgrpFile;
 
@@ -1411,7 +1614,8 @@ public class AccountInterestCalcJob {
          */
         void xreffileOpen() {
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L253
-            xrefFile = job.cardXrefRepository.openBrowse();                                   //     L254
+            xrefRepository = job.xrefFileRepository();
+            xrefFile = xrefRepository.openBrowse();                                            //     L254
             String status = xrefFile.openStatus();
             applResultFromOkStatus(status);                                                   // L255-259
             if (!workingStorage.applAok()) {                                                  //     L260
@@ -1461,7 +1665,8 @@ public class AccountInterestCalcJob {
          */
         void tranfileOpen() {
             workingStorage.moveToApplResult(APPL_RESULT_ASSUMED_FAILURE);                     //     L308
-            tranFile = job.transactionRepository.openOutput();                                //     L309
+            tranFile = job.transactionRepository.openOutput(                                  //     L309
+                    job.batchConfig.datasetBinding(JOB_KEY, TRANSACT_DD_NAME), TRANSACT_DD_NAME);
             String status = tranFile.openStatus();
             applResultFromOkStatus(status);                                                   // L310-314
             if (!workingStorage.applAok()) {                                                  //     L315
@@ -1568,6 +1773,43 @@ public class AccountInterestCalcJob {
          * mainframe's would. Every handle's own close is idempotent, so calling this after a successful
          * {@link #closeFiles()} changes nothing.
          */
+        /**
+         * Applies the abnormal disposition of {@code app/jcl/INTCALC.jcl:37} to the {@code TRANSACT}
+         * generation, then releases the handles.
+         *
+         * <p>Called instead of {@link #release()} on the path a run takes when it does <em>not</em> reach
+         * end of file - which is to say when it abends. {@code DISP=(NEW,CATLG,DELETE)} catalogues the
+         * generation on a normal end and deletes it otherwise, so an abended run must leave no generation
+         * behind even though each of its writes was durable as it completed.
+         *
+         * <p>The account master is deliberately not touched: {@code ACCTFILE} is {@code DISP=SHR}
+         * ({@code app/jcl/INTCALC.jcl:33}) over an existing {@code RECOVERY(NONE)} dataset, so every
+         * rewrite this run performed stands. Two datasets, two dispositions - which is what per-resource
+         * persistence means here.
+         *
+         * <p>Nothing is thrown. The abend that brought the run here is what the caller must see, so a
+         * disposition that cannot be applied reports itself through the log and the returned status of
+         * {@link OutputFile#discardGeneration()} rather than by raising something of its own.
+         */
+        void releaseAbnormally() {
+            if (tranFile != null) {
+                // Applied in its own boundary. A disposition is the initiator's work and runs after the
+                // step, so enrolling it in whatever transaction the step was inside would let the failure
+                // that triggered the disposition undo the disposition - leaving exactly the partial
+                // generation it exists to remove.
+                String disposition = job.unitOfWork.persistDisposition(
+                        TRANSACT_ABNORMAL_DISPOSITION, tranFile::discardGeneration);
+                if (!FileStatus.OK.equals(disposition)) {
+                    LOG.error("The " + TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME
+                            + " generation of this abended run could not be discarded; it reported file "
+                            + "status " + FileStatus.toStatusImage(disposition)
+                            + ". app/jcl/INTCALC.jcl:37 declares DISP=(NEW,CATLG,DELETE), so a partial "
+                            + "generation may remain where the mainframe would leave none");
+                }
+            }
+            release();
+        }
+
         void release() {
             if (tranFile != null) {
                 tranFile.close();
@@ -1794,7 +2036,15 @@ public class AccountInterestCalcJob {
             accountRecord.zeroAcctCurrCycDebit();                                             //     L354
 
             // REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD                                            L356
-            AccountRepository.WriteResult result = acctFile.rewrite(accountRecord);
+            //
+            // Persisted on its own. This paragraph rewrites the PREVIOUS account and processing then
+            // continues into the next account group, where a failed read (:387), a failed rate lookup
+            // (:412) or a failed WRITE (:510) abends at :632. The COBOL leaves this rewrite in place -
+            // no syncpoint, and ACCTDAT is RECOVERY(NONE) - so it must not be enrolled in a boundary a
+            // later failure rolls back. An account reverted here would have its interest posted twice by
+            // the re-run, because its cycle amounts would have been un-zeroed with it.
+            AccountRepository.WriteResult result = job.unitOfWork.persistVerb(
+                    REWRITE_ACCTFILE_VERB, () -> acctFile.rewrite(accountRecord));
             String status = result.status();
             applResultFromOkStatus(status);                                                   // L357-361
             if (!workingStorage.applAok()) {                                                  //     L362
@@ -1877,7 +2127,7 @@ public class AccountInterestCalcJob {
 
             // READ XREF-FILE INTO CARD-XREF-RECORD KEY IS FD-XREF-ACCT-ID ... END-READ           L394-398
             CardXrefRepository.ReadResult result =
-                    job.cardXrefRepository.readByAccountIdViaAltIndex(acctId);
+                    xrefRepository.readByAccountIdViaAltIndex(acctId);
             if (result.isNotFound()) {                                                        //     L396
                 sysout.write(ACCOUNT_NOT_FOUND_PREFIX + keyImage);                            //     L397
             }
@@ -2069,7 +2319,13 @@ public class AccountInterestCalcJob {
             tranRecord.moveTranProcTs(timestamp);                                             //     L498
 
             // WRITE FD-TRANFILE-REC FROM TRAN-RECORD                                                 L500
-            TransactionRepository.WriteResult result = tranFile.writeSequential(tranRecord);
+            //
+            // Persisted on its own, for the same reason the rewrite is: the generation is being built
+            // record by record, each WRITE is durable when it completes, and the abend at :632 truncates
+            // the generation rather than emptying it. Every transaction written before the failure is a
+            // transaction the COBOL leaves on the dataset.
+            TransactionRepository.WriteResult result = job.unitOfWork.persistVerb(
+                    WRITE_TRANFILE_VERB, () -> tranFile.writeSequential(tranRecord));
             String status = result.status();
             applResultFromOkStatus(status);                                                   // L501-505
             if (!workingStorage.applAok()) {                                                  //     L507
@@ -3186,6 +3442,36 @@ public class AccountInterestCalcJob {
         }
 
         /**
+         * Renders a disclosure-group key for a log line: one line, with the account group masked.
+         *
+         * <p>{@code DIS-GROUP-KEY} is three fields ({@code app/cpy/CVTRA02Y.cpy:5-8}), and they do not
+         * carry the same risk. {@code DIS-ACCT-GROUP-ID X(10)} identifies the account group whose rate
+         * is being looked up, so it is masked. {@code DIS-TRAN-TYPE-CD X(02)} and
+         * {@code DIS-TRAN-CAT-CD 9(04)} are classification codes drawn from small fixed code tables -
+         * they identify no account and no customer - so they stay legible, which is what makes the log
+         * line useful for telling "the rate table has no row for this category" apart from "the dataset
+         * refused the read".
+         *
+         * <p>The whole rendering also passes through {@link DiagnosticText#singleLine(String)}, because
+         * the key arrives from storage rather than from a code table: a control character in those bytes
+         * would otherwise let a stored value inject a line break and forge a second log record
+         * (CWE-117).
+         *
+         * @param keyImage the key as read or composed; may be shorter than the declared width if the
+         *                 caller is reporting a malformed value, and may be {@code null}
+         * @return a single-line rendering safe to log
+         */
+        private static String keyForDiagnostics(String keyImage) {
+            if (keyImage == null) {
+                return DiagnosticText.ABSENT;
+            }
+            int split = Math.min(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH, keyImage.length());
+            String group = keyImage.substring(0, split);
+            String codes = keyImage.substring(split);
+            return DiagnosticText.masked(group) + DiagnosticText.singleLine(codes);
+        }
+
+        /**
          * Performs the keyed read for a handle that opened successfully.
          *
          * @param selectByKey the statement the handle's open resolved
@@ -3199,7 +3485,8 @@ public class AccountInterestCalcJob {
                         recordImageMapper());
             } catch (DataAccessException translated) {
                 // The sanitized summary only; see the note in open() for why the throwable is not passed.
-                LOG.error("Could not read key '" + keyImage + "' from the disclosure group dataset '"
+                LOG.error("Could not read key '" + keyForDiagnostics(keyImage)
+                        + "' from the disclosure group dataset '"
                         + datasetName + "' - "
                         + DatasetRelation.BackendDiagnostic.of(translated).describe()
                         + "; reporting file status "
@@ -3215,7 +3502,8 @@ public class AccountInterestCalcJob {
 
             byte[] image = rows.get(0);
             if (image == null) {
-                LOG.error("The disclosure group dataset '" + datasetName + "' presented key '" + keyImage
+                LOG.error("The disclosure group dataset '" + datasetName + "' presented key '"
+                        + keyForDiagnostics(keyImage)
                         + "' with no record image at column position "
                         + DatasetRelation.RECORD_IMAGE_COLUMN_INDEX + "; reporting file status "
                         + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
@@ -3232,7 +3520,8 @@ public class AccountInterestCalcJob {
                 // The measured width only, never the row's own bytes and never the rejection's message:
                 // the row IS the data this log line must not carry (CWE-532), and the width is the whole
                 // of what an operator needs. Same reasoning as the note in open().
-                LOG.error("The disclosure group dataset '" + datasetName + "' presented key '" + keyImage
+                LOG.error("The disclosure group dataset '" + datasetName + "' presented key '"
+                        + keyForDiagnostics(keyImage)
                         + "' as " + image.length + " byte(s) where app/cpy/CVTRA02Y.cpy declares "
                         + DisclosureGroupRecord.RECORD_LENGTH + "; reporting file status "
                         + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
@@ -3240,6 +3529,32 @@ public class AccountInterestCalcJob {
                         + "discrepancy would be wrong");
                 return DisclosureGroupRead.failed(PERMANENT_ERROR_STATUS);
             }
+        }
+
+        /**
+         * Names a key in a log line without reproducing it.
+         *
+         * <p>Two reasons, and the first is the one that makes this a defect rather than a preference. The
+         * key is assembled from {@code PIC X} spans read out of {@code TCATBALF} and {@code ACCTFILE}
+         * ({@code DIS-ACCT-GROUP-ID X(10)}, {@code DIS-TRAN-TYPE-CD X(02)},
+         * {@code DIS-TRAN-CAT-CD 9(04)}), and a {@code PIC X} span holds whatever bytes are in the record
+         * - including a carriage return or a line feed. Concatenated raw, such a key ends the log entry
+         * early and starts a line of the writer's choosing, so a forged entry can be planted in a file an
+         * operator trusts (CWE-117). {@link SensitiveDiagnostics#maskIdentifier(String)} escapes control
+         * characters in the part it reveals and replaces the rest, so no byte of the record reaches the
+         * line unexamined.
+         *
+         * <p>Second, the leading span links the failure to a set of accounts, and a log file is retained
+         * longer and read more widely than the dataset it describes (CWE-532). The read itself always uses
+         * the real key; only its rendering is masked. This is the same treatment
+         * {@code TranCatBalRepository} gives its own key image, deliberately, so one policy covers every
+         * key this module logs.
+         *
+         * @param keyImage the 16-character key image
+         * @return a phrase naming the key, safe to log
+         */
+        private static String describeKey(String keyImage) {
+            return "key '" + SensitiveDiagnostics.maskIdentifier(keyImage) + "'";
         }
 
         /**
@@ -3396,6 +3711,228 @@ public class AccountInterestCalcJob {
     }
 
     // =================================================================================================
+    // The step-execution scope around the chunk delegate.
+    // =================================================================================================
+
+    /**
+     * The reader, processor, writer, stream and listener the step is actually built from: a thin router
+     * that owns no run of its own and forwards every callback to a {@link ChunkDelegate} belonging to the
+     * step execution that is calling.
+     *
+     * <p>This exists because of a lifetime mismatch. A {@code Step} bean is constructed once, when the
+     * application context starts, and the reader, processor and writer it was given at that moment are
+     * the ones every later execution uses. A {@link ChunkDelegate} captured there would therefore be
+     * shared by every launch of the job - and it is deliberately stateful, holding the
+     * {@value BatchConfig#PARM_DATE_PARAMETER} the launcher supplied, the five open files, the
+     * cross-record accumulators {@code WS-TOTAL-INT} and {@code WS-LAST-ACCT-NUM}, and the two run
+     * counters. Two overlapping launches sharing one would interleave their reads of {@code TCATBALF},
+     * accumulate each other's interest into one {@code WS-TOTAL-INT}, and post the sum to whichever
+     * account happened to break first.
+     *
+     * <p>{@code CBACT04C} has no such sharing to reproduce, which is what makes the isolation a parity
+     * requirement rather than a hardening measure. Each {@code EXEC PGM=CBACT04C}
+     * ({@code app/jcl/INTCALC.jcl:22}) runs in its own address space: its own {@code WORKING-STORAGE},
+     * its own {@code PARM}, and its own five {@code OPEN}s. One delegate per step execution is that
+     * address space.
+     *
+     * <p>The delegate is held in a {@link ThreadLocal} rather than a map keyed by
+     * {@link StepExecution}, because every callback of a serial chunk step - {@code beforeStep},
+     * {@code open}, each {@code read}, {@code process} and {@code write}, then {@code close} - is invoked
+     * on the thread executing the step, and a {@code ThreadLocal} is the only structure that needs no key
+     * to be threaded through interfaces that do not carry one ({@link ItemStreamReader#read()} takes no
+     * arguments). The field is {@code final} and per-instance, so no mutable state is shared: what varies
+     * is per-thread, which is precisely the isolation being reproduced. The step is left serial - no
+     * {@code TaskExecutor} is configured - because {@code CBACT04C}'s per-account accumulation depends on
+     * reading {@code TCATBALF} in physical order.
+     */
+    public static final class StepScopedChunkDelegate implements ItemStreamReader<TranCatBalRecord>,
+            ItemProcessor<TranCatBalRecord, RecordOutcome>, ItemWriter<RecordOutcome>,
+            StepExecutionListener {
+
+        private final AccountInterestCalcJob job;
+
+        /**
+         * The scope belonging to the step execution running on this thread. Per-instance and
+         * {@code final}; the mutability is per-thread, never shared.
+         */
+        private final ThreadLocal<Scope> executionScope = new ThreadLocal<>();
+
+        StepScopedChunkDelegate(AccountInterestCalcJob job) {
+            this.job = Objects.requireNonNull(job, "A job is required to scope its chunk delegate");
+        }
+
+        /**
+         * One step execution and the delegate that is its address space.
+         *
+         * @param stepExecution the execution the delegate belongs to
+         * @param delegate      that execution's delegate
+         */
+        private record Scope(StepExecution stepExecution, ChunkDelegate delegate) {
+        }
+
+        /**
+         * Builds this execution's delegate and hands it the launcher's parameters.
+         *
+         * <p>Spring Batch invokes this before the stream is opened, so the delegate exists before any
+         * other callback can reach for it.
+         *
+         * <p>The scope is keyed by the {@link StepExecution} rather than by call order, and that is
+         * deliberate: a chunk step registers its reader both as a stream and, when the reader is also a
+         * listener, as a step-execution listener, so this callback can legitimately arrive more than once
+         * for one execution. Arriving again for the <em>same</em> execution therefore reuses that
+         * execution's delegate, which is safe because handing a delegate its parameters twice yields the
+         * same {@code PARM}. Arriving for a <em>different</em> execution while one is still scoped is
+         * refused, because that is two executions nested on one thread and silently replacing the first
+         * would abandon its five open files.
+         *
+         * @param stepExecution the execution starting; must not be {@code null}
+         */
+        @Override
+        public void beforeStep(StepExecution stepExecution) {
+            Objects.requireNonNull(stepExecution, "A step execution is required to scope a delegate");
+            Scope existing = executionScope.get();
+            if (existing != null) {
+                if (existing.stepExecution() != stepExecution) {
+                    throw new IllegalStateException("A chunk delegate is already scoped to this thread "
+                            + "for a different step execution. Each step execution gets its own delegate, "
+                            + "and one cannot be started inside another on the same thread: replacing the "
+                            + "first would abandon the five files it has open.");
+                }
+                existing.delegate().beforeStep(stepExecution);
+                return;
+            }
+            ChunkDelegate delegate = job.newChunkDelegate();
+            executionScope.set(new Scope(stepExecution, delegate));
+            delegate.beforeStep(stepExecution);
+        }
+
+        /**
+         * Forwards the stream open - the banner and the five {@code OPEN}s - to this execution's delegate.
+         *
+         * @param executionContext the step's execution context; must not be {@code null}
+         */
+        @Override
+        public void open(ExecutionContext executionContext) {
+            requireScopedDelegate("open").open(executionContext);
+        }
+
+        /**
+         * Forwards {@code 1000-TCATBALF-GET-NEXT} to this execution's delegate.
+         *
+         * @return the next record, or {@code null} at end of file
+         */
+        @Override
+        public TranCatBalRecord read() {
+            return requireScopedDelegate("read").read();
+        }
+
+        /**
+         * Forwards the record body to this execution's delegate.
+         *
+         * @param item the record read; must not be {@code null}
+         * @return the outcome of the record body; never {@code null}
+         */
+        @Override
+        public RecordOutcome process(TranCatBalRecord item) {
+            return requireScopedDelegate("process").process(item);
+        }
+
+        /**
+         * Forwards the chunk bookkeeping to this execution's delegate.
+         *
+         * @param chunk the processed outcomes; must not be {@code null}
+         */
+        @Override
+        public void write(Chunk<? extends RecordOutcome> chunk) {
+            requireScopedDelegate("write").write(chunk);
+        }
+
+        /**
+         * Forwards the stream update to this execution's delegate when one is scoped.
+         *
+         * <p>{@link ChunkDelegate} stores no restartable position, so this contributes nothing to the
+         * execution context; it is forwarded rather than swallowed so the delegate remains the single
+         * definition of the stream contract.
+         *
+         * @param executionContext the step's execution context; must not be {@code null}
+         */
+        @Override
+        public void update(ExecutionContext executionContext) {
+            Scope scope = executionScope.get();
+            if (scope != null) {
+                scope.delegate().update(executionContext);
+            }
+        }
+
+        /**
+         * Forwards the stream close - the five {@code CLOSE}s and the closing banner, or a silent release
+         * after an abend - and then releases the scope.
+         *
+         * <p>The scope is released here rather than in {@code afterStep} because Spring Batch invokes the
+         * step listeners before closing the streams, so clearing it there would leave the closes with
+         * nothing to run. A close with no delegate scoped is a no-op: a stream may be closed without ever
+         * having been opened.
+         */
+        @Override
+        public void close() {
+            Scope scope = executionScope.get();
+            if (scope == null) {
+                return;
+            }
+            try {
+                scope.delegate().close();
+            } finally {
+                executionScope.remove();
+            }
+        }
+
+        /**
+         * Leaves the exit status to the step and the job listener.
+         *
+         * <p>{@link ChunkDelegate} contributes no exit status of its own - an abend's status comes from
+         * {@link BatchConfig}'s job listener translating {@link AbendException} - so this returns
+         * {@code null}, which Spring Batch reads as "no change".
+         *
+         * @param stepExecution the execution finishing; must not be {@code null}
+         * @return {@code null} always
+         */
+        @Override
+        public ExitStatus afterStep(StepExecution stepExecution) {
+            Objects.requireNonNull(stepExecution, "A step execution is required to finish a delegate");
+            return null;
+        }
+
+        /**
+         * This execution's delegate, or a diagnosis of the callback order that reached here without one.
+         *
+         * @param callback the callback name, for the message
+         * @return the scoped delegate; never {@code null}
+         */
+        private ChunkDelegate requireScopedDelegate(String callback) {
+            Scope scope = executionScope.get();
+            if (scope == null) {
+                throw new IllegalStateException("No chunk delegate is scoped to this thread, so '"
+                        + callback + "' has no run to address. beforeStep establishes the scope and it is "
+                        + "released by close, so this means the callback arrived outside a step execution "
+                        + "or on a different thread from the one executing the step.");
+            }
+            return scope.delegate();
+        }
+
+        /**
+         * The delegate currently scoped to the calling thread, if any.
+         *
+         * <p>Exposed so a test can assert that two step executions were handed different delegates, and
+         * that the scope is released when the step ends.
+         *
+         * @return the scoped delegate, or empty when no step execution is in progress on this thread
+         */
+        public Optional<ChunkDelegate> scopedDelegate() {
+            return Optional.ofNullable(executionScope.get()).map(Scope::delegate);
+        }
+    }
+
+    // =================================================================================================
     // The Spring Batch chunk delegate: one object, four roles, one run.
     // =================================================================================================
 
@@ -3465,10 +4002,20 @@ public class AccountInterestCalcJob {
          *
          * <p>Invoked before the stream is opened, which is why the PARM is available to
          * {@link #open(ExecutionContext)}. A launcher that supplied none leaves the JCL step card's
-         * declared value in place; either way the value is moved into {@code PIC X(10)} so a shorter one is
-         * space-padded and a longer one truncated on the right, exactly as the linkage item receives it.
+         * declared value in place.
+         *
+         * <p><strong>A supplied value is taken as it is or refused - never repaired.</strong> The value
+         * is concatenated verbatim into every generated transaction identifier
+         * ({@code app/cbl/CBACT04C.cbl:L476-L480}), so padding a short one or truncating a long one
+         * would write a whole generation of subtly misplaced identifiers and report success.
+         * {@link BatchConfig#parmDateValidator()}, attached to
+         * {@link AccountInterestCalcJob#accountInterestCalcJob()}, rejects a wrong width before the job
+         * starts; this guard is the same rule at the point of use, so a step exercised outside that job
+         * cannot slip past it either.
          *
          * @param stepExecution the execution about to start
+         * @throws IllegalArgumentException if a supplied value is not exactly
+         *                                  {@link BatchConfig#PARM_DATE_WIDTH} characters
          */
         @Override
         public void beforeStep(StepExecution stepExecution) {
@@ -3478,7 +4025,30 @@ public class AccountInterestCalcJob {
                     .getString(BatchConfig.PARM_DATE_PARAMETER);
             parmDate = supplied == null
                     ? job.declaredParmDate
-                    : job.codec.movePicX(supplied, PARM_DATE_WIDTH);
+                    : requireDeclaredParmWidth(supplied);
+        }
+
+        /**
+         * Requires a supplied {@value BatchConfig#PARM_DATE_PARAMETER} to be exactly the width the COBOL
+         * linkage item declares.
+         *
+         * @param supplied the launcher's value; never {@code null}
+         * @return the value, unaltered
+         * @throws IllegalArgumentException if it is any other width
+         */
+        private static String requireDeclaredParmWidth(String supplied) {
+            if (supplied.length() != PARM_DATE_WIDTH) {
+                throw new IllegalArgumentException("The job parameter '"
+                        + BatchConfig.PARM_DATE_PARAMETER + "' is " + supplied.length()
+                        + " characters, but " + PROGRAM_ID + " needs exactly " + PARM_DATE_WIDTH
+                        + ". app/cbl/CBACT04C.cbl:178 declares PARM-DATE PIC X(" + PARM_DATE_WIDTH
+                        + ") and L476-L480 concatenates the whole declared width into a fixed "
+                        + "PIC X(16) transaction identifier, so a shorter value shifts the generated "
+                        + "suffix left in every identifier this job writes and a longer one pushes it "
+                        + "off the end. The value is never padded or truncated to fit, because that "
+                        + "would write a full generation of wrong identifiers and report success.");
+            }
+            return supplied;
         }
 
         /**
@@ -3586,8 +4156,9 @@ public class AccountInterestCalcJob {
                 return;
             }
             run = null;
+            boolean normalEnd = finishing.workingStorage().endOfFileIsYes();
             try {
-                if (finishing.workingStorage().endOfFileIsYes()) {
+                if (normalEnd) {
                     // PERFORM 9000-TCATBALF-CLOSE through 9400-TRANFILE-CLOSE.                   L224-L228
                     finishing.closeFiles();
 
@@ -3595,7 +4166,14 @@ public class AccountInterestCalcJob {
                     finishing.sysout().write(END_OF_EXECUTION);
                 }
             } finally {
-                finishing.release();
+                // The TRANSACT DD's abnormal disposition, for a step that ended before end of file:
+                // app/jcl/INTCALC.jcl:37 is DISP=(NEW,CATLG,DELETE), so the generation is catalogued only
+                // on a normal end. The account rewrites stand either way - ACCTFILE is DISP=SHR.
+                if (normalEnd) {
+                    finishing.release();
+                } else {
+                    finishing.releaseAbnormally();
+                }
             }
         }
 

@@ -18,6 +18,7 @@ import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -131,11 +132,22 @@ class UserDeleteControllerTest {
     }
 
     /** A screen carrying one user id and one communication area, everything else blank. */
+    /** The same payload with {@code CDEMO-CU03-USR-SELECTED} naming a user. */
+    private static UserDeleteRequest withSelection(UserDeleteRequest request, String selected) {
+        UserDeleteRequest.Cu03Info info = request.cu03Info();
+        return new UserDeleteRequest(request.trnName(), request.title01(), request.curDate(),
+                request.pgmName(), request.title02(), request.curTime(), request.usrIdIn(),
+                request.fName(), request.lName(), request.usrType(), request.errMsg(),
+                request.navigationContext(), request.aid(),
+                new UserDeleteRequest.Cu03Info(info.usridFirst(), info.usridLast(), info.pageNum(),
+                        info.nextPageFlg(), info.usrSelFlg(), selected));
+    }
+
     private static UserDeleteRequest screen(String usrIdIn, NavigationContext commarea) {
         UserDeleteRequest blank = UserDeleteRequest.empty();
         return new UserDeleteRequest(blank.trnName(), blank.title01(), blank.curDate(), blank.pgmName(),
                 blank.title02(), blank.curTime(), usrIdIn, blank.fName(), blank.lName(), blank.usrType(),
-                blank.errMsg(), commarea, blank.aid());
+                blank.errMsg(), commarea, blank.aid(), null);
     }
 
     /** An 80-byte {@code SEC-USER-DATA} for the given key. */
@@ -518,7 +530,7 @@ class UserDeleteControllerTest {
             UserDeleteRequest carrying = new UserDeleteRequest(blank.trnName(), blank.title01(),
                     blank.curDate(), blank.pgmName(), blank.title02(), blank.curTime(), USER_ID,
                     "Stale" + " ".repeat(15), "Name" + " ".repeat(16), "A", blank.errMsg(), reenter(),
-                    blank.aid());
+                    blank.aid(), null);
 
             ProgramState state = controller.mainPara(carrying, CicsAid.DFHENTER, null);
 
@@ -975,7 +987,7 @@ class UserDeleteControllerTest {
             UserDeleteRequest inbound = new UserDeleteRequest("CU03", ScreenTitles.CCDA_TITLE01,
                     EXPECTED_DATE, "COUSR03C", ScreenTitles.CCDA_TITLE02, EXPECTED_TIME, USER_ID,
                     "Sam" + " ".repeat(17), "Spade" + " ".repeat(15), "U", errMsgImage("prior"),
-                    reenter(), "ENTER");
+                    reenter(), "ENTER", null);
 
             controller.receiveUsrdelScreen(state, inbound);
 
@@ -999,7 +1011,7 @@ class UserDeleteControllerTest {
         void anOmittedMemberBecomesSpaces() {
             ProgramState state = new ProgramState();
             UserDeleteRequest sparse = new UserDeleteRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, reenter(), null);
+                    null, null, null, null, reenter(), null, null);
 
             controller.receiveUsrdelScreen(state, sparse);
 
@@ -1158,6 +1170,24 @@ class UserDeleteControllerTest {
             assertThat(state.displayLines()).isEmpty();
             assertThat(state.response()).isEqualTo(UserDeleteResponse.empty());
             assertThat(state.commarea()).isEqualTo(NavigationContext.empty());
+        }
+
+        @Test
+        @DisplayName("the extension is state with no absent value: null records its VALUE clauses")
+        void theExtensionHasNoAbsentState() {
+            ProgramState state = new ProgramState();
+
+            assertThat(state.cu03Info()).isEqualTo(UserDeleteRequest.Cu03Info.initial());
+
+            UserDeleteRequest.Cu03Info paged = new UserDeleteRequest.Cu03Info("USER0001", "USER0010",
+                    2, UserDeleteRequest.Cu03Info.NEXT_PAGE_YES, "S", "USER0004");
+            state.setCu03Info(paged);
+            assertThat(state.cu03Info()).isEqualTo(paged);
+
+            // A communication area cannot arrive without these 34 bytes, so a null statement records the
+            // state COUSR03C:50-58 declares rather than an absence the COBOL has no way to represent.
+            state.setCu03Info(null);
+            assertThat(state.cu03Info()).isEqualTo(UserDeleteRequest.Cu03Info.initial());
         }
 
         @Test
@@ -1368,7 +1398,7 @@ class UserDeleteControllerTest {
         private UserDeleteRequest withAid(UserDeleteRequest base, String aid) {
             return new UserDeleteRequest(base.trnName(), base.title01(), base.curDate(), base.pgmName(),
                     base.title02(), base.curTime(), base.usrIdIn(), base.fName(), base.lName(),
-                    base.usrType(), base.errMsg(), base.navigationContext(), aid);
+                    base.usrType(), base.errMsg(), base.navigationContext(), aid, null);
         }
 
         @Test
@@ -1435,10 +1465,13 @@ class UserDeleteControllerTest {
         void thePathVariableIsTheSelectedUserOnFirstEntry() {
             stubHeldRead(USER_ID);
 
-            UserDeleteResponse screen = controller.deleteUser(USER_ID, screen(" ".repeat(8), enter()));
+            ScreenResponse<UserDeleteResponse> answer =
+                    controller.deleteUser(USER_ID, screen(" ".repeat(8), enter()));
 
             verify(repository).readForUpdate(USER_ID);
-            assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
+            assertThat(answer.screen().usrIdIn()).isEqualTo(USER_ID);
+            assertThat(answer.screenMetadata()).as("the envelope carries the presentation state")
+                    .isNotNull();
         }
 
         @Test
@@ -1454,10 +1487,74 @@ class UserDeleteControllerTest {
         @Test
         @DisplayName("the adapter accepts an absent body and projects the cold start")
         void theAdapterAcceptsAnAbsentBody() {
-            UserDeleteResponse screen = controller.deleteUser(USER_ID, null);
+            UserDeleteResponse screen = controller.deleteUser(USER_ID, null).screen();
 
             assertThat(screen.nextProgram()).isEqualTo("COSGN00C");
             verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("a path identity wider than USRIDIN is refused, never padded into another user")
+        void anOverWidePathIdentityIsRefused() {
+            assertThatThrownBy(() -> controller.deleteUser("USER00012345", null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Padding it would keep the leading");
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("a path identity of exactly the declared width is accepted")
+        void anExactWidthPathIdentityIsAccepted() {
+            UserDeleteController.requireIdentityFits("USER0001");
+
+            assertThat(UserDeleteController.USR_ID_IN_LENGTH).isEqualTo(8);
+        }
+
+        @Test
+        @DisplayName("a body USRIDIN naming a different user is refused before the record is held")
+        void aBodyIdentityThatDisagreesIsRefused() {
+            UserDeleteRequest other = screen("USER0002", reenter());
+
+            assertThatThrownBy(() -> controller.deleteUser(USER_ID, other))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("USRIDIN names a user that is not the one the path addresses");
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("a CDEMO-CU03-USR-SELECTED naming a different user is refused for the same reason")
+        void anExtensionSelectionThatDisagreesIsRefused() {
+            UserDeleteRequest request = withSelection(screen(" ".repeat(8), enter()), "USER0002");
+
+            assertThatThrownBy(() -> controller.deleteUser(USER_ID, request))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CDEMO-CU03-USR-SELECTED names a user that is not the one");
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @Test
+        @DisplayName("a body that states the same user, space-padded or not, agrees with the path")
+        void anAgreeingBodyIsAccepted() {
+            stubHeldRead(USER_ID);
+
+            UserDeleteResponse screen = controller.deleteUser(USER_ID,
+                    withSelection(screen(USER_ID, enter()), USER_ID)).screen();
+
+            assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
+            verify(repository).readForUpdate(USER_ID);
+        }
+
+        @Test
+        @DisplayName("the extension travels in the payload, and its absence is its VALUE-clause state")
+        void theExtensionTravelsInThePayload() {
+            stubHeldRead(USER_ID);
+
+            ScreenResponse<UserDeleteResponse> answer = controller.deleteUser(USER_ID,
+                    withSelection(screen(USER_ID, enter()), USER_ID));
+
+            assertThat(answer.screen().cu03Info().usrSelected()).isEqualTo(USER_ID);
+            assertThat(controller.deleteUser(USER_ID, screen(USER_ID, enter())).screen().cu03Info())
+                    .isEqualTo(UserDeleteRequest.Cu03Info.initial());
         }
     }
 

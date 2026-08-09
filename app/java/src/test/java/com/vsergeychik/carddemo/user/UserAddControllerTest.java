@@ -6,6 +6,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.SecUserRepository.WriteResult;
@@ -30,6 +31,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -736,13 +738,37 @@ class UserAddControllerTest {
         }
 
         @Test
-        @DisplayName("eibcalen resolution: explicit wins, then the payload's context decides")
+        @DisplayName("eibcalen resolution: the carrier decides, and a statement must agree with it")
         void eibcalenResolution() {
-            assertThat(UserAddController.resolveEibcalen(160, null)).isEqualTo(160);
-            assertThat(UserAddController.resolveEibcalen(0, populatedRequest())).isZero();
+            // Absent: EIBCALEN is derived from what actually arrived, which is what CICS would have set.
             assertThat(UserAddController.resolveEibcalen(null, null)).isZero();
             assertThat(UserAddController.resolveEibcalen(null, populatedRequest()))
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH);
+            // Stated and in agreement: taken as given.
+            assertThat(UserAddController.resolveEibcalen(0, null)).isZero();
+            assertThat(UserAddController.resolveEibcalen(NavigationContext.COMMAREA_LENGTH,
+                    populatedRequest())).isEqualTo(NavigationContext.COMMAREA_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a stated eibcalen that contradicts the carrier is refused, in either direction")
+        void aContradictingEibcalenIsRefusedDirectly() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> UserAddController.resolveEibcalen(
+                            NavigationContext.COMMAREA_LENGTH, null))
+                    .withMessageContaining("no communication area");
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> UserAddController.resolveEibcalen(0, populatedRequest()))
+                    .withMessageContaining("a communication area");
+        }
+
+        @ParameterizedTest(name = "eibcalen = {0} is not a length CICS could have set")
+        @ValueSource(ints = {-5, 1, 159, 161, 194, 2000})
+        @DisplayName("only 0 and the copybook length are accepted: COUSR01C declares no extension")
+        void anImpossibleEibcalenIsRefusedDirectly(int stated) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> UserAddController.resolveEibcalen(stated, populatedRequest()))
+                    .withMessageContaining(UserAddController.EIBCALEN_PARAM);
         }
 
         @Test
@@ -765,19 +791,47 @@ class UserAddControllerTest {
         @Test
         @DisplayName("addUser delegates and projects, producing the same response as mainPara")
         void adapterDelegates() {
-            UserAddResponse viaAdapter = controller.addUser(populatedRequest(), 0x7D,
+            ScreenResponse<UserAddResponse> answer = controller.addUser(populatedRequest(), 0x7D,
                     NavigationContext.COMMAREA_LENGTH);
 
+            UserAddResponse viaAdapter = answer.screen();
             assertThat(viaAdapter.errMsg()).contains("has been added");
             assertThat(viaAdapter.nextProgram()).isEqualTo("COUSR01C");
+            // The presentation metadata travels beside the screen rather than not travelling at all.
+            assertThat(answer.screenMetadata()).isNotNull();
+            assertThat(answer.screenMetadata().fields())
+                    .as("COUSR01 declares no attribute quads this program writes")
+                    .isEmpty();
+            assertThat(answer.screenMetadata().messageColour()).isNotNull();
         }
 
         @Test
         @DisplayName("addUser tolerates a null body, which is how EIBCALEN = 0 is reached over HTTP")
         void adapterToleratesNullBody() {
-            UserAddResponse response = controller.addUser(null, null, null);
+            UserAddResponse response = controller.addUser(null, null, null).screen();
 
             assertThat(response.nextProgram()).isEqualTo(UserAddController.SIGNON_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("an EIBCALEN that contradicts the carrier is refused, in either direction")
+        void aContradictingEibcalenIsRefused() {
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, 0))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("a communication area");
+            assertThatThrownBy(() -> controller.addUser(null, null,
+                    NavigationContext.COMMAREA_LENGTH))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("no communication area");
+        }
+
+        @ParameterizedTest(name = "eibcalen = {0} is refused")
+        @ValueSource(ints = {-1, 1, 159, 161, 194, 2000})
+        @DisplayName("EIBCALEN can only be one of the two lengths CICS could have set")
+        void anImpossibleEibcalenIsRefused(int stated) {
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), 0x7D, stated))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(UserAddController.EIBCALEN_PARAM);
         }
 
         @Test
@@ -872,7 +926,7 @@ class UserAddControllerTest {
             assertThat(UserAddController.DEFAULT_WORKING_STORAGE_CHARSET)
                     .isEqualTo(StandardCharsets.US_ASCII);
             assertThat(bean.addUser(populatedRequest(), 0x7D, NavigationContext.COMMAREA_LENGTH)
-                    .errMsg()).contains("has been added");
+                    .screen().errMsg()).contains("has been added");
         }
 
         @Test

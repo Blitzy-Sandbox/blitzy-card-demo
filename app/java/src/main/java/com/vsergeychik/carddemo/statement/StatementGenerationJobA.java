@@ -4,12 +4,19 @@ import com.vsergeychik.carddemo.account.model.AccountRecord;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.FixedWidthRecord;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobB.Response;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobB.Session;
 import com.vsergeychik.carddemo.statement.StatementHtmlWriter.AddressField;
@@ -23,6 +30,8 @@ import com.vsergeychik.carddemo.statement.StatementTextWriter.StatementSlot;
 import com.vsergeychik.carddemo.statement.model.Stm03CustomerRecord;
 import com.vsergeychik.carddemo.statement.model.TrnxRecord;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
@@ -39,17 +48,21 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
 
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.regex.Pattern;
 
 /**
  * {@code CBSTM03A} - the CardDemo statement report driver, translated field for field and statement
@@ -168,12 +181,61 @@ import java.util.regex.Pattern;
  * working storage only; no copybook in the estate declares packed decimal, so no nibble unpacking exists
  * anywhere.
  *
+ * <h2>The HTML statement is not escaped, and that is an accepted divergence rather than an oversight</h2>
+ *
+ * <p>The sequence this class drives embeds customer data into HTML markup unescaped: the name paragraph
+ * at {@code L560-L568}, the three address paragraphs at {@code L569-L592}, the account identifier,
+ * balance and FICO score at {@code L613-L633}, and every transaction identifier, description and amount
+ * at {@code L684-L718}. A value containing {@code <} reaches the {@value #HTMLFILE_DD} record as
+ * {@code <}. That is what {@code CBSTM03A} does, character for character, and
+ * {@link StatementHtmlWriter} states the same position for the bytes it composes.
+ *
+ * <p><strong>It is deliberately not fixed here, and the reasoning is recorded so that a later reader
+ * does not have to reconstruct it:</strong>
+ * <ul>
+ *   <li><strong>Escaping would change the records the parity gate compares.</strong> Every
+ *       {@value #HTMLFILE_DD} record is exactly {@value StatementHtmlWriter#RECORD_LENGTH} bytes (gates
+ *       G19, G20). Replacing one character with a five-character entity reflows the record and either
+ *       truncates content on the right or shifts every following byte - so the escaped output is a diff
+ *       against the COBOL on every statement that contains a markup character, and a silent content loss
+ *       on statements that do not fit. There is no encoding that both escapes and preserves the byte
+ *       layout.</li>
+ *   <li><strong>The AAP forbids it.</strong> The migration is a like-for-like translation with no
+ *       changed business rules, and practice B6 states the security posture is neither weakened nor
+ *       unrequestedly strengthened. Output encoding is a behaviour change, and one this migration was
+ *       not asked to make.</li>
+ *   <li><strong>Nothing in this module serves these records as active content.</strong> They are written
+ *       to the {@value #HTMLFILE_DD} dataset, and no endpoint anywhere in the module returns
+ *       {@code text/html} - the seventeen controllers produce {@code application/json} exclusively. The
+ *       records are data at rest here; whatever renders them is downstream of this module and outside
+ *       the AAP.</li>
+ * </ul>
+ *
+ * <p><strong>What that leaves for whoever operates the downstream renderer.</strong> The generated
+ * statement is untrusted markup: it must be escaped, sandboxed or served as {@code text/plain} at the
+ * point of rendering, not here. That is the one place the two requirements - byte parity with the
+ * mainframe, and safety in a browser - can both be met, because a renderer can escape without changing
+ * the stored record. Recorded rather than resolved (practice B4), and it is an inherited property of the
+ * legacy design, not something this migration introduced.
+ *
  * @see StatementGenerationJobB the data-access collaborator that owns all four input files
  * @see StatementTextWriter the 80-byte plain-text statement writer
  * @see StatementHtmlWriter the 100-byte HTML statement writer
  */
 @Configuration(StatementGenerationJobA.CONFIGURATION_BEAN_NAME)
 public class StatementGenerationJobA {
+
+    /**
+     * The log, and it is used for exactly two things: an unguarded output condition on
+     * {@value #STMTFILE_DD} or {@value #HTMLFILE_DD}, and a failure while releasing a handle after an
+     * incomplete run. Both are conditions this program has no {@code DISPLAY} for, so the log is the only
+     * place they can be recorded without inventing {@code SYSOUT} lines the COBOL never writes.
+     *
+     * <p>Nothing customer-related reaches it. Statement content - names, addresses, balances, transaction
+     * descriptions - goes to the two datasets and to nowhere else; what is logged here is a DD name, a
+     * COBOL statement name and an outcome name.
+     */
+    private static final Log LOG = LogFactory.getLog(StatementGenerationJobA.class);
 
     // =================================================================================================
     // Identity. Every name is either transcribed from a source artefact or derived from the class name;
@@ -851,6 +913,10 @@ public class StatementGenerationJobA {
      *                                  bean, in which case standard output is used
      * @param tiotSourceProvider        provider for an injected {@code TIOT} substitute; may resolve to
      *                                  no bean, in which case the configured one is used
+     * @param recordImageForm           how this deployment's driver presents a record image, from
+     *                                  {@value RecordImageForm#FORM_PROPERTY} - carried into the default
+     *                                  utility port so every component of the module reads and writes a
+     *                                  record image the same way
      * @param datasetUtilityPortProvider provider for an injected utility port; may resolve to no bean, in
      *                                  which case the {@link JdbcTemplate}-backed default is used
      * @throws NullPointerException  if any required argument is {@code null}
@@ -864,6 +930,8 @@ public class StatementGenerationJobA {
             BatchConfig batchConfig,
             @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
             JdbcTemplate jdbcTemplate,
+            RecordImageForm recordImageForm,
+            DatasetUnitOfWork unitOfWork,
             ObjectProvider<SysoutSink> sysoutSinkProvider,
             ObjectProvider<TiotSource> tiotSourceProvider,
             ObjectProvider<DatasetUtilityPort> datasetUtilityPortProvider) {
@@ -884,6 +952,13 @@ public class StatementGenerationJobA {
         Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required to build the default dataset "
                 + "utility port; the data-source configuration declares the single instance this module "
                 + "shares");
+        Objects.requireNonNull(recordImageForm, "A record-image representation is required to build the "
+                + "default dataset utility port: SORT and REPRO move records whole, so whether the driver "
+                + "presents an image as characters or as bytes decides whether they survive");
+        Objects.requireNonNull(unitOfWork, "A unit of work is required to build the default dataset "
+                + "utility port: app/jcl/CREASTMT.JCL:59 binds OUTFILE with DISP=SHR, so a REPRO that "
+                + "fails part way leaves what it had already loaded, and each record's insert therefore "
+                + "has to persist on its own rather than inside the step's transaction");
         Objects.requireNonNull(sysoutSinkProvider, "A SYSOUT sink provider is required; it may resolve "
                 + "to no bean, in which case the standard output stream is used");
         Objects.requireNonNull(tiotSourceProvider, "A TIOT source provider is required; it may resolve "
@@ -895,8 +970,8 @@ public class StatementGenerationJobA {
         this.stepContracts = requireJclContract(batchConfig);
         this.sysoutSink = sysoutSinkProvider.getIfAvailable(() -> standardOutput(datasetCharset));
         this.tiotSource = tiotSourceProvider.getIfAvailable(this::configuredTiotSource);
-        this.datasetUtilityPort = datasetUtilityPortProvider
-                .getIfAvailable(() -> new JdbcDatasetUtilityPort(jdbcTemplate, datasetCharset));
+        this.datasetUtilityPort = datasetUtilityPortProvider.getIfAvailable(() ->
+                new JdbcDatasetUtilityPort(jdbcTemplate, datasetCharset, recordImageForm, unitOfWork));
     }
 
     /**
@@ -1068,7 +1143,8 @@ public class StatementGenerationJobA {
      */
     public Tasklet sortAndReformatTasklet() {
         return (contribution, chunkContext) ->
-                report(contribution, chunkContext, sortAndReformatTransactions());
+                report(contribution, chunkContext,
+                        sortAndReformatTransactions(StopSignal.of(chunkContext)));
     }
 
     /**
@@ -1078,7 +1154,8 @@ public class StatementGenerationJobA {
      */
     public Tasklet reproTasklet() {
         return (contribution, chunkContext) ->
-                report(contribution, chunkContext, reproSortedFileIntoWorkDataset());
+                report(contribution, chunkContext,
+                        reproSortedFileIntoWorkDataset(StopSignal.of(chunkContext)));
     }
 
     /**
@@ -1092,7 +1169,8 @@ public class StatementGenerationJobA {
     }
 
     /**
-     * {@value #STEP_040}'s body: a thin adapter over {@link #printAccountStatements(SysoutSink)}.
+     * {@value #STEP_040}'s body: a thin adapter over
+     * {@link #printAccountStatements(SysoutSink, StopSignal)}.
      *
      * <p>Thin on purpose (practice B10, gate G51). The adapter creates nothing and decides nothing, so
      * the twenty parity cases and every branch test call the program directly, with no
@@ -1106,7 +1184,8 @@ public class StatementGenerationJobA {
      */
     public Tasklet statementTasklet() {
         return (contribution, chunkContext) ->
-                report(contribution, chunkContext, printAccountStatements(sysoutSink));
+                report(contribution, chunkContext,
+                        printAccountStatements(sysoutSink, StopSignal.of(chunkContext)));
     }
 
     /**
@@ -1116,9 +1195,12 @@ public class StatementGenerationJobA {
      * returning {@code CONTINUABLE} would re-run the whole step.
      *
      * @param contribution the step's contribution, which the count is reported to
-     * @param chunkContext the framework's chunk context; deliberately unused, because a tasklet that runs
-     *                     once has no per-chunk state to consult and this job has no restart semantics
-     *                     beyond re-running the step
+     * @param chunkContext the framework's chunk context; unused <em>here</em>, because reporting a count
+     *                     needs nothing from it. Each tasklet reads it for one thing before calling this -
+     *                     the {@link StopSignal} its body consults between records - and for nothing else,
+     *                     since this job has no per-chunk state and no restart semantics beyond re-running
+     *                     the step. It is still required to be present, which is what the check below
+     *                     states
      * @param records      how many records the body handled
      * @return {@link RepeatStatus#FINISHED}
      */
@@ -1393,8 +1475,72 @@ public class StatementGenerationJobA {
      * @throws IllegalStateException if either dataset cannot be addressed
      */
     public int sortAndReformatTransactions() {
+        return sortAndReformatTransactions(StopSignal.RUNNING);
+    }
+
+    /**
+     * {@value #STEP_010}, yielding to a stop request between written records.
+     *
+     * <p>Identical to {@link #sortAndReformatTransactions()} in what it reads, how it orders it, how it
+     * reformats it and what it writes. The read is one statement, bounded by the configured statement
+     * timeout; the write is a record at a time, which is where a stop can be honoured. Nothing is
+     * retried, so a stopped copy leaves the records it had already written and reports that count.
+     *
+     * @param stopSignal the between-record cancellation probe; never {@code null}
+     * @return how many records were written
+     * @throws IllegalStateException if either dataset cannot be addressed
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
+     */
+    public int sortAndReformatTransactions(StopSignal stopSignal) {
+        // One materialised copy of the input, and only one. A sort has to see every key before it can
+        // place the first record, so the input is held - but the ordering and the reformat are then done
+        // in place and on demand respectively, so the step never holds the input, a sorted copy and a
+        // reformatted copy all at once.
+        //
+        // The comparison stays in Java deliberately. Pushing SORT FIELDS into an ORDER BY would substitute
+        // the backend's collation for the byte order this step's key domain requires, which is the same
+        // substitution the USRSEC browse had to be rescued from; SORT_FIELDS_ORDER documents why
+        // lexicographic comparison is correct for these two spans and a backend's collation is not
+        // knowable from here.
         List<String> input = datasetUtilityPort.readAllRecordImages(datasetBinding(SORTIN_DD));
-        return datasetUtilityPort.writeRecordImages(datasetBinding(SORTOUT_DD), sortAndReformat(input));
+        return datasetUtilityPort.writeRecordImages(datasetBinding(SORTOUT_DD), sortAndReformat(input),
+                stopSignal);
+    }
+
+    /**
+     * The {@code OUTREC} reformat as a view over the sorted records, applied one record at a time.
+     *
+     * <p>{@code sortAndReformat} returns the derived {@code TRNX-RECORD} images, and the obvious way to
+     * produce them is to build a second list of the same size. That doubles what the step holds at its
+     * peak, for records the caller consumes once and in order - {@code writeRecordImages} walks the list
+     * front to back and inserts each one.
+     *
+     * <p>So the reformat is applied in {@link #get(int)} instead. The list is exactly as long as the sorted
+     * input, its elements are the same values a materialised list would have held, and it is immutable
+     * because it defines no mutator. What it does not do is hold them all at once.
+     *
+     * <p>The trade is stated rather than hidden: a caller that walks it twice performs the reformat twice.
+     * {@code OUTREC} is a pure byte rearrangement of one record, so the result is identical each time and
+     * the only cost is the work.
+     */
+    private final class OutrecView extends AbstractList<String> {
+
+        /** The sorted {@code TRAN-RECORD} images this view reformats. */
+        private final List<String> ordered;
+
+        private OutrecView(List<String> ordered) {
+            this.ordered = ordered;
+        }
+
+        @Override
+        public String get(int index) {
+            return applyOutrec(ordered.get(index));
+        }
+
+        @Override
+        public int size() {
+            return ordered.size();
+        }
     }
 
     /**
@@ -1408,8 +1554,28 @@ public class StatementGenerationJobA {
      * @throws IllegalStateException if either dataset cannot be addressed
      */
     public int reproSortedFileIntoWorkDataset() {
-        List<String> sorted = datasetUtilityPort.readAllRecordImages(datasetBinding(INFILE_DD));
-        return datasetUtilityPort.writeRecordImages(datasetBinding(OUTFILE_DD), sorted);
+        return reproSortedFileIntoWorkDataset(StopSignal.RUNNING);
+    }
+
+    /**
+     * {@value #STEP_020}, yielding to a stop request between copied records.
+     *
+     * <p>Identical to {@link #reproSortedFileIntoWorkDataset()} in what it copies and in what order. The
+     * copy is a record at a time, which is where a stop can be honoured. Nothing is retried, so a
+     * stopped copy leaves the records it had already written and reports that count.
+     *
+     * @param stopSignal the between-record cancellation probe; never {@code null}
+     * @return how many records were loaded
+     * @throws IllegalStateException if either dataset cannot be addressed
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
+     */
+    public int reproSortedFileIntoWorkDataset(StopSignal stopSignal) {
+        // Streamed, not read-then-write. The copy holds no whole-dataset list, and a failure part way
+        // leaves the records already copied in place - which is what DISP=SHR on OUTFILE
+        // (app/jcl/CREASTMT.JCL:59) means and what an interrupted IDCAMS REPRO leaves behind.
+        stopSignal.checkStopRequested();
+        return datasetUtilityPort.copyRecordImages(datasetBinding(INFILE_DD),
+                datasetBinding(OUTFILE_DD));
     }
 
     /**
@@ -1461,11 +1627,7 @@ public class StatementGenerationJobA {
                 + "master yields an empty work dataset and is not an error");
         List<String> ordered = new ArrayList<>(tranRecordImages);
         ordered.sort(SORT_FIELDS_ORDER);
-        List<String> derived = new ArrayList<>(ordered.size());
-        for (String tranRecordImage : ordered) {
-            derived.add(applyOutrec(tranRecordImage));
-        }
-        return derived;
+        return new OutrecView(ordered);
     }
 
     /**
@@ -1615,6 +1777,53 @@ public class StatementGenerationJobA {
          * @throws IllegalStateException if the dataset cannot be addressed
          */
         int writeRecordImages(DatasetBinding binding, List<String> recordImages);
+
+        /**
+         * Copies one dataset into another, record for record and in order: {@code REPRO INFILE OUTFILE}.
+         *
+         * <p>A separate operation rather than a read followed by a write, because for {@code REPRO} the two
+         * are one thing and separating them changes two properties that matter. It bounds what is held -
+         * an implementation that can stream holds a fixed number of records rather than the source's whole
+         * contents - and it fixes <em>when</em> a failure is observed: a copy that reads everything before
+         * writing anything fails with nothing loaded, while {@code IDCAMS REPRO} fails with everything up
+         * to that record loaded.
+         *
+         * <p>The default reads the source in full and writes it, which is the correct implementation for an
+         * in-memory port where holding the records is the point. {@link JdbcDatasetUtilityPort} overrides
+         * it with a streaming, per-record-durable copy.
+         *
+         * @param source the dataset to copy from; must not be {@code null}
+         * @param target the dataset to copy into; must not be {@code null}
+         * @return how many records were copied
+         * @throws IllegalStateException if either dataset cannot be addressed
+         */
+        default int copyRecordImages(DatasetBinding source, DatasetBinding target) {
+            return writeRecordImages(target, readAllRecordImages(source));
+        }
+
+        /**
+         * Writes records as {@link #writeRecordImages(DatasetBinding, List)} does, yielding to a stop
+         * request between records.
+         *
+         * <p>This is the overload a utility <em>step</em> calls, because a copy of a full dataset is the
+         * one thing these steps do and it can be long. An implementation that writes record by record
+         * overrides this and consults the signal between records; the default below suits an
+         * implementation that cannot subdivide its write, and checks once before starting so a stop
+         * requested before the copy begins is still honoured. Either way nothing is retried: a record
+         * already written stays written, and a second attempt at a legacy write would be a duplicate.
+         *
+         * @param binding      the dataset to write; never {@code null}
+         * @param recordImages the records, in order; never {@code null} and never containing {@code null}
+         * @param stopSignal   the between-record cancellation probe; never {@code null}
+         * @return how many records were written; fewer than were given only if a stop ended the write
+         * @throws IllegalStateException if the dataset cannot be addressed
+         * @throws BatchConfig.StopRequestedException if the step is asked to stop
+         */
+        default int writeRecordImages(DatasetBinding binding, List<String> recordImages,
+                StopSignal stopSignal) {
+            stopSignal.checkStopRequested();
+            return writeRecordImages(binding, recordImages);
+        }
     }
 
     /**
@@ -1646,73 +1855,288 @@ public class StatementGenerationJobA {
      */
     public static final class JdbcDatasetUtilityPort implements DatasetUtilityPort {
 
-        /**
-         * The z/OS dataset-name grammar: dot-separated qualifiers, each one to eight characters, each
-         * beginning with a letter or one of {@code $ # @} and continuing with those, digits or a hyphen.
-         *
-         * <p>Upper case only, and not case-folded. Configuration declares these names in the case the
-         * mainframe uses them in, and quietly upper-casing something that arrived lower-case would be
-         * addressing a name nobody wrote.
-         */
-        private static final Pattern DATASET_NAME =
-                Pattern.compile("[A-Z$#@][A-Z0-9$#@-]{0,7}(?:\\.[A-Z$#@][A-Z0-9$#@-]{0,7})*");
-
-        /** The maximum length of a z/OS dataset name, including the separating dots. */
-        private static final int MAX_DATASET_NAME_LENGTH = 44;
-
         /** The 1-based column position the record image occupies in a dataset relation. */
-        private static final int RECORD_IMAGE_COLUMN_INDEX = 1;
+        private static final int RECORD_IMAGE_COLUMN_INDEX = DatasetRelation.RECORD_IMAGE_COLUMN_INDEX;
+
+        /**
+         * Names the copy's per-record verb for attribution in a diagnostic.
+         *
+         * <p>{@code REPRO} is the verb {@code app/jcl/CREASTMT.JCL:61} performs, and it performs it once
+         * per record: an interrupted one leaves the records it had already written.
+         */
+        private static final String REPRO_RECORD_VERB =
+                "app/jcl/CREASTMT.JCL:61 REPRO INFILE(INFILE) OUTFILE(OUTFILE) - one record";
+
+        /**
+         * How many rows one round trip of a streaming copy carries.
+         *
+         * <p>Not a performance setting. It is small and positive so a copy holds a bounded number of rows
+         * whatever the driver's default would have been, and it is greater than one so a dataset-sized
+         * copy is not a dataset-sized number of round trips.
+         */
+        private static final int COPY_FETCH_SIZE = 32;
 
         /** The module's shared template over the configuration-bound {@code DataSource}. */
         private final JdbcTemplate jdbcTemplate;
 
-        /** The codec that fits a read row to its binding's declared width under the {@code PIC X} rule. */
+        /** The code page a stored record image is bytes in. Stated explicitly, never defaulted. */
+        private final Charset datasetCharset;
+
+        /**
+         * The hand-written fixed-width codec over {@link #datasetCharset} (practices B8 and B11).
+         *
+         * <p>Held alongside the charset rather than instead of it, because both are needed: the charset
+         * is what {@link RecordImageForm} binds a parameter and reads a column in, and the codec is what
+         * applies the {@code PIC X} move rule to a record image once it is text.
+         */
         private final FixedWidthCodec codec;
 
         /**
-         * @param jdbcTemplate   the module's shared template; must not be {@code null}
-         * @param datasetCharset the dataset code page, stated explicitly and never defaulted; must not be
-         *                       {@code null}
-         * @throws NullPointerException if either argument is {@code null}
+         * How this deployment's driver presents a record image: as characters, or as bytes.
+         *
+         * <p>Injected rather than assumed, and that is a byte-integrity requirement rather than a
+         * configuration nicety. {@code SORT} and {@code REPRO} transform nothing - they move records
+         * whole - so a record that passes through either must come out the other side byte for byte.
+         * Reading with {@link ResultSet#getString(int)} against a relation whose column is
+         * {@code BINARY}/{@code VARBINARY} asks the driver to apply <em>its</em> notion of a code page to
+         * bytes that carry a mainframe's, and a signed-overpunch byte or any byte above {@code 0x7F} does
+         * not survive that. {@link RecordImageForm} is the single place this module decides the question,
+         * by {@link RecordImageForm#FORM_PROPERTY}, and every read and write here goes through it.
          */
-        public JdbcDatasetUtilityPort(JdbcTemplate jdbcTemplate, Charset datasetCharset) {
+        private final RecordImageForm recordImageForm;
+
+        /**
+         * The boundary that makes one {@code REPRO} record durable on its own, or {@code null}.
+         *
+         * <p>Reached only from {@link #copyRecordImages(DatasetBinding, DatasetBinding)}. The three other
+         * operations deliberately do not use it: {@value #SORTOUT_DD} is
+         * {@code DISP=(NEW,CATLG,DELETE)} ({@code app/jcl/CREASTMT.JCL:48-49}), so its whole output is
+         * discarded when the step fails and the step's own transaction is exactly right for it.
+         *
+         * <p><strong>Optional, and only because the disposition decides whether it is needed.</strong>
+         * {@code app/jcl/CREASTMT.JCL:59} binds {@code REPRO}'s {@code OUTFILE} {@code DISP=SHR} over an
+         * already-defined cluster with no abnormal disposition, so an interrupted copy there must leave
+         * what it loaded - which needs a boundary per record. A caller copying into a generation its own
+         * JCL declares {@code DISP=(NEW,CATLG,DELETE)} discards the whole output on failure, so a
+         * per-record boundary would express nothing there; such a caller supplies none and the copy runs
+         * on whatever boundary its step already has.
+         */
+        private final DatasetUnitOfWork unitOfWork;
+
+        /**
+         * Wires the port without a per-record boundary, for a destination whose own disposition discards
+         * the whole generation when the step fails.
+         *
+         * @param jdbcTemplate    the module's shared template; must not be {@code null}
+         * @param datasetCharset  the dataset code page, stated explicitly and never defaulted; must not be
+         *                        {@code null}
+         * @param recordImageForm how the driver presents a record image; must not be {@code null}
+         * @throws NullPointerException     if any argument is {@code null}
+         * @throws IllegalArgumentException if {@code datasetCharset} is not a total single-byte code page
+         */
+        public JdbcDatasetUtilityPort(JdbcTemplate jdbcTemplate, Charset datasetCharset,
+                RecordImageForm recordImageForm) {
+            this(jdbcTemplate, datasetCharset, recordImageForm, null);
+        }
+
+        /**
+         * @param jdbcTemplate    the module's shared template; must not be {@code null}
+         * @param datasetCharset  the dataset code page, stated explicitly and never defaulted; must not be
+         *                        {@code null}
+         * @param recordImageForm how the driver presents a record image; must not be {@code null}
+         * @param unitOfWork      the boundary each copied record is persisted in, or {@code null} when the
+         *                        destination's disposition discards the whole generation on failure
+         * @throws NullPointerException     if any argument other than {@code unitOfWork} is {@code null}
+         * @throws IllegalArgumentException if {@code datasetCharset} is not a total single-byte code page
+         */
+        public JdbcDatasetUtilityPort(JdbcTemplate jdbcTemplate, Charset datasetCharset,
+                RecordImageForm recordImageForm, DatasetUnitOfWork unitOfWork) {
             this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required to "
                     + "address a dataset; the data-source configuration declares the single instance "
                     + "this module shares");
-            this.codec = new FixedWidthCodec(Objects.requireNonNull(datasetCharset, "A dataset charset "
+            this.datasetCharset = Objects.requireNonNull(datasetCharset, "A dataset charset "
                     + "is required: a fixed-width record is bytes in a specific code page, which is "
-                    + "never derived from the platform"));
+                    + "never derived from the platform");
+            this.codec = new FixedWidthCodec(this.datasetCharset);
+            this.recordImageForm = Objects.requireNonNull(recordImageForm, "A record-image "
+                    + "representation is required: whether this deployment's driver presents a record "
+                    + "image as characters or as bytes is stated once, by " + RecordImageForm.FORM_PROPERTY
+                    + ", and never decided per dataset or per step");
+            // Nullable by contract - see the field. A DISP=SHR REPRO needs a boundary per record; a
+            // DISP=(NEW,CATLG,DELETE) one does not, and inventing a boundary for it would claim a
+            // durability its own disposition contradicts.
+            this.unitOfWork = unitOfWork;
+            RecordImageForm.requireSingleByteCodePage(datasetCharset);
         }
 
         @Override
         public int deleteAllRecords(DatasetBinding binding) {
-            return jdbcTemplate.update("DELETE FROM " + identifierOf(binding));
+            return jdbcTemplate.update(relationOf(binding).deleteAllStatement());
         }
 
         @Override
         public List<String> readAllRecordImages(DatasetBinding binding) {
-            String identifier = identifierOf(binding);
+            DatasetRelation relation = relationOf(binding);
             int recordLength = binding.recordLength();
-            return jdbcTemplate.query("SELECT * FROM " + identifier,
-                    (row, rowNumber) -> requireRecordImage(row.getString(RECORD_IMAGE_COLUMN_INDEX),
-                            identifier, rowNumber, recordLength));
+            return jdbcTemplate.query(relation.selectAll(),
+                    (row, rowNumber) -> requireRecordImage(readImage(row), relation.identifier(),
+                            rowNumber, recordLength));
         }
 
         @Override
         public int writeRecordImages(DatasetBinding binding, List<String> recordImages) {
+            return writeRecordImages(binding, recordImages, StopSignal.RUNNING);
+        }
+
+        /**
+         * Writes each record with its own statement, yielding to a stop request between records.
+         *
+         * <p>One statement per record rather than a batch, which is what makes the probe meaningful:
+         * the copy can be ended between any two records with the record in flight complete. The probe
+         * is a call rather than a condition, so it adds no arm to the loop, and it sits before the
+         * write so a stop never lands mid-record. <strong>No write is retried</strong> - the records
+         * already written stay written and the count returned says how many those were.
+         *
+         * @param binding      the dataset to write; never {@code null}
+         * @param recordImages the records, in order; never {@code null} and never containing
+         *                     {@code null}
+         * @param stopSignal   the between-record cancellation probe; never {@code null}
+         * @return how many records were written
+         * @throws IllegalStateException if the dataset cannot be addressed
+         * @throws BatchConfig.StopRequestedException if the step is asked to stop
+         */
+        @Override
+        public int writeRecordImages(DatasetBinding binding, List<String> recordImages,
+                StopSignal stopSignal) {
             Objects.requireNonNull(recordImages, "Records are required to write; pass an empty list to "
                     + "write nothing");
-            String statement = "INSERT INTO " + identifierOf(binding) + " VALUES (?)";
+            Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING "
+                    + "outside a step, which is what the two-argument overload does");
+            String statement = relationOf(binding).insertRecordImage();
+            int recordLength = binding.recordLength();
             int written = 0;
             for (String recordImage : recordImages) {
-                written += jdbcTemplate.update(statement,
-                        codec.movePicX(recordImage, binding.recordLength()));
+                stopSignal.checkStopRequested();
+                written += insert(statement, recordImage, recordLength);
             }
             return written;
         }
 
         /**
+         * {@code REPRO INFILE(INFILE) OUTFILE(OUTFILE)} as a stream: one record read, one record written,
+         * in order, with no whole-dataset list anywhere.
+         *
+         * <p>{@code REPRO} copies and transforms nothing, so nothing has to be held to copy it. Reading
+         * the source into a list first would cost the source's whole size in heap to move records one at a
+         * time regardless - on a dataset whose size is a deployment's business rather than this class's -
+         * and it would delay every write until every read had finished, which changes <em>when</em> a
+         * failure is observed relative to what has already been loaded.
+         *
+         * <p><strong>Each record is loaded on its own, not as one transaction, and that is parity.</strong>
+         * {@code app/jcl/CREASTMT.JCL:59} binds {@code OUTFILE} with {@code DISP=SHR} over the cluster
+         * {@code DELDEF01} defined - an existing dataset, with no abnormal disposition to discard it - so
+         * an {@code IDCAMS REPRO} that fails part way leaves the records it had already written in the
+         * KSDS. That is the opposite of {@value #SORTOUT_DD} at {@code :48-49}, which is
+         * {@code DISP=(NEW,CATLG,DELETE)} and is therefore discarded whole. Two datasets, two failure
+         * semantics; enrolling this copy in one transaction would give the wrong one of them.
+         *
+         * @param source the dataset to copy from; must not be {@code null}
+         * @param target the dataset to copy into; must not be {@code null}
+         * @return how many records were copied
+         * @throws IllegalStateException if either dataset cannot be addressed
+         */
+        @Override
+        public int copyRecordImages(DatasetBinding source, DatasetBinding target) {
+            DatasetRelation from = relationOf(source);
+            String insert = relationOf(target).insertRecordImage();
+            int sourceLength = source.recordLength();
+            int targetLength = target.recordLength();
+            RowCounter copied = new RowCounter();
+            jdbcTemplate.query(streamed(from.selectAll()), (ResultSet row) -> {
+                while (row.next()) {
+                    String recordImage = requireRecordImage(readImage(row), from.identifier(),
+                            copied.count(), sourceLength);
+                    // Each record on its own. See this method's own note for why DISP=SHR requires it.
+                    // With no boundary supplied the destination's own disposition discards the whole
+                    // generation on failure, so the insert runs on the step's boundary as it stands.
+                    copied.add(unitOfWork == null
+                            ? insert(insert, recordImage, targetLength)
+                            : unitOfWork.persistVerb(REPRO_RECORD_VERB,
+                                    () -> insert(insert, recordImage, targetLength)));
+                }
+                return null;
+            });
+            return copied.count();
+        }
+
+        /**
+         * Reads one row's record image in this deployment's representation.
+         *
+         * @param row the row, positioned by the caller
+         * @return the image, or {@code null} when the column holds none
+         * @throws SQLException if the driver cannot supply the column
+         */
+        private byte[] readImage(ResultSet row) throws SQLException {
+            return recordImageForm.readImage(row, RECORD_IMAGE_COLUMN_INDEX, codec.charset());
+        }
+
+        /**
+         * Writes one record, bound in this deployment's representation and fitted to the target's width.
+         *
+         * @param statement    the parameterised insert
+         * @param recordImage  the record to write
+         * @param recordLength the target's declared width
+         * @return how many rows were added
+         */
+        private int insert(String statement, String recordImage, int recordLength) {
+            byte[] image = FixedWidthRecord.encodeStrictly(codec.movePicX(recordImage, recordLength),
+                    codec.charset(), "a record image being written");
+            return jdbcTemplate.update(statement,
+                    recordImageForm.imageParameter(image, codec.charset()));
+        }
+
+        /**
+         * Bounds a read to a forward-only cursor carrying {@value #COPY_FETCH_SIZE} rows per round trip.
+         *
+         * <p>No {@code setMaxRows}: a copy reads every record, so there is no row limit to impose. What is
+         * bounded is how many rows are in flight at once, which is what keeps a copy's footprint
+         * independent of the dataset's size.
+         *
+         * @param statement the statement to bound
+         * @return a creator that produces the bounded statement
+         */
+        private static PreparedStatementCreator streamed(String statement) {
+            return connection -> {
+                PreparedStatement prepared = connection.prepareStatement(statement,
+                        ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+                prepared.setFetchSize(COPY_FETCH_SIZE);
+                return prepared;
+            };
+        }
+
+        /** A mutable count, so a streaming extractor can report progress without a field on the port. */
+        private static final class RowCounter {
+
+            private int count;
+
+            private void add(int rows) {
+                count += rows;
+            }
+
+            private int count() {
+                return count;
+            }
+        }
+
+        /**
          * Fits one read row to its binding's declared width, refusing a row that carries no image at all.
+         *
+         * <p>Takes the stored <em>bytes</em>, because that is what {@link RecordImageForm} returns and
+         * therefore what the driver actually held: under {@code BINARY} they are the column's bytes
+         * untouched, and under {@code CHARACTER} they are the column's text encoded in the dataset's own
+         * code page rather than in whatever the driver would have chosen. They are decoded here, in that
+         * same code page, so the {@code PIC X} fitting that follows operates on the record the mainframe
+         * wrote.
          *
          * @param recordImage  the column's value, which a malformed relation may report as {@code null}
          * @param identifier   the delimited dataset identifier, for the diagnostic
@@ -1721,7 +2145,7 @@ public class StatementGenerationJobA {
          * @return exactly {@code recordLength} characters
          * @throws IllegalStateException if {@code recordImage} is {@code null}
          */
-        private String requireRecordImage(String recordImage, String identifier, int rowNumber,
+        private String requireRecordImage(byte[] recordImage, String identifier, int rowNumber,
                 int recordLength) {
             if (recordImage == null) {
                 throw new IllegalStateException("Dataset " + identifier + " presented row " + rowNumber
@@ -1730,19 +2154,19 @@ public class StatementGenerationJobA {
                         + "row that has none, and treating it as an empty record would load a "
                         + recordLength + "-byte run of spaces the mainframe never wrote.");
             }
-            return codec.movePicX(recordImage, recordLength);
+            return codec.movePicX(FixedWidthRecord.decodeText(recordImage, codec.charset(),
+                    "a stored record image of " + identifier), recordLength);
         }
 
         /**
-         * The delimited SQL identifier for a binding's dataset, once its name is confirmed to be one.
          *
          * @param binding the binding to address; must not be {@code null}
-         * @return the dataset name wrapped in double quotes
+         * @return the relation; never {@code null}
          * @throws NullPointerException  if {@code binding} is {@code null}
          * @throws IllegalStateException if the binding names no dataset, or names something that is not a
          *                               well-formed z/OS dataset name
          */
-        private static String identifierOf(DatasetBinding binding) {
+        private static DatasetRelation relationOf(DatasetBinding binding) {
             Objects.requireNonNull(binding, "A dataset binding is required to address a dataset");
             String dsname = binding.dsname();
             if (dsname == null || dsname.isEmpty()) {
@@ -1750,19 +2174,18 @@ public class StatementGenerationJobA {
                         + "dsname, so there is nothing to address. Declare it under carddemo.datasets, "
                         + "or under carddemo.jobs." + JOB_KEY + ".datasets for a job-scoped override.");
             }
-            if (dsname.length() > MAX_DATASET_NAME_LENGTH
-                    || !DATASET_NAME.matcher(dsname).matches()) {
-                throw new IllegalStateException("'" + dsname + "' is not a z/OS dataset name, so it "
-                        + "cannot be rendered as the identifier of a dataset relation. A name is at most "
-                        + MAX_DATASET_NAME_LENGTH + " characters of dot-separated qualifiers, each one "
-                        + "to eight upper-case characters beginning with a letter or $ # @. Supply a "
-                        + "dataset name, or inject a " + DatasetUtilityPort.class.getSimpleName()
-                        + " that can address whatever this deployment binds instead.");
+            try {
+                return DatasetRelation.of(dsname, binding.recordLength());
+            } catch (IllegalArgumentException notADatasetName) {
+                // Rethrown as an IllegalStateException because it is a statement about the deployment's
+                // configuration rather than about this call's arguments, and because that is what the four
+                // utility steps declare. The cause carries DatasetRelation's own account of which
+                // character in which position it rejected, which is more than a pattern match can say.
+                throw new IllegalStateException("The " + JOB_KEY + " job cannot address the dataset a "
+                        + "binding names: " + notADatasetName.getMessage() + " Supply a dataset name, or "
+                        + "inject a " + DatasetUtilityPort.class.getSimpleName() + " that can address "
+                        + "whatever this deployment binds instead.", notADatasetName);
             }
-            // Delimited so the dots are part of one identifier rather than a qualified reference. A
-            // double quote inside the name is impossible under the grammar just enforced, so there is
-            // nothing left to escape.
-            return "\"" + dsname + "\"";
         }
     }
 
@@ -2022,11 +2445,15 @@ public class StatementGenerationJobA {
      * <p>The sink is a parameter as well as a field so a caller can capture one run's output without
      * reconfiguring the bean - which is exactly what a parity case does.
      *
-     * <p><strong>No try-with-resources, deliberately.</strong> {@code CBSTM03A} abends outright, without
-     * closing anything, and none of the three handles holds an operating-system resource: a
-     * {@link Session} carries a record image and a position, and both writer sinks borrow a pooled
-     * connection per record and return it immediately. Wrapping the pass would therefore add close
-     * behaviour on the abend path that the COBOL does not have.
+     * <p><strong>The handles are released on every path, including the abend path.</strong> On the mainframe
+     * a terminating run unit is torn down by the Language Environment, which closes what the program left
+     * open; in a long-lived JVM nothing does that for us, so a job that abends part-way would leave the
+     * subroutine session and both output handles held for the lifetime of the process, and the next run
+     * would find the sinks' bookkeeping in a state the COBOL cannot produce. The release therefore happens
+     * in a {@code finally} block, and it is deliberately <em>invisible</em>: it emits no {@code SYSOUT},
+     * reports no status, throws nothing, and only touches a handle that is still open. Nothing about the
+     * program's observable output changes - the {@code CLOSE} at {@code L339} still does the closing on
+     * every path that reaches it, and this only cleans up after the paths that do not.
      *
      * @param sysout where every displayed line goes; must not be {@code null}
      * @return how many statements were written; {@code 0} when the cross-reference is empty
@@ -2035,30 +2462,136 @@ public class StatementGenerationJobA {
      *                              fatal, carrying {@link #ABEND_RETURN_CODE}
      */
     public int printAccountStatements(SysoutSink sysout) {
+        return printAccountStatements(sysout, StopSignal.RUNNING);
+    }
+
+    /**
+     * Runs {@code CBSTM03A} once, yielding to the given stop signal between records.
+     *
+     * <p>The pass is identical to {@link #printAccountStatements(SysoutSink)} - same reads, same
+     * statements, same lines, same order - and the signal changes nothing while no stop is pending. It
+     * exists because this program is a single pass inside one tasklet invocation, so the framework's
+     * interruption check at the step's repeat boundary happens once and cannot end a pass already under
+     * way. This is the longest pass in the estate: it loads the whole transaction table and then writes
+     * one statement per cross-reference record, so it has <em>two</em> record loops and the probe is in
+     * both - {@link #readTrnxRead} between transactions and {@link #mainline} between statements.
+     *
+     * <p>Nothing is retried. A stop between statements leaves the statements already written in both
+     * output datasets, which is why the step reports as stopped rather than complete; see
+     * {@link StopSignal}.
+     *
+     * @param sysout     where every displayed line goes; must not be {@code null}
+     * @param stopSignal the between-record cancellation probe; {@link StopSignal#RUNNING} for a caller
+     *                   outside a step; must not be {@code null}
+     * @return how many statements were written; {@code 0} when the cross-reference is empty
+     * @throws NullPointerException if {@code sysout} or {@code stopSignal} is {@code null}
+     * @throws AbendException       if any open, read or close reports a status this program treats as
+     *                              fatal, carrying {@link #ABEND_RETURN_CODE}
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop, which abandons the pass
+     *                              between records
+     */
+    public int printAccountStatements(SysoutSink sysout, StopSignal stopSignal) {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required: the displayed line sequence is part "
                 + "of this program's observable output, so there is nothing to run without somewhere to "
                 + "write it");
+        Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING outside a "
+                + "step, which is what the single-argument overload does");
 
         // WORKING-STORAGE, fresh per run. None of it belongs to this singleton bean (practice B9, gate
         // G53), so two concurrent runs share not one byte of table, counter or accumulator.
         WorkingStorage ws = new WorkingStorage(codec, statementSubroutine.newSession());
 
-        // The unnamed paragraph that runs before 0000-START.                                L266-L294
-        checkUnitControlBlocks(ws, sysout);
+        try {
+            // The unnamed paragraph that runs before 0000-START.                            L266-L294
+            checkUnitControlBlocks(ws, sysout);
 
-        // Control FALLS THROUGH into 0000-START - there is no PERFORM and no GO TO here.          L296
-        boolean reachedMainline = runFileControl(ws, sysout);
+            // Control FALLS THROUGH into 0000-START - there is no PERFORM and no GO TO here.      L296
+            boolean reachedMainline = runFileControl(ws, sysout);
 
-        int statements = 0;
-        if (reachedMainline) {
-            statements = mainline(ws, sysout);
+            int statements = 0;
+            if (reachedMainline) {
+                statements = mainline(ws, sysout, stopSignal);
+            }
+
+            // 9999-GOBACK.  GOBACK.                                                        L341-L342
+            // The run unit ends. Releasing the subroutine's cursors is not a COBOL CLOSE and reports no
+            // status; the four CLOSE statements already happened, inside 1000-MAINLINE.
+            ws.session().close();
+            return statements;
+        } finally {
+            releaseHandles(ws);
         }
+    }
 
-        // 9999-GOBACK.  GOBACK.                                                            L341-L342
-        // The run unit ends. Releasing the subroutine's cursors is not a COBOL CLOSE and reports no
-        // status; the four CLOSE statements already happened, inside 1000-MAINLINE.
-        ws.session().close();
-        return statements;
+    /**
+     * Releases whatever this run still holds, silently, on every path out of
+     * {@link #printAccountStatements(SysoutSink)}.
+     *
+     * <p>Three properties, and each of them is what keeps this from changing the program's behaviour:
+     * <ul>
+     *   <li><strong>Idempotent.</strong> Only a handle that is still open is touched.
+     *       {@link StatementFile#closeOutput()} is idempotent in its own right, and
+     *       {@link StatementHtmlWriter#close(HtmlStatementFile)} deliberately is <em>not</em> - it
+     *       refuses a second close - so its handle is tested first. On the normal path both were closed
+     *       by {@code L339} and this does nothing at all.</li>
+     *   <li><strong>Silent.</strong> No {@code SYSOUT} line, no status returned, nothing branched on.
+     *       {@code CLOSE STMT-FILE HTML-FILE} is the program's only close of these files and it is
+     *       already translated, with its conditions checked, in {@link #mainline}. This is cleanup, not
+     *       a second {@code CLOSE}.</li>
+     *   <li><strong>Non-throwing.</strong> Every failure here is swallowed, because this runs in a
+     *       {@code finally}: an exception thrown from it would replace whatever the pass was already
+     *       failing with - typically the {@link AbendException} the caller needs - and the abend is
+     *       always the more important of the two. The swallowed condition is logged instead, so it is
+     *       still diagnosable.</li>
+     * </ul>
+     *
+     * @param ws this run's working storage; must not be {@code null}
+     */
+    private void releaseHandles(WorkingStorage ws) {
+        HtmlStatementFile html = ws.htmlFileOrNull();
+        if (html != null && html.isOpen()) {
+            try {
+                htmlWriter.close(html);
+            } catch (RuntimeException cleanupFailure) {
+                reportCleanupFailure(HTMLFILE_DD, cleanupFailure);
+            }
+        }
+        StatementFile stmt = ws.stmtFileOrNull();
+        if (stmt != null && stmt.isOpen()) {
+            try {
+                stmt.closeOutput();
+            } catch (RuntimeException cleanupFailure) {
+                reportCleanupFailure(STMTFILE_DD, cleanupFailure);
+            }
+        }
+        try {
+            // Session.close releases the subroutine's four cursors and is idempotent, so the normal
+            // path's own call at L341-L342 has already done this and this call is a no-op.
+            ws.session().close();
+        } catch (RuntimeException cleanupFailure) {
+            reportCleanupFailure(PROGRAM_ID + " subroutine session", cleanupFailure);
+        }
+    }
+
+    /**
+     * Records a failure that happened while releasing a handle, without quoting the backend.
+     *
+     * <p>The throwable is deliberately <strong>not</strong> handed to the logger, and neither is its
+     * message. A driver composes its message around the value it refused, so a statement record - a
+     * customer's name, address or transaction description - could reach a log line through it (CWE-532),
+     * and a newline in that text would let the message forge a second entry (CWE-117).
+     * {@link BackendDiagnostic} carries the {@code SQLSTATE}, the vendor code and the exception type and
+     * has no component for a message, which is the module's established way to keep a failure
+     * diagnosable without repeating what the backend said.
+     *
+     * @param what           the handle being released, named as its DD or as the session
+     * @param cleanupFailure what the release threw
+     */
+    private static void reportCleanupFailure(String what, RuntimeException cleanupFailure) {
+        LOG.warn("Releasing " + what + " after an incomplete run failed - "
+                + BackendDiagnostic.of(cleanupFailure).describe()
+                + ". The run's own outcome is reported to the caller unchanged, because the run's own "
+                + "failure is the one that matters.");
     }
 
     /**
@@ -2115,6 +2648,14 @@ public class StatementGenerationJobA {
         // OPEN OUTPUT STMT-FILE HTML-FILE.  Both, in that order, once per run.                  L293
         ws.openOutput(textWriter.openOutput(), htmlWriter.open());
 
+        // The OPEN is unguarded in the source, which does not mean a failed open is survivable - it means
+        // the program has no code that could survive one. HTMLFILE's sink reports its open status on the
+        // handle, so it is checked here: a run that continued past a refused open would write a hundred
+        // records into nothing and report success. STMTFILE's writer reports no open status of its own;
+        // a sink that cannot accept records fails on the first WRITE, which the checks below catch.
+        requireOutputSucceeded(FileStatus.outcomeOfStatus(ws.htmlFile().openStatus()), HTMLFILE_DD,
+                "OPEN OUTPUT HTML-FILE");
+
         // INITIALIZE WS-TRNX-TABLE WS-TRN-TBL-CNTR.  Both groups are entirely non-FILLER, so every
         // card number, transaction number, transaction remainder and counter is cleared.        L294
         ws.initializeTrnxTable();
@@ -2153,6 +2694,26 @@ public class StatementGenerationJobA {
      * @throws AbendException if any open or read on the way reports a fatal status
      */
     boolean runFileControl(WorkingStorage ws, SysoutSink sysout) {
+        return runFileControl(ws, sysout, StopSignal.RUNNING);
+    }
+
+    /**
+     * {@code 0000-START}, with a stop signal for the table-load loop it dispatches to.
+     *
+     * <p>The dispatch itself carries <strong>no</strong> probe, deliberately: it iterates at most once per
+     * recognised state - five of them - so it is not a long loop, and a probe there would yield between
+     * file opens rather than between records. The signal is passed through to {@link #readTrnxRead},
+     * whose loop is one iteration per transaction record and is genuinely long.
+     *
+     * @param ws         this run's working storage
+     * @param sysout     where the guard messages go
+     * @param stopSignal the between-record cancellation probe for the table load
+     * @return {@code true} when control reached {@code 1000-MAINLINE}, {@code false} when the
+     *         {@code WHEN OTHER} arm sent it straight to {@code 9999-GOBACK}
+     * @throws AbendException if any open or read on the way reports a fatal status
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
+     */
+    boolean runFileControl(WorkingStorage ws, SysoutSink sysout, StopSignal stopSignal) {
         while (true) {
             String state = ws.wsFlDd();
             // WHEN 'TRNXFILE'  ALTER ... TO PROCEED TO 8100-TRNXFILE-OPEN  GO TO 8100-FILE-OPEN
@@ -2170,7 +2731,7 @@ public class StatementGenerationJobA {
                 return true;                                     // GO TO 1000-MAINLINE.        L815
             // WHEN 'READTRNX'  GO TO 8500-READTRNX-READ                                    L311-L312
             } else if (STATE_READTRNX.equals(state)) {
-                readTrnxRead(ws, sysout);
+                readTrnxRead(ws, sysout, stopSignal);
             // WHEN OTHER  GO TO 9999-GOBACK.  Unreachable in the observed sequence, and a real
             // branch all the same, so it is kept and it is covered (practice B5).           L313-L314
             } else {
@@ -2236,13 +2797,20 @@ public class StatementGenerationJobA {
      * never closed, and hands control back to the dispatch with {@code WS-FL-DD} set to
      * {@value #STATE_XREFFILE}.
      *
-     * @param ws     this run's working storage
-     * @param sysout where the guard messages go
+     * @param ws         this run's working storage
+     * @param sysout     where the guard messages go
+     * @param stopSignal the between-record cancellation probe, consulted at the top of each pass so the
+     *                   transaction in flight is always fully recorded in the table
      * @throws AbendException if a read reports anything but {@code '00'} or {@code '10'}
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
      */
-    private void readTrnxRead(WorkingStorage ws, SysoutSink sysout) {
+    private void readTrnxRead(WorkingStorage ws, SysoutSink sysout, StopSignal stopSignal) {
         boolean reading = true;
         while (reading) {
+            // NO COBOL COUNTERPART. The between-record yield to a stop request: a call rather than a
+            // condition, so it adds no arm to the translated control flow. See BatchConfig.StopSignal.
+            stopSignal.checkStopRequested();
+
             // IF WS-SAVE-CARD = TRNX-CARD-NUM  ADD 1 TO TR-CNT                           L819-L820
             if (ws.wsSaveCard().equals(ws.trnxRecord().readTrnxCardNum())) {
                 ws.addOneToTrCnt();
@@ -2351,16 +2919,26 @@ public class StatementGenerationJobA {
      * here. The {@code WHEN OTHER} arm of {@code 0000-START} bypasses them entirely, which is exactly what
      * {@code GO TO 9999-GOBACK} does.
      *
-     * @param ws     this run's working storage
-     * @param sysout where the guard messages go
+     * @param ws         this run's working storage
+     * @param sysout     where the guard messages go
+     * @param stopSignal the between-statement cancellation probe, consulted at the top of each pass so
+     *                   the statement in flight is always complete in both output datasets
      * @return how many statements were written
      * @throws AbendException if any read or close reports a fatal status
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
      */
-    private int mainline(WorkingStorage ws, SysoutSink sysout) {
+    private int mainline(WorkingStorage ws, SysoutSink sysout, StopSignal stopSignal) {
         int statements = 0;
 
         // PERFORM UNTIL END-OF-FILE = 'Y'                                                      L317
         while (!END_OF_FILE_YES.equals(ws.endOfFile())) {
+            // NO COBOL COUNTERPART. The between-statement yield to a stop request: a call rather than a
+            // condition, so it adds no arm to the translated control flow, and positioned before
+            // 1000-XREFFILE-GET-NEXT so a statement is never abandoned half written. The five CLOSE
+            // statements below are NOT reached on a stop, exactly as they are not reached on an abend.
+            // See BatchConfig.StopSignal.
+            stopSignal.checkStopRequested();
+
             // IF END-OF-FILE = 'N' - redundant, PRESERVED (practice B5).                        L318
             if (END_OF_FILE_NO.equals(ws.endOfFile())) {
                 // PERFORM 1000-XREFFILE-GET-NEXT                                               L319
@@ -2390,11 +2968,15 @@ public class StatementGenerationJobA {
         custFileClose(ws, sysout);
         acctFileClose(ws, sysout);
 
-        // CLOSE STMT-FILE HTML-FILE.  Neither file has a FILE STATUS clause and neither close is
-        // guarded, so the reported outcomes are not branched on - inventing a failure path here would
-        // add control flow the COBOL does not have.                                             L339
-        ws.stmtFile().closeOutput();
-        htmlWriter.close(ws.htmlFile());
+        // CLOSE STMT-FILE HTML-FILE.  ONE statement naming BOTH files, so both are closed before
+        // either condition is acted on - which is why the two closeOutput calls come first and the two
+        // checks after, rather than being interleaved. Neither file has a FILE STATUS clause, so a
+        // failed close terminates the run unit; the checks are in the statement's own order, so the
+        // condition reported is STMT-FILE's when both fail.                                     L339
+        FileStatus.Outcome textClosed = ws.stmtFile().closeOutput();
+        FileStatus.Outcome htmlClosed = htmlWriter.close(ws.htmlFile());
+        requireOutputSucceeded(textClosed, STMTFILE_DD, "CLOSE STMT-FILE");
+        requireOutputSucceeded(htmlClosed, HTMLFILE_DD, "CLOSE HTML-FILE");
 
         return statements;
     }
@@ -2566,12 +3148,12 @@ public class StatementGenerationJobA {
 
         // WRITE ST-LINE12, ST-LINE14A, ST-LINE15.                                       L435-L437
         for (StatementLine line : STATEMENT_TOTAL_TEXT_LINES) {
-            ws.stmtFile().writeLine(line);
+            writeStatementLine(ws.stmtFile(), line);
         }
 
         // The eight closing HTML records.                                               L439-L454
         for (HtmlFixedLine line : HTML_FOOTER_LINES) {
-            htmlWriter.writeFixedLine(ws.htmlFile(), line);
+            writeHtmlFixedLine(ws.htmlFile(), line);
         }
     }
 
@@ -2683,6 +3265,112 @@ public class StatementGenerationJobA {
     }
 
     // =================================================================================================
+    // The two statement outputs, and what happens when one of them refuses a record.
+    //
+    // STMT-FILE and HTML-FILE are declared at app/cbl/CBSTM03A.CBL:L38-L39 and L44-L47 with NO FILE
+    // STATUS clause, and every OPEN, WRITE and CLOSE against them - L293, the ~120 WRITE statements, and
+    // L339 - carries no guard, no INVALID KEY phrase and no USE procedure. That is not the same thing as
+    // "failures do not matter here": with no status item to receive the condition and no declarative
+    // procedure to handle it, an unsuccessful I-O operation terminates the run unit. The COBOL has no
+    // recovery path because there is nothing in it that could observe the failure and continue.
+    //
+    // So the translation terminates too, and deliberately terminates DIFFERENTLY from the four guarded
+    // input files. Those emit three SYSOUT lines and CALL 'CEE3ABD' because their guards say so
+    // (reportAndAbend, above); these two files have no guard and emit NOTHING, so writing a banner here
+    // would invent output the program never produces. RETURN_CODE_IO_ERROR rather than
+    // ABEND_RETURN_CODE for the same reason: 8 is the code CALL 'CEE3ABD' is reported with at the ten
+    // guarded sites, and claiming it for a site that calls no CEE3ABD would misattribute it. Twelve is
+    // the estate's convention for a termination arising from an unguarded data-access failure.
+    // =================================================================================================
+
+    /**
+     * Checks what an unguarded output operation reported, and terminates the run unit if it failed.
+     *
+     * <p>{@link FileStatus.Outcome#OK} returns; anything else throws. There is no intermediate case,
+     * because the source has no code that could distinguish one: a sequential {@code WRITE} to an
+     * output-only dataset either transferred the record or did not.
+     *
+     * @param outcome   what the writer's sink reported; must not be {@code null}
+     * @param ddName    the DD the operation addressed, for the diagnostic
+     * @param operation what was attempted, named as the COBOL statement, for the diagnostic
+     * @throws NullPointerException if {@code outcome} is {@code null}
+     * @throws AbendException       if {@code outcome} is anything but {@link FileStatus.Outcome#OK}
+     */
+    private static void requireOutputSucceeded(FileStatus.Outcome outcome, String ddName,
+                                               String operation) {
+        Objects.requireNonNull(outcome, "An output operation on " + ddName + " must report an outcome; "
+                + "there is no COBOL FILE STATUS meaning 'no answer'");
+        if (outcome == FileStatus.Outcome.OK) {
+            return;
+        }
+        throw unhandledOutputCondition(ddName, operation, outcome.name());
+    }
+
+    /**
+     * The termination an unguarded output condition produces on {@value #STMTFILE_DD} or
+     * {@value #HTMLFILE_DD}.
+     *
+     * <p>No {@code DISPLAY}, no {@code ABCODE} and no {@code TIMING}: the source emits none of the three
+     * for these two files, and {@link AbendException#withoutAbendParameters} exists so that the absence
+     * can be stated rather than papered over with values the program never produces.
+     *
+     * @param ddName    the DD the failing operation addressed
+     * @param operation what was attempted, named as the COBOL statement
+     * @param condition what the sink reported, named rather than quoted
+     * @return the exception to throw, so the call site reads {@code throw unhandledOutputCondition(..)}
+     */
+    private static AbendException unhandledOutputCondition(String ddName, String operation,
+                                                          String condition) {
+        LOG.error(operation + " on " + ddName + " reported FILE STATUS outcome " + condition
+                + ". app/cbl/CBSTM03A.CBL declares no FILE STATUS clause for this file and guards none "
+                + "of its OPEN, WRITE or CLOSE statements, so there is no path on which the program "
+                + "continues: the run unit terminates. Any statement records already written stand, "
+                + "exactly as they would on the mainframe.");
+        return AbendException.withoutAbendParameters(PROGRAM_ID, AbendException.RETURN_CODE_IO_ERROR,
+                operation + " on " + ddName + " reported FILE STATUS outcome " + condition
+                        + ", and app/cbl/CBSTM03A.CBL guards neither this file's OPEN, WRITE nor CLOSE, "
+                        + "so the condition terminates the run unit");
+    }
+
+    /**
+     * {@code WRITE FD-STMTFILE-REC FROM <line>} - one 80-byte plain-text record, checked.
+     *
+     * @param stmt the open {@value #STMTFILE_DD} handle
+     * @param line which statement line to emit
+     * @throws AbendException if the sink refuses the record
+     */
+    private static void writeStatementLine(StatementFile stmt, StatementLine line) {
+        requireOutputSucceeded(stmt.writeLine(line), STMTFILE_DD,
+                "WRITE FD-STMTFILE-REC FROM " + line.cobolName());
+    }
+
+    /**
+     * {@code WRITE FD-HTMLFILE-REC FROM HTML-FIXED-LN} - one 100-byte record, checked.
+     *
+     * @param html the open {@value #HTMLFILE_DD} handle
+     * @param line which fixed HTML line to emit
+     * @throws AbendException if the sink refuses the record
+     */
+    private void writeHtmlFixedLine(HtmlStatementFile html, HtmlFixedLine line) {
+        requireOutputSucceeded(htmlWriter.writeFixedLine(html, line), HTMLFILE_DD,
+                "WRITE FD-HTMLFILE-REC FROM " + line.cobolName());
+    }
+
+    /**
+     * {@code WRITE FD-HTMLFILE-REC FROM HTML-TRAN-LN} - one transaction cell, checked.
+     *
+     * @param html  the open {@value #HTMLFILE_DD} handle
+     * @param field which transaction cell to emit
+     * @param value the already-formatted image the statement slot holds
+     * @throws AbendException if the sink refuses the record
+     */
+    private void writeHtmlTransactionField(HtmlStatementFile html, TransactionField field,
+                                           String value) {
+        requireOutputSucceeded(htmlWriter.writeTransactionField(html, field, value), HTMLFILE_DD,
+                "WRITE FD-HTMLFILE-REC FROM HTML-TRAN-LN " + field.cobolName());
+    }
+
+    // =================================================================================================
     // Statement composition. The writers own the bytes; this section owns the sequence, and the sequence is
     // parity-invariant.
     // =================================================================================================
@@ -2722,7 +3410,7 @@ public class StatementGenerationJobA {
         stmt.initializeStatementLines();
 
         // WRITE FD-STMTFILE-REC FROM ST-LINE0 - and it is not blank, see above.                 L460
-        stmt.writeLine(StatementLine.ST_LINE0);
+        writeStatementLine(stmt, StatementLine.ST_LINE0);
 
         // PERFORM 5100-WRITE-HTML-HEADER THRU 5100-EXIT - one method call (AAP 0.7.5).          L461
         writeHtmlHeader(ws);
@@ -2769,7 +3457,7 @@ public class StatementGenerationJobA {
 
         // The fifteen plain-text writes, with ST-LINE5 and ST-LINE12 each written twice.  L488-L502
         for (StatementLine line : STATEMENT_BODY_TEXT_LINES) {
-            stmt.writeLine(line);
+            writeStatementLine(stmt, line);
         }
     }
 
@@ -2792,16 +3480,17 @@ public class StatementGenerationJobA {
 
         // L01, L02, L03, L04, L05, L06, L07, L08, LTRS, L10.                             L508-L527
         for (HtmlFixedLine line : HTML_HEADER_PROLOGUE_LINES) {
-            htmlWriter.writeFixedLine(html, line);
+            writeHtmlFixedLine(html, line);
         }
 
         // MOVE ACCT-ID TO L11-ACCT.  WRITE FD-HTMLFILE-REC FROM HTML-L11.                L529-L530
-        htmlWriter.writeAccountHeading(html,
-                codec.movePic9(ws.accountRecord().getAcctId(), AccountRecord.ACCT_ID_LENGTH));
+        requireOutputSucceeded(htmlWriter.writeAccountHeading(html,
+                codec.movePic9(ws.accountRecord().getAcctId(), AccountRecord.ACCT_ID_LENGTH)),
+                HTMLFILE_DD, "WRITE FD-HTMLFILE-REC FROM HTML-L11");
 
         // LTDE, LTRE, LTRS, L15, L16, L17, L18, LTDE, LTRE, LTRS, L22-35.                L531-L552
         for (HtmlFixedLine line : HTML_HEADER_BANK_LINES) {
-            htmlWriter.writeFixedLine(html, line);
+            writeHtmlFixedLine(html, line);
         }
     }
 
@@ -2825,28 +3514,34 @@ public class StatementGenerationJobA {
 
         // MOVE ST-NAME TO L23-NAME.  MOVE SPACES TO FD-HTMLFILE-REC.  STRING ... INTO
         // FD-HTMLFILE-REC.  WRITE FD-HTMLFILE-REC - with no FROM, from the record area.   L560-L568
-        htmlWriter.writeNameLine(html, stmt.slotImage(StatementSlot.ST_NAME));
+        requireOutputSucceeded(
+                htmlWriter.writeNameLine(html, stmt.slotImage(StatementSlot.ST_NAME)),
+                HTMLFILE_DD, "WRITE FD-HTMLFILE-REC (the name paragraph group)");
 
         // The three <p> address lines, built from ST-ADD1, ST-ADD2 and ST-ADD3.           L569-L592
         for (int line = 0; line < HTML_ADDRESS_FIELDS.size(); line++) {
-            htmlWriter.writeAddressLine(html, HTML_ADDRESS_FIELDS.get(line),
-                    stmt.slotImage(HTML_ADDRESS_SLOTS.get(line)));
+            AddressField field = HTML_ADDRESS_FIELDS.get(line);
+            requireOutputSucceeded(htmlWriter.writeAddressLine(html, field,
+                    stmt.slotImage(HTML_ADDRESS_SLOTS.get(line))),
+                    HTMLFILE_DD, "WRITE FD-HTMLFILE-REC FROM HTML-ADDR-LN " + field.cobolName());
         }
 
         // LTDE, LTRE, LTRS, L30-42, L31, LTDE, LTRE, LTRS, L22-35.                        L594-L611
         for (HtmlFixedLine line : HTML_BASIC_DETAILS_PRELUDE_LINES) {
-            htmlWriter.writeFixedLine(html, line);
+            writeHtmlFixedLine(html, line);
         }
 
         // The three labelled detail lines: ST-ACCT-ID, ST-CURR-BAL, ST-FICO-SCORE.        L613-L633
         for (int detail = 0; detail < HTML_BASIC_DETAILS.size(); detail++) {
-            htmlWriter.writeBasicDetail(html, HTML_BASIC_DETAILS.get(detail),
-                    stmt.slotImage(HTML_BASIC_DETAIL_SLOTS.get(detail)));
+            BasicDetail basic = HTML_BASIC_DETAILS.get(detail);
+            requireOutputSucceeded(htmlWriter.writeBasicDetail(html, basic,
+                    stmt.slotImage(HTML_BASIC_DETAIL_SLOTS.get(detail))),
+                    HTMLFILE_DD, "WRITE FD-HTMLFILE-REC FROM HTML-BSIC-LN " + basic.cobolName());
         }
 
         // The Transaction Summary heading and the three column headings.                  L634-L669
         for (HtmlFixedLine line : HTML_COLUMN_HEADING_LINES) {
-            htmlWriter.writeFixedLine(html, line);
+            writeHtmlFixedLine(html, line);
         }
     }
 
@@ -2877,27 +3572,27 @@ public class StatementGenerationJobA {
         // MOVE TRNX-AMT TO ST-TRANAMT - S9(09)V99 into PIC Z(9).99-.                           L678
         stmt.setTransactionAmount(trnx.readTrnxAmt());
         // WRITE FD-STMTFILE-REC FROM ST-LINE14.                                                L679
-        stmt.writeLine(StatementLine.ST_LINE14);
+        writeStatementLine(stmt, StatementLine.ST_LINE14);
 
         // SET HTML-LTRS TO TRUE.  WRITE.                                                  L681-L682
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_LTRS);
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_LTRS);
         // SET HTML-L58 TO TRUE.  WRITE.  Then <p>ST-TRANID</p>, then LTDE.                L684-L694
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_L58);
-        htmlWriter.writeTransactionField(html, TransactionField.TRAN_ID,
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_L58);
+        writeHtmlTransactionField(html, TransactionField.TRAN_ID,
                 stmt.slotImage(StatementSlot.ST_TRANID));
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_LTDE);
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_LTDE);
         // SET HTML-L61 TO TRUE.  WRITE.  Then <p>ST-TRANDT</p>, then LTDE.                L696-L706
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_L61);
-        htmlWriter.writeTransactionField(html, TransactionField.TRAN_DETAILS,
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_L61);
+        writeHtmlTransactionField(html, TransactionField.TRAN_DETAILS,
                 stmt.slotImage(StatementSlot.ST_TRANDT));
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_LTDE);
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_LTDE);
         // SET HTML-L64 TO TRUE.  WRITE.  Then <p>ST-TRANAMT</p>, then LTDE.               L708-L718
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_L64);
-        htmlWriter.writeTransactionField(html, TransactionField.TRAN_AMOUNT,
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_L64);
+        writeHtmlTransactionField(html, TransactionField.TRAN_AMOUNT,
                 stmt.slotImage(StatementSlot.ST_TRANAMT));
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_LTDE);
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_LTDE);
         // SET HTML-LTRE TO TRUE.  WRITE.                                                  L720-L721
-        htmlWriter.writeFixedLine(html, HtmlFixedLine.HTML_LTRE);
+        writeHtmlFixedLine(html, HtmlFixedLine.HTML_LTRE);
     }
 
     // =================================================================================================
@@ -3069,6 +3764,27 @@ public class StatementGenerationJobA {
         HtmlStatementFile htmlFile() {
             return Objects.requireNonNull(htmlFile, "HTMLFILE is not open; OPEN OUTPUT runs once, in "
                     + "the prologue at app/cbl/CBSTM03A.CBL:L293");
+        }
+
+        /**
+         * The plain-text handle if {@code OPEN OUTPUT} reached it, or {@code null} if it did not.
+         *
+         * <p>For {@link StatementGenerationJobA#releaseHandles(WorkingStorage)} alone, which runs on the
+         * path where the prologue itself failed and has to ask rather than assert.
+         *
+         * @return the handle, or {@code null} when {@code L293} has not run
+         */
+        StatementFile stmtFileOrNull() {
+            return stmtFile;
+        }
+
+        /**
+         * The HTML handle if {@code OPEN OUTPUT} reached it, or {@code null} if it did not.
+         *
+         * @return the handle, or {@code null} when {@code L293} has not run
+         */
+        HtmlStatementFile htmlFileOrNull() {
+            return htmlFile;
         }
 
         /**

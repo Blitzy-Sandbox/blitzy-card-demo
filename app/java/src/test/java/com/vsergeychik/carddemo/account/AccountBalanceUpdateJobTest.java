@@ -5,8 +5,11 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -27,6 +30,8 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopRequestedException;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -60,9 +65,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.scope.context.ChunkContext;
+import org.springframework.batch.core.scope.context.StepContext;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
@@ -220,8 +231,25 @@ class AccountBalanceUpdateJobTest {
      * @return a catalogue holding just that entry
      */
     private static DatasetBindings bindings(int recordLength, String dsname) {
+        return bindings(recordLength, dsname, dsname);
+    }
+
+    /**
+     * @param recordLength the width to declare
+     * @param dsname       the dataset name to declare for this job's {@code XREFFILE} DD
+     * @param baseDsname   the dataset name to declare for {@code CCXREF}, the key the cross-reference
+     *                     repository is bound to
+     * @return a catalogue holding both entries
+     */
+    private static DatasetBindings bindings(int recordLength, String dsname, String baseDsname) {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put(AccountBalanceUpdateJob.XREFFILE_DD_NAME, new DatasetBinding(dsname,
+                DatasetBinding.KSDS, false, "FB", null, recordLength, "CVACT03Y",
+                CardXrefRecord.XREF_CARD_NUM_LENGTH, null, null, null));
+        // The job's JCL says XREFFILE (app/jcl/READXREF.jcl:25-26); the repository it browses is bound to
+        // the CICS file name CCXREF. The job proves at construction that the two name one dataset, so
+        // both keys are declared here, and passing two different names exercises the rejection.
+        catalogue.put(CardXrefRepository.BASE_DD_NAME, new DatasetBinding(baseDsname,
                 DatasetBinding.KSDS, false, "FB", null, recordLength, "CVACT03Y",
                 CardXrefRecord.XREF_CARD_NUM_LENGTH, null, null, null));
         return catalogue;
@@ -280,6 +308,53 @@ class AccountBalanceUpdateJobTest {
     }
 
     /**
+     * A step execution shaped as the framework builds one, so a tasklet can be driven exactly as a
+     * running step drives it.
+     *
+     * <p>Built by hand rather than with a test factory from another artifact, because the dependency set
+     * is closed and the constructors needed are public API. Only the step name and the
+     * {@code terminateOnly} flag are read by anything under test here.
+     *
+     * @return a fresh step execution, not asked to stop
+     */
+    private static StepExecution stepExecution() {
+        return new StepExecution(AccountBalanceUpdateJob.STEP_NAME, new JobExecution(1L));
+    }
+
+    /**
+     * The chunk context the framework hands a tasklet, over the given step execution.
+     *
+     * @param stepExecution the execution the tasklet is running inside
+     * @return a real chunk context; never a mock, because the tasklet reads through it to the execution
+     */
+    private static ChunkContext chunkContext(StepExecution stepExecution) {
+        return new ChunkContext(new StepContext(stepExecution));
+    }
+
+    /**
+     * A probe that permits the given number of records and then reports a stop.
+     *
+     * <p>It sets {@code terminateOnly} on the real step execution and then delegates to the real
+     * {@link StopSignal}, so the refusal is produced by the production probe and the framework's own
+     * interruption policy rather than by a stand-in that merely throws the same type.
+     *
+     * @param stepExecution the execution to mark
+     * @param permitted     how many consultations return before the stop is requested
+     * @return the probe
+     */
+    private static StopSignal signalStoppingAfter(StepExecution stepExecution, int permitted) {
+        StopSignal real = StopSignal.of(stepExecution);
+        int[] consulted = { 0 };
+        return () -> {
+            if (consulted[0] == permitted) {
+                stepExecution.setTerminateOnly();
+            }
+            consulted[0]++;
+            real.checkStopRequested();
+        };
+    }
+
+    /**
      * A browse cursor that opens cleanly, returns the given records and closes cleanly.
      *
      * @param records the records to return, in order
@@ -318,8 +393,28 @@ class AccountBalanceUpdateJobTest {
      * @param cursor the cursor its open returns
      * @return the repository double
      */
-    private static CardXrefRepository repositoryWith(BrowseCursor cursor) {
+    /**
+     * A cross-reference repository mock that hands itself back when the job re-binds it to its own DD.
+     *
+     * <p>{@code CBACT03C} browses the DD {@code app/jcl/READXREF.jcl:25-26} binds, so the job asks the
+     * repository for a view addressing {@value AccountBalanceUpdateJob#XREFFILE_DD_NAME} before it
+     * opens. A bare mock answers {@code null} to that, so a stubbed cursor would hang off an instance
+     * the job never touches.
+     *
+     * <p>Returning the same mock is what the real repository does whenever the DD resolves to the
+     * dataset it already addresses - the shipped configuration, where {@code XREFFILE} and
+     * {@code CCXREF} are two names for one cluster.
+     *
+     * @return the mock, with the re-binding stubbed
+     */
+    private static CardXrefRepository cardXrefRepositoryMock() {
         CardXrefRepository repository = mock(CardXrefRepository.class);
+        when(repository.addressing(any(), any(), any(), any())).thenReturn(repository);
+        return repository;
+    }
+
+    private static CardXrefRepository repositoryWith(BrowseCursor cursor) {
+        CardXrefRepository repository = cardXrefRepositoryMock();
         when(repository.openBrowse()).thenReturn(cursor);
         return repository;
     }
@@ -406,6 +501,67 @@ class AccountBalanceUpdateJobTest {
     // The mandated name against the verified behaviour - migration rule R1.
     // =================================================================================================
 
+    // =================================================================================================
+    // The declared DD is the DD browsed - the DD-mapping finding.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("the DD this job declares is the DD it browses - app/jcl/READXREF.jcl:25-26")
+    class TheDeclaredDdDrivesTheBrowse {
+
+        @Test
+        @DisplayName("the browse is taken through the resolved XREFFILE binding, not through CCXREF")
+        void theBrowseGoesThroughTheDeclaredDd() {
+            CardXrefRepository repository = repositoryOver(List.of());
+
+            job(repository).execute(new CapturingSysout());
+
+            ArgumentCaptor<DatasetBinding> used = ArgumentCaptor.forClass(DatasetBinding.class);
+            verify(repository).addressing(used.capture(),
+                    eq(AccountBalanceUpdateJob.XREFFILE_DD_NAME), isNull(), anyString());
+            assertThat(used.getValue().dsname()).isEqualTo(TEST_DSNAME);
+            assertThat(AccountBalanceUpdateJob.XREFFILE_DD_NAME).isEqualTo("XREFFILE");
+        }
+
+        @Test
+        @DisplayName("no alternate-index binding is handed over, because this program opens no path")
+        void noAlternateIndexBindingIsSupplied() {
+            // app/cbl/CBACT03C.cbl:29-33 is one SELECT with no ALTERNATE RECORD KEY and READXREF.jcl
+            // declares one DD. Supplying an alternate-index binding would assert a path this program
+            // never opens - and the alternate-index DD name is still named, so a diagnostic can say
+            // which key would have been at fault.
+            CardXrefRepository repository = repositoryOver(List.of());
+
+            job(repository).execute(new CapturingSysout());
+
+            verify(repository).addressing(any(), anyString(), isNull(),
+                    eq(CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME));
+        }
+
+        @Test
+        @DisplayName("the browse is taken on the instance the re-binding returned")
+        void theBrowseIsTakenOnTheRebindingResult() {
+            CardXrefRepository injected = cardXrefRepositoryMock();
+            CardXrefRepository rebound = repositoryOver(List.of());
+            when(injected.addressing(any(), anyString(), any(), anyString())).thenReturn(rebound);
+
+            job(injected).execute(new CapturingSysout());
+
+            verify(rebound).openBrowse();
+            verify(injected, never()).openBrowse();
+        }
+
+        @Test
+        @DisplayName("the re-binding is asked for once per run")
+        void theRebindingHappensOncePerRun() {
+            CardXrefRepository repository = repositoryOver(fixtureRecords());
+
+            job(repository).execute(new CapturingSysout());
+
+            verify(repository, times(1)).addressing(any(), anyString(), any(), anyString());
+        }
+    }
+
     @Nested
     @DisplayName("The name says Update; CBACT03C updates nothing")
     class UpdatesNothing {
@@ -436,8 +592,7 @@ class AccountBalanceUpdateJobTest {
                 if (!Modifier.isPublic(method.getModifiers()) || method.isSynthetic()) {
                     continue;
                 }
-                String name = method.getName().toLowerCase(Locale.ROOT);
-                if (writeVerbs.stream().anyMatch(name::startsWith)) {
+                if (writeVerbs.stream().anyMatch(verb -> namesTheVerb(method.getName(), verb))) {
                     offenders.add(method.getName());
                 }
             }
@@ -447,6 +602,29 @@ class AccountBalanceUpdateJobTest {
                             + "so a write-side method on the cross reference would be an API this "
                             + "program has no statement for")
                     .isEmpty();
+        }
+
+        /**
+         * Whether a method name opens with a verb <em>as a word</em>, in camel case.
+         *
+         * <p>A plain prefix test is not the same question. {@code addressing} opens with the letters of
+         * {@code add} and is a read-side selector - it returns this repository addressing the dataset a
+         * DD names - so a prefix test reports a write method that does not exist, and a guard that cries
+         * wolf gets relaxed rather than obeyed. Requiring the next character to be upper case, or the
+         * name to be the verb exactly, keeps {@code add}, {@code addRecord}, {@code writeImage} and
+         * {@code deleteAll} caught while letting an unrelated word through.
+         *
+         * @param methodName the declared method name, in its own case
+         * @param verb       the lower-case verb to test for
+         * @return {@code true} when the name is the verb, or the verb followed by a new camel-case word
+         */
+        private boolean namesTheVerb(String methodName, String verb) {
+            String name = methodName.toLowerCase(Locale.ROOT);
+            if (!name.startsWith(verb)) {
+                return false;
+            }
+            return methodName.length() == verb.length()
+                    || Character.isUpperCase(methodName.charAt(verb.length()));
         }
 
         @Test
@@ -759,7 +937,21 @@ class AccountBalanceUpdateJobTest {
                     FileStatus.toDisplayLine(PERMANENT), AbendException.ABEND_DISPLAY_TEXT);
             assertThat(abend.getReason()).contains(AccountBalanceUpdateJob.ERROR_READING_XREFFILE
                     + " - " + FileStatus.toDisplayLine(PERMANENT));
-            verify(cursor, never()).closeBrowse();
+
+            // What parity requires is that 9000-XREFFILE-CLOSE did not RUN: CEE3ABD terminates the task
+            // at :113, so the paragraph's own DISPLAY and its APPL-RESULT transitions never happen. The
+            // containsExactly above is what proves that - ERROR CLOSING XREFFILE and the end banner are
+            // both absent - and the abend's reason names the read, not the close.
+            //
+            // The handle is nevertheless released once on the way out, silently. That is not the
+            // paragraph running: closeBrowse() issues no I/O, emits no DISPLAY and cannot alter the
+            // abend, so the SYSOUT line sequence and the return code - the whole of what CBACT03C
+            // observably produces - are identical either way. Asserting exactly once also pins that the
+            // cleanup cannot fire twice or fire on a path that already closed.
+            verify(cursor, times(1)).closeBrowse();
+            assertThat(sysout.lines())
+                    .doesNotContain(AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE)
+                    .doesNotContain(AccountBalanceUpdateJob.END_OF_EXECUTION);
         }
 
         @Test
@@ -890,7 +1082,7 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("every collaborator is required")
         void everyCollaboratorIsRequired() {
-            CardXrefRepository repository = mock(CardXrefRepository.class);
+            CardXrefRepository repository = cardXrefRepositoryMock();
             ObjectProvider<SysoutSink> sinks = new SuppliedProvider<>(null);
 
             assertThatNullPointerException().isThrownBy(() ->
@@ -901,6 +1093,31 @@ class AccountBalanceUpdateJobTest {
                     new AccountBalanceUpdateJob(validBatchConfig(), repository, null, sinks));
             assertThatNullPointerException().isThrownBy(() ->
                     new AccountBalanceUpdateJob(validBatchConfig(), repository, ASCII, null));
+        }
+
+        @Test
+        @DisplayName("XREFFILE and CCXREF pointing at different datasets is refused at construction")
+        void divergingDdNamesAreRefused() {
+            // The step's JCL names XREFFILE (app/jcl/READXREF.jcl:25-26); the repository it browses is
+            // bound to the CICS file name CCXREF. Both keys carry independent overrides in
+            // application.yml, so a deployment can point them at different datasets - and the job would
+            // then browse one its own DD statement never named, silently. A COBOL step cannot do this,
+            // because the DD statement is the binding.
+            BatchConfig diverging = batchConfig(validContracts(),
+                    bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME, "TEST.SOMETHING.ELSE"));
+
+            assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(diverging,
+                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    .withMessageContaining(AccountBalanceUpdateJob.XREFFILE_DD_NAME)
+                    .withMessageContaining(CardXrefRepository.BASE_DD_NAME)
+                    .withMessageContaining("TEST.SOMETHING.ELSE");
+        }
+
+        @Test
+        @DisplayName("XREFFILE and CCXREF naming one dataset is accepted, which is the shipped default")
+        void agreeingDdNamesAreAccepted() {
+            assertThat(job(mock(CardXrefRepository.class)).xrefFileDatasetName())
+                    .isEqualTo(TEST_DSNAME);
         }
 
         @Test
@@ -916,14 +1133,14 @@ class AccountBalanceUpdateJobTest {
 
             assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                     batchConfig(wrongJobProgram, bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME)),
-                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining("carddemo.jobs." + AccountBalanceUpdateJob.JOB_KEY
                             + ".program")
                     .withMessageContaining("CBACT01C");
 
             assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                     batchConfig(wrongStepProgram, bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME)),
-                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining(AccountBalanceUpdateJob.STEP_NAME + "].program")
                     .withMessageContaining("CBACT02C");
         }
@@ -936,7 +1153,7 @@ class AccountBalanceUpdateJobTest {
 
             assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                     batchConfig(renamedStep, bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME)),
-                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining("declares no step named '"
                             + AccountBalanceUpdateJob.STEP_NAME + "'");
         }
@@ -949,7 +1166,7 @@ class AccountBalanceUpdateJobTest {
 
             assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                     batchConfig(gated, bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME)),
-                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining("require-preceding-exit-code-zero")
                     .withMessageContaining("no COND");
         }
@@ -964,7 +1181,7 @@ class AccountBalanceUpdateJobTest {
 
             assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                     batchConfig(parameterised, bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME)),
-                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining("no PARM at all");
         }
 
@@ -974,7 +1191,7 @@ class AccountBalanceUpdateJobTest {
         void aRecordLengthOtherThanFiftyIsRefused(int width) {
             assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                     batchConfig(validContracts(), bindings(width, TEST_DSNAME)),
-                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining("record-length is " + width)
                     .withMessageContaining("CVACT03Y");
         }
@@ -986,7 +1203,7 @@ class AccountBalanceUpdateJobTest {
                 assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                         batchConfig(validContracts(),
                                 bindings(CardXrefRecord.RECORD_LENGTH, unusable)),
-                        mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                        cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                         .withMessageContaining("carddemo.datasets."
                                 + AccountBalanceUpdateJob.XREFFILE_DD_NAME + ".dsname");
             }
@@ -997,7 +1214,7 @@ class AccountBalanceUpdateJobTest {
         void anUnboundDatasetIsRefused() {
             assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
                     batchConfig(validContracts(), new DatasetBindings()),
-                    mock(CardXrefRepository.class), ASCII, new SuppliedProvider<>(null)))
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining("No dataset binding is configured for DD name '"
                             + AccountBalanceUpdateJob.XREFFILE_DD_NAME + "'");
         }
@@ -1006,7 +1223,7 @@ class AccountBalanceUpdateJobTest {
         @DisplayName("a code page that cannot hold a digit in one byte is refused")
         void aMultiByteCodePageIsRefused() {
             assertThatIllegalArgumentException().isThrownBy(() -> new AccountBalanceUpdateJob(
-                    validBatchConfig(), mock(CardXrefRepository.class), StandardCharsets.UTF_16,
+                    validBatchConfig(), cardXrefRepositoryMock(), StandardCharsets.UTF_16,
                     new SuppliedProvider<>(null)))
                     .withMessageContaining("byte(s)");
         }
@@ -1039,7 +1256,8 @@ class AccountBalanceUpdateJobTest {
             AccountBalanceUpdateJob subject = new AccountBalanceUpdateJob(validBatchConfig(),
                     repositoryOver(fixtureRecords()), ASCII, new SuppliedProvider<>(sysout));
 
-            RepeatStatus status = subject.accountBalanceUpdateTasklet().execute(null, null);
+            RepeatStatus status = subject.accountBalanceUpdateTasklet()
+                    .execute(null, chunkContext(stepExecution()));
 
             assertThat(status).isEqualTo(RepeatStatus.FINISHED);
             assertThat(sysout.lines()).hasSize(102);
@@ -1052,7 +1270,7 @@ class AccountBalanceUpdateJobTest {
             AccountBalanceUpdateJob subject = new AccountBalanceUpdateJob(validBatchConfig(),
                     repositoryOver(List.of()), ASCII, new SuppliedProvider<>(published));
 
-            subject.accountBalanceUpdateTasklet().execute(null, null);
+            subject.accountBalanceUpdateTasklet().execute(null, chunkContext(stepExecution()));
 
             assertThat(published.lines()).containsExactly(
                     AccountBalanceUpdateJob.START_OF_EXECUTION,
@@ -1067,10 +1285,113 @@ class AccountBalanceUpdateJobTest {
             // completes; where those two lines land is the deployment's business.
             AccountBalanceUpdateJob subject = job(repositoryOver(List.of()));
 
-            RepeatStatus status = subject.accountBalanceUpdateTasklet().execute(null, null);
+            RepeatStatus status = subject.accountBalanceUpdateTasklet()
+                    .execute(null, chunkContext(stepExecution()));
 
             assertThat(status).isEqualTo(RepeatStatus.FINISHED);
             assertThat(subject.defaultSysoutSink()).isNotNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("Bounded cancellation - the pass yields to a stop request between records")
+    class BoundedCancellation {
+
+        @Test
+        @DisplayName("no stop requested leaves the pass exactly as it was: 102 lines, unchanged")
+        void withoutAStopTheWholePassRuns() {
+            CapturingSysout sysout = new CapturingSysout();
+            AccountBalanceUpdateJob subject = new AccountBalanceUpdateJob(validBatchConfig(),
+                    repositoryOver(fixtureRecords()), ASCII, new SuppliedProvider<>(sysout));
+
+            ExecutionSummary summary = subject.execute(sysout, StopSignal.of(stepExecution()));
+
+            // The signal is consulted on every iteration and changes nothing while nothing is pending.
+            // Fifty records, two DISPLAY lines each, plus the two banners.
+            assertThat(sysout.lines()).hasSize(102);
+            assertThat(summary.recordsRead()).isEqualTo(FIXTURE_ROW_COUNT);
+        }
+
+        @Test
+        @DisplayName("a stop requested before the pass starts ends it at the first record boundary")
+        void aStopBeforeTheFirstRecordEndsThePassAtOnce() {
+            StepExecution stepExecution = stepExecution();
+            stepExecution.setTerminateOnly();
+            CapturingSysout sysout = new CapturingSysout();
+            AccountBalanceUpdateJob subject = job(repositoryOver(fixtureRecords()));
+
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(() -> subject.execute(sysout, StopSignal.of(stepExecution)))
+                    .withMessageContaining(AccountBalanceUpdateJob.STEP_NAME)
+                    .withMessageContaining("NO write is retried")
+                    // The cause is what makes AbstractStep report the step as STOPPED rather than
+                    // FAILED, so it is asserted rather than left as an implementation detail.
+                    .withCauseInstanceOf(JobInterruptedException.class);
+
+            // The OPEN happened and its banner was written; not one record line was.
+            assertThat(sysout.lines())
+                    .containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("a stop part way through leaves the record in flight displayed twice, not once")
+        void aStopPartWayThroughLeavesTheRecordInFlightComplete() {
+            StepExecution stepExecution = stepExecution();
+            CapturingSysout sysout = new CapturingSysout();
+            AccountBalanceUpdateJob subject = job(repositoryOver(fixtureRecords()));
+            int stopAfter = 4;
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    subject.execute(sysout, signalStoppingAfter(stepExecution, stopAfter)));
+
+            // CBACT03C displays each record TWICE - :96 inside the read paragraph and :78 in the loop -
+            // so a pass stopped between records must show an EVEN number of record lines. An odd count
+            // would mean the probe had landed mid-record, which is the one thing its position rules out.
+            assertThat(sysout.lines()).hasSize(stopAfter * 2 + 1);
+            assertThat(sysout.lines().size() - 1).isEven();
+
+            // And the close banner is NOT written, exactly as it is not written on an abend.
+            assertThat(sysout.lines()).doesNotContain(AccountBalanceUpdateJob.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("the single-argument overload runs unbounded, so every existing caller is unchanged")
+        void theSingleArgumentOverloadIsUnbounded() {
+            CapturingSysout withSignal = new CapturingSysout();
+            CapturingSysout withoutSignal = new CapturingSysout();
+
+            job(repositoryOver(fixtureRecords())).execute(withoutSignal);
+            job(repositoryOver(fixtureRecords())).execute(withSignal, StopSignal.RUNNING);
+
+            assertThat(withoutSignal.lines()).isEqualTo(withSignal.lines());
+        }
+
+        @Test
+        @DisplayName("a null stop signal is refused rather than silently treated as 'never stop'")
+        void aNullStopSignalIsRefused() {
+            AccountBalanceUpdateJob subject = job(repositoryOver(fixtureRecords()));
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> subject.execute(new CapturingSysout(), null))
+                    .withMessageContaining("StopSignal.RUNNING");
+        }
+
+        @Test
+        @DisplayName("the tasklet takes its signal from the step execution the framework supplies")
+        void theTaskletTakesItsSignalFromTheStepExecution() {
+            StepExecution stepExecution = stepExecution();
+            stepExecution.setTerminateOnly();
+            CapturingSysout sysout = new CapturingSysout();
+            AccountBalanceUpdateJob subject = new AccountBalanceUpdateJob(validBatchConfig(),
+                    repositoryOver(fixtureRecords()), ASCII, new SuppliedProvider<>(sysout));
+
+            // Driven exactly as TaskletStep drives it, so this asserts the wiring and not just the
+            // program: a tasklet that ignored the chunk context would run the whole pass here.
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    subject.accountBalanceUpdateTasklet().execute(null, chunkContext(stepExecution)));
+
+            assertThat(sysout.lines())
+                    .containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION);
         }
     }
 
@@ -1387,7 +1708,10 @@ class AccountBalanceUpdateJobTest {
                     "com.vsergeychik.carddemo.common.AbendException",
                     "com.vsergeychik.carddemo.common.FileStatus",
                     "com.vsergeychik.carddemo.common.FixedWidthCodec",
-                    "com.vsergeychik.carddemo.config.BatchConfig");
+                    "com.vsergeychik.carddemo.config.BatchConfig",
+                    // The bean name of the dataset code page is taken from the class that publishes it
+                    // rather than restated as a literal, so that class is now a declared dependency.
+                    "com.vsergeychik.carddemo.config.CobolCharsetConfig");
 
             List<String> internalImports = subjectSource().lines()
                     .map(String::strip)

@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.parity;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.InvalidFormatException;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -8,14 +9,17 @@ import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.parity.ParityCase.DatasetInput;
+import com.vsergeychik.carddemo.parity.ParityCase.DatasetChannel;
 import com.vsergeychik.carddemo.parity.ParityCase.DatasetNormalisation;
 import com.vsergeychik.carddemo.parity.ParityCase.EmittedMessage;
+import com.vsergeychik.carddemo.parity.ParityCase.ExpectedDataset;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedRecord;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedResponse;
 import com.vsergeychik.carddemo.parity.ParityCase.ForcedOutcome;
 import com.vsergeychik.carddemo.parity.ParityCase.MessageChannel;
 import com.vsergeychik.carddemo.parity.ParityCase.Normalisation;
 import com.vsergeychik.carddemo.parity.ParityCase.Redaction;
+import com.vsergeychik.carddemo.parity.ParityCase.RepositoryOperation;
 import com.vsergeychik.carddemo.parity.ParityCase.ScreenRequest;
 import com.vsergeychik.carddemo.parity.ParityCase.ScreenSend;
 import com.vsergeychik.carddemo.parity.ParityCase.Termination;
@@ -366,14 +370,20 @@ class ParityCaseTest {
         @DisplayName("declaring both rows and a fixture is refused")
         void declaringBothShapesIsRefused() {
             rejectedBecause(() -> new DatasetInput(List.of(SEED_ROW_80), "acctdata.txt", null, null),
-                "exactly one", "both were declared");
+                "exactly one", "2 were declared");
+            rejectedBecause(() -> new DatasetInput(List.of(SEED_ROW_80), null, null, null,
+                    Boolean.TRUE, 80, "CSUSR01Y"),
+                "exactly one", "2 were declared");
+            rejectedBecause(() -> new DatasetInput(List.of(), "acctdata.txt", null, null,
+                    Boolean.TRUE, 300, "CVACT01Y"),
+                "exactly one", "2 were declared");
         }
 
         @Test
-        @DisplayName("declaring neither rows nor a fixture is refused")
+        @DisplayName("declaring no shape at all is refused, and says how to declare an empty dataset")
         void declaringNeitherShapeIsRefused() {
             rejectedBecause(() -> new DatasetInput(List.of(), null, null, null),
-                "exactly one", "neither was declared");
+                "exactly one", "none was declared", "end-of-file");
         }
 
         @Test
@@ -915,14 +925,16 @@ class ParityCaseTest {
         }
 
         @ParameterizedTest(name = "operation \"{0}\" is refused")
-        @DisplayName("a forced-outcome key that is not a repository method name is refused")
-        @ValueSource(strings = {"READ", "Read", "read-for-update", "read.next", ""})
+        @DisplayName("a spelling that names no repository call site is refused, listing the seven")
+        @ValueSource(strings = {"rewirte", "READ", "Read", "read-for-update", "read.next", "",
+            "readforupdate"})
         void aMalformedOperationKeyIsRefused(String operation) {
-            Map<String, ForcedOutcome> forced = new LinkedHashMap<>();
-            forced.put(operation, new ForcedOutcome(FileStatus.Outcome.OTHER, null, null));
-
-            rejectedBecause(() -> new ScreenRequest(300, null, null, null, Map.of(), Map.of(),
-                forced), "forcedOutcomes");
+            // The realistic failure is a transposition, and it is silent: "rewirte" names no call
+            // site, so nothing is forced, the run takes the ordinary path, and a case whose whole
+            // purpose is the WHEN OTHER arm passes without reaching it.
+            rejectedBecause(() -> RepositoryOperation.fromKey(operation),
+                "is not a repository operation", "read, readForUpdate, readNext, startBrowse, "
+                    + "write, rewrite, delete");
         }
 
         @ParameterizedTest(name = "operation \"{0}\" is accepted")
@@ -930,18 +942,50 @@ class ParityCaseTest {
         @ValueSource(strings = {"read", "readForUpdate", "readNext", "startBrowse", "write",
             "rewrite", "delete"})
         void realOperationKeysAreAccepted(String operation) {
-            Map<String, ForcedOutcome> forced = new LinkedHashMap<>();
-            forced.put(operation, new ForcedOutcome(FileStatus.Outcome.OTHER, null, null));
+            RepositoryOperation resolved = RepositoryOperation.fromKey(operation);
+            Map<RepositoryOperation, ForcedOutcome> forced = new LinkedHashMap<>();
+            forced.put(resolved, new ForcedOutcome(FileStatus.Outcome.OTHER, null, null));
 
+            Assertions.assertThat(resolved.key())
+                .as("the case-file spelling round-trips, so a fixture reads as the code does")
+                .isEqualTo(operation);
             Assertions.assertThat(new ScreenRequest(300, null, null, null, Map.of(), Map.of(),
-                forced).forcedOutcomes()).containsOnlyKeys(operation);
+                forced).forcedOutcomes()).containsOnlyKeys(resolved);
+        }
+
+        @Test
+        @DisplayName("the set is closed at seven, and each names a real repository method")
+        void theSetIsClosedAtSeven() {
+            Assertions.assertThat(RepositoryOperation.values())
+                .as("these are the operations the 28 programs perform; an eighth would need a call "
+                    + "site to force")
+                .hasSize(7);
+            Assertions.assertThat(RepositoryOperation.values()).extracting(
+                    RepositoryOperation::key)
+                .containsExactly("read", "readForUpdate", "readNext", "startBrowse", "write",
+                    "rewrite", "delete");
+        }
+
+        @Test
+        @DisplayName("a case file naming an unknown operation fails to bind rather than binding oddly")
+        void anUnknownOperationInJsonIsRefused() throws IOException {
+            String json = "{\"eibcalen\":300,\"aid\":\"DFHENTER\",\"charset\":\"US-ASCII\","
+                + "\"forcedOutcomes\":{\"rewirte\":{\"outcome\":\"OTHER\"}}}";
+
+            Assertions.assertThatExceptionOfType(InvalidFormatException.class)
+                .isThrownBy(() -> mapper().readValue(json, ScreenRequest.class));
+
+            String valid = "{\"eibcalen\":300,\"aid\":\"DFHENTER\",\"charset\":\"US-ASCII\","
+                + "\"forcedOutcomes\":{\"rewrite\":{\"outcome\":\"OTHER\"}}}";
+            Assertions.assertThat(mapper().readValue(valid, ScreenRequest.class).forcedOutcomes())
+                .containsOnlyKeys(RepositoryOperation.REWRITE);
         }
 
         @Test
         @DisplayName("a null forced outcome is refused")
         void aNullForcedOutcomeIsRefused() {
-            Map<String, ForcedOutcome> forced = new LinkedHashMap<>();
-            forced.put("read", null);
+            Map<RepositoryOperation, ForcedOutcome> forced = new LinkedHashMap<>();
+            forced.put(RepositoryOperation.READ, null);
 
             rejectedBecause(() -> new ScreenRequest(300, null, null, null, Map.of(), Map.of(),
                 forced), "forcedOutcomes", "read");
@@ -1146,6 +1190,196 @@ class ParityCaseTest {
             String text = "User ID can NOT be empty...";
             return new ScreenSend(Map.of("ERRMSGO", text + " ".repeat(78 - text.length())),
                 Map.of("ERRMSGC", "DFHRED"));
+        }
+    }
+
+    // ===============================================================================================
+    @Nested
+    @DisplayName("DatasetInput.empty: a dataset that exists and holds no row")
+    class EmptyInputs {
+
+        @Test
+        @DisplayName("an empty declaration carries its own width and copybook, and reads as empty")
+        void anEmptyDeclarationIsWellFormed() {
+            DatasetInput input = DatasetInput.ofEmpty(430, "CVTRA06Y");
+
+            Assertions.assertThat(input.declaredEmpty()).isTrue();
+            Assertions.assertThat(input.inline()).isFalse();
+            Assertions.assertThat(input.fixtureBacked()).isFalse();
+            Assertions.assertThat(input.recordLength()).isEqualTo(430);
+            Assertions.assertThat(input.copybook()).isEqualTo("CVTRA06Y");
+            Assertions.assertThat(input.rows()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("exactly one of rows, fixture and empty may be declared")
+        void exactlyOneShapeMayBeDeclared() {
+            rejectedBecause(
+                () -> new DatasetInput(List.of(SEED_ROW_80), null, null, null, Boolean.TRUE, 80,
+                    "CSUSR01Y"),
+                "exactly one", "\"empty\": true");
+            rejectedBecause(
+                () -> new DatasetInput(List.of(), "acctdata.txt", null, null, Boolean.TRUE, 300,
+                    "CVACT01Y"),
+                "exactly one");
+            rejectedBecause(() -> new DatasetInput(List.of(), null, null, null, null, null, null),
+                "none was declared", "different assertions");
+        }
+
+        @Test
+        @DisplayName("\"empty\": false is refused rather than read as an absent declaration")
+        void anExplicitFalseIsRefused() {
+            // A case author writing "empty": false plainly means something by it, and the two readings
+            // - "this dataset is not empty" and "say nothing" - differ. Refusing is the only reading
+            // that cannot be wrong.
+            rejectedBecause(
+                () -> new DatasetInput(List.of(SEED_ROW_80), null, null, null, Boolean.FALSE, null,
+                    null),
+                "empty");
+        }
+
+        @Test
+        @DisplayName("an empty declaration must carry a usable record width")
+        void theWidthIsRequiredAndPositive() {
+            rejectedBecause(() -> new DatasetInput(List.of(), null, null, null, Boolean.TRUE, null,
+                "CVACT01Y"), "recordLength");
+            rejectedBecause(() -> new DatasetInput(List.of(), null, null, null, Boolean.TRUE, 0,
+                "CVACT01Y"), "recordLength");
+            rejectedBecause(() -> new DatasetInput(List.of(), null, null, null, Boolean.TRUE, -1,
+                "CVACT01Y"), "recordLength");
+        }
+
+        @Test
+        @DisplayName("an empty declaration must name the copybook its rows would follow")
+        void theCopybookIsRequiredAndWellFormed() {
+            rejectedBecause(() -> DatasetInput.ofEmpty(300, null), "copybook");
+            rejectedBecause(() -> DatasetInput.ofEmpty(300, ""), "copybook");
+            rejectedBecause(() -> DatasetInput.ofEmpty(300, "cvact01y"), "copybook");
+            rejectedBecause(() -> DatasetInput.ofEmpty(300, "CVACT01Y.cpy"), "copybook");
+            rejectedBecause(() -> DatasetInput.ofEmpty(300, "CVACT01Y-TOO-LONG"), "copybook");
+        }
+
+        @Test
+        @DisplayName("a row range is meaningless on an empty dataset and is refused")
+        void aRowRangeIsRefused() {
+            rejectedBecause(() -> new DatasetInput(List.of(), null, 0, null, Boolean.TRUE, 300,
+                "CVACT01Y"), "fromRow", "no row to narrow");
+            rejectedBecause(() -> new DatasetInput(List.of(), null, null, 5, Boolean.TRUE, 300,
+                "CVACT01Y"), "rowCount");
+        }
+
+        @Test
+        @DisplayName("recordLength or copybook without \"empty\": true is refused")
+        void theWidthBelongsOnlyToTheEmptyShape() {
+            rejectedBecause(
+                () -> new DatasetInput(List.of(SEED_ROW_80), null, null, null, null, 80, null),
+                "recordLength", "second, unchecked opinion");
+            rejectedBecause(
+                () -> new DatasetInput(List.of(SEED_ROW_80), null, null, null, null, null,
+                    "CSUSR01Y"),
+                "copybook");
+        }
+
+        @Test
+        @DisplayName("a normalisation cannot name a dataset declared empty: there is nothing to pad")
+        void aNormalisationCannotNameAnEmptyDataset() {
+            rejectedBecause(
+                () -> new ParityCase(PROGRAM, "case01", "an empty seed with a pad",
+                    UnitKind.BATCH_JOB, Map.of(USRSEC, DatasetInput.ofEmpty(80, "CSUSR01Y")),
+                    Map.of(), null, null, List.of(), List.of(), 0, List.of(),
+                    List.of(new DatasetNormalisation(USRSEC,
+                        Normalisation.USRSEC_FILLER_PAD_57_TO_80))),
+                USRSEC);
+        }
+
+        @Test
+        @DisplayName("its rendering names the shape and never a row")
+        void itsRenderingNamesTheShape() {
+            Assertions.assertThat(DatasetInput.ofEmpty(300, "CVACT01Y").toString())
+                .contains("empty", "recordLength=300", "CVACT01Y");
+        }
+    }
+
+    // ===============================================================================================
+    @Nested
+    @DisplayName("ExpectedDataset: the dataset-level observation a row expectation cannot make")
+    class ExpectedDatasets {
+
+        @Test
+        @DisplayName("a row count of zero is legal and is the whole point of the type")
+        void zeroIsLegalAndMeaningful() {
+            ExpectedDataset expectation = ExpectedDataset.empty("DALYREJS", DatasetChannel.WRITES,
+                430);
+
+            Assertions.assertThat(expectation.rowCount()).isZero();
+            Assertions.assertThat(expectation.recordLength()).isEqualTo(430);
+            Assertions.assertThat(expectation.channel()).isEqualTo(DatasetChannel.WRITES);
+        }
+
+        @Test
+        @DisplayName("the row count is mandatory, so an omitted key cannot bind to zero")
+        void theRowCountIsMandatory() {
+            // Zero is a real, asserting value here, which is exactly why it must never arrive by
+            // default: a fixture that forgot the key would otherwise assert "this dataset produced
+            // nothing" and pass on a job that produced nothing because it was broken.
+            Assertions.assertThatNullPointerException()
+                .isThrownBy(() -> new ExpectedDataset("DALYREJS", DatasetChannel.WRITES, null, 430))
+                .withMessageContainingAll("rowCount", "never defaulted", "by accident");
+            rejectedBecause(
+                () -> new ExpectedDataset("DALYREJS", DatasetChannel.WRITES, -1, 430),
+                "rowCount");
+        }
+
+        @Test
+        @DisplayName("the dataset and the channel are both required")
+        void theDatasetAndChannelAreRequired() {
+            rejectedBecause(() -> new ExpectedDataset(null, DatasetChannel.WRITES, 0, 430),
+                "dataset");
+            rejectedBecause(() -> new ExpectedDataset(" ", DatasetChannel.WRITES, 0, 430),
+                "dataset");
+            Assertions.assertThatNullPointerException()
+                .isThrownBy(() -> new ExpectedDataset("DALYREJS", null, 0, 430))
+                .withMessageContaining("channel");
+        }
+
+        @Test
+        @DisplayName("a declared width must be usable, and is optional for a populated dataset")
+        void theWidthIsOptionalButNeverNonsense() {
+            rejectedBecause(() -> new ExpectedDataset("DALYREJS", DatasetChannel.WRITES, 0, 0),
+                "recordLength");
+            Assertions.assertThat(ExpectedDataset.of("TRANSACT", DatasetChannel.WRITES, 3)
+                    .recordLength())
+                .as("a dataset holding rows measures its own width from them")
+                .isNull();
+        }
+
+        @Test
+        @DisplayName("the same dataset may be declared once per channel, and no more")
+        void oneDeclarationPerDatasetAndChannel() {
+            ParityCase accepted = new ParityCase(PROGRAM, "case01", "both channels",
+                UnitKind.BATCH_JOB, Map.of(), Map.of(), null, null, List.of(), List.of(), 0,
+                List.of(), List.of(), List.of(
+                    ExpectedDataset.empty("DALYREJS", DatasetChannel.WRITES, 430),
+                    ExpectedDataset.empty("DALYREJS", DatasetChannel.FINAL_STATE, 430)));
+
+            Assertions.assertThat(accepted.expectedDatasets()).hasSize(2);
+
+            rejectedBecause(
+                () -> new ParityCase(PROGRAM, "case01", "the same channel twice",
+                    UnitKind.BATCH_JOB, Map.of(), Map.of(), null, null, List.of(), List.of(), 0,
+                    List.of(), List.of(), List.of(
+                        ExpectedDataset.empty("DALYREJS", DatasetChannel.WRITES, 430),
+                        ExpectedDataset.of("DALYREJS", DatasetChannel.WRITES, 1))),
+                "DALYREJS");
+        }
+
+        @Test
+        @DisplayName("the list is frozen, and a case declaring none carries an empty list")
+        void theListIsFrozenAndDefaultsEmpty() {
+            Assertions.assertThat(batchCase().expectedDatasets()).isEmpty();
+            Assertions.assertThatExceptionOfType(UnsupportedOperationException.class)
+                .isThrownBy(() -> batchCase().expectedDatasets().add(
+                    ExpectedDataset.of("TRANSACT", DatasetChannel.WRITES, 1)));
         }
     }
 
@@ -1603,14 +1837,240 @@ class ParityCaseTest {
                 .contains(Redaction.MASK, "len=8");
         }
 
-        @ParameterizedTest(name = "\"{0}\" is not a credential field")
+        @ParameterizedTest(name = "\"{0}\" is not a classified field")
         @DisplayName("an ordinary field is not masked, or a diff could not be diagnosed")
-        @ValueSource(strings = {"SEC-USR-ID", "SEC-USR-FNAME", "ERRMSGO", "ACCT-CURR-BAL",
+        @ValueSource(strings = {"ERRMSGO", "ACCT-CURR-BAL", "SEC-USR-TYPE", "TRAN-ID",
             "sec-usr-pwd", "SEC-USR-PWD-HASH"})
         void anOrdinaryFieldIsNotMasked(String fieldName) {
+            Assertions.assertThat(Redaction.classify(fieldName))
+                .isEqualTo(Redaction.Sensitivity.PUBLIC);
             Assertions.assertThat(Redaction.sensitiveField(fieldName)).isFalse();
             Assertions.assertThat(Redaction.maskFieldValue(fieldName, "ADMIN001"))
                 .isEqualTo("ADMIN001");
+        }
+
+        @ParameterizedTest(name = "\"{0}\" carries personal data")
+        @DisplayName("a name, an address, a telephone number, an SSN, a date of birth or a credit "
+            + "score is personal data and is never printed")
+        @ValueSource(strings = {"CUST-FIRST-NAME", "CUST-MIDDLE-NAME", "CUST-LAST-NAME",
+            "CUST-ADDR-LINE-1", "CUST-ADDR-ZIP", "CUST-PHONE-NUM-1", "CUST-SSN",
+            "CUST-GOVT-ISSUED-ID", "CUST-DOB-YYYY-MM-DD", "CUST-DOB-YYYYMMDD",
+            "CUST-EFT-ACCOUNT-ID", "CUST-FICO-CREDIT-SCORE", "SEC-USR-FNAME", "SEC-USR-LNAME",
+            "CARD-EMBOSSED-NAME", "FNAMEI", "LNAMEO", "SSN1I", "DOBI", "FNAME01I", "LNAME10O"})
+        void personalDataIsMasked(String fieldName) {
+            Assertions.assertThat(Redaction.classify(fieldName))
+                .isEqualTo(Redaction.Sensitivity.PERSONAL);
+            Assertions.assertThat(Redaction.sensitiveField(fieldName)).isTrue();
+            Assertions.assertThat(Redaction.credentialField(fieldName))
+                .as("personal data is not a credential: it discloses a digest, a credential none")
+                .isFalse();
+            Assertions.assertThat(Redaction.maskFieldValue(fieldName, "Margaret"))
+                .doesNotContain("Margaret")
+                .contains("<personal>", "len=8", "sha256=");
+        }
+
+        @ParameterizedTest(name = "\"{0}\" identifies one account, card, customer or user")
+        @DisplayName("an individual identifier is masked, including the commarea field carrying it")
+        @ValueSource(strings = {"ACCT-ID", "CARD-NUM", "CARD-ACCT-ID", "XREF-CARD-NUM",
+            "XREF-ACCT-ID", "XREF-CUST-ID", "CUST-ID", "TRAN-CARD-NUM", "DALYTRAN-CARD-NUM",
+            "TRNX-CARD-NUM", "SEC-USR-ID", "ACCTSIDI", "CARDNUMO", "USRIDINI",
+            "CDEMO-USER-ID", "CDEMO-ACCT-ID", "CDEMO-CARD-NUM", "CDEMO-CUST-ID",
+            "CDEMO-CU02-USR-SELECTED"})
+        void anIdentifierIsMasked(String fieldName) {
+            Assertions.assertThat(Redaction.classify(fieldName))
+                .isEqualTo(Redaction.Sensitivity.IDENTIFIER);
+            Assertions.assertThat(Redaction.sensitiveField(fieldName)).isTrue();
+            Assertions.assertThat(Redaction.maskFieldValue(fieldName, "00000000011"))
+                .doesNotContain("00000000011")
+                .contains("<identifier>", "len=11", "sha256=");
+        }
+
+        @Test
+        @DisplayName("a digest is stable and discriminating: equal values match, different ones do not")
+        void aDigestIsStableAndDiscriminating() {
+            String first = Redaction.maskFieldValue("ACCT-ID", "00000000011");
+
+            Assertions.assertThat(Redaction.maskFieldValue("ACCT-ID", "00000000011"))
+                .as("an unstable digest would make one value look like two")
+                .isEqualTo(first);
+            Assertions.assertThat(Redaction.maskFieldValue("ACCT-ID", "00000000012"))
+                .as("a digest that collided would make a difference look like a match, which is the "
+                    + "one thing a parity report must never do")
+                .isNotEqualTo(first);
+            Assertions.assertThat(first)
+                .as("the digest is truncated so a multi-field failure stays readable")
+                .contains("sha256=")
+                .hasSize("<identifier>(len=11,sha256=)".length() + Redaction.DIGEST_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a credential discloses no digest at all, only that it was eight bytes")
+        void aCredentialDisclosesNoDigest() {
+            Assertions.assertThat(Redaction.maskFieldValue("SEC-USR-PWD", "PASSWORD"))
+                .as("the credential space is small enough that a digest of one is reversible")
+                .doesNotContain("sha256")
+                .isEqualTo(Redaction.MASK + "(len=8)");
+        }
+
+        @Test
+        @DisplayName("PGMNAMEI is not a person's name: the program-name item every screen carries "
+            + "must stay legible")
+        void theProgramNameItemIsNotClassified() {
+            for (String fieldName : List.of("PGMNAMEI", "PGMNAMEO", "TRNNAMEI", "TITLE01O",
+                "ERRMSGO", "CDEMO-FROM-PROGRAM", "CDEMO-TO-PROGRAM", "CDEMO-LAST-MAP")) {
+                Assertions.assertThat(Redaction.classify(fieldName))
+                    .as("%s carries navigation, not a person - masking it would hide the single value "
+                        + "an XCTL failure is diagnosed from", fieldName)
+                    .isEqualTo(Redaction.Sensitivity.PUBLIC);
+            }
+        }
+
+        @Test
+        @DisplayName("a null field name classifies as public rather than throwing")
+        void aNullFieldNameIsPublic() {
+            Assertions.assertThat(Redaction.classify(null))
+                .isEqualTo(Redaction.Sensitivity.PUBLIC);
+        }
+
+        @Test
+        @DisplayName("maskImage masks every classified span of a record and leaves the rest legible")
+        void maskImageMasksEveryClassifiedSpan() {
+            String image = "ADMIN001" + "John" + " ".repeat(16) + "Doe" + " ".repeat(17)
+                + "PASSWORD" + "A" + " ".repeat(23);
+            List<Redaction.Span> spans = List.of(
+                new Redaction.Span("SEC-USR-ID", 0, 8),
+                new Redaction.Span("SEC-USR-FNAME", 8, 20),
+                new Redaction.Span("SEC-USR-LNAME", 28, 20),
+                new Redaction.Span("SEC-USR-PWD", 48, 8),
+                new Redaction.Span("SEC-USR-TYPE", 56, 1),
+                new Redaction.Span("SEC-USR-FILLER", 57, 23));
+
+            String masked = Redaction.maskImage(image, spans);
+
+            Assertions.assertThat(masked)
+                .hasSize(image.length())
+                .doesNotContain("ADMIN001", "John", "Doe", "PASSWORD")
+                .startsWith("*".repeat(56));
+            Assertions.assertThat(masked.charAt(56))
+                .as("the unclassified authorisation byte is what keeps a masked row diagnosable")
+                .isEqualTo('A');
+        }
+
+        @Test
+        @DisplayName("maskImage masks as far as a truncated image goes, rather than giving up")
+        void maskImageMasksATruncatedSpan() {
+            String masked = Redaction.maskImage("ADMIN001Jo",
+                List.of(new Redaction.Span("SEC-USR-FNAME", 8, 20)));
+
+            Assertions.assertThat(masked)
+                .as("two characters of a name are still a disclosure")
+                .isEqualTo("ADMIN001**");
+        }
+
+        @Test
+        @DisplayName("maskImage leaves an unclassified record untouched, and refuses a null span list")
+        void maskImageLeavesAnUnclassifiedRecordAlone() {
+            Assertions.assertThat(Redaction.maskImage("0000001000000010",
+                List.of(new Redaction.Span("TRAN-CAT-CD", 0, 16))))
+                .isEqualTo("0000001000000010");
+            Assertions.assertThat(Redaction.maskImage(null, List.of())).isNull();
+            Assertions.assertThat(Redaction.maskImage("", List.of())).isEmpty();
+            Assertions.assertThatNullPointerException()
+                .isThrownBy(() -> Redaction.maskImage("row", null));
+        }
+
+        @ParameterizedTest(name = "a Span with offset {0} and length {1} is refused")
+        @DisplayName("a Span validates its own geometry, because a wrong one masks the wrong bytes")
+        @CsvSource({"-1, 8", "0, 0", "0, -3"})
+        void aSpanValidatesItsGeometry(int offset, int length) {
+            Assertions.assertThatIllegalArgumentException()
+                .isThrownBy(() -> new Redaction.Span("SEC-USR-PWD", offset, length));
+            Assertions.assertThatNullPointerException()
+                .isThrownBy(() -> new Redaction.Span(null, 0, 8));
+        }
+
+        @Test
+        @DisplayName("an image of unknown geometry renders as its length and a digest, nothing more")
+        void anUnlocatedImageRendersAsLengthAndDigest() {
+            String image = "ADMIN001John                Doe                 PASSWORDA"
+                + " ".repeat(23);
+
+            Assertions.assertThat(Redaction.maskUnlocatedImage(image))
+                .doesNotContain("ADMIN001", "John", "Doe", "PASSWORD")
+                .contains("<image>", "len=80", "sha256=");
+            Assertions.assertThat(Redaction.maskUnlocatedImage(null)).isNull();
+        }
+
+        @Test
+        @DisplayName("a diagnostic from outside this package is scrubbed and bounded")
+        void aDiagnosticIsScrubbedAndBounded() {
+            Assertions.assertThat(Redaction.sanitiseDiagnostic(
+                    "row 0 of USRSEC is 'ADMIN001...PASSWORDA': width 57 of 80"))
+                .as("a credential value is masked wherever in the text it sits")
+                .doesNotContain("PASSWORD")
+                .contains(Redaction.MASK, "width 57 of 80");
+            Assertions.assertThat(Redaction.sanitiseDiagnostic(null))
+                .isEqualTo(Redaction.NO_MESSAGE);
+            Assertions.assertThat(Redaction.sanitiseDiagnostic("   "))
+                .isEqualTo(Redaction.NO_MESSAGE);
+
+            String customerRow = "X".repeat(500);
+            Assertions.assertThat(Redaction.sanitiseDiagnostic(customerRow))
+                .as("an exception that quoted a whole 500-byte customer row is bounded rather than "
+                    + "printed: names, address and SSN are all in there and no field name is")
+                .hasSize(Redaction.MAX_DIAGNOSTIC_LENGTH + Redaction.TRUNCATION_MARKER.length())
+                .endsWith(Redaction.TRUNCATION_MARKER);
+        }
+
+        @Test
+        @DisplayName("a credential labelled in foreign text loses its value and keeps its label")
+        void aLabelledCredentialLosesItsValue() {
+            Assertions.assertThat(Redaction.sanitiseDiagnostic("rewrite failed: password=SECRET99"))
+                .as("a credential this package has never seen still must not survive")
+                .doesNotContain("SECRET99")
+                .contains("password=" + Redaction.MASK);
+            Assertions.assertThat(Redaction.sanitiseDiagnostic("pwd : hunter2 rejected"))
+                .doesNotContain("hunter2")
+                .contains("pwd : " + Redaction.MASK, "rejected");
+        }
+
+        @Test
+        @DisplayName("a real program message about a password is NOT mangled by the label rule")
+        void aProgramMessageAboutAPasswordSurvives() {
+            // COUSR01C emits this exact text as a screen message, and COUSR02C emits its siblings.
+            // They are expectations in their own right, so a rule that masked the word after
+            // "Password" would break the parity contract in order to protect nothing.
+            for (String message : List.of("Password can NOT be empty...",
+                "Password should be Alphanumeric...", "Wrong Password. Try again...")) {
+                Assertions.assertThat(Redaction.maskIfSensitiveText(message))
+                    .as("%s is program output and must stay byte-exact", message)
+                    .isEqualTo(message);
+                Assertions.assertThat(Redaction.sanitiseDiagnostic(message))
+                    .as("%s carries no separator, so the label rule does not fire", message)
+                    .isEqualTo(message);
+            }
+        }
+
+        @Test
+        @DisplayName("a throwable is described by its type and its sanitised message, never raw")
+        void aThrowableIsDescribedNotQuoted() {
+            Assertions.assertThat(Redaction.describeThrowable(
+                    new IllegalStateException("stored PASSWORD did not match")))
+                .doesNotContain("PASSWORD")
+                .contains(IllegalStateException.class.getName(), Redaction.MASK,
+                    "did not match");
+            Assertions.assertThat(Redaction.describeThrowable(new IllegalStateException()))
+                .contains(IllegalStateException.class.getName(), Redaction.NO_MESSAGE);
+            Assertions.assertThat(Redaction.describeThrowable(null))
+                .isEqualTo(Redaction.NO_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("a line that merely contains a credential keeps its other text and loses that")
+        void aLineContainingACredentialLosesOnlyTheCredential() {
+            Assertions.assertThat(Redaction.maskIfSensitiveText("PWD is PASSWORD for ADMIN001"))
+                .doesNotContain("PASSWORD")
+                .contains(Redaction.MASK, "for ADMIN001");
         }
 
         @Test
@@ -1780,7 +2240,7 @@ class ParityCaseTest {
         @DisplayName("the mask is fixed text that cannot be mistaken for data")
         void theMaskIsFixedText() {
             Assertions.assertThat(Redaction.MASK).isEqualTo("<redacted>");
-            Assertions.assertThat(Redaction.SENSITIVE_FIELDS).hasSize(3);
+            Assertions.assertThat(Redaction.CREDENTIAL_FIELDS).hasSize(3);
             Assertions.assertThat(Redaction.SENSITIVE_DATASET).isEqualTo(USRSEC);
         }
 
@@ -2534,7 +2994,7 @@ class ParityCaseTest {
         @Test
         @DisplayName("every repository outcome arm is reachable, forced where data cannot reach it")
         void everyRepositoryOutcomeArmIsCovered() {
-            Map<String, List<FileStatus.Outcome>> forced = new LinkedHashMap<>();
+            Map<RepositoryOperation, List<FileStatus.Outcome>> forced = new LinkedHashMap<>();
             for (ParityCase parityCase : loadAll()) {
                 parityCase.screenRequest().forcedOutcomes()
                     .forEach((operation, outcome) -> forced
@@ -2545,10 +3005,11 @@ class ParityCaseTest {
             Assertions.assertThat(forced)
                 .as("the WHEN OTHER arms of both EVALUATE WS-RESP-CD paragraphs need a forced "
                     + "outcome: no arrangement of seeded rows produces an I/O failure")
-                .containsOnlyKeys("readForUpdate", "rewrite");
-            Assertions.assertThat(forced.get("readForUpdate"))
+                .containsOnlyKeys(RepositoryOperation.READ_FOR_UPDATE,
+                    RepositoryOperation.REWRITE);
+            Assertions.assertThat(forced.get(RepositoryOperation.READ_FOR_UPDATE))
                 .contains(FileStatus.Outcome.NOT_FOUND, FileStatus.Outcome.OTHER);
-            Assertions.assertThat(forced.get("rewrite"))
+            Assertions.assertThat(forced.get(RepositoryOperation.REWRITE))
                 .contains(FileStatus.Outcome.NOT_FOUND, FileStatus.Outcome.OTHER);
         }
 
@@ -2616,7 +3077,7 @@ class ParityCaseTest {
                 }
                 boolean rewriteForcedToFail = parityCase.screenRequest().forcedOutcomes()
                     .entrySet().stream()
-                    .anyMatch(entry -> "rewrite".equals(entry.getKey())
+                    .anyMatch(entry -> entry.getKey() == RepositoryOperation.REWRITE
                         && entry.getValue().outcome() != FileStatus.Outcome.OK);
                 if (rewriteForcedToFail && parityCase.expectedWrites().isEmpty()) {
                     sawRejectedRewrite = true;

@@ -1,9 +1,12 @@
 package com.vsergeychik.carddemo.user;
 
+import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -19,6 +22,7 @@ import com.vsergeychik.carddemo.user.dto.UserListRequest;
 import com.vsergeychik.carddemo.user.dto.UserListResponse;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 
+import org.mockito.Mockito;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -31,16 +35,19 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.OptionalInt;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -1581,6 +1588,54 @@ class UserMenuControllerTest {
         }
 
         @Test
+        @DisplayName("the metadata reports the cursor request and the erase, which had no other route")
+        void theMetadataReportsWhatTheSendCarried() {
+            // MOVE -1 TO USRIDINL is a request to place the cursor, carried in the SEND's CURSOR
+            // option. It cannot travel as a field length, because UserListRequest.FieldMetadata refuses
+            // a negative one, so the envelope is where it becomes observable.
+            ScreenMetadata painted = controllerOver(PAGE_SIZE).getUsers(entering(), null)
+                    .screenMetadata();
+
+            assertThat(painted.cursorField()).isEqualTo(UserListResponse.USRIDIN_FIELD);
+            assertThat(painted.resetAllOutputFields())
+                    .as("SEND ... ERASE at :288 clears the screen before painting")
+                    .isTrue();
+            assertThat(painted.messageColour()).isEqualTo(Byte.toUnsignedInt(BmsAttributes.DFHDFCOL));
+            assertThat(painted.fields()).as("COUSR00 declares no per-field attribute quads").isEmpty();
+
+            // Every path through the program reports the same cursor request, because :108 moves -1
+            // before the EIBCALEN test at :110 - so even the cold start that transfers away has made it.
+            assertThat(controllerOver(PAGE_SIZE)
+                    .getUsers(UserListRequest.empty().withoutNavigationContext(), null)
+                    .screenMetadata().cursorField())
+                    .isEqualTo(UserListResponse.USRIDIN_FIELD);
+
+            // A work area in which no statement has run has made no cursor request and no erase: the
+            // metadata names no field rather than inventing one, which is what keeps the reported cursor
+            // a reading of what happened rather than a constant.
+            ScreenMetadata untouched = UserMenuController.screenMetadataOf(new WorkArea());
+            assertThat(untouched.cursorField()).isNull();
+            assertThat(untouched.resetAllOutputFields())
+                    .as("SEND-ERASE-YES is the declared initial state of the 88-level")
+                    .isTrue();
+
+            // A PF8 with NEXT-PAGE-NO is the one presentation choice that differs between paths: :275
+            // turns ERASE off so the "already at the bottom" message lands on the page still displayed.
+            ScreenMetadata atTheBottom = controllerOver(PAGE_SIZE)
+                    .getUsers(reentering(), Byte.toUnsignedInt(CicsAid.DFHPF8))
+                    .screenMetadata();
+            assertThat(atTheBottom.resetAllOutputFields()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the metadata refuses to be read from no work area at all")
+        void theMetadataNeedsAWorkArea() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> UserMenuController.screenMetadataOf(null))
+                    .withMessageContaining("work area");
+        }
+
+        @Test
         @DisplayName("both contract guards pass against the copybooks they defend")
         void theContractGuardsPass() {
             UserMenuController.verifyScreenContract();
@@ -1594,7 +1649,10 @@ class UserMenuControllerTest {
                     Integer.class);
 
             assertThat(UserMenuController.USER_LIST_PATH).isEqualTo("/api/users");
-            assertThat(mapped.getReturnType()).isEqualTo(UserListResponse.class);
+            // The handler answers the shared online envelope, whose payload member is this screen.
+            assertThat(mapped.getReturnType()).isEqualTo(ScreenResponse.class);
+            assertThat(((ParameterizedType) mapped.getGenericReturnType()).getActualTypeArguments())
+                    .containsExactly(UserListResponse.class);
             for (Class<?> parameter : mapped.getParameterTypes()) {
                 assertThat(parameter.getName())
                         .as("no servlet type may appear in the signature")
@@ -1621,10 +1679,14 @@ class UserMenuControllerTest {
         @Test
         @DisplayName("the request mapping delegates without deciding anything itself")
         void theRequestMappingDelegates() {
-            UserListResponse throughHttp = controllerOver(PAGE_SIZE).getUsers(entering(), null);
+            ScreenResponse<UserListResponse> answer =
+                    controllerOver(PAGE_SIZE).getUsers(entering(), null);
 
+            UserListResponse throughHttp = answer.screen();
             assertThat(rowUserId(throughHttp, 1)).isEqualTo("ADMIN001");
             assertThat(throughHttp.pgmName()).isEqualTo("COUSR00C");
+            assertThat(answer.screenMetadata()).as("the envelope carries the presentation state")
+                    .isNotNull();
         }
 
         @Test
@@ -1833,6 +1895,68 @@ class UserMenuControllerTest {
         private static UserMenuController controllerWithOnlyAnUndecodableRow() {
             return new UserMenuController(new SecUserRepository(seeded(List.of(UNDECODABLE)),
                     validBindings(), ASCII, RecordImageForm.CHARACTER), CODEC, CLOCK);
+        }
+
+        @Test
+        @DisplayName("a read that fails outright still ends the browse, and adds no send")
+        void anUnmodelledReadFailureStillEndsTheBrowse() {
+            // The EVALUATE arms of READNEXT-USER-SEC-FILE classify a CICS response; they do not wrap the
+            // command itself, so a driver-level refusal propagates. That exit bypasses the ENDBR at :325,
+            // and under CICS it would be harmless because task termination releases the browse - there is
+            // no implicit release here, so the request boundary performs it.
+            SecUserRepository repository = Mockito.spy(new SecUserRepository(seeded(fixtureImages(PAGE_SIZE)),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER));
+            BrowseCursor cursor = Mockito.mock(BrowseCursor.class);
+            Mockito.when(cursor.openOutcome()).thenReturn(FileStatus.Outcome.OK);
+            Mockito.when(cursor.openCicsResp()).thenReturn(OptionalInt.of(FileStatus.NORMAL));
+            Mockito.when(cursor.isOpen()).thenReturn(true);
+            Mockito.when(cursor.readNext()).thenThrow(new IllegalStateException("the read was refused"));
+            Mockito.doReturn(cursor).when(repository).startBrowse(Mockito.any());
+            UserMenuController controller = new UserMenuController(repository, CODEC, CLOCK);
+            WorkArea ws = new WorkArea();
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> controller.processPageForward(ws, CicsAid.DFHPF8))
+                    .withMessage("the read was refused");
+
+            Mockito.verify(cursor).endBrowse();
+            assertThat(ws.sends())
+                    .as("the release is silent: no map is sent and no message set")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a backward read that fails outright also ends the browse")
+        void anUnmodelledBackwardReadFailureStillEndsTheBrowse() {
+            SecUserRepository repository = Mockito.spy(new SecUserRepository(seeded(fixtureImages(PAGE_SIZE)),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER));
+            BrowseCursor cursor = Mockito.mock(BrowseCursor.class);
+            Mockito.when(cursor.openOutcome()).thenReturn(FileStatus.Outcome.OK);
+            Mockito.when(cursor.openCicsResp()).thenReturn(OptionalInt.of(FileStatus.NORMAL));
+            Mockito.when(cursor.isOpen()).thenReturn(true);
+            Mockito.when(cursor.readPrevious()).thenThrow(new IllegalStateException("refused"));
+            Mockito.doReturn(cursor).when(repository).startBrowse(Mockito.any());
+            UserMenuController controller = new UserMenuController(repository, CODEC, CLOCK);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> controller.processPageBackward(new WorkArea(), CicsAid.DFHPF7));
+
+            Mockito.verify(cursor).endBrowse();
+        }
+
+        @Test
+        @DisplayName("a request that reached its own ENDBR is not ended a second time")
+        void aCompletedRequestIsNotEndedTwice() {
+            // The guard is the cursor's own isOpen(), which reports false once a browse has been ended, so
+            // "one ENDBR per browse" - the single statement at :325 - still holds.
+            SecUserRepository repository = Mockito.spy(new SecUserRepository(seeded(fixtureImages(PAGE_SIZE)),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER));
+            UserMenuController controller = new UserMenuController(repository, CODEC, CLOCK);
+            WorkArea ws = new WorkArea();
+
+            controller.processPageForward(ws, CicsAid.DFHENTER);
+
+            assertThat(ws.errFlgOn()).isFalse();
         }
 
         @Test

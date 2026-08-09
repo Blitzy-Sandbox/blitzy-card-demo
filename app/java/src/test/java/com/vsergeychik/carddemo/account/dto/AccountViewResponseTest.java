@@ -1581,18 +1581,31 @@ class AccountViewResponseTest {
         }
 
         @Test
-        @DisplayName("nothing is masked - practice B6, the same divergence AccountViewRequest records")
-        void nothingIsMasked() {
+        @DisplayName("the payload is unmasked and the diagnostic rendering is not")
+        void thePayloadIsUnmaskedAndTheRenderingIsNot() {
+            // Two different surfaces, and the distinction is the whole point. COACTVWC puts these fields
+            // on a 3270 in the clear, so the PAYLOAD must carry them in the clear - masking an accessor
+            // would change observable behaviour (practice B6). The Java toString() is not that surface:
+            // it has no COBOL counterpart, nothing reads it for parity, and a log holding a social
+            // security number is CWE-532 for no gain at all.
             AccountViewResponse response = populated();
+
             assertThat(response.getAcstssn()).startsWith(HYPHENATED_SSN);
             assertThat(response.getAcstdob()).startsWith("1970-01-01");
             assertThat(response.getAcsgovt()).startsWith("GOVTID9988776655");
+
             assertThat(response.toString())
-                    .as("COACTVWC puts these on a 3270 in the clear; hiding them would change behaviour")
-                    .contains(HYPHENATED_SSN)
-                    .contains("1970-01-01")
-                    .contains("GOVTID9988776655")
-                    .doesNotContain("[REDACTED]");
+                    .doesNotContain(HYPHENATED_SSN)
+                    .doesNotContain("1970-01-01")
+                    .doesNotContain("GOVTID9988776655");
+        }
+
+        @Test
+        @DisplayName("no field value can forge a second log line")
+        void noFieldValueCanForgeALogLine() {
+            AccountViewResponse response = populatedBuilder().trnname("CAVW\r\nINJECTED").build();
+
+            assertThat(response.toString()).doesNotContain("\n").doesNotContain("\r");
         }
 
         @Test

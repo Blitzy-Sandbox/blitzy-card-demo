@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 
+import com.vsergeychik.carddemo.account.AccountInterestCalcJob;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.CobolDecimal;
@@ -44,8 +46,12 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -54,6 +60,7 @@ import java.util.UUID;
 
 import javax.sql.DataSource;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -62,13 +69,16 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
 
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.ResultSetExtractor;
+import org.springframework.jdbc.datasource.DelegatingDataSource;
 import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 
@@ -184,6 +194,21 @@ class TransactionRepositoryTest {
                 RecordImageForm.CHARACTER);
     }
 
+    /**
+     * Drops and shuts down this test's database once the test has finished with it.
+     *
+     * <p>{@code DB_CLOSE_DELAY=-1} above is what keeps the database alive between the connections
+     * {@code SimpleDriverDataSource} opens, and it is also what keeps it alive for the rest of the JVM
+     * after the test ends. Left that way every test in this class leaves a live, still-addressable
+     * schema behind - a name a later test could reach, which is precisely the shared state a per-test
+     * database exists to avoid, and a growing set of them held to the end of the run.
+     */
+    @AfterEach
+    void dropRelations() {
+        template.execute("DROP ALL OBJECTS");
+        template.execute("SHUTDOWN");
+    }
+
     // =================================================================================================
     // Fixtures.
     // =================================================================================================
@@ -240,6 +265,72 @@ class TransactionRepositoryTest {
     /** Stores an arbitrary image, for the malformed-row cases. */
     private void seedRaw(String dataset, String image) {
         template.update("INSERT INTO \"" + dataset + "\" VALUES (?)", image);
+    }
+
+    /**
+     * A data source that hands out real connections and remembers every one, so a test can see how many
+     * are still open at a given moment.
+     *
+     * <p>This is what makes "the pass streams through one cursor" assertable rather than asserted by
+     * inspection: a pass that drains its statement into a list holds nothing between reads, while a pass
+     * that walks a cursor holds exactly one connection from its first read until its close. Counting the
+     * live ones distinguishes the two, and it does so against the real driver rather than a mock's idea
+     * of one.
+     */
+    private static final class RecordingDataSource extends DelegatingDataSource {
+
+        /** Every connection handed out, closed or not. */
+        private final List<Connection> handedOut = new ArrayList<>();
+
+        /**
+         * Every statement prepared with an explicit cursor type - which is to say, every sequential
+         * pass. Recorded so the prepare-time settings can be verified on the object the real driver
+         * accepted, rather than on a mock's idea of it.
+         */
+        private final List<PreparedStatement> cursorStatements = new ArrayList<>();
+
+        RecordingDataSource(DataSource target) {
+            super(target);
+        }
+
+        @Override
+        public Connection getConnection() throws SQLException {
+            Connection connection = Mockito.spy(super.getConnection());
+            Mockito.doAnswer(invocation -> {
+                PreparedStatement prepared = Mockito.spy(
+                        (PreparedStatement) invocation.callRealMethod());
+                cursorStatements.add(prepared);
+                return prepared;
+            }).when(connection).prepareStatement(anyString(), ArgumentMatchers.anyInt(),
+                    ArgumentMatchers.anyInt());
+            handedOut.add(connection);
+            return connection;
+        }
+
+        /**
+         * The statements prepared for a sequential pass, in order.
+         *
+         * @return the recorded statements
+         */
+        List<PreparedStatement> cursorStatements() {
+            return List.copyOf(cursorStatements);
+        }
+
+        /**
+         * How many of the connections handed out are still open.
+         *
+         * @return the count of live connections
+         * @throws SQLException if a connection cannot report its own state
+         */
+        int liveConnections() throws SQLException {
+            int live = 0;
+            for (Connection connection : handedOut) {
+                if (!connection.isClosed()) {
+                    live++;
+                }
+            }
+            return live;
+        }
     }
 
     /** A repository whose datasets do not exist, so every statement is refused. */
@@ -879,6 +970,104 @@ class TransactionRepositoryTest {
         }
 
         @Test
+        @DisplayName("a physical-sequential pass streams through one cursor and releases it at close")
+        void aSequentialPassStreamsThroughOneCursor() throws SQLException {
+            // The defect this replaces: the first READ drained the whole relation into a List<byte[]>
+            // and later reads handed rows out of it, so a READ of the first record cost the whole
+            // dataset in heap - unbounded by anything in the source, since neither CBTRN03C nor
+            // CBTRN01C bounds how many records a generation holds.
+            //
+            // What proves the fix is not the absence of a list but the presence of a cursor, and a
+            // cursor is a connection held across reads. So the connections are counted.
+            seed(DALY_DS, record("0000000000000003"));
+            seed(DALY_DS, record("0000000000000002"));
+            seed(DALY_DS, record("0000000000000001"));
+            RecordingDataSource recording = new RecordingDataSource(dataSource);
+            TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+
+            InputFile input = subject.openInput(sequential(DALY_DS));
+
+            assertThat(input.openStatus()).isEqualTo(FileStatus.OK);
+            // The open describes the relation and gives its connection straight back, so an opened pass
+            // that is never read holds nothing.
+            assertThat(recording.liveConnections()).isZero();
+
+            // Every read walks the same cursor: one connection from the first read onward, never one per
+            // row and never none.
+            assertThat(input.readNext().requireRecord().tranId()).isEqualTo("0000000000000003");
+            assertThat(recording.liveConnections()).isEqualTo(1);
+            assertThat(input.readNext().requireRecord().tranId()).isEqualTo("0000000000000002");
+            assertThat(recording.liveConnections()).isEqualTo(1);
+            assertThat(input.readNext().requireRecord().tranId()).isEqualTo("0000000000000001");
+            assertThat(recording.liveConnections()).isEqualTo(1);
+            assertThat(input.readNext().isEndOfFile()).isTrue();
+            assertThat(recording.liveConnections()).isEqualTo(1);
+
+            // And the close releases it, which is the other half of the contract: a job that opened a
+            // pass and closed it leaks no connection.
+            assertThat(input.closeInput()).isEqualTo(FileStatus.OK);
+            assertThat(recording.liveConnections()).isZero();
+            // Idempotent, and the same answer - the release is not attempted twice.
+            assertThat(input.closeInput()).isEqualTo(FileStatus.OK);
+            assertThat(input.closeApplResult()).isEqualTo(FileStatus.APPL_AOK);
+        }
+
+        @Test
+        @DisplayName("the pass is prepared forward-only, read-only, with a positive fetch size stated")
+        void theCursorIsForwardOnlyReadOnlyAndBounded() throws SQLException {
+            // Forward-only and read-only is the JDBC statement of ORGANIZATION SEQUENTIAL with
+            // ACCESS MODE IS SEQUENTIAL on an OPEN INPUT: no consumer repositions and none writes. The
+            // stated fetch size is what makes the buffering a bound rather than the driver's own default,
+            // which for several drivers is the whole result set - the very thing being removed here.
+            //
+            // Asserted through a spy over the real driver rather than a mock of one, so the statement
+            // that is inspected is the statement the driver actually accepted.
+            seed(DALY_DS, record("0000000000000001"));
+            RecordingDataSource recording = new RecordingDataSource(dataSource);
+            TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+
+            try (InputFile input = subject.openInput(sequential(DALY_DS))) {
+                assertThat(input.readNext().isFound()).isTrue();
+            }
+
+            assertThat(recording.cursorStatements()).hasSize(1);
+            Mockito.verify(recording.cursorStatements().get(0))
+                    .setFetchSize(ArgumentMatchers.intThat(size -> size > 0));
+        }
+
+        @Test
+        @DisplayName("closing an unread physical-sequential pass releases nothing and still reports OK")
+        void closingAnUnreadSequentialPassReportsOk() throws SQLException {
+            RecordingDataSource recording = new RecordingDataSource(dataSource);
+            TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+
+            InputFile input = subject.openInput(sequential(DALY_DS));
+
+            assertThat(input.closeInput()).isEqualTo(FileStatus.OK);
+            assertThat(input.closeApplResult()).isEqualTo(FileStatus.APPL_AOK);
+            assertThat(recording.liveConnections()).isZero();
+        }
+
+        @Test
+        @DisplayName("try-with-resources releases the cursor even when the body never closes the pass")
+        void tryWithResourcesReleasesTheCursor() throws SQLException {
+            seed(DALY_DS, record("0000000000000001"));
+            RecordingDataSource recording = new RecordingDataSource(dataSource);
+            TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+
+            try (InputFile input = subject.openInput(sequential(DALY_DS))) {
+                assertThat(input.readNext().isFound()).isTrue();
+                assertThat(recording.liveConnections()).isEqualTo(1);
+            }
+
+            assertThat(recording.liveConnections()).isZero();
+        }
+
+        @Test
         @DisplayName("CBTRN01C's dead path: open and close with no read between them, both reported")
         void openAndCloseWithNoRead() {
             try (InputFile input = repository.openInput()) {
@@ -1030,6 +1219,37 @@ class TransactionRepositoryTest {
         }
 
         @Test
+        @DisplayName("an unaddressable destination fails the OPEN, not the first write")
+        void anUnaddressableDestinationFailsTheOpen() {
+            // app/cbl/CBACT04C.cbl:307-323 status-checks OPEN OUTPUT exactly as it status-checks the
+            // write at :501-514 and the close at :598, and displays 'ERROR OPENING TRANSACTION FILE' at
+            // :318 on the failing arm. Before this, the open could not fail at all, so that arm was
+            // unreachable and an unusable destination first appeared as 'ERROR WRITING TRANSACTION
+            // RECORD' - the wrong paragraph, for a condition that was true before the first record
+            // existed.
+            try (OutputFile output = repositoryOverMissingRelations().openOutput()) {
+                assertThat(output.openStatus())
+                        .isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+                assertThat(output.openOutcome()).isEqualTo(Outcome.OTHER);
+                assertThat(output.openApplResult())
+                        .isEqualTo(TransactionRepository.APPL_RESULT_FATAL);
+            }
+        }
+
+        @Test
+        @DisplayName("the OPEN probe writes no record, so a refused open leaves the generation empty")
+        void theOpenProbeWritesNothing() {
+            try (OutputFile output = repository.openOutput()) {
+                assertThat(output.openStatus()).isEqualTo(FileStatus.OK);
+                // The probe prepared the insert and released it; it did not execute it.
+                assertThat(output.recordsWritten()).isZero();
+            }
+
+            assertThat(template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"", Integer.class)).isZero();
+        }
+
+        @Test
         @DisplayName("a sequential dataset has no key, so the same record may be written twice")
         void aSequentialOutputHasNoDuplicateOutcome() {
             try (OutputFile output = repository.openOutput()) {
@@ -1052,6 +1272,85 @@ class TransactionRepositoryTest {
         }
 
         @Test
+        @DisplayName("the OPEN OUTPUT empties the generation, because INTCALC.jcl declares it "
+                + "DISP=(NEW,CATLG,DELETE) - it does not append to the last run")
+        void theOpenEmptiesTheGeneration() {
+            // A run writes into a brand-new generation, so last run's generated interest transactions
+            // are not part of this one. Before the open cleared, a second run over the same configured
+            // destination left both runs' records in it - which is OPEN EXTEND, a verb CBACT04C does
+            // not issue.
+            try (OutputFile first = repository.openOutput()) {
+                assertThat(first.writeSequential(record("2022071800001")).isWritten()).isTrue();
+            }
+            assertThat(template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"", Integer.class)).isOne();
+
+            try (OutputFile second = repository.openOutput()) {
+                assertThat(second.openStatus()).isEqualTo(FileStatus.OK);
+                // Emptied by the open itself, before a single record of this run was written.
+                assertThat(template.queryForObject(
+                        "SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"", Integer.class)).isZero();
+                assertThat(second.writeSequential(record("2022071800002")).isWritten()).isTrue();
+            }
+
+            List<String> stored = template.queryForList(
+                    "SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + SYSTRAN_DS + "\"", String.class);
+            assertThat(stored).hasSize(1);
+            assertThat(stored.get(0)).startsWith("2022071800002");
+        }
+
+        @Test
+        @DisplayName("a run that writes nothing still leaves the empty generation the JCL created")
+        void aRunThatWritesNothingLeavesTheEmptyGeneration() {
+            // CBACT04C computes no interest when no category balance qualifies, and the JCL still
+            // creates SYSTRAN(+1). An empty dataset and an absent one are different states downstream.
+            try (OutputFile output = repository.openOutput()) {
+                assertThat(output.recordsWritten()).isZero();
+                assertThat(output.closeOutput()).isEqualTo(FileStatus.OK);
+            }
+
+            assertThat(template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"", Integer.class)).isZero();
+        }
+
+        @Test
+        @DisplayName("a destination that cannot be established fails the OPEN, and the CLOSE reports "
+                + "the same - the ladder at CBACT04C:310-314 and :598-602")
+        void aRefusedOpenIsReportedByBothTheOpenAndTheClose() {
+            // 'ERROR OPENING TRANSACTION FILE' (:318-321) is what an absent destination must produce,
+            // and it must produce it from the OPEN rather than 350 bytes later from the first write.
+            OutputFile output = repositoryOverMissingRelations().openOutput();
+
+            assertThat(output.openStatus())
+                    .isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+            assertThat(output.openOutcome()).isEqualTo(Outcome.OTHER);
+            assertThat(output.openApplResult())
+                    .isEqualTo(TransactionRepository.APPL_RESULT_FATAL);
+
+            // A CLOSE of a file that never opened is not a success, which is the same rule the read
+            // side applies.
+            assertThat(output.closeOutput())
+                    .isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+            assertThat(output.closeApplResult())
+                    .isEqualTo(TransactionRepository.APPL_RESULT_FATAL);
+            // Idempotent, and it does not change its mind on the second call.
+            assertThat(output.closeOutput())
+                    .isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("the APPL-RESULT of a close that has not happened yet is the assumed-failure "
+                + "value CBACT04C holds at :596, never a success")
+        void theCloseApplResultBeforeTheCloseIsTheAssumedFailure() {
+            try (OutputFile output = repository.openOutput()) {
+                assertThat(output.closeApplResult())
+                        .isEqualTo(TransactionRepository.APPL_RESULT_FATAL);
+                assertThat(output.closeOutput()).isEqualTo(FileStatus.OK);
+                assertThat(output.closeApplResult()).isEqualTo(FileStatus.APPL_AOK);
+            }
+        }
+
+        @Test
         @DisplayName("writing to a closed run is a defect in the caller, and a record is required")
         void writingToAClosedRunThrows() {
             OutputFile output = repository.openOutput();
@@ -1062,6 +1361,74 @@ class TransactionRepositoryTest {
             assertThatIllegalStateException()
                     .isThrownBy(() -> output.writeSequential(record("2022071800001")))
                     .withMessageContaining("has been closed");
+        }
+
+        // ------------------------------------------------------- DISP=(NEW,CATLG,DELETE), third position
+
+        @Test
+        @DisplayName("the abnormal disposition discards the whole generation this run wrote")
+        void theAbnormalDispositionDiscardsTheGeneration() {
+            // app/jcl/INTCALC.jcl:37 declares DISP=(NEW,CATLG,DELETE). The third positional is the
+            // ABNORMAL disposition: a step that abends leaves no generation at all, even though every
+            // write it managed was durable as it completed (RECOVERY(NONE), app/csd/CARDDEMO.CSD:84).
+            OutputFile output = repository.openOutput();
+            assertThat(output.writeSequential(record("2022071800001")).isWritten()).isTrue();
+            assertThat(output.writeSequential(record("2022071800002")).isWritten()).isTrue();
+            assertThat(output.recordsWritten()).isEqualTo(2);
+
+            assertThat(output.discardGeneration()).isEqualTo(FileStatus.OK);
+
+            assertThat(template.queryForList("SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + SYSTRAN_DS + "\"", String.class)).isEmpty();
+            // Idempotent: a caller already abending must be able to apply it without guarding the call.
+            assertThat(output.discardGeneration()).isEqualTo(FileStatus.OK);
+            output.closeOutput();
+        }
+
+        @Test
+        @DisplayName("a run that wrote nothing has nothing to discard, and issues no statement")
+        void anEmptyGenerationNeedsNoDiscard() {
+            try (OutputFile output = repository.openOutput()) {
+                assertThat(output.recordsWritten()).isZero();
+                assertThat(output.discardGeneration()).isEqualTo(FileStatus.OK);
+            }
+        }
+
+        @Test
+        @DisplayName("the discard is refused when the dataset holds records this run did not write")
+        void theDiscardIsRefusedWhenTheGenerationIsNotThisRunsAlone() {
+            // DISP=NEW means the step allocates its own generation, so a faithful deployment gives this
+            // run a relation of its own. A deployment that instead maps successive generations onto one
+            // relation would have this delete another generation's records - so it is refused, loudly,
+            // rather than acted on.
+            // The foreign record arrives AFTER the open, and it has to: the open applies DISP=NEW by
+            // emptying the generation, so a record present beforehand is not there to be miscounted. What
+            // the guard defends is the window between the open and the disposition - a second DD mapped
+            // onto this relation, or a concurrent writer - and that is the scenario constructed here.
+            OutputFile output = repository.openOutput();
+            assertThat(output.writeSequential(record("2022071800001")).isWritten()).isTrue();
+            template.update("INSERT INTO \"" + SYSTRAN_DS + "\" VALUES (?)",
+                    new String(record("2022071700009").encode(ASCII), ASCII));
+
+            assertThat(output.discardGeneration())
+                    .isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+
+            assertThat(template.queryForList("SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + SYSTRAN_DS + "\"", String.class))
+                    .as("neither generation may be touched when the premise does not hold")
+                    .hasSize(2);
+            output.closeOutput();
+        }
+
+        @Test
+        @DisplayName("a backend that refuses the discard reports a status rather than throwing")
+        void aRefusedDiscardIsReported() {
+            // The caller is already abending when it applies a disposition, so a disposition that cannot
+            // be applied must not replace the abend that caused it.
+            OutputFile output = repository.openOutput();
+            assertThat(output.writeSequential(record("2022071800001")).isWritten()).isTrue();
+            template.execute("DROP TABLE \"" + SYSTRAN_DS + "\"");
+
+            assertThat(output.discardGeneration())
+                    .isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
         }
     }
 
@@ -1101,6 +1468,53 @@ class TransactionRepositoryTest {
         }
 
         @Test
+        @DisplayName("a row the driver refuses to read stops the pass instead of being re-read for ever")
+        void aRowRefusedOnReadStopsThePass() throws SQLException {
+            // Two conditions look alike and must not be treated alike. A refusal before a row is reached
+            // leaves the pass where it was. A refusal after one is reached is a record that is present
+            // and unreadable, and the pass has to stop on it - otherwise a caller looping until end of
+            // file, which is exactly what CBTRN03C:172 and CBTRN01C:169 do, would re-read that one row
+            // without end and never terminate.
+            ResultSetMetaData metaData = mock(ResultSetMetaData.class);
+            doReturn(1).when(metaData).getColumnCount();
+            doReturn(IMAGE_COLUMN).when(metaData).getColumnName(1);
+
+            ResultSet describeRows = mock(ResultSet.class);
+            doReturn(metaData).when(describeRows).getMetaData();
+            Statement describeStatement = mock(Statement.class);
+            doReturn(describeRows).when(describeStatement).executeQuery(anyString());
+
+            ResultSet passRows = mock(ResultSet.class);
+            doReturn(true).when(passRows).next();
+            doThrow(new SQLException("the row cannot be read", "58005", 1))
+                    .when(passRows).getString(ArgumentMatchers.anyInt());
+            PreparedStatement passStatement = mock(PreparedStatement.class);
+            doReturn(passRows).when(passStatement).executeQuery();
+
+            Connection connection = mock(Connection.class);
+            doReturn(describeStatement).when(connection).createStatement();
+            doReturn(passStatement).when(connection).prepareStatement(anyString(),
+                    ArgumentMatchers.anyInt(), ArgumentMatchers.anyInt());
+            DataSource refusing = mock(DataSource.class);
+            doReturn(connection).when(refusing).getConnection();
+
+            TransactionRepository subject = new TransactionRepository(new JdbcTemplate(refusing),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+            InputFile input = subject.openInput(sequential(DALY_DS));
+
+            assertThat(input.openStatus()).isEqualTo(FileStatus.OK);
+            ReadResult refused = input.readNext();
+            assertThat(refused.isOther()).isTrue();
+            assertThat(refused.status()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+            assertThat(refused.applResult()).isEqualTo(TransactionRepository.APPL_RESULT_FATAL);
+
+            // Stopped: the next read reports the end rather than reaching the same unreadable row again.
+            assertThat(input.readNext().isEndOfFile()).isTrue();
+            assertThat(input.position()).isZero();
+            Mockito.verify(passRows, Mockito.times(1)).getString(ArgumentMatchers.anyInt());
+        }
+
+        @Test
         @DisplayName("a describe that yields no record-image column fails the OPEN of a keyed dataset")
         void noRecordImageColumnFailsAKeyedOpen() {
             doReturn(null).when(stub).query(anyString(), anyExtractor());
@@ -1118,10 +1532,18 @@ class TransactionRepositoryTest {
 
             InputFile input = stubbed.openInput(sequential(DALY_DS));
 
+            // The point of the test: a physical-sequential dataset names no column, so the open does not
+            // need one and does not fail for the want of it.
             assertThat(input.openStatus()).isEqualTo(FileStatus.OK);
-            // The pass then yields nothing, because the same stub answers the read with nothing - which
-            // presents as an immediate end of file rather than as a silent success.
-            assertThat(input.readNext().isEndOfFile()).isTrue();
+            // The read is a separate matter, and over this stub it cannot succeed: a sequential read now
+            // opens a forward-only cursor, which needs a DataSource, and a stubbed template carries none.
+            // That is a wiring defect rather than a dataset condition, and it is reported through the
+            // read's own WHEN OTHER arm - which is the arm a caller has - instead of being thrown into
+            // the middle of a job.
+            ReadResult read = input.readNext();
+            assertThat(read.isOther()).isTrue();
+            assertThat(read.isEndOfFile()).isFalse();
+            assertThat(read.status()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
         }
 
         @Test
@@ -1482,6 +1904,25 @@ class TransactionRepositoryTest {
     @Nested
     @DisplayName("The surface this repository deliberately does not have")
     class AbsentSurface {
+        @Test
+        @DisplayName("a test's relations are dropped when the test ends, so no schema outlives it")
+        void aTestsRelationsAreDroppedWhenTheTestEnds() {
+            // DB_CLOSE_DELAY=-1 above is what keeps the four relations alive between the connections
+            // the data source opens, and it is also what would keep them alive for the rest of the JVM.
+            // A schema that outlives its test is a schema another test can reach by name.
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + MASTER_DS + "\"",
+                    Integer.class))
+                    .as("the relation exists while the test is using it")
+                    .isZero();
+
+            dropRelations();
+
+            assertThatExceptionOfType(BadSqlGrammarException.class)
+                    .as("and afterwards nothing is addressable through that name")
+                    .isThrownBy(() -> template.queryForObject(
+                            "SELECT COUNT(*) FROM \"" + MASTER_DS + "\"", Integer.class));
+        }
+
 
         @Test
         @DisplayName("there is no rewrite and no delete, because no program in the estate performs one")
@@ -2044,6 +2485,110 @@ class TransactionRepositoryTest {
                             "TRAN-DESC", "TRAN-AMT", "TRAN-MERCHANT-ID", "TRAN-MERCHANT-NAME",
                             "TRAN-MERCHANT-CITY", "TRAN-MERCHANT-ZIP", "TRAN-CARD-NUM", "TRAN-ORIG-TS",
                             "TRAN-PROC-TS", "FILLER");
+        }
+    }
+
+    // =================================================================================================
+    // The DD-scoped output open - the DD-mapping finding.
+    //
+    // app/jcl/INTCALC.jcl:37-41 declares the generated-transaction output under the DD name TRANSACT -
+    // the same eight characters as the CICS transaction master, addressing a completely different
+    // dataset. Only a job-scoped resolution can see the alias that resolves the collision, so a job
+    // hands its resolved binding in rather than calling the no-argument open.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("openOutput(binding, ddName) - the caller's own DD is the one written")
+    class TheDdScopedOutputOpen {
+
+        @Test
+        @DisplayName("a binding naming the configured output opens the configured relation")
+        void theConfiguredBindingOpensTheConfiguredRelation() {
+            TransactionRepository.OutputFile file = repository.openOutput(sequential(SYSTRAN_DS),
+                    AccountInterestCalcJob.TRANSACT_DD_NAME);
+
+            assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
+            assertThat(file.insertStatement()).contains(SYSTRAN_DS);
+        }
+
+        @Test
+        @DisplayName("a binding naming another dataset writes there, not to the configured output")
+        void anotherDatasetIsWrittenTo() {
+            // This is the case the finding was about, made observable: two distinct destinations, and the
+            // DD decides which one receives the record.
+            template.execute("CREATE TABLE \"" + SYSTRAN_DS + ".ALT\" (\"" + IMAGE_COLUMN + "\" CHAR("
+                    + RECORD_LENGTH + "))");
+
+            TransactionRepository.OutputFile file = repository.openOutput(
+                    sequential(SYSTRAN_DS + ".ALT"), AccountInterestCalcJob.TRANSACT_DD_NAME);
+            assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
+            assertThat(file.writeSequential(record("2022071800001")).isWritten()).isTrue();
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.OK);
+
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + SYSTRAN_DS + ".ALT\"",
+                    Integer.class)).isOne();
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"",
+                    Integer.class)).isZero();
+        }
+
+        @Test
+        @DisplayName("the open clears the generation it addresses, exactly as the no-argument open does")
+        void theOpenClearsTheGenerationItAddresses() {
+            // DISP=(NEW,CATLG,DELETE): a run writes into an empty generation whichever DD named it.
+            TransactionRepository.OutputFile first = repository.openOutput(sequential(SYSTRAN_DS),
+                    AccountInterestCalcJob.TRANSACT_DD_NAME);
+            assertThat(first.writeSequential(record("2022071800001")).isWritten()).isTrue();
+            assertThat(first.closeOutput()).isEqualTo(FileStatus.OK);
+
+            TransactionRepository.OutputFile second = repository.openOutput(sequential(SYSTRAN_DS),
+                    AccountInterestCalcJob.TRANSACT_DD_NAME);
+
+            assertThat(second.openStatus()).isEqualTo(FileStatus.OK);
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"",
+                    Integer.class)).isZero();
+        }
+
+        @Test
+        @DisplayName("a destination that does not exist is reported by the open, not by the write")
+        void anAbsentDestinationIsReportedByTheOpen() {
+            TransactionRepository.OutputFile file = repository.openOutput(
+                    sequential("CARDDEMO.TEST.ABSENT"), AccountInterestCalcJob.TRANSACT_DD_NAME);
+
+            assertThat(file.openStatus()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+            assertThat(file.openApplResult()).isEqualTo(12);
+        }
+
+        @Test
+        @DisplayName("a binding of the wrong record width is refused, naming the key to correct")
+        void aWrongWidthIsRefused() {
+            DatasetBinding wrong = new DatasetBinding(SYSTRAN_DS, "sequential", false, "F", 0,
+                    RECORD_LENGTH + 1, "CVTRA05Y", null, null, null, null);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.openOutput(wrong,
+                            AccountInterestCalcJob.TRANSACT_DD_NAME))
+                    .withMessageContaining(AccountInterestCalcJob.TRANSACT_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("a binding declaring no dataset name is refused")
+        void aBlankDatasetNameIsRefused() {
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.openOutput(sequential("   "),
+                            AccountInterestCalcJob.TRANSACT_DD_NAME))
+                    .withMessageContaining(AccountInterestCalcJob.TRANSACT_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("neither argument may be null, and the DD name is checked first")
+        void neitherArgumentMayBeNull() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> repository.openOutput(sequential(SYSTRAN_DS), null))
+                    .withMessageContaining("DD name");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> repository.openOutput(null,
+                            AccountInterestCalcJob.TRANSACT_DD_NAME))
+                    .withMessageContaining(AccountInterestCalcJob.TRANSACT_DD_NAME);
         }
     }
 }

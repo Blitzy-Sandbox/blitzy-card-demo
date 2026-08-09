@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -1655,22 +1656,83 @@ class TranReportWriterTest {
         @Test
         @DisplayName("the JdbcTemplate-backed default sink reports OK: it prepares nothing at open")
         void theDefaultSinkReportsOkAtOpen() throws SQLException {
-            // It borrows a pooled connection per record rather than holding one open, so there is
-            // nothing for it to establish here and open() is correctly left defaulted.
+            // 0100-REPTFILE-OPEN is an OPEN OUTPUT over a dataset TRANREPT.jcl:L76-L80 declares
+            // DISP=(NEW,CATLG,DELETE), so the open resolves the destination and empties it: a describe
+            // that transfers nothing, then a delete. Both must reach the backend, because an open that
+            // reached nothing could not report the '00'-or-12 the report job branches on, and a run that
+            // did not clear would append this report to the previous one.
             DataSource dataSource = Mockito.mock(DataSource.class);
             Connection connection = Mockito.mock(Connection.class);
             PreparedStatement statement = Mockito.mock(PreparedStatement.class);
+            Statement plain = Mockito.mock(Statement.class);
             Mockito.when(dataSource.getConnection()).thenReturn(connection);
             Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+
+            TranReportWriter subject = new TranReportWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "FB"), RecordImageForm.CHARACTER);
+
+            ReportFile file = subject.openOutput();
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+
+            String describe = "SELECT * FROM \"" + TEST_DSNAME + "\" WHERE 1 = 0";
+            Mockito.verify(plain).execute(describe);
+            Mockito.verify(plain).executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
+
+            // The close probes the destination again and clears nothing: exactly one DELETE for the
+            // whole run, whatever else happens to it. A close that cleared would throw the report away
+            // at the moment the job finished writing it.
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            Mockito.verify(plain, Mockito.times(2)).execute(describe);
+            Mockito.verify(plain, Mockito.times(1))
+                    .executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
+
+            // No record was written, so the insert was never prepared: the open transfers no report
+            // line, it only makes the destination ready to receive them.
+            Mockito.verifyNoInteractions(statement);
+        }
+
+        @Test
+        @DisplayName("the JDBC sink reports the WHEN OTHER outcome when the destination cannot be "
+                + "opened, rather than letting the first line discover it")
+        void theJdbcSinkReportsARefusedOpen() throws SQLException {
+            // 'ERROR OPENING REPTFILE' (CBTRN03C.cbl:L404-L409) is what a destination that is not there
+            // must produce, and it must produce it from the OPEN. Before the open issued anything, an
+            // absent dataset was silently OK here and surfaced 133 bytes later as a failed write.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Mockito.when(dataSource.getConnection())
+                    .thenThrow(new SQLException("dataset unavailable"));
 
             TranReportWriter subject = new TranReportWriter(new JdbcTemplate(dataSource), ASCII,
                     bindings(LRECL, "FB"), RecordImageForm.CHARACTER);
 
             try (ReportFile file = subject.openOutput()) {
-                assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+                assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OTHER);
             }
+        }
 
-            Mockito.verifyNoInteractions(statement);
+        @Test
+        @DisplayName("the JDBC sink reports the WHEN OTHER outcome from the close when the destination "
+                + "has gone (CBTRN03C.cbl:L540-L545)")
+        void theJdbcSinkReportsARefusedClose() throws SQLException {
+            // Nothing is buffered, so what a close can still discover is that the destination is no
+            // longer addressable. A close that could not fail would make the report job's
+            // 'ERROR CLOSING REPORT FILE' arm unreachable.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+            Mockito.when(plain.execute(Mockito.anyString()))
+                    .thenReturn(true)
+                    .thenThrow(new SQLException("dataset dropped"));
+
+            TranReportWriter subject = new TranReportWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "FB"), RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput();
+
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
         }
 
         @Test
@@ -1829,6 +1891,7 @@ class TranReportWriterTest {
                 PreparedStatement statement = Mockito.mock(PreparedStatement.class);
                 Mockito.when(dataSource.getConnection()).thenReturn(connection);
                 Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+                Mockito.when(connection.createStatement()).thenReturn(Mockito.mock(Statement.class));
 
                 TranReportWriter subject = new TranReportWriter(new JdbcTemplate(dataSource), ASCII,
                         bindings(LRECL, "FB"), form);
@@ -1866,7 +1929,12 @@ class TranReportWriterTest {
             assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
                     .isEqualTo(FileStatus.Outcome.OTHER);
             assertThat(file.recordsWritten()).isEqualTo(1);
-            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            // The same unreachable destination is reported by all three verbs rather than by the write
+            // alone: 0100-REPTFILE-OPEN, 1111-WRITE-REPORT-REC and 9100-REPTFILE-CLOSE each run their
+            // own '00'-or-12 ladder, and a close that reported OK over a dataset that was never there
+            // would tell the report job the run completed.
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
         }
 
         @Test
@@ -1876,9 +1944,11 @@ class TranReportWriterTest {
             // an unchecked type outside the DataAccessException family, which the sink deliberately does
             // not catch: reporting it as a failed write would make every line abend with a misleading
             // reason instead of failing once, clearly.
-            ReportFile file = writer().openOutput();
+            TranReportWriter subject = writer();
 
-            assertThatIllegalStateException().isThrownBy(() -> file.writeLine("line"));
+            // The open is now the first statement the sink issues, so that is where the defect surfaces
+            // - one failure at the top of the job instead of one per report line.
+            assertThatIllegalStateException().isThrownBy(subject::openOutput);
         }
     }
 

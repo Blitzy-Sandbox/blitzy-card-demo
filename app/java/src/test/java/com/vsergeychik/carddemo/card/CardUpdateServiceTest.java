@@ -12,9 +12,13 @@ import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.DetailGroup;
 import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.Stream;
+import javax.sql.DataSource;
 
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,6 +31,10 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.jdbc.support.JdbcTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -74,14 +82,37 @@ class CardUpdateServiceTest {
     private static final String EARLIER_MESSAGE = "Card expiry month must be between 1 and 12";
 
     private CardRepository cardRepository;
+    private DatasetUnitOfWork unitOfWork;
     private CardUpdateService service;
     private FixedWidthCodec codec;
 
     @BeforeEach
     void setUp() {
         cardRepository = mock(CardRepository.class);
-        service = new CardUpdateService(cardRepository);
+        unitOfWork = realUnitOfWork();
+        service = new CardUpdateService(cardRepository, unitOfWork);
         codec = new FixedWidthCodec(StandardCharsets.US_ASCII);
+    }
+
+    /**
+     * A unit of work over a real transaction manager and a real single connection.
+     *
+     * <p>Deliberately not a stub. The whole point of {@code 9200-WRITE-PROCESSING} is that the lock the
+     * read takes survives to the rewrite, and only a real transaction can be observed doing that; a
+     * double that simply ran the body would let the arrangement pass while proving nothing. An
+     * in-memory database is used because the subject is the boundary, which is the framework's
+     * behaviour rather than the deployment driver's.
+     *
+     * @return a unit of work whose {@code execute} opens a genuine transaction
+     */
+    private static DatasetUnitOfWork realUnitOfWork() {
+        SingleConnectionDataSource source = new SingleConnectionDataSource(
+                "jdbc:h2:mem:card-update-" + System.nanoTime()
+                        + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
+                "sa", "", true);
+        source.setSuppressClose(true);
+        DataSource dataSource = source;
+        return new DatasetUnitOfWork(new JdbcTransactionManager(dataSource));
     }
 
     // =================================================================================================
@@ -961,12 +992,80 @@ class CardUpdateServiceTest {
     class Construction {
 
         @Test
-        @DisplayName("the repository is required, and it is the only collaborator")
+        @DisplayName("the repository and the unit of work are both required")
         void theRepositoryIsRequired() {
             Assertions.assertThatNullPointerException()
-                    .isThrownBy(() -> new CardUpdateService(null))
+                    .isThrownBy(() -> new CardUpdateService(null, unitOfWork))
                     .withMessageContaining("CARDDAT");
-            Assertions.assertThat(new CardUpdateService(mock(CardRepository.class))).isNotNull();
+            Assertions.assertThatNullPointerException()
+                    .isThrownBy(() -> new CardUpdateService(mock(CardRepository.class), null))
+                    .withMessageContaining("unit of work");
+            Assertions.assertThat(new CardUpdateService(mock(CardRepository.class), unitOfWork))
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("the lock, the comparison and the rewrite all happen inside one unit of work")
+        void theWholeParagraphRunsInsideOneUnitOfWork() {
+            CardRecord stored = storedRecord();
+            List<Boolean> insideAUnitOfWork = new ArrayList<>();
+            List<Integer> completion = new ArrayList<>();
+            when(cardRepository.readForUpdateByCardNumber(anyString())).thenAnswer(invocation -> {
+                insideAUnitOfWork.add(DatasetUnitOfWork.active());
+                TransactionSynchronizationManager.registerSynchronization(
+                        new TransactionSynchronization() {
+                            @Override
+                            public void afterCompletion(int status) {
+                                completion.add(status);
+                            }
+                        });
+                return CardReadResult.normal(stored);
+            });
+            when(cardRepository.rewrite(any(CardRecord.class))).thenAnswer(invocation -> {
+                insideAUnitOfWork.add(DatasetUnitOfWork.active());
+                return CardWriteResult.normal();
+            });
+
+            WriteResult result = service.writeProcessing(workArea(),
+                    matchingOldDetails(stored), typedNewDetails(), null, codec);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.CHANGES_OKAYED_AND_DONE);
+            // Both statements ran inside the boundary. Without it CardRepository refuses the read
+            // outright, and a lenient repository would release the lock before the rewrite - leaving
+            // 9300-CHECK-CHANGE-IN-REC passing while protecting nothing.
+            Assertions.assertThat(insideAUnitOfWork).containsExactly(true, true);
+            // COCRDUPC issues no SYNCPOINT ROLLBACK anywhere, so the boundary commits.
+            Assertions.assertThat(completion)
+                    .containsExactly(TransactionSynchronization.STATUS_COMMITTED);
+            Assertions.assertThat(DatasetUnitOfWork.active())
+                    .as("the boundary closes when the paragraph returns, as a task does at RETURN")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a failed rewrite still commits: :1488-1492 has nothing to back out")
+        void aFailedRewriteStillCommits() {
+            CardRecord stored = storedRecord();
+            List<Integer> completion = new ArrayList<>();
+            when(cardRepository.readForUpdateByCardNumber(anyString())).thenAnswer(invocation -> {
+                TransactionSynchronizationManager.registerSynchronization(
+                        new TransactionSynchronization() {
+                            @Override
+                            public void afterCompletion(int status) {
+                                completion.add(status);
+                            }
+                        });
+                return CardReadResult.normal(stored);
+            });
+            when(cardRepository.rewrite(any(CardRecord.class)))
+                    .thenReturn(CardWriteResult.reportedFailure(FileStatus.INVREQ, 42));
+
+            WriteResult result = service.writeProcessing(workArea(),
+                    matchingOldDetails(stored), typedNewDetails(), null, codec);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.LOCKED_BUT_UPDATE_FAILED);
+            Assertions.assertThat(completion)
+                    .containsExactly(TransactionSynchronization.STATUS_COMMITTED);
         }
 
         @Test
@@ -989,6 +1088,9 @@ class CardUpdateServiceTest {
                             .asGroup(DetailGroup.OLD), null, codec))
                     .withMessageContaining("CCUP-NEW-DETAILS");
             verify(cardRepository, never()).readForUpdateByCardNumber(anyString());
+            // Each argument was refused before any boundary opened: an argument defect is the caller's,
+            // and opening a transaction to reject one would take a connection to accomplish nothing.
+            Assertions.assertThat(DatasetUnitOfWork.active()).isFalse();
         }
 
         @Test

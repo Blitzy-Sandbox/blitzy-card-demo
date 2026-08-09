@@ -16,6 +16,7 @@ import com.vsergeychik.carddemo.customer.CustomerRepository.Statements;
 import com.vsergeychik.carddemo.customer.CustomerRepository.WriteResult;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -25,6 +26,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -243,6 +245,37 @@ class CustomerRepositoryTest {
      */
     private int databaseOrdinal;
 
+
+    /**
+     * Every in-memory database this test created, so the teardown can dispose of all of them.
+     *
+     * <p>An instance field, populated only by this test's own helpers: nothing is shared between tests
+     * and no static holds it (gate G53, practice B9).
+     */
+    private final List<DataSource> createdDatabases = new ArrayList<>();
+
+    /**
+     * Drops and shuts down every database this test created.
+     *
+     * <p>{@code DB_CLOSE_DELAY=-1} is what makes the seed usable at all - without it each connection
+     * {@code DriverManagerDataSource} opens would get its own empty database - and it is also what keeps
+     * every one of them alive for the rest of the JVM once the test that made it has finished. Over a
+     * suite this size that is hundreds of live schemas held to the end of the run, each one still
+     * addressable by name; and a name that outlives its test is a name a later test could reach, which
+     * is the shared state the per-test database exists to avoid. Dropping the objects and shutting the
+     * database down closes both, and it frees the name for reuse - which is why the ordinal below can
+     * restart at zero for each test instead of needing a counter that outlives one.
+     */
+    @AfterEach
+    void disposeCreatedDatabases() {
+        for (DataSource created : createdDatabases) {
+            JdbcTemplate template = new JdbcTemplate(created);
+            template.execute("DROP ALL OBJECTS");
+            template.execute("SHUTDOWN");
+        }
+        createdDatabases.clear();
+    }
+
     // =============================================================================================
     // Per-test setup. Collaborators are built fresh for every test; nothing survives between them.
     // =============================================================================================
@@ -336,6 +369,7 @@ class CustomerRepositoryTest {
                 "jdbc:h2:mem:" + databaseNamePrefix + "_" + (++databaseOrdinal)
                         + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
         dataSource.setDriverClassName("org.h2.Driver");
+        createdDatabases.add(dataSource);
         JdbcTemplate template = new JdbcTemplate(dataSource);
         template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (" + RECORD_IMAGE_COLUMN
                 + " VARCHAR(" + columnWidth + "))");
@@ -2565,6 +2599,30 @@ class CustomerRepositoryTest {
     @Nested
     @DisplayName("Every file status is reported as a value; only WHEN OTHER reaches the caller's abend")
     class FileStatusMatrixTests {
+
+        @Test
+        @DisplayName("a test's database is disposed of when the test ends, name and schema alike")
+        void aTestsDatabaseIsDisposedOf() {
+            // The name is derived from the test's own identity, which stops two tests colliding - but
+            // DB_CLOSE_DELAY=-1, needed for the seed to work at all, keeps each one alive and
+            // addressable for the rest of the JVM. A name that outlives its test is a name another test
+            // can reach, so the database is disposed of rather than merely uniquely named.
+            JdbcTemplate template = seeded(fixtureRows());
+            DataSource created = template.getDataSource();
+
+            assertThat(new JdbcTemplate(created).queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class))
+                    .as("the relation holds this test's rows while the test is using it")
+                    .isPositive();
+
+            disposeCreatedDatabases();
+
+            assertThatExceptionOfType(BadSqlGrammarException.class)
+                    .as("and afterwards the schema is gone, so the name addresses nothing a later "
+                            + "test could see")
+                    .isThrownBy(() -> new JdbcTemplate(created).queryForObject(
+                            "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class));
+        }
 
         @ParameterizedTest(name = "read status ''{0}'' classifies as {1} with APPL-RESULT {2}")
         @CsvSource({

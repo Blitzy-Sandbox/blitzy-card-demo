@@ -1,6 +1,9 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.user.dto.UserUpdateRequest.Cu02Info;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -358,7 +361,8 @@ public record UserUpdateResponse(String trnName,
                                  NavigationContext navigationContext,
                                  String nextProgram,
                                  String nextMapset,
-                                 String nextMap) {
+                                 String nextMap,
+                                 Cu02Info cu02Info) {
 
     // =============================================================================================
     // Screen identity. These four literals are the ones COUSR02C itself holds, so they are stated
@@ -650,6 +654,9 @@ public record UserUpdateResponse(String trnName,
         nextProgram = requireWidth(nextProgram, NEXT_PROGRAM_LENGTH, NEXT_PROGRAM_FIELD);
         nextMapset = requireWidth(nextMapset, NEXT_MAPSET_LENGTH, NEXT_MAPSET_FIELD);
         nextMap = requireWidth(nextMap, NEXT_MAP_LENGTH, NEXT_MAP_FIELD);
+        // The extension has no absent state either: 05 CDEMO-CU02-INFO is storage inside the
+        // communication area, and a cold start sees it as its VALUE clauses left it.
+        cu02Info = cu02Info == null ? Cu02Info.initial() : cu02Info;
     }
 
     /**
@@ -686,7 +693,8 @@ public record UserUpdateResponse(String trnName,
                 NavigationContext.empty(),
                 spaces(NEXT_PROGRAM_LENGTH),
                 spaces(NEXT_MAPSET_LENGTH),
-                spaces(NEXT_MAP_LENGTH));
+                spaces(NEXT_MAP_LENGTH),
+                Cu02Info.initial());
     }
 
     // =============================================================================================
@@ -706,7 +714,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withTrnName(String newTrnName) {
         return new UserUpdateResponse(newTrnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -721,7 +729,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withTitle01(String newTitle01) {
         return new UserUpdateResponse(trnName, newTitle01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -736,7 +744,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withCurDate(String newCurDate) {
         return new UserUpdateResponse(trnName, title01, newCurDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -751,7 +759,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withPgmName(String newPgmName) {
         return new UserUpdateResponse(trnName, title01, curDate, newPgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -765,7 +773,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withTitle02(String newTitle02) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, newTitle02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -780,7 +788,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withCurTime(String newCurTime) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, newCurTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -798,7 +806,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withUsrIdIn(String newUsrIdIn) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 newUsrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -813,7 +821,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withFName(String newFName) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, newFName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -828,7 +836,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withLName(String newLName) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, newLName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -853,7 +861,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withPasswd(String newPasswd) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, newPasswd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -870,7 +878,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withUsrType(String newUsrType) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, newUsrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -888,7 +896,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withErrMsg(String newErrMsg) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, newErrMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -902,7 +910,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withNavigationContext(NavigationContext newNavigationContext) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, newNavigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -922,7 +930,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withNextProgram(String newNextProgram) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, newNextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -937,7 +945,7 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withNextMapset(String newNextMapset) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                newNextMapset, nextMap);
+                newNextMapset, nextMap, cu02Info);
     }
 
     /**
@@ -952,7 +960,26 @@ public record UserUpdateResponse(String trnName,
     public UserUpdateResponse withNextMap(String newNextMap) {
         return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, newNextMap);
+                nextMapset, newNextMap, cu02Info);
+    }
+
+    /**
+     * A copy carrying a different {@code 05 CDEMO-CU02-INFO} extension - the thirty-four bytes
+     * {@code app/cbl/COUSR02C.cbl:50-58} appends to the communication area and line 260 hands back on
+     * the {@code XCTL} along with it.
+     *
+     * <p>Carried separately from {@link #navigationContext()} because {@code app/cpy/COCOM01Y.cpy} is
+     * exactly {@value NavigationContext#COMMAREA_LENGTH} bytes and is shared by all seventeen
+     * controllers, while this group belongs to this program alone. The two together are the
+     * 194 bytes line 94 restores.
+     *
+     * @param newCu02Info the extension; {@code null} is replaced by {@link Cu02Info#initial()}
+     * @return a new response
+     */
+    public UserUpdateResponse withCu02Info(Cu02Info newCu02Info) {
+        return new UserUpdateResponse(trnName, title01, curDate, pgmName, title02, curTime,
+                usrIdIn, fName, lName, passwd, usrType, errMsg, navigationContext, nextProgram,
+                nextMapset, nextMap, newCu02Info);
     }
 
     // =============================================================================================

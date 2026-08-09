@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.billing.dto;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 /**
  * The outbound payload of the CardDemo bill-payment screen: a field-for-field projection of
@@ -1533,30 +1535,52 @@ public class BillPaymentResponse {
      *
      * @return a single-line rendering naming every member, never {@code null}
      */
+    /**
+     * A diagnostic rendering that masks the identifiers and withholds the balance.
+     *
+     * <p>Everything was printed verbatim: the account identifier, the current balance, the first, last and
+     * selected transaction identifiers, and the error message. Together those name an account and state
+     * what is in it (CWE-532), and every field is a fixed-width screen value that can hold whatever the
+     * caller moved into it, so a CR or LF among them forges a second log line (CWE-117).
+     *
+     * <p>The account and the three transaction identifiers are masked to their last four characters, the
+     * balance is withheld, and every remaining text field - the screen chrome included - is escaped to a
+     * single line. The page number, the cursor field and the highlight mnemonic disclose nothing and are
+     * left exactly as they were.
+     *
+     * <p><strong>No branch is added here.</strong> Every helper is a straight call and the concatenation
+     * stays one expression, so this method contributes no decision to the coverage measured for its
+     * package - the classification lives in the helpers, where it is already tested from both sides.
+     *
+     * <p>The JSON payload and every accessor are untouched: the REST projection of the symbolic map is the
+     * parity surface, and this rendering has no COBOL counterpart.
+     *
+     * @return the rendering; never {@code null}
+     */
     @Override
     public String toString() {
-        return "BillPaymentResponse[trnName=" + trnName
-                + ", title01=" + title01
-                + ", curDate=" + curDate
-                + ", pgmName=" + pgmName
-                + ", title02=" + title02
-                + ", curTime=" + curTime
-                + ", actIdIn=" + actIdIn
-                + ", curBal=" + curBal
-                + ", confirm=" + confirm
-                + ", errMsg=" + errMsg
+        return "BillPaymentResponse[trnName=" + DiagnosticText.singleLine(trnName)
+                + ", title01=" + DiagnosticText.singleLine(title01)
+                + ", curDate=" + DiagnosticText.singleLine(curDate)
+                + ", pgmName=" + DiagnosticText.singleLine(pgmName)
+                + ", title02=" + DiagnosticText.singleLine(title02)
+                + ", curTime=" + DiagnosticText.singleLine(curTime)
+                + ", actIdIn=" + SensitiveDiagnostics.maskIdentifier(actIdIn)
+                + ", curBal=" + DiagnosticText.omitted(curBal)
+                + ", confirm=" + DiagnosticText.singleLine(confirm)
+                + ", errMsg=" + DiagnosticText.singleLine(errMsg)
                 + ", cursorField=" + cursorField
                 + ", messageHighlight=" + messageHighlight
                 + ", navigationContext=" + navigationContext
-                + ", nextProgram=" + nextProgram
-                + ", nextMapset=" + nextMapset
-                + ", nextMap=" + nextMap
-                + ", trnIdFirst=" + trnIdFirst
-                + ", trnIdLast=" + trnIdLast
+                + ", nextProgram=" + DiagnosticText.singleLine(nextProgram)
+                + ", nextMapset=" + DiagnosticText.singleLine(nextMapset)
+                + ", nextMap=" + DiagnosticText.singleLine(nextMap)
+                + ", trnIdFirst=" + SensitiveDiagnostics.maskIdentifier(trnIdFirst)
+                + ", trnIdLast=" + SensitiveDiagnostics.maskIdentifier(trnIdLast)
                 + ", pageNum=" + pageNum
-                + ", nextPageFlg=" + nextPageFlg
-                + ", trnSelFlg=" + trnSelFlg
-                + ", trnSelected=" + trnSelected
+                + ", nextPageFlg=" + DiagnosticText.singleLine(nextPageFlg)
+                + ", trnSelFlg=" + DiagnosticText.singleLine(trnSelFlg)
+                + ", trnSelected=" + SensitiveDiagnostics.maskIdentifier(trnSelected)
                 + "]";
     }
 }

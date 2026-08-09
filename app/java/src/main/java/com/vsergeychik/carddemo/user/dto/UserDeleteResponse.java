@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.user.dto;
 
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
+import com.vsergeychik.carddemo.user.dto.UserDeleteRequest.Cu03Info;
 import java.util.Objects;
 
 /**
@@ -191,6 +192,9 @@ import java.util.Objects;
  *     client to follow (gate G40)
  * @param nextMapset the mapset the client should request next, {@code X(7)} wide
  * @param nextMap the map the client should request next, {@code X(7)} wide
+ * @param cu03Info the 34-byte {@code 05 CDEMO-CU03-INFO} extension of
+ *     {@code app/cbl/COUSR03C.cbl:50-58}, handed back behind the communication area exactly as line 94
+ *     restored it; {@code null} is normalised to {@link Cu03Info#initial()}
  */
 public record UserDeleteResponse(String trnName,
                                  String title01,
@@ -206,7 +210,8 @@ public record UserDeleteResponse(String trnName,
                                  NavigationContext navigationContext,
                                  String nextProgram,
                                  String nextMapset,
-                                 String nextMap) {
+                                 String nextMap,
+                                 Cu03Info cu03Info) {
 
     // =================================================================================================
     // Screen identity. Every literal below is quoted from the read-only sources rather than invented,
@@ -503,6 +508,9 @@ public record UserDeleteResponse(String trnName,
         nextProgram = requireWidth(nextProgram, NEXT_PROGRAM_LENGTH, NEXT_PROGRAM_FIELD);
         nextMapset = requireWidth(nextMapset, NEXT_MAPSET_LENGTH, NEXT_MAPSET_FIELD);
         nextMap = requireWidth(nextMap, NEXT_MAP_LENGTH, NEXT_MAP_FIELD);
+        // The extension has no absent state: 05 CDEMO-CU03-INFO is storage inside the communication
+        // area, and a cold start sees it as its VALUE clauses left it.
+        cu03Info = cu03Info == null ? Cu03Info.initial() : cu03Info;
     }
 
     // =================================================================================================
@@ -541,7 +549,8 @@ public record UserDeleteResponse(String trnName,
                 NavigationContext.empty(),
                 spaces(NEXT_PROGRAM_LENGTH),
                 spaces(NEXT_MAPSET_LENGTH),
-                spaces(NEXT_MAP_LENGTH));
+                spaces(NEXT_MAP_LENGTH),
+                Cu03Info.initial());
     }
 
     // =================================================================================================
@@ -563,7 +572,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withTrnName(String newTrnName) {
         return new UserDeleteResponse(newTrnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset,
-                nextMap);
+                nextMap, cu03Info);
     }
 
     /**
@@ -576,7 +585,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withTitle01(String newTitle01) {
         return new UserDeleteResponse(trnName, newTitle01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset,
-                nextMap);
+                nextMap, cu03Info);
     }
 
     /**
@@ -589,7 +598,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withCurDate(String newCurDate) {
         return new UserDeleteResponse(trnName, title01, newCurDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset,
-                nextMap);
+                nextMap, cu03Info);
     }
 
     /**
@@ -602,7 +611,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withPgmName(String newPgmName) {
         return new UserDeleteResponse(trnName, title01, curDate, newPgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset,
-                nextMap);
+                nextMap, cu03Info);
     }
 
     /**
@@ -615,7 +624,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withTitle02(String newTitle02) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, newTitle02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset,
-                nextMap);
+                nextMap, cu03Info);
     }
 
     /**
@@ -628,7 +637,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withCurTime(String newCurTime) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, newCurTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset,
-                nextMap);
+                nextMap, cu03Info);
     }
 
     /**
@@ -642,7 +651,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withUsrIdIn(String newUsrIdIn) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 newUsrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -655,7 +664,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withFName(String newFName) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, newFName, lName, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -668,7 +677,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withLName(String newLName) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, newLName, usrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -681,7 +690,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withUsrType(String newUsrType) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, newUsrType, errMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -722,7 +731,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withErrMsg(String newErrMsg) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, newErrMsg, navigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -736,7 +745,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withNavigationContext(NavigationContext newNavigationContext) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, newNavigationContext, nextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -755,7 +764,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withNextProgram(String newNextProgram) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, newNextProgram,
-                nextMapset, nextMap);
+                nextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -768,7 +777,7 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withNextMapset(String newNextMapset) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram,
-                newNextMapset, nextMap);
+                newNextMapset, nextMap, cu03Info);
     }
 
     /**
@@ -781,7 +790,25 @@ public record UserDeleteResponse(String trnName,
     public UserDeleteResponse withNextMap(String newNextMap) {
         return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime,
                 usrIdIn, fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset,
-                newNextMap);
+                newNextMap, cu03Info);
+    }
+
+    /**
+     * A copy carrying a different {@code 05 CDEMO-CU03-INFO} extension - the thirty-four bytes
+     * {@code app/cbl/COUSR03C.cbl:50-58} appends to the communication area and lines 205-208 hand back
+     * on the {@code XCTL} along with it.
+     *
+     * <p>Carried separately from {@link #navigationContext()} because {@code app/cpy/COCOM01Y.cpy} is
+     * exactly {@value NavigationContext#COMMAREA_LENGTH} bytes and is shared by all seventeen
+     * controllers, while this group belongs to this program alone.
+     *
+     * @param newCu03Info the extension; {@code null} is replaced by {@link Cu03Info#initial()}
+     * @return a new response
+     */
+    public UserDeleteResponse withCu03Info(Cu03Info newCu03Info) {
+        return new UserDeleteResponse(trnName, title01, curDate, pgmName, title02, curTime, usrIdIn,
+                fName, lName, usrType, errMsg, navigationContext, nextProgram, nextMapset, nextMap,
+                newCu03Info);
     }
 
     // =================================================================================================

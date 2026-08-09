@@ -11,6 +11,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
@@ -360,6 +361,25 @@ public class CardRepository {
     public static final String ALTERNATE_INDEX_DD_NAME = "CARDAIX";
 
     /**
+     * The <strong>batch</strong> DD name of the same base cluster: {@code CARDFILE}.
+     *
+     * <p>{@code app/cbl/CBACT02C.cbl:29} is {@code SELECT CARDFILE-FILE ASSIGN TO CARDFILE}, and
+     * {@code app/jcl/READCARD.jcl:25-26} binds {@code //CARDFILE DD} over
+     * {@code CARDDATA.VSAM.KSDS} - the very dataset {@link #BASE_DD_NAME} addresses online. One
+     * dataset, two DD names: the CSD's for the transactions and the JCL's for the batch reader.
+     *
+     * <p>It exists because a batch job must read through <em>its own</em> DD. Resolving
+     * {@link #BASE_DD_NAME} on a job's behalf would mean the job validated one binding and performed
+     * its I/O against another, so a deployment that re-pointed {@code CARDFILE} - which is exactly
+     * what a {@code //CARDFILE DD} statement is for - would read a dataset nobody asked for while
+     * every startup check reported success. {@link #addressing(DatasetBinding, String)} is how a job
+     * hands its resolved binding in.
+     *
+     * <p>A key, not a dataset name (gate G46).
+     */
+    public static final String BATCH_DD_NAME = "CARDFILE";
+
+    /**
      * The declared width of a CICS file-name literal in the legacy programs: {@code PIC X(8)}. The
      * two literals below are held at this width because the COBOL holds them at this width, and one
      * of them reaches a screen through {@code ERROR-FILE PIC X(9)}.
@@ -389,18 +409,16 @@ public class CardRepository {
     public static final String ALTERNATE_INDEX_CICS_FILE_NAME = "CARDAIX ";
 
     /**
-     * The bean name of the active dataset code page, as the module's charset configuration declares
-     * it.
+     * The bean name of the module's active dataset code page.
      *
-     * <p>The name is restated here rather than referenced, deliberately: this file's dependency
-     * whitelist excludes the charset configuration class, exactly as it excludes it from
-     * {@link FixedWidthCodec}, so that the code page arrives as an explicit constructor argument and
-     * no data-access component acquires a compile-time dependency on how the code page is chosen. The
-     * duplication is safe because it fails loudly rather than quietly: were the two ever to diverge,
-     * the application context would refuse to start with an unsatisfied-dependency diagnostic naming
-     * this qualifier, and this class's tests assert the two spellings agree.
+     * <p>Taken from {@link CobolCharsetConfig#DATASET_CHARSET_BEAN_NAME}, the class that publishes the
+     * bean, rather than restated as a literal here. A second spelling of a bean name is a rename waiting
+     * to break silently: the qualifier would still compile, still resolve at startup against the old
+     * name, and fail only when the publisher moved on. Kept as a constant of this class so a caller or a
+     * test that referred to it still can.
      */
-    public static final String DATASET_CHARSET_BEAN_NAME = "carddemoDatasetCharset";
+    public static final String DATASET_CHARSET_BEAN_NAME =
+            CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME;
 
     // =================================================================================================
     // Record geometry and row shape.
@@ -675,6 +693,75 @@ public class CardRepository {
         this.alternateIndexRelation = DatasetRelation.of(
                 requireUsableDatasetName(alternateIndex.dsname(), ALTERNATE_INDEX_DD_NAME),
                 RECORD_LENGTH);
+    }
+
+    /**
+     * Re-binding constructor: the same repository addressing a different base cluster.
+     *
+     * <p>Private, and reached only through {@link #addressing(DatasetBinding, String)}. Everything that
+     * decides <em>behaviour</em> - the template, the code page and {@code MOVE} semantics carried by the
+     * codec, and how a record image crosses JDBC - is shared with the instance it was derived from, so a
+     * re-bound repository is the same repository reading somewhere else. Only the base relation differs,
+     * which is the whole point: a dataset name is the one thing a DD name selects.
+     *
+     * <p>{@link #statements} is deliberately <em>not</em> copied. Its text embeds the base relation's
+     * identifier, so carrying it over would send the source instance's statements against this
+     * instance's dataset - the exact defect this constructor exists to remove. It resolves again on
+     * first use, against this relation.
+     *
+     * @param source         the instance whose collaborators are shared
+     * @param baseRelation   the base cluster this instance addresses
+     */
+    private CardRepository(CardRepository source, DatasetRelation baseRelation) {
+        this.jdbcTemplate = source.jdbcTemplate;
+        this.codec = source.codec;
+        this.recordImageForm = source.recordImageForm;
+        this.baseRelation = baseRelation;
+        this.alternateIndexRelation = source.alternateIndexRelation;
+    }
+
+    /**
+     * Returns this repository addressing the base cluster a caller's own DD binding names.
+     *
+     * <p><strong>Why a batch job needs this.</strong> {@code CBACT02C} reads the card master through
+     * the DD {@code app/jcl/READCARD.jcl:25-26} binds, and a job resolves that DD through its own view
+     * of the catalogue - job-scoped entry first, global second - because a DD name is not unique across
+     * this estate. This repository resolved {@link #BASE_DD_NAME} at construction, from the global
+     * catalogue only. Those are two different resolutions, and a job that checked one and read through
+     * the other would report a healthy start and then read whatever the other happened to name.
+     *
+     * <p>Returns {@code this} when the binding names the dataset already addressed, so the common
+     * case - the shipped configuration, where {@code CARDFILE} and {@code CARDDAT} are two names for
+     * one dataset - allocates nothing and shares the resolved statements.
+     *
+     * <p>No new access path and no schema change: the returned instance issues the same statements
+     * against a relation built the same way (gate G44).
+     *
+     * @param binding the caller's resolved binding, normally from
+     *                {@code BatchConfig.datasetBinding(jobKey, ddName)}
+     * @param ddName  the DD name it was resolved for; used only to say which key is at fault
+     * @return this repository, or one addressing the binding's dataset; never {@code null}
+     * @throws NullPointerException  if either argument is {@code null}
+     * @throws IllegalStateException if the binding declares a record width other than
+     *                               {@value #RECORD_LENGTH}, or no usable dataset name
+     */
+    public CardRepository addressing(DatasetBinding binding, String ddName) {
+        Objects.requireNonNull(ddName, "A DD name is required: it is what a diagnostic names when the "
+                + "binding is at fault");
+        Objects.requireNonNull(binding, "A resolved dataset binding is required for DD name '" + ddName
+                + "': a batch job reads through the DD its JCL declares, not through the CICS file name "
+                + "this repository resolved at construction");
+        if (binding.recordLength() != RECORD_LENGTH) {
+            throw new IllegalStateException("The dataset binding for '" + ddName + "' declares a record "
+                    + "length of " + binding.recordLength() + ", but the card file is decoded by "
+                    + "absolute offset against a " + RECORD_LENGTH + "-byte record (app/cpy/CVACT02Y.cpy). "
+                    + "Correct carddemo.datasets." + ddName + ".record-length to " + RECORD_LENGTH + ".");
+        }
+        String dsname = requireUsableDatasetName(binding.dsname(), ddName);
+        if (dsname.equals(baseRelation.dsname())) {
+            return this;
+        }
+        return new CardRepository(this, DatasetRelation.of(dsname, RECORD_LENGTH));
     }
 
     // =================================================================================================
@@ -1070,6 +1157,60 @@ public class CardRepository {
                 + "separate STARTBR for each direction (app/cbl/COCRDLIC.cbl:1129 and :1273), so a "
                 + "browse is never direction-less");
         return new CardBrowse(this, baseKeyOf(cardNumber), direction);
+    }
+
+    /**
+     * Opens the base cluster for a sequential pass and reports whether it could be opened: the batch
+     * entry point, for {@code OPEN INPUT CARDFILE-FILE} at {@code app/cbl/CBACT02C.cbl:120}.
+     *
+     * <p><strong>Why this exists alongside {@link #startBrowse(String, BrowseDirection)}.</strong> The
+     * two callers of this cluster treat their open differently, and the difference is in the source.
+     * {@code COCRDLIC} issues {@code EXEC CICS STARTBR}, captures the response and never tests it, so
+     * {@code startBrowse} reports nothing and makes no call - surfacing a status there would invite a
+     * caller to branch on something the COBOL ignores. {@code CBACT02C} declares
+     * {@code FILE STATUS IS CARDFILE-STATUS} at {@code :33} and tests it at {@code :121-:127}, reaching
+     * {@code DISPLAY 'ERROR OPENING CARDFILE'} at {@code :129} and an abend at {@code :132}. That arm is
+     * unreachable unless the open can fail, so this entry point gives it something to fail on.
+     *
+     * <p>The probe describes the relation rather than reading it: it establishes that the dataset exists
+     * and presents a record-image column without a single row crossing the wire, which is what an
+     * {@code OPEN INPUT} establishes too. It cannot pass where a read would fail, because a read composes
+     * its statement from the same describe.
+     *
+     * <p>The response is reported, never thrown, because {@code OPEN} has a {@code FILE STATUS} clause
+     * and no exception, and the caller's own guard chain decides what a bad status means. What the backend
+     * said is logged rather than discarded with it, so the abend that follows is diagnosable.
+     *
+     * @param cardNumber the key to position at or after, moved to the declared key width
+     * @param direction  which way the pass is walked
+     * @return a handle whose {@link CardBrowse#openResp()} reports whether the dataset was opened; never
+     *         {@code null}
+     * @throws NullPointerException if {@code direction} is {@code null}
+     */
+    public CardBrowse openBrowse(String cardNumber, BrowseDirection direction) {
+        Objects.requireNonNull(direction, "A browse direction is required: the legacy code issues a "
+                + "separate STARTBR for each direction (app/cbl/COCRDLIC.cbl:1129 and :1273), so a "
+                + "browse is never direction-less");
+        String key = baseKeyOf(cardNumber);
+        try {
+            resolveStatements();
+        } catch (DataAccessException translated) {
+            LOG.error("Could not open a sequential pass over the " + BASE_DD_NAME + " base cluster - "
+                    + BackendDiagnostic.of(translated).describe() + "; reporting CICS response "
+                    + FileStatus.NOTOPEN + " to the caller, which is the arm that displays "
+                    + "ERROR OPENING CARDFILE and abends");
+            return new CardBrowse(this, key, direction, FileStatus.NOTOPEN);
+        } catch (IllegalStateException unusable) {
+            // The relation resolved but presents nothing at the record-image position, so there is no
+            // record to read and no statement that could be composed over it. An open-time fact about the
+            // dataset, reported from the open. The message is this module's own text and carries no value
+            // the driver supplied, so it is safe to log verbatim.
+            LOG.error("Could not open a sequential pass over the " + BASE_DD_NAME + " base cluster: "
+                    + unusable.getMessage() + "; reporting CICS response " + FileStatus.NOTOPEN
+                    + " to the caller");
+            return new CardBrowse(this, key, direction, FileStatus.NOTOPEN);
+        }
+        return new CardBrowse(this, key, direction, FileStatus.NORMAL);
     }
 
     // =================================================================================================
@@ -2252,6 +2393,18 @@ public class CardRepository {
         private boolean ended;
 
         /**
+         * What the open reported, as a CICS response.
+         *
+         * <p>{@link FileStatus#NORMAL} for a handle from
+         * {@link CardRepository#startBrowse(String, BrowseDirection)}, which issues no backend call at
+         * all - that is the online contract, where both {@code STARTBR} sites discard their own response.
+         * For a handle from {@link CardRepository#openBrowse(String, BrowseDirection)} it is what the
+         * open probe found, because the batch program that uses that entry point does test its
+         * {@code OPEN}.
+         */
+        private final int openResp;
+
+        /**
          * Constructed only by {@link CardRepository#startBrowse(String, BrowseDirection)}, so that a
          * handle always carries a key already moved to its declared width.
          *
@@ -2260,9 +2413,48 @@ public class CardRepository {
          * @param direction  which read this handle accepts
          */
         private CardBrowse(CardRepository repository, String anchorKey, BrowseDirection direction) {
+            this(repository, anchorKey, direction, FileStatus.NORMAL);
+        }
+
+        /**
+         * Constructed by {@link CardRepository#openBrowse(String, BrowseDirection)}, carrying what its
+         * open probe found.
+         *
+         * @param repository the repository to read through
+         * @param anchorKey  the key to position at or after, at its declared width
+         * @param direction  which read this handle accepts
+         * @param openResp   the CICS response the open reported
+         */
+        private CardBrowse(CardRepository repository, String anchorKey, BrowseDirection direction,
+                           int openResp) {
             this.repository = repository;
             this.anchorKey = anchorKey;
             this.direction = direction;
+            this.openResp = openResp;
+        }
+
+        /**
+         * The CICS response the open reported, for a caller whose COBOL tests its {@code OPEN}.
+         *
+         * <p>Translate it with {@link FileStatus#batchStatusOfCicsResp(int)} to get the two-character
+         * {@code FILE STATUS} a batch program's guard chain reads - which is exactly how
+         * {@link #readNext()}'s result is translated, so the open and the read reach their arms the same
+         * way.
+         *
+         * @return {@link FileStatus#NORMAL} when the dataset was opened, or {@link FileStatus#NOTOPEN}
+         *         when it could not be
+         */
+        public int openResp() {
+            return openResp;
+        }
+
+        /**
+         * Whether the open succeeded, and so whether reading this handle can return anything.
+         *
+         * @return {@code true} when the open reported {@link FileStatus#NORMAL}
+         */
+        public boolean isOpen() {
+            return openResp == FileStatus.NORMAL;
         }
 
         /**

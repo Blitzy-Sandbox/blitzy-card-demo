@@ -2,9 +2,13 @@ package com.vsergeychik.carddemo.account;
 
 import com.vsergeychik.carddemo.account.model.AccountRecord;
 import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.NumericIntrinsics;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
@@ -516,8 +520,11 @@ public class AccountUpdateService {
      * The value {@link #testNumvalC(String)} returns for an argument that conforms - the same
      * {@code 0} the five {@code IF FUNCTION TEST-NUMVAL-C(...) = 0} guards at
      * {@code app/cbl/COACTUPC.cbl:1078,1092,1106,1120,1134} test for.
+     *
+     * <p>Read from {@link NumericIntrinsics} rather than restated, so the constant and the scan that
+     * produces it cannot drift apart.
      */
-    public static final int NUMVAL_CONFORMS = 0;
+    public static final int NUMVAL_CONFORMS = NumericIntrinsics.CONFORMS;
 
     /**
      * The declared width of the five monetary screen fields - {@code ACRDLIMI}, {@code ACSHLIMI},
@@ -641,14 +648,47 @@ public class AccountUpdateService {
      * @param customerRepository the {@code CUSTDAT} dataset; must not be {@code null}
      * @throws NullPointerException if either repository is {@code null}
      */
+    /**
+     * What the unit of work is doing, for a failure to name it by.
+     *
+     * <p>Names the paragraph and the two datasets, because a unit of work that fails to commit has to be
+     * traceable to the COBOL it was reproducing.
+     */
+    private static final String UNIT_OF_WORK_DESCRIPTION =
+            "9600-WRITE-PROCESSING (app/cbl/COACTUPC.cbl:3889-4106): lock ACCTDAT and CUSTDAT, compare "
+                    + "both against the painted screen, and rewrite both at full declared width";
+
+    /**
+     * The unit-of-work boundary the whole lock, compare and rewrite sequence runs inside.
+     *
+     * <p><strong>Why the service owns the boundary and not the caller.</strong> In CICS a task always has
+     * a unit of work: {@code EXEC CICS READ ... UPDATE} at {@code app/cbl/COACTUPC.cbl:3894} takes a lock
+     * that the task holds until its syncpoint, which is what lets {@code 9700-CHECK-CHANGE-IN-REC}
+     * compare at {@code :3947} and {@code REWRITE} write at {@code :4065} against a record nobody else
+     * could have moved in between. This paragraph <em>is</em> the task's body, so the boundary belongs
+     * here. Left to a caller it was nowhere: {@link AccountRepository#readForUpdate(String)} refuses to
+     * issue {@code FOR UPDATE} outside a transaction - correctly, because the lock would end with the
+     * statement - so the write path could not execute at all.
+     *
+     * <p>One boundary for the whole sequence, not one per operation. Two units of work would release the
+     * account lock before the customer record was read, which is precisely the interleaving the
+     * concurrency check exists to detect and cannot detect from inside.
+     */
+    private final DatasetUnitOfWork unitOfWork;
+
     public AccountUpdateService(AccountRepository accountRepository,
-                               CustomerRepository customerRepository) {
+                               CustomerRepository customerRepository,
+                               DatasetUnitOfWork unitOfWork) {
         this.accountRepository = Objects.requireNonNull(accountRepository,
                 "An ACCTDAT repository is required: 9600-WRITE-PROCESSING both reads the account "
                         + "record for update at app/cbl/COACTUPC.cbl:3894 and rewrites it at :4065");
         this.customerRepository = Objects.requireNonNull(customerRepository,
                 "A CUSTDAT repository is required: 9600-WRITE-PROCESSING both reads the customer "
                         + "record for update at app/cbl/COACTUPC.cbl:3922 and rewrites it at :4085");
+        this.unitOfWork = Objects.requireNonNull(unitOfWork, "A unit-of-work boundary is required: a "
+                + "CICS task always has one, and the two READ ... UPDATE locks this paragraph takes are "
+                + "worthless outside it - AccountRepository.readForUpdate refuses to issue FOR UPDATE "
+                + "when no transaction is open, so without this the write path cannot run at all");
     }
 
     // =================================================================================================
@@ -731,6 +771,9 @@ public class AccountUpdateService {
                                       AccountUpdateDetails newDetails,
                                       String returnMessage,
                                       FixedWidthCodec codec) {
+        // The argument checks sit OUTSIDE the boundary deliberately. A wrong detail group or a missing
+        // codec is a programming error, not dataset work, and opening a transaction to reject one would
+        // put a connection behind a failure that never touches a dataset.
         Objects.requireNonNull(navigationContext, "The COCOM01Y commarea is required: "
                 + "9600-WRITE-PROCESSING reads CDEMO-CUST-ID from it at app/cbl/COACTUPC.cbl:3920 to "
                 + "build the CUSTDAT record identification field");
@@ -739,6 +782,56 @@ public class AccountUpdateService {
         requireGroup(oldDetails, DetailGroup.OLD, "ACUP-OLD-DETAILS", "669-756");
         requireGroup(newDetails, DetailGroup.NEW, "ACUP-NEW-DETAILS", "757-855");
 
+        try {
+            return unitOfWork.execute(UNIT_OF_WORK_DESCRIPTION, () -> {
+                WriteResult result = writeProcessingUnderLock(ccAcctId, navigationContext, oldDetails,
+                        newDetails, returnMessage, codec);
+                if (result.syncpointRollbackRequested()) {
+                    // :4099-4101 EXEC CICS SYNCPOINT ROLLBACK. The account rewrite has already
+                    // succeeded and the customer rewrite has not, so the account change must not stand.
+                    //
+                    // A throw is the rollback, and it is this module's established mechanism rather than
+                    // a second one: DatasetUnitOfWork.commitRefusal documents that
+                    // TransactionAspectSupport.currentTransactionStatus() raises NoTransactionException
+                    // inside a TransactionTemplate body - the template does not publish its status - so a
+                    // rollback-only flag is not reachable from here, and publishing one through a
+                    // thread-local of our own would be the static mutable state practice B9 forbids.
+                    // TransactionTemplate rolls back on any unchecked exception, so throwing IS the
+                    // SYNCPOINT ROLLBACK.
+                    //
+                    // The COBOL then falls through to 9600-WRITE-PROCESSING-EXIT and its caller reports
+                    // LOCKED-BUT-UPDATE-FAILED, so the result has to survive the rollback: it travels on
+                    // the throw and is returned below. That is a rollback the task continues past, which
+                    // is exactly what EXEC CICS SYNCPOINT ROLLBACK is.
+                    throw new SyncpointRollback(result);
+                }
+                return result;
+            });
+        } catch (SyncpointRollback rolledBack) {
+            return rolledBack.result();
+        }
+    }
+
+    /**
+     * {@code 9600-WRITE-PROCESSING}'s body, running inside the unit of work its locks need.
+     *
+     * <p>Every step is the source's, in the source's order. The only thing this method does not do is
+     * open or close the boundary, which is {@link #writeProcessing} above.
+     *
+     * @param ccAcctId          the work area's account identifier
+     * @param navigationContext the commarea, read for {@code CDEMO-CUST-ID}
+     * @param oldDetails        the snapshot the screen was painted from
+     * @param newDetails        what the user typed
+     * @param returnMessage     the current {@code WS-RETURN-MSG}
+     * @param codec             the codec carrying the code page and the move rules
+     * @return the outcome; never {@code null}
+     */
+    private WriteResult writeProcessingUnderLock(String ccAcctId,
+                                                 NavigationContext navigationContext,
+                                                 AccountUpdateDetails oldDetails,
+                                                 AccountUpdateDetails newDetails,
+                                                 String returnMessage,
+                                                 FixedWidthCodec codec) {
         String pendingMessage = atReturnMessageWidth(returnMessage);
 
         // Step 1, :3892 and :3897. The RID travels as the X(11) REDEFINES view, so a blank or
@@ -1817,17 +1910,17 @@ public class AccountUpdateService {
      * sites are guarded by {@code IF FUNCTION TEST-NUMVAL-C(...) = 0}, so a non-conforming value never
      * reaches the conversion.
      *
-     * <p>Implemented here rather than imported. {@code COACTUPC} is the only program in the account
-     * package that uses {@code NUMVAL-C}, {@link AccountDateValidator} provides the unsuffixed
-     * {@code FUNCTION NUMVAL} and not this one, and the only other implementation lives in the
-     * transaction package, which this file does not depend on.
+     * <p>Delegated to {@link NumericIntrinsics}, which is the module's one implementation of the
+     * intrinsic. The grammar the standard defines - which characters may appear, in what order, and
+     * where a currency sign or a trailing sign is safe - is stated once there rather than restated in
+     * every program that calls the function.
      *
      * @param image the argument to convert; must not be {@code null}
      * @return the value the argument denotes, or zero when it does not conform
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static BigDecimal numvalC(String image) {
-        return scanNumvalC(image).value();
+        return NumericIntrinsics.numvalC(image);
     }
 
     /**
@@ -1841,87 +1934,7 @@ public class AccountUpdateService {
      * @throws NullPointerException if {@code image} is {@code null}
      */
     public static int testNumvalC(String image) {
-        return scanNumvalC(image).errorPosition();
-    }
-
-    /**
-     * The single scan behind {@link #numvalC(String)} and {@link #testNumvalC(String)}, so the value and
-     * the verdict can never disagree.
-     *
-     * @param image the argument; must not be {@code null}
-     * @return the scan's outcome
-     * @throws NullPointerException if {@code image} is {@code null}
-     */
-    private static NumvalScan scanNumvalC(String image) {
-        Objects.requireNonNull(image, "FUNCTION NUMVAL-C requires an argument");
-
-        int length = image.length();
-        int index = skipSpaces(image, 0);
-
-        boolean negative = false;
-        boolean leadingSignSeen = false;
-        if (index < length && isSign(image.charAt(index))) {
-            negative = image.charAt(index) == MINUS_SIGN;
-            leadingSignSeen = true;
-            index = skipSpaces(image, index + ONE);
-        }
-
-        // The currency sign is what distinguishes NUMVAL-C from NUMVAL. It contributes no digit and may
-        // be followed by spaces.
-        if (index < length && image.charAt(index) == CURRENCY_SIGN) {
-            index = skipSpaces(image, index + ONE);
-        }
-
-        StringBuilder digits = new StringBuilder();
-        int fractionDigits = 0;
-        boolean decimalPointSeen = false;
-        while (index < length) {
-            char character = image.charAt(index);
-            if (isDigit(character)) {
-                digits.append(character);
-                if (decimalPointSeen) {
-                    fractionDigits++;
-                }
-                index++;
-            } else if (character == DECIMAL_POINT && !decimalPointSeen) {
-                decimalPointSeen = true;
-                index++;
-            } else if (character == DIGIT_SEPARATOR && !decimalPointSeen && digits.length() > 0
-                    && index + ONE < length && isDigit(image.charAt(index + ONE))) {
-                // A grouping comma: permitted between digits of the integer part only, and it
-                // contributes no digit of its own.
-                index++;
-            } else {
-                break;
-            }
-        }
-
-        if (digits.length() == 0) {
-            // No digit anywhere: all spaces, a bare sign, a bare currency sign or a bare decimal point.
-            // The intrinsic reports this at the length plus one rather than at a character position.
-            // This is also the arm a LOW-VALUES staging copy reaches.
-            return NumvalScan.rejected(length + ONE);
-        }
-
-        index = skipSpaces(image, index);
-        if (index < length && !leadingSignSeen) {
-            char character = image.charAt(index);
-            if (isSign(character)) {
-                negative = character == MINUS_SIGN;
-                index = skipSpaces(image, index + ONE);
-            } else if (image.startsWith(CREDIT_INDICATOR, index)
-                    || image.startsWith(DEBIT_INDICATOR, index)) {
-                negative = true;
-                index = skipSpaces(image, index + CREDIT_INDICATOR.length());
-            }
-        }
-
-        if (index != length) {
-            return NumvalScan.rejected(index + ONE);
-        }
-
-        BigDecimal magnitude = new BigDecimal(digits.toString()).movePointLeft(fractionDigits);
-        return NumvalScan.accepted(negative ? magnitude.negate() : magnitude);
+        return NumericIntrinsics.testNumvalC(image);
     }
 
     /**
@@ -1992,37 +2005,6 @@ public class AccountUpdateService {
                     + expected.groupName() + " group, but the supplied details are the "
                     + details.group().groupName() + " group. The two have identical shapes, so nothing "
                     + "but this check would catch the transposition.");
-        }
-    }
-
-    /**
-     * The outcome of one {@code FUNCTION NUMVAL-C} scan: the value and the conformance verdict together,
-     * so a caller cannot read one without the other having been derived from the same pass.
-     *
-     * @param value         the value the argument denotes, or zero when it does not conform
-     * @param errorPosition {@value #NUMVAL_CONFORMS} when it conforms, otherwise the one-based position
-     *                      of the first character in error
-     */
-    private record NumvalScan(BigDecimal value, int errorPosition) {
-
-        /**
-         * The conforming arm.
-         *
-         * @param value the converted value
-         * @return a scan carrying {@code value} and {@value #NUMVAL_CONFORMS}
-         */
-        static NumvalScan accepted(BigDecimal value) {
-            return new NumvalScan(value, NUMVAL_CONFORMS);
-        }
-
-        /**
-         * The non-conforming arm.
-         *
-         * @param position the one-based position of the first character in error
-         * @return a scan carrying zero and {@code position}
-         */
-        static NumvalScan rejected(int position) {
-            return new NumvalScan(BigDecimal.ZERO, position);
         }
     }
 
@@ -2425,6 +2407,42 @@ public class AccountUpdateService {
             return requireCodec(codec).encodeSignedScaled(currCycDebit, MONETARY_INTEGER_DIGITS,
                     CobolDecimal.MONETARY_SCALE);
         }
+
+        /**
+         * A diagnostic rendering that names the record without disclosing its money.
+         *
+         * <p>The generated record rendering printed all seventeen components verbatim, which put the
+         * account number, the current balance, both credit limits and both cycle amounts into any log line
+         * that rendered one (CWE-532), and let a fixed-width field carrying CR or LF forge a second line
+         * (CWE-117).
+         *
+         * <p>The account number is masked to its last four digits - enough to tell one record from another
+         * while diagnosing a parity failure, which is what {@link SensitiveDiagnostics.Disclosure#IDENTIFIER}
+         * is for - and every monetary item is withheld. The date parts are integers a caller supplied and
+         * carry no personal data, so they stay; the status flag and the group id are escaped rather than
+         * interpolated, because both are {@code PIC X} and can hold any byte moved into them.
+         *
+         * <p>Accessors and the {@code Image} methods are untouched: this rendering has no COBOL
+         * counterpart, so withholding from it costs no observable behaviour.
+         *
+         * @return the rendering; never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "ACUP-<group>-ACCT-DATA["
+                    + "ACCT-ID='" + SensitiveDiagnostics.maskIdentifier(acctId, ACCT_ID_LENGTH) + "', "
+                    + "ACCT-ACTIVE-STATUS=" + DiagnosticText.singleLine(activeStatus) + ", "
+                    + "ACCT-CURR-BAL=" + WITHHELD_NUMBER + ", "
+                    + "ACCT-CREDIT-LIMIT=" + WITHHELD_NUMBER + ", "
+                    + "ACCT-CASH-CREDIT-LIMIT=" + WITHHELD_NUMBER + ", "
+                    + "ACCT-OPEN-DATE=" + openYear + '-' + openMon + '-' + openDay + ", "
+                    + "ACCT-EXPIRAION-DATE=" + expYear + '-' + expMon + '-' + expDay + ", "
+                    + "ACCT-REISSUE-DATE=" + reissueYear + '-' + reissueMon + '-' + reissueDay + ", "
+                    + "ACCT-CURR-CYC-CREDIT=" + WITHHELD_NUMBER + ", "
+                    + "ACCT-CURR-CYC-DEBIT=" + WITHHELD_NUMBER + ", "
+                    + "ACCT-GROUP-ID=" + DiagnosticText.singleLine(groupId)
+                    + "]";
+        }
     }
 
     /**
@@ -2718,11 +2736,18 @@ public class AccountUpdateService {
          * withholds it only because something rendered the object rather than because a caller asked for
          * a value by name.
          *
-         * <p>The customer identifier is left legible on the same reasoning the module applies to
-         * {@code SEC-USR-ID}: it is the {@code CUSTDAT} key {@code 9600-WRITE-PROCESSING} reads on at
-         * {@code app/cbl/COACTUPC.cbl:3920-3931} and the only field a parity failure can be traced from.
-         * The two-character state and three-character country codes are geographic codes rather than an
-         * address, and the credit score is a derived number, so all three stay legible for diagnosis.
+         * <p>The customer identifier is <strong>masked to its last four digits</strong> rather than left
+         * legible. It is the {@code CUSTDAT} key {@code 9600-WRITE-PROCESSING} reads on at
+         * {@code app/cbl/COACTUPC.cbl:3920-3931}, so a reader diagnosing a parity failure still needs to
+         * tell one record from another - four digits do that - but a whole customer number alongside the
+         * described name and address fields would re-identify the person the rest of this rendering is
+         * careful not to name. {@link SensitiveDiagnostics.Disclosure#IDENTIFIER} is the module's stated
+         * treatment for a customer key and this now follows it.
+         *
+         * <p>The two-character state and three-character country codes, the holder indicator and the
+         * credit score carry no personal data and stay legible - but they are escaped to a single line
+         * rather than interpolated raw, because a fixed-width field can hold any byte a caller moved into
+         * it and a CR or LF among them would forge a second log line (CWE-117).
          *
          * @return a single-line description with every identifying component withheld, never
          *         {@code null}
@@ -2730,15 +2755,16 @@ public class AccountUpdateService {
         @Override
         public String toString() {
             return "ACUP-<group>-CUST-DATA["
-                    + "CUST-ID='" + custId + "', "
+                    + "CUST-ID='" + SensitiveDiagnostics.maskIdentifier(custId, CUST_ID_LENGTH)
+                    + "', "
                     + "CUST-FIRST-NAME=" + withheld(firstName) + ", "
                     + "CUST-MIDDLE-NAME=" + withheld(middleName) + ", "
                     + "CUST-LAST-NAME=" + withheld(lastName) + ", "
                     + "CUST-ADDR-LINE-1=" + withheld(addrLine1) + ", "
                     + "CUST-ADDR-LINE-2=" + withheld(addrLine2) + ", "
                     + "CUST-ADDR-LINE-3=" + withheld(addrLine3) + ", "
-                    + "CUST-ADDR-STATE-CD='" + addrStateCd + "', "
-                    + "CUST-ADDR-COUNTRY-CD='" + addrCountryCd + "', "
+                    + "CUST-ADDR-STATE-CD=" + DiagnosticText.singleLine(addrStateCd) + ", "
+                    + "CUST-ADDR-COUNTRY-CD=" + DiagnosticText.singleLine(addrCountryCd) + ", "
                     + "CUST-ADDR-ZIP=" + withheld(addrZip) + ", "
                     + "CUST-PHONE-NUM-1=" + withheld(phoneNum1) + ", "
                     + "CUST-PHONE-NUM-2=" + withheld(phoneNum2) + ", "
@@ -2746,8 +2772,8 @@ public class AccountUpdateService {
                     + "CUST-GOVT-ISSUED-ID=" + withheld(govtIssuedId) + ", "
                     + "CUST-DOB-YYYY-MM-DD=" + WITHHELD_DATE + ", "
                     + "CUST-EFT-ACCOUNT-ID=" + withheld(eftAccountId) + ", "
-                    + "CUST-PRI-CARD-HOLDER-IND='" + priHolderInd + "', "
-                    + "CUST-FICO-CREDIT-SCORE='" + ficoScore + "'"
+                    + "CUST-PRI-CARD-HOLDER-IND=" + DiagnosticText.singleLine(priHolderInd) + ", "
+                    + "CUST-FICO-CREDIT-SCORE=" + DiagnosticText.singleLine(String.valueOf(ficoScore))
                     + "]";
         }
     }
@@ -2819,6 +2845,21 @@ public class AccountUpdateService {
          */
         public AccountUpdateDetails withCustData(CustomerData newCustData) {
             return new AccountUpdateDetails(group, acctData, newCustData);
+        }
+
+        /**
+         * A diagnostic rendering that delegates to the two subgroups' own safe renderings.
+         *
+         * <p>The generated record rendering recursed into both components, so the whole of
+         * {@link AccountData} and {@link CustomerData} reached the log through it. Naming them explicitly
+         * means each is rendered by its own override, and a component added here later cannot slip past
+         * unclassified.
+         *
+         * @return the rendering; never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "ACUP-" + group + "-DETAILS[acctData=" + acctData + ", custData=" + custData + ']';
         }
     }
 
@@ -3771,5 +3812,50 @@ public class AccountUpdateService {
                     .orElse(WITHHELD_ABSENT);
         }
     }
-}
 
+    /**
+     * Carries a completed {@link WriteResult} out through a rollback.
+     *
+     * <p>{@code EXEC CICS SYNCPOINT ROLLBACK} at {@code app/cbl/COACTUPC.cbl:4099-4101} backs out the
+     * account rewrite and the task then <em>continues</em> - it falls through to
+     * {@code 9600-WRITE-PROCESSING-EXIT} and its caller reports {@code LOCKED-BUT-UPDATE-FAILED} to the
+     * screen. So the rollback must not lose the result, and a plain {@code throw} of a failure would.
+     *
+     * <p>Unchecked, because {@link org.springframework.transaction.support.TransactionTemplate} rolls
+     * back on unchecked exceptions and that is the only rollback signal available inside its body - see
+     * {@link DatasetUnitOfWork#commitRefusal(String, String)}, which documents why. It never escapes
+     * {@link #writeProcessing}: it is thrown inside the boundary and caught immediately outside it, so no
+     * caller can see it and no caller has to know it exists.
+     *
+     * <p>Stack trace and suppression are both disabled. This is control flow, not a fault: there is
+     * nothing about the throw site an operator needs, and filling in a trace on a path that runs whenever
+     * a customer rewrite fails would be cost with no reader.
+     */
+    private static final class SyncpointRollback extends RuntimeException {
+
+        /** Serialisation identity, required of every {@link RuntimeException} subclass. */
+        private static final long serialVersionUID = 1L;
+
+        /** The outcome the paragraph reached before it asked for the rollback. */
+        private final transient WriteResult result;
+
+        /**
+         * @param result the outcome to carry out through the rollback
+         */
+        private SyncpointRollback(WriteResult result) {
+            super("EXEC CICS SYNCPOINT ROLLBACK (app/cbl/COACTUPC.cbl:4099-4101): the ACCTDAT rewrite "
+                    + "succeeded and the CUSTDAT rewrite did not, so the unit of work is rolled back and "
+                    + "the paragraph's outcome is carried out to the caller", null, false, false);
+            this.result = result;
+        }
+
+        /**
+         * The outcome to return once the rollback has happened.
+         *
+         * @return the result; never {@code null}
+         */
+        private WriteResult result() {
+            return result;
+        }
+    }
+}

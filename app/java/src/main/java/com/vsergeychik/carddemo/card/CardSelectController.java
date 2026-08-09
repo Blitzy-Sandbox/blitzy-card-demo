@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.card;
 
 import com.vsergeychik.carddemo.card.dto.CardScreenState;
 import com.vsergeychik.carddemo.card.dto.CardSelectRequest;
+import com.vsergeychik.carddemo.card.dto.CardSelectRequest.ThisProgCommarea;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse;
 import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.AbendException;
@@ -14,11 +15,14 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
+import jakarta.validation.Valid;
+
 import java.nio.charset.Charset;
 import java.time.Clock;
 import java.util.Arrays;
@@ -31,6 +35,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -821,100 +826,15 @@ public class CardSelectController {
 
     // =================================================================================================
     // WS-THIS-PROGCOMMAREA - app/cbl/COCRDSLC.cbl:200-203.
+    //
+    // The twelve-byte trailer this program appends to CARDDEMO-COMMAREA when it returns is declared as
+    // CardSelectRequest.ThisProgCommarea, not here. It belongs with the payload types because it is
+    // payload: :274-278 restores it from what the caller passed and :398-400 returns it, so it has to
+    // travel in the request and come back in the response, and a carrier declared inside the controller
+    // could not be a member of either without the dto package depending on the controller. The paired
+    // request owns it and the paired response imports it, which is exactly how the CT01 screen carries
+    // CDEMO-CT01-INFO (TransactionAddRequest.Ct01Info).
     // =================================================================================================
-
-    /**
-     * {@code WS-THIS-PROGCOMMAREA} - the twelve bytes this program appends to
-     * {@code CARDDEMO-COMMAREA} when it returns.
-     *
-     * <pre>
-     * 01 WS-THIS-PROGCOMMAREA.
-     *    05 CA-CALL-CONTEXT.
-     *       10 CA-FROM-PROGRAM  PIC X(08).
-     *       10 CA-FROM-TRANID   PIC X(04).
-     * </pre>
-     *
-     * <p>The program never reads or writes either field - it only restores the area at {@code :276-278}
-     * and returns it at {@code :398-400}, so the twelve bytes travel out exactly as they travelled in.
-     * That pass-through is behaviour, and dropping the area would shorten the returned commarea from
-     * {@value CardSelectController#PASSED_COMMAREA_LENGTH} bytes to
-     * {@value NavigationContext#COMMAREA_LENGTH} and change what the next program in a chain receives.
-     *
-     * <p>A record, so it is immutable and can be shared safely.
-     *
-     * @param caFromProgram {@code CA-FROM-PROGRAM PIC X(08)}, {@code app/cbl/COCRDSLC.cbl:202}
-     * @param caFromTranid  {@code CA-FROM-TRANID PIC X(04)}, {@code :203}
-     */
-    public record ThisProgCommarea(String caFromProgram, String caFromTranid) {
-
-        /** Declared width of {@code CA-FROM-PROGRAM}: {@code PIC X(08)}. */
-        public static final int CA_FROM_PROGRAM_LENGTH = 8;
-
-        /** Declared width of {@code CA-FROM-TRANID}: {@code PIC X(04)}. */
-        public static final int CA_FROM_TRANID_LENGTH = 4;
-
-        /**
-         * Rejects {@code null} in either component. A COBOL alphanumeric field is never absent; the
-         * empty state is a run of spaces.
-         *
-         * <p>Widths are deliberately not enforced, because a group item can legitimately be observed
-         * mid-{@code MOVE}. {@link #toImage(FixedWidthCodec)} applies them.
-         *
-         * @throws NullPointerException if either component is {@code null}
-         */
-        public ThisProgCommarea {
-            Objects.requireNonNull(caFromProgram, "caFromProgram (CA-FROM-PROGRAM) must not be null: "
-                    + "COBOL has no absent state, so an empty value is a run of spaces");
-            Objects.requireNonNull(caFromTranid, "caFromTranid (CA-FROM-TRANID) must not be null: "
-                    + "COBOL has no absent state, so an empty value is a run of spaces");
-        }
-
-        /**
-         * {@code INITIALIZE WS-THIS-PROGCOMMAREA} - {@code app/cbl/COCRDSLC.cbl:272}: both alphanumeric
-         * items to spaces at their declared widths.
-         *
-         * @return the initialised area; never {@code null}
-         */
-        public static ThisProgCommarea initialized() {
-            return new ThisProgCommarea(CardScreenState.spaces(CA_FROM_PROGRAM_LENGTH),
-                    CardScreenState.spaces(CA_FROM_TRANID_LENGTH));
-        }
-
-        /**
-         * Renders the area as its twelve-character fixed-width image, applying the {@code PIC X} move to
-         * each component.
-         *
-         * @param codec the codec owning the {@code PIC X} move rule
-         * @return exactly {@value CardSelectController#THIS_PROGCOMMAREA_LENGTH} characters
-         * @throws NullPointerException if {@code codec} is {@code null}
-         */
-        public String toImage(FixedWidthCodec codec) {
-            Objects.requireNonNull(codec, "A codec is required to apply the PIC X move");
-            return codec.movePicX(caFromProgram, CA_FROM_PROGRAM_LENGTH)
-                    + codec.movePicX(caFromTranid, CA_FROM_TRANID_LENGTH);
-        }
-
-        /**
-         * Reads the area back from a twelve-character image, splitting at the copybook's offsets.
-         *
-         * @param image a {@value CardSelectController#THIS_PROGCOMMAREA_LENGTH}-character image
-         * @return the decoded area; never {@code null}
-         * @throws NullPointerException     if {@code image} is {@code null}
-         * @throws IllegalArgumentException if {@code image} is not exactly
-         *                                  {@value CardSelectController#THIS_PROGCOMMAREA_LENGTH}
-         *                                  characters
-         */
-        public static ThisProgCommarea fromImage(String image) {
-            Objects.requireNonNull(image, "An image is required to decode WS-THIS-PROGCOMMAREA");
-            if (image.length() != CA_FROM_PROGRAM_LENGTH + CA_FROM_TRANID_LENGTH) {
-                throw new IllegalArgumentException("WS-THIS-PROGCOMMAREA is "
-                        + (CA_FROM_PROGRAM_LENGTH + CA_FROM_TRANID_LENGTH) + " characters, but the "
-                        + "image supplied is " + image.length());
-            }
-            return new ThisProgCommarea(image.substring(0, CA_FROM_PROGRAM_LENGTH),
-                    image.substring(CA_FROM_PROGRAM_LENGTH));
-        }
-    }
 
     // =================================================================================================
     // The per-request conversation.
@@ -1235,15 +1155,56 @@ public class CardSelectController {
     // =================================================================================================
     // The HTTP surface - GET /api/cards/{cardNum}, CSD transaction CCDL.
     //
-    // One route, because the plan names one (section 0.3.9). Everything CICS would have found in the
-    // terminal input area or the commarea arrives as a query parameter, which keeps the endpoint stateless
-    // (rule R6, gate G37) and keeps the whole conversation inspectable in a URL. The screen has only two
-    // input fields, so this is not a compromise: CARDSID is the path variable, ACCTSID is one parameter,
-    // and the rest is the commarea.
+    // One route, because the plan names one (section 0.3.9), and it binds the WHOLE symbolic-map request.
     //
-    // This method contains NO decision logic. It binds, delegates to handle(...), and answers. Every
-    // branch lives below, reachable from a plain JUnit test with a mocked repository (gate G51).
+    // It used to bind a path variable and twelve ad-hoc query parameters instead - acctId, eibAid,
+    // eibcalen, pgmContext, fromTranid, fromProgram, userId, userType, cdemoAcctId, cdemoCardNum,
+    // lastMapset, lastMap - and built a CardSelectRequest from them internally. Three things were wrong
+    // with that, and all three are corrected here:
+    //
+    //   * THE CONTRACT WAS NOT THE SYMBOLIC MAP. CardSelectRequest is derived field-for-field from
+    //     app/cpy-bms/COCRDSL.CPY and is the published request shape, but nothing bound it, so thirteen
+    //     of its fifteen fields could not be sent at all and the two that could arrived under invented
+    //     names - acctId and cardNum rather than the DFHMDF labels ACCTSID and CARDSID.
+    //   * THE 12-BYTE TRAILER HAD NOWHERE TO TRAVEL. COMMON-RETURN returns CARDDEMO-COMMAREA followed by
+    //     WS-THIS-PROGCOMMAREA (app/cbl/COCRDSLC.cbl:397-400), 160 + 12 = 172 bytes. A query string of
+    //     commarea fields had no room for the trailer, so :274-278's restore had nothing to restore from.
+    //   * NOTHING WAS VALIDATED. An over-long card number was silently truncated to PIC X(16) - which is
+    //     one URI addressing a DIFFERENT card - an EIBAID was narrowed straight to byte, and EIBCALEN was
+    //     whatever the caller said it was, including negative.
+    //
+    // So the request DTO is bound with @Valid, as a body: one call is one execution of COCRDSLC, and the
+    // fifteen screen fields, the 160-byte commarea and the 12-byte trailer are a state document rather
+    // than a query string. GET keeps the plan's route verbatim (section 0.3.9 names GET
+    // /api/cards/{cardNum}) and the body is optional, because a cold start has no state to send - which is
+    // EIBCALEN = 0, the arm at :268. The in-package precedent is DELETE /api/users/{userId}, which binds
+    // @RequestBody(required = false) for exactly the same reason.
+    //
+    // {cardNum} stays the only identity in the URI and is authoritative: it is reconciled with CARDSID
+    // rather than competing with it.
+    //
+    // This method contains NO decision logic beyond that reconciliation and the three boundary guards.
+    // Every branch of the program lives below, reachable from a plain JUnit test with a mocked repository
+    // (gate G51).
     // =================================================================================================
+
+    /** The lowest value an unsigned {@code EIBAID} byte can carry. */
+    private static final int AID_MIN = 0;
+
+    /** The highest value an unsigned {@code EIBAID} byte can carry. */
+    private static final int AID_MAX = 255;
+
+    /** The name of the query parameter carrying the raw {@code EIBAID} byte. */
+    static final String EIBAID_PARAM = "eibAid";
+
+    /** The name of the query parameter carrying {@code EIBCALEN}. */
+    static final String EIBCALEN_PARAM = "eibcalen";
+
+    /**
+     * The {@code CARDSID} values that mean "the operator typed no card number", per
+     * {@code app/cbl/COCRDSLC.cbl:622-626}, where {@code '*'} and {@code SPACES} are treated alike.
+     */
+    private static final String NO_CRITERION = "*";
 
     /**
      * Displays one credit card's detail screen: {@code GET /api/cards/{cardNum}}, transaction
@@ -1262,115 +1223,226 @@ public class CardSelectController {
      * answered {@code 500} by {@code WebConfig.CobolErrorHandler} - the faithful projection of
      * {@code EXEC CICS ABEND ABCODE('9999')} at {@code :875-877}.
      *
-     * @param cardNum      {@code CARDSIDI PIC X(16)} - the card number typed on the screen, and the
-     *                     {@code CARDDAT} key {@code 9100-GETCARD-BYACCTCARD} reads with. Required,
-     *                     because it is the path
-     * @param acctId       {@code ACCTSIDI PIC X(11)} - the account filter. Absent means the operator left
-     *                     the field empty, which {@code 2200-EDIT-MAP-INPUTS} treats identically to
-     *                     {@code SPACES} and to {@code '*'} ({@code :615-620})
-     * @param eibAid       {@code EIBAID} - the raw attention identifier byte, {@code 0}-{@code 255}.
-     *                     Absent means {@link CicsAid#DFHENTER}. It is resolved by
-     *                     {@link PfKeyResolver}, so an unrecognised byte reaches the same no-match arm
-     *                     the COBOL's {@code EVALUATE} leaves unhandled
-     * @param eibcalen     {@code EIBCALEN} - the length of the passed commarea. Absent is inferred: a
-     *                     request that named no commarea field passes {@value #NO_COMMAREA_LENGTH}, and
-     *                     one that named any passes {@value #PASSED_COMMAREA_LENGTH}. The distinction is
-     *                     load-bearing at {@code :268}
-     * @param pgmContext   {@code CDEMO-PGM-CONTEXT} - {@value NavigationContext#PGM_CONTEXT_ENTER} for
-     *                     {@code CDEMO-PGM-ENTER}, {@value NavigationContext#PGM_CONTEXT_REENTER} for
-     *                     {@code CDEMO-PGM-REENTER}. Absent means {@code ENTER}
-     * @param fromTranid   {@code CDEMO-FROM-TRANID PIC X(4)}; absent means spaces, which
-     *                     {@code :309-310} treats as "no caller"
-     * @param fromProgram  {@code CDEMO-FROM-PROGRAM PIC X(8)}; absent means spaces. The value
-     *                     {@value #LIT_CCLISTPGM} selects the card-list entry arm at {@code :339-340}
-     * @param userId       {@code CDEMO-USER-ID PIC X(8)}; carried through untouched
-     * @param userType     {@code CDEMO-USER-TYPE PIC X(1)} - {@code 'A'} or {@code 'U'}. Carried in, and
-     *                     unconditionally overwritten with {@code 'U'} on the {@code PF3} arm
-     *                     ({@code :326}), which is the source's own behaviour and is not corrected
-     * @param cdemoAcctId  {@code CDEMO-ACCT-ID PIC 9(11)} - the commarea's account id, which the
-     *                     card-list arm moves into {@code CC-ACCT-ID-N} at {@code :342}. Distinct from
-     *                     {@code acctId}, which is the screen field
-     * @param cdemoCardNum {@code CDEMO-CARD-NUM PIC 9(16)} - the commarea's card number, moved into
-     *                     {@code CC-CARD-NUM-N} at {@code :343}
-     * @param lastMapset   {@code CDEMO-LAST-MAPSET PIC X(7)}; {@value #LIT_CCLISTMAPSET} here selects the
-     *                     protected-field variant at {@code :505-508}
-     * @param lastMap      {@code CDEMO-LAST-MAP PIC X(7)}; carried through
-     * @return the painted screen, its attribute quads, the next-screen triple and the commarea, all in
-     *         the body so nothing is retained server-side
+     * @param cardNum  {@code CARDSIDI PIC X(16)} - the card number this URI addresses, and the
+     *                 {@code CARDDAT} key {@code 9100-GETCARD-BYACCTCARD} reads with. Required, because
+     *                 it is the path, and authoritative: it is moved into {@code CARDSID}. A body that
+     *                 states {@code CARDSID} as well must agree with it, or state the source's own
+     *                 "no criterion" value - spaces or {@code '*'} ({@code :622-626})
+     * @param request  the whole {@code 01 CCRDSLAI} symbolic-map request, validated against the declared
+     *                 widths, together with the 160-byte {@code CARDDEMO-COMMAREA} and the 12-byte
+     *                 {@code WS-THIS-PROGCOMMAREA} trailer {@code :274-278} restores from.
+     *                 {@code null} when no body was sent, which is the {@code EIBCALEN = 0} cold start
+     * @param eibAid   {@code EIBAID} - the raw attention identifier byte, {@code 0}-{@code 255}. Absent
+     *                 means {@link CicsAid#DFHENTER}. It is resolved by {@link PfKeyResolver}, so an
+     *                 unrecognised byte reaches the same no-match arm the COBOL's {@code EVALUATE}
+     *                 leaves unhandled
+     * @param eibcalen {@code EIBCALEN} - the length of the passed commarea, and therefore either
+     *                 {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH} and nothing else.
+     *                 Absent is derived from the carrier, and a stated value that contradicts the
+     *                 carrier is refused rather than believed. The distinction is load-bearing at
+     *                 {@code :268}
+     * @return the painted screen and its metadata: the fifteen fields, the next-screen triple, the
+     *         commarea, the 12-byte trailer and the attribute quads, all in the body so nothing is
+     *         retained server-side
+     * @throws IllegalArgumentException if {@code cardNum} or a bound field is wider than its
+     *                                  {@code PICTURE}, if the body's {@code CARDSID} names a different
+     *                                  card, if {@code eibAid} is outside {@code 0}-{@code 255}, or if
+     *                                  {@code eibcalen} is neither of the two lengths or disagrees with
+     *                                  the carrier - each answered {@code 400} by
+     *                                  {@code WebConfig.CobolErrorHandler} with no value echoed
      */
     @GetMapping(path = "/api/cards/{cardNum}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<CardSelectResponse> viewCardDetail(
+    public ResponseEntity<ScreenResponse<CardSelectResponse>> viewCardDetail(
             @PathVariable("cardNum") String cardNum,
-            @RequestParam(name = "acctId", required = false) String acctId,
-            @RequestParam(name = "eibAid", required = false) Integer eibAid,
-            @RequestParam(name = "eibcalen", required = false) Integer eibcalen,
-            @RequestParam(name = "pgmContext", required = false) Integer pgmContext,
-            @RequestParam(name = "fromTranid", required = false) String fromTranid,
-            @RequestParam(name = "fromProgram", required = false) String fromProgram,
-            @RequestParam(name = "userId", required = false) String userId,
-            @RequestParam(name = "userType", required = false) String userType,
-            @RequestParam(name = "cdemoAcctId", required = false) Long cdemoAcctId,
-            @RequestParam(name = "cdemoCardNum", required = false) Long cdemoCardNum,
-            @RequestParam(name = "lastMapset", required = false) String lastMapset,
-            @RequestParam(name = "lastMap", required = false) String lastMap) {
+            @Valid @RequestBody(required = false) CardSelectRequest request,
+            @RequestParam(name = EIBAID_PARAM, required = false) Integer eibAid,
+            @RequestParam(name = EIBCALEN_PARAM, required = false) Integer eibcalen) {
 
-        NavigationContext commarea = NavigationContext.empty()
-                .withFromTranid(orSpaces(fromTranid, NavigationContext.FROM_TRANID_LENGTH))
-                .withFromProgram(orSpaces(fromProgram, NavigationContext.FROM_PROGRAM_LENGTH))
-                .withUserId(orSpaces(userId, NavigationContext.USER_ID_LENGTH))
-                .withUserType(orSpaces(userType, NavigationContext.USER_TYPE_LENGTH))
-                .withPgmContext(pgmContext == null ? NavigationContext.PGM_CONTEXT_ENTER : pgmContext)
-                .withAcctId(cdemoAcctId == null ? 0L : cdemoAcctId)
-                .withCardNum(cdemoCardNum == null ? 0L : cdemoCardNum)
-                .withLastMapset(orSpaces(lastMapset, NavigationContext.LAST_MAPSET_LENGTH))
-                .withLastMap(orSpaces(lastMap, NavigationContext.LAST_MAP_LENGTH));
+        Objects.requireNonNull(cardNum, "A card number is required in the path: it is the RIDFLD of the "
+                + "READ at app/cbl/COCRDSLC.cbl:806-813");
 
-        CardSelectRequest request = new CardSelectRequest();
-        request.initializeMapArea();
-        request.setCardsid(codec.movePicX(cardNum, CardSelectRequest.CARDSID_LENGTH));
-        request.setAcctsid(codec.movePicX(orSpaces(acctId, CardSelectRequest.ACCTSID_LENGTH),
-                CardSelectRequest.ACCTSID_LENGTH));
-        request.setNavigationContext(commarea);
+        CardSelectRequest received = bind(cardNum, request);
+        int commareaLength = resolveEibcalen(eibcalen, received);
+        byte attentionIdentifier = resolveAttentionIdentifier(eibAid);
 
-        int commareaLength = eibcalen != null
-                ? eibcalen
-                : (anyCommareaFieldSupplied(pgmContext, fromTranid, fromProgram, userId, userType,
-                        cdemoAcctId, cdemoCardNum, lastMapset, lastMap)
-                                ? PASSED_COMMAREA_LENGTH
-                                : NO_COMMAREA_LENGTH);
-
-        byte attentionIdentifier = eibAid == null ? CicsAid.DFHENTER : (byte) eibAid.intValue();
-
-        return ResponseEntity.ok(handle(request, commareaLength, attentionIdentifier));
+        CardSelectResponse painted = handle(received, commareaLength, attentionIdentifier);
+        return ResponseEntity.ok(ScreenResponse.of(painted, painted.screenMetadata()));
     }
 
     /**
-     * Whether the caller named any {@code CARDDEMO-COMMAREA} field, which is how an unstated
-     * {@code EIBCALEN} is inferred.
+     * Reconciles the URI's card number with the bound request, and refuses the two ways a caller could
+     * otherwise reach a record the URI does not name.
      *
-     * <p>Package-visible and separate so the inference is testable on its own: it decides which arm of
-     * {@code app/cbl/COCRDSLC.cbl:268} a request takes, and that decides whether the conversation's state
-     * survives the turn.
+     * <h4>Why an over-width value is refused rather than moved</h4>
+     * {@code MOVE} to a {@code PIC X(16)} field keeps the leading sixteen characters and discards the
+     * rest, so {@code /api/cards/40000000000000019999} would have been truncated to
+     * {@code 4000000000000001} and read <em>that</em> card - a URI addressing a record it does not
+     * name, and one no operator could have typed, because a 3270 field physically cannot accept more
+     * characters than it declares. The COBOL move is faithful for a value that fits; for one that does
+     * not, there is nothing faithful to reproduce, so the request is refused at the boundary before any
+     * padding, any repository call and any lock.
      *
-     * @param values the optional commarea parameters, in any order
-     * @return {@code true} when at least one is present
+     * <h4>Why the path wins, and how the body still gets a say</h4>
+     * {@code CARDSID} is both the resource's identity and a screen field the operator types into. When
+     * the two agree there is nothing to decide. When the body leaves the field at its "no criterion"
+     * state - spaces or {@code '*'}, which {@code :622-626} treats alike - the path supplies it, which
+     * is how a client re-sends a screen it painted from a URI. When the body names a
+     * <em>different</em> card the two statements of identity contradict each other, and answering one
+     * of them silently would be a guess; it is refused instead.
+     *
+     * @param cardNum the path variable; must not be {@code null}
+     * @param request the bound body, or {@code null} for a cold start
+     * @return the request to execute, with {@code CARDSID} set from the path; never {@code null}
+     * @throws IllegalArgumentException if the path value is wider than {@code CARDSID}, or the body
+     *                                  states a different card
      */
-    static boolean anyCommareaFieldSupplied(Object... values) {
-        return Arrays.stream(values).anyMatch(Objects::nonNull);
+    CardSelectRequest bind(String cardNum, CardSelectRequest request) {
+        if (cardNum.length() > CardSelectRequest.CARDSID_LENGTH) {
+            throw new IllegalArgumentException("The card number in the path is " + cardNum.length()
+                    + " characters, but CARDSID is CARDSIDI PIC X(" + CardSelectRequest.CARDSID_LENGTH
+                    + "). Padding it would keep the leading " + CardSelectRequest.CARDSID_LENGTH
+                    + " characters and address a different card than the one the URI names.");
+        }
+
+        CardSelectRequest received = request == null ? coldStartRequest() : new CardSelectRequest(request);
+        String stated = received.getCardsid();
+        if (statesADifferentCard(cardNum, stated)) {
+            throw new IllegalArgumentException("The request body states a card number that is not the "
+                    + "one the path addresses. CARDSID is the resource's identity here, so the two "
+                    + "cannot disagree; send the field as spaces or '*' to let the path supply it.");
+        }
+        received.setCardsid(codec.movePicX(cardNum, CardSelectRequest.CARDSID_LENGTH));
+
+        // Never null: initializeState() fills all fifteen items at their declared widths, setAcctsid
+        // normalises a null - including an explicit JSON null, because Jackson binds through the setter
+        // rather than the field - and the copy constructor copies a value that is already there. A COBOL
+        // alphanumeric item has no absent state, and this one has none either, so no null guard is
+        // written for a state that cannot occur.
+        String acctsid = received.getAcctsid();
+        if (acctsid.length() > CardSelectRequest.ACCTSID_LENGTH) {
+            throw new IllegalArgumentException("ACCTSID is ACCTSIDI PIC X("
+                    + CardSelectRequest.ACCTSID_LENGTH + ") and was given " + acctsid.length()
+                    + " characters. Padding it would keep the leading "
+                    + CardSelectRequest.ACCTSID_LENGTH + " and filter on a different account.");
+        }
+        received.setAcctsid(codec.movePicX(acctsid, CardSelectRequest.ACCTSID_LENGTH));
+        return received;
     }
 
     /**
-     * An absent parameter as the run of spaces COBOL would have held, and a present one unchanged.
+     * Whether the body's {@code CARDSID} names a card other than the one the URI addresses.
      *
-     * <p>Never {@code null}: a COBOL alphanumeric field has no absent state, so "the operator typed
-     * nothing" is spaces, and the edits at {@code app/cbl/COCRDSLC.cbl:615-627} test for exactly that.
+     * <p>Three values are <strong>not</strong> a different card: {@code null}, the "no criterion" states
+     * {@code app/cbl/COCRDSLC.cbl:622-626} treats alike - spaces and {@code '*'} - and the path value
+     * itself. Everything else is a second, contradicting statement of identity.
      *
-     * @param value  the supplied value, or {@code null}
-     * @param length the field's declared width
-     * @return {@code value}, or {@code length} spaces
+     * <p>Compared trimmed, because {@code CARDSID} is {@code PIC X(16)} and a client that echoes a
+     * painted screen back sends the field space-padded to its declared width; a padded form of the same
+     * card number is the same card number.
+     *
+     * @param cardNum the path variable
+     * @param stated  the body's {@code CARDSID}, possibly {@code null}
+     * @return {@code true} when the two contradict each other
      */
-    private static String orSpaces(String value, int length) {
-        return value == null ? CardScreenState.spaces(length) : value;
+    static boolean statesADifferentCard(String cardNum, String stated) {
+        if (stated == null) {
+            return false;
+        }
+        String trimmed = stated.trim();
+        return !trimmed.isEmpty() && !NO_CRITERION.equals(trimmed) && !cardNum.equals(trimmed);
+    }
+
+    /**
+     * The request a bodiless call executes: an initialised map area, no commarea and an initialised
+     * trailer - which is what {@code EIBCALEN = 0} means at {@code app/cbl/COCRDSLC.cbl:268}.
+     *
+     * @return a fresh request; never {@code null}
+     */
+    private static CardSelectRequest coldStartRequest() {
+        CardSelectRequest cold = new CardSelectRequest();
+        cold.initializeMapArea();
+        return cold;
+    }
+
+    /**
+     * Resolves {@code EIBCALEN} from the stated value and the carrier, and refuses any statement the
+     * carrier does not support.
+     *
+     * <h4>Why a caller may not simply declare it</h4>
+     * {@code EIBCALEN} is not caller data on a real terminal: CICS sets it to the length of the area it
+     * actually passed. It selects the arm at {@code :268} that decides whether the operator's typed
+     * criteria and the calling program's identity survive the turn, so a caller that could state it
+     * freely could discard state that was sent, or claim state that was not.
+     *
+     * <h4>Why the two accepted values are 0 and {@value #PASSED_COMMAREA_LENGTH}</h4>
+     * {@code :268} tests the value against zero and nothing else, and the only other thing the program
+     * does with the passed area is read exactly {@value #PASSED_COMMAREA_LENGTH} bytes out of it -
+     * {@code DFHCOMMAREA(1:160)} at {@code :274-275} and {@code DFHCOMMAREA(161:12)} at {@code :276-278}.
+     * The projected request carries precisely those two areas, so it is in one of exactly two states:
+     * absent, or complete at {@value #PASSED_COMMAREA_LENGTH} bytes. The byte count a real terminal would
+     * report is not one number - {@code COCRDLIC} transfers control passing {@code CARDDEMO-COMMAREA}
+     * alone [{@code app/cbl/COCRDLIC.cbl:538-540}] while this program's own {@code COMMON-RETURN} passes
+     * {@code WS-COMMAREA}, declared {@code PIC X(2000)} [{@code app/cbl/COCRDSLC.cbl:205}] - and since
+     * none of those numbers is tested for anything but zero, reproducing the terminal-dependent count
+     * would add a distinction the program does not make. The parameter states the presence of the area
+     * the program reads, at the length it reads.
+     *
+     * <p>So: absent is derived from the carrier, a stated value must be one of the two lengths, and it
+     * must agree with what actually arrived.
+     *
+     * @param eibcalen the stated value, or {@code null}
+     * @param request  the bound request, whose commarea presence is the carrier
+     * @return {@value #NO_COMMAREA_LENGTH} or {@value #PASSED_COMMAREA_LENGTH}
+     * @throws IllegalArgumentException if the stated value is neither length, or contradicts the carrier
+     */
+    static int resolveEibcalen(Integer eibcalen, CardSelectRequest request) {
+        int carried = request.hasNavigationContext() ? PASSED_COMMAREA_LENGTH : NO_COMMAREA_LENGTH;
+        if (eibcalen == null) {
+            return carried;
+        }
+        int stated = eibcalen;
+        if (stated != NO_COMMAREA_LENGTH && stated != PASSED_COMMAREA_LENGTH) {
+            throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter is " + stated
+                    + ", but CICS sets EIBCALEN to the length of the area it passed - which for this "
+                    + "program is either " + NO_COMMAREA_LENGTH + " or " + PASSED_COMMAREA_LENGTH
+                    + ", CARDDEMO-COMMAREA plus WS-THIS-PROGCOMMAREA.");
+        }
+        if (stated != carried) {
+            throw new IllegalArgumentException("The " + EIBCALEN_PARAM + " parameter says " + stated
+                    + " but the payload carries " + (carried == NO_COMMAREA_LENGTH ? "no" : "a")
+                    + " communication area. EIBCALEN describes what arrived; it cannot contradict it, "
+                    + "because app/cbl/COCRDSLC.cbl:268 uses it to decide whether the conversation's "
+                    + "state survives the turn.");
+        }
+        return stated;
+    }
+
+    /**
+     * Narrows the stated {@code EIBAID} to the byte {@code :291-299} tests, having first required it to
+     * be a byte.
+     *
+     * <p>An {@code Integer} cast straight to {@code byte} keeps the low eight bits and discards the
+     * rest, so {@code 499} would arrive as {@code 0xF3} - {@code DFHPF3}, the one key besides
+     * {@code ENTER} this screen acts on - and {@code -14} as {@code 0xF2}. Neither is a key anyone
+     * pressed. This is the guard {@code UserAddController}, {@code UserMenuController} and
+     * {@code TransactionMenuController} already apply, written the same way for the same reason.
+     *
+     * @param eibAid the stated value, or {@code null} for {@link CicsAid#DFHENTER}
+     * @return the raw attention-identifier byte
+     * @throws IllegalArgumentException if {@code eibAid} is outside {@code 0}-{@code 255}
+     */
+    static byte resolveAttentionIdentifier(Integer eibAid) {
+        if (eibAid == null) {
+            return CicsAid.DFHENTER;
+        }
+        int value = eibAid;
+        if (value < AID_MIN || value > AID_MAX) {
+            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
+                    + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
+                    + ". Narrowing it silently would select an attention identifier the caller never "
+                    + "pressed.");
+        }
+        return (byte) value;
     }
 
     // =================================================================================================
@@ -1616,7 +1688,11 @@ public class CardSelectController {
         task.carddemoCommarea = request.hasNavigationContext()
                 ? request.getNavigationContext()
                 : NavigationContext.empty();
-        task.thisProgCommarea = ThisProgCommarea.initialized();
+        // The trailer arrives with the request, exactly as the commarea does. It used to be initialised
+        // here unconditionally, which made :276-278 restore twelve spaces however many bytes the caller
+        // had actually passed - the pass-through at :398-400 then returned spaces too, and the next
+        // program in the chain lost the calling program and transaction it should have received.
+        task.thisProgCommarea = request.getThisProgCommarea();
     }
 
     /**
@@ -1876,6 +1952,11 @@ public class CardSelectController {
         task.carddemoCommarea = commarea;
 
         // :331-334 - EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)
+        //
+        // The XCTL passes CARDDEMO-COMMAREA and NOTHING ELSE - not WS-THIS-PROGCOMMAREA, which
+        // COMMON-RETURN appends at :398-400 but this arm never touches. So the trailer is deliberately
+        // NOT published here: the program being transferred to receives 160 bytes, and adding the twelve
+        // would hand it state the source does not pass. It stays at its initialised twelve spaces.
         response.setNavigationContext(commarea);
         response.setCardScreenState(task.ccWorkArea);
         response.setNextProgram(commarea.toProgram());
@@ -2067,7 +2148,13 @@ public class CardSelectController {
         task.wsCommarea = codec.movePicX(commareaImage + trailerImage, WS_COMMAREA_LENGTH);
 
         // :402-406 - EXEC CICS RETURN TRANSID('CCDL') COMMAREA(WS-COMMAREA) LENGTH(2000)
+        //
+        // Both halves of the area travel, because both halves are what the RETURN passes: the 160-byte
+        // CARDDEMO-COMMAREA and the 12-byte WS-THIS-PROGCOMMAREA composed at :397-400. The trailer used
+        // to be assembled into task.wsCommarea above and then dropped, so the next turn received 160
+        // bytes where the program had returned 172.
         response.setNavigationContext(task.carddemoCommarea);
+        response.setThisProgCommarea(task.thisProgCommarea);
         response.setCardScreenState(task.ccWorkArea);
         task.returned = true;
     }
@@ -2423,6 +2510,7 @@ public class CardSelectController {
         response.setNextMapset(task.ccWorkArea.getCcardNextMapset());
         response.setNextMap(task.ccWorkArea.getCcardNextMap());
         response.setNavigationContext(task.carddemoCommarea);
+        response.setThisProgCommarea(task.thisProgCommarea);
         response.setCardScreenState(task.ccWorkArea);
         task.wsRespCd = FileStatus.NORMAL;
     }

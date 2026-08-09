@@ -2,6 +2,8 @@ package com.vsergeychik.carddemo.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -2475,6 +2477,147 @@ class CardXrefRepositoryTest {
                         .hasSize(CardXrefRepository.CICS_FILE_NAME_LENGTH)
                         .startsWith(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
             });
+        }
+    }
+
+    // =============================================================================================
+    // The batch DD view - the DD-mapping finding.
+    //
+    // CBACT03C reads through //XREFFILE and CBACT04C through //XREFFILE plus //XREFFIL1. Those are the
+    // JCL's names for the two things the CSD calls CCXREF and CXACAIX, and a job resolves them through
+    // its own view of the catalogue - so it needs a way to say "address MY bindings".
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("addressing - the caller's own DD bindings are the ones read")
+    class TheBatchDdView {
+
+        private final JdbcTemplate template = mock(JdbcTemplate.class);
+
+        @Test
+        @DisplayName("the batch DD names are the ones READXREF.jcl and INTCALC.jcl bind")
+        void theBatchDdNamesAreTheJcls() {
+            assertThat(CardXrefRepository.BATCH_DD_NAME).isEqualTo("XREFFILE");
+            assertThat(CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME).isEqualTo("XREFFIL1");
+            assertThat(CardXrefRepository.BATCH_DD_NAME)
+                    .isNotEqualTo(CardXrefRepository.BASE_DD_NAME);
+            assertThat(CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME)
+                    .isNotEqualTo(CardXrefRepository.ALTERNATE_INDEX_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("bindings naming the datasets already addressed hand back the same instance")
+        void identicalBindingsAreIdentity() {
+            CardXrefRepository subject = repository(template);
+
+            CardXrefRepository same = subject.addressing(ksds(BASE_DS),
+                    CardXrefRepository.BATCH_DD_NAME, aixPath(ALT_DS),
+                    CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME);
+
+            assertThat(same).isSameAs(subject);
+        }
+
+        @Test
+        @DisplayName("an omitted alternate-index binding keeps the configured path and is not identity "
+                + "when the base moves")
+        void anOmittedAlternateIndexKeepsThePath() {
+            // CBACT03C declares one SELECT and READXREF.jcl one DD, so a sequential reader supplies no
+            // alternate-index binding. The path must not become null, because the instance still has to
+            // be a whole repository.
+            CardXrefRepository subject = repository(template);
+
+            CardXrefRepository rebound = subject.addressing(ksds("TEST.XREF.BATCH"),
+                    CardXrefRepository.BATCH_DD_NAME, null,
+                    CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME);
+
+            assertThat(rebound).isNotSameAs(subject);
+            assertThat(rebound.baseDatasetName()).isEqualTo("TEST.XREF.BATCH");
+            assertThat(rebound.alternateIndexDatasetName()).isEqualTo(ALT_DS);
+        }
+
+        @Test
+        @DisplayName("an omitted alternate-index binding over an unchanged base is identity")
+        void anOmittedAlternateIndexOverTheSameBaseIsIdentity() {
+            CardXrefRepository subject = repository(template);
+
+            CardXrefRepository same = subject.addressing(ksds(BASE_DS),
+                    CardXrefRepository.BATCH_DD_NAME, null,
+                    CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME);
+
+            assertThat(same).isSameAs(subject);
+        }
+
+        @Test
+        @DisplayName("both bindings move together, and the statements follow them")
+        void bothBindingsRebase() {
+            CardXrefRepository subject = repository(template);
+
+            CardXrefRepository rebound = subject.addressing(ksds("TEST.XREF.BATCH"),
+                    CardXrefRepository.BATCH_DD_NAME, aixPath("TEST.XREF.BATCH.PATH"),
+                    CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME);
+
+            assertThat(rebound.baseDatasetName()).isEqualTo("TEST.XREF.BATCH");
+            assertThat(rebound.alternateIndexDatasetName()).isEqualTo("TEST.XREF.BATCH.PATH");
+            // The statements address the new relations. Carrying the source's resolved statements over
+            // would have sent them at the old datasets - the defect, expressed in SQL.
+            assertThat(rebound.describeBaseStatement())
+                    .contains("TEST.XREF.BATCH")
+                    .doesNotContain(BASE_DS);
+            assertThat(rebound.describeAlternateIndexStatement())
+                    .contains("TEST.XREF.BATCH.PATH")
+                    .doesNotContain(ALT_DS);
+            // The instance it came from is untouched: two views, one of them the online one.
+            assertThat(subject.baseDatasetName()).isEqualTo(BASE_DS);
+        }
+
+        @Test
+        @DisplayName("a wrong record width is refused for either binding, naming the key to correct")
+        void aWrongWidthIsRefused() {
+            CardXrefRepository subject = repository(template);
+            DatasetBinding wrongBase = new DatasetBinding("TEST.XREF.BATCH", "ksds", false, "FB", null,
+                    CardXrefRecord.RECORD_LENGTH + 1, "CVACT03Y", null, null, null, null);
+            DatasetBinding wrongPath = new DatasetBinding("TEST.XREF.BATCH.PATH", "aix-path", false,
+                    "FB", null, CardXrefRecord.RECORD_LENGTH - 1, "CVACT03Y", null, null,
+                    CardXrefRepository.BASE_DD_NAME, CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> subject.addressing(wrongBase,
+                            CardXrefRepository.BATCH_DD_NAME, aixPath(ALT_DS),
+                            CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME))
+                    .withMessageContaining(CardXrefRepository.BATCH_DD_NAME);
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> subject.addressing(ksds("TEST.XREF.BATCH"),
+                            CardXrefRepository.BATCH_DD_NAME, wrongPath,
+                            CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME))
+                    .withMessageContaining(CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("a blank dataset name is refused")
+        void aBlankDatasetNameIsRefused() {
+            CardXrefRepository subject = repository(template);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> subject.addressing(ksds("  "),
+                            CardXrefRepository.BATCH_DD_NAME, null,
+                            CardXrefRepository.ALTERNATE_INDEX_BATCH_DD_NAME))
+                    .withMessageContaining(CardXrefRepository.BATCH_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("the base binding and both DD names are required; only the path may be omitted")
+        void theRequiredArgumentsAreRequired() {
+            CardXrefRepository subject = repository(template);
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> subject.addressing(ksds(BASE_DS), null, null, "XREFFIL1"))
+                    .withMessageContaining("base DD name");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> subject.addressing(ksds(BASE_DS), "XREFFILE", null, null))
+                    .withMessageContaining("alternate-index DD name");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> subject.addressing(null, "XREFFILE", null, "XREFFIL1"))
+                    .withMessageContaining("XREFFILE");
         }
     }
 }

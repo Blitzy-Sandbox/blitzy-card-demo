@@ -1,12 +1,17 @@
 package com.vsergeychik.carddemo.parity;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -19,6 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -158,11 +164,18 @@ import java.util.stream.Collectors;
  *     {@code null}, and empty asserts positively that nothing was written
  * @param expectedFinalState what each dataset holds after the run, row by row; never {@code null}
  * @param expectedReturnCode the expected COBOL {@code RETURN-CODE}, mapped onto the batch exit
- *     status
+ *     status. <strong>Mandatory</strong>, and boxed for exactly that reason: as a primitive
+ *     {@code int} an omitted {@code "expectedReturnCode"} key bound silently to {@code 0}, so a
+ *     fixture that forgot to state the return code asserted the most common value by accident, and a
+ *     case expecting an abend of 8 or 12 passed while asserting a normal completion. A boxed member
+ *     arrives {@code null} when the key is absent, which the constructor refuses
  * @param expectedMessages emitted lines in emission order, each declaring its channel and
  *     therefore its width; never {@code null}
  * @param normalisations the seed-time width normalisations, each bound to the dataset it applies
  *     to; never {@code null}, and empty for a case seeding no under-width fixture
+ * @param expectedDatasets dataset-level expectations - the identity and the exact row count of a
+ *     dataset on a channel, including a count of zero; never {@code null}, and empty for a case that
+ *     asserts only at row level
  */
 @JsonIgnoreProperties(ignoreUnknown = false)
 @JsonPropertyOrder({
@@ -178,7 +191,8 @@ import java.util.stream.Collectors;
     "expectedFinalState",
     "expectedReturnCode",
     "expectedMessages",
-    "normalisations"
+    "normalisations",
+    "expectedDatasets"
 })
 public record ParityCase(
     @JsonProperty("program") String program,
@@ -191,9 +205,10 @@ public record ParityCase(
     @JsonProperty("expectedResponse") ExpectedResponse expectedResponse,
     @JsonProperty("expectedWrites") List<ExpectedRecord> expectedWrites,
     @JsonProperty("expectedFinalState") List<ExpectedRecord> expectedFinalState,
-    @JsonProperty("expectedReturnCode") int expectedReturnCode,
+    @JsonProperty("expectedReturnCode") Integer expectedReturnCode,
     @JsonProperty("expectedMessages") List<EmittedMessage> expectedMessages,
-    @JsonProperty("normalisations") List<DatasetNormalisation> normalisations) {
+    @JsonProperty("normalisations") List<DatasetNormalisation> normalisations,
+    @JsonProperty("expectedDatasets") List<ExpectedDataset> expectedDatasets) {
 
     /**
      * A COBOL program name: upper case, alphanumeric, beginning with a letter, and exactly eight
@@ -228,6 +243,18 @@ public record ParityCase(
      * also avoids restating the configuration here, where the copy would immediately begin to rot.
      */
     private static final Pattern DATASET_KEY = Pattern.compile("[A-Z][A-Z0-9]{0,7}");
+
+    /**
+     * A copybook member name as {@code app/cpy} spells them: one to eight upper-case alphanumerics
+     * beginning with a letter. {@code CVACT01Y}, {@code CVTRA05Y}, {@code CSUSR01Y}, {@code COSTM01},
+     * {@code CUSTREC}.
+     *
+     * <p>Eight is the partitioned-dataset member-name limit, the same bound a program name obeys. The
+     * mixed filename casing of the source tree - {@code .cpy} for twenty-seven of them and
+     * {@code COSTM01.CPY} for the twenty-eighth - is a property of the file name and not of the member
+     * name, so it does not reach this pattern.
+     */
+    private static final Pattern COPYBOOK_NAME = Pattern.compile("[A-Z][A-Z0-9]{0,7}");
 
     /**
      * A batch job parameter name: lower camel case, letters and digits only.
@@ -287,13 +314,6 @@ public record ParityCase(
     private static final Pattern MAP_REFERENCE = Pattern.compile("[A-Z][A-Z0-9]{0,6}");
 
     /**
-     * A repository operation a case may force an outcome for, named as the repository method:
-     * {@code read}, {@code readForUpdate}, {@code readNext}, {@code startBrowse}, {@code write},
-     * {@code rewrite}, {@code delete}.
-     */
-    private static final Pattern REPOSITORY_OPERATION = Pattern.compile("[a-z][A-Za-z0-9]*");
-
-    /**
      * The largest value a z/OS step return code can carry. Return codes are non-negative by
      * definition, so this bound rejects a sign error at construction rather than letting it reach a
      * comparison.
@@ -344,6 +364,7 @@ public record ParityCase(
      *     declares a normalisation for a dataset it never seeds
      * @throws NullPointerException if {@code unitKind} is absent
      */
+    @JsonCreator
     public ParityCase {
         program = requireProgramName(program);
         caseId = requireCaseId(caseId);
@@ -363,6 +384,41 @@ public record ParityCase(
         expectedReturnCode = requireReturnCode(expectedReturnCode);
         expectedMessages = freezeExpectedMessages(expectedMessages);
         normalisations = freezeNormalisations(normalisations, inputs);
+        expectedDatasets = freezeExpectedDatasets(expectedDatasets);
+    }
+
+    /**
+     * The shape of a case that declares no dataset-level expectation: the thirteen members that
+     * existed before {@link #expectedDatasets()} did.
+     *
+     * <p>A dataset-level expectation is an <em>additional</em> assertion rather than a replacement for
+     * a row-level one, so a case is entitled to declare none - and every call site that declares none
+     * uses this form. Delegating rather than duplicating means it can never construct a value the
+     * canonical constructor would have rejected.
+     *
+     * @param program the eight-character upper-case COBOL program name
+     * @param caseId {@code case01} through {@code case20}
+     * @param description what the case exercises, in prose
+     * @param unitKind how the harness must reach the unit
+     * @param inputs the datasets to seed, keyed by binding key
+     * @param jobParameters the batch job parameters, only for a batch case
+     * @param screenRequest the online invocation, only for a controller case
+     * @param expectedResponse the online response, only for a controller case
+     * @param expectedWrites the records expected to be written, in write order
+     * @param expectedFinalState what each dataset is expected to hold afterwards
+     * @param expectedReturnCode the expected {@code RETURN-CODE}; mandatory
+     * @param expectedMessages the lines expected to be emitted, in order
+     * @param normalisations the seed-time width normalisations
+     */
+    public ParityCase(String program, String caseId, String description, UnitKind unitKind,
+                      Map<String, DatasetInput> inputs, Map<String, String> jobParameters,
+                      ScreenRequest screenRequest, ExpectedResponse expectedResponse,
+                      List<ExpectedRecord> expectedWrites, List<ExpectedRecord> expectedFinalState,
+                      Integer expectedReturnCode, List<EmittedMessage> expectedMessages,
+                      List<DatasetNormalisation> normalisations) {
+        this(program, caseId, description, unitKind, inputs, jobParameters, screenRequest,
+            expectedResponse, expectedWrites, expectedFinalState, expectedReturnCode,
+            expectedMessages, normalisations, List.of());
     }
 
     /**
@@ -388,7 +444,8 @@ public record ParityCase(
             + ", expectedFinalState=" + expectedFinalState.size()
             + ", expectedReturnCode=" + expectedReturnCode
             + ", expectedMessages=" + expectedMessages.size()
-            + ", normalisations=" + normalisations.size() + ']';
+            + ", normalisations=" + normalisations.size()
+            + ", expectedDatasets=" + expectedDatasets.size() + ']';
     }
 
     // -------------------------------------------------------------------------------------------
@@ -416,6 +473,91 @@ public record ParityCase(
      * through a servlet container or a job repository - both merely add ways for a test to fail for
      * a reason that has nothing to do with parity.
      */
+    /**
+     * The repository operations a case may force an outcome for - the closed set these 28 programs
+     * actually perform.
+     *
+     * <p>A closed type rather than a name, because the set really is closed and the difference is not
+     * cosmetic. The whole purpose of a forced outcome is to reach an arm the seeded data cannot reach:
+     * the {@code WHEN OTHER} of a {@code RESP} check, a {@code DUPKEY} on a write, a {@code NOTFND} on
+     * a keyed read. A key that matches no call site forces nothing, the arm stays unreached, and the
+     * case passes - having asserted the opposite of what it says. Spelt as free text that is one
+     * transposed letter away at every call site; spelt as this enum it cannot be written at all in
+     * Java and is refused by name when read from JSON.
+     *
+     * <p>The JSON spelling is the repository method name in lower camel case, so a case file reads as
+     * the code does. {@link #key()} is what Jackson writes and {@link #fromKey(String)} is what it
+     * reads, in both directions including as a map key.
+     */
+    public enum RepositoryOperation {
+
+        /** A keyed read - {@code EXEC CICS READ} or a {@code READ ... KEY IS} in a batch program. */
+        READ("read"),
+
+        /** A keyed read for update, which the two update programs perform before a rewrite. */
+        READ_FOR_UPDATE("readForUpdate"),
+
+        /** The next record of an open browse - {@code EXEC CICS READNEXT}. */
+        READ_NEXT("readNext"),
+
+        /** Positioning a browse - {@code EXEC CICS STARTBR}. */
+        START_BROWSE("startBrowse"),
+
+        /** Adding a record - {@code EXEC CICS WRITE} or a batch {@code WRITE}. */
+        WRITE("write"),
+
+        /** Replacing the record a read-for-update holds - {@code EXEC CICS REWRITE}. */
+        REWRITE("rewrite"),
+
+        /** Removing a record - {@code EXEC CICS DELETE}. */
+        DELETE("delete");
+
+        /** The repository method name, which is also the JSON key. */
+        private final String key;
+
+        /** Binds a constant to its method name. */
+        RepositoryOperation(String key) {
+            this.key = key;
+        }
+
+        /**
+         * The repository method name, as a case file spells it.
+         *
+         * @return the lower-camel-case name, never {@code null}
+         */
+        @JsonValue
+        public String key() {
+            return key;
+        }
+
+        /**
+         * Resolves a spelling from a case file.
+         *
+         * @param key the operation name as the case spells it
+         * @return the matching operation
+         * @throws IllegalArgumentException if the name is not one of the seven, listing them. The
+         *     message names the whole set because the realistic failure is a typo - {@code rewirte}
+         *     for {@code rewrite} - and a reader needs to see the right spelling, not be told the
+         *     wrong one is wrong
+         */
+        @JsonCreator
+        public static RepositoryOperation fromKey(String key) {
+            for (RepositoryOperation operation : values()) {
+                if (operation.key.equals(key)) {
+                    return operation;
+                }
+            }
+            StringBuilder permitted = new StringBuilder();
+            for (RepositoryOperation operation : values()) {
+                permitted.append(permitted.isEmpty() ? "" : ", ").append(operation.key);
+            }
+            throw new IllegalArgumentException("\"" + key + "\" is not a repository operation this "
+                + "migration performs. The seven are: " + permitted + ". A forced outcome exists to "
+                + "reach an arm the seeded data cannot reach, so a key matching no call site would "
+                + "force nothing and leave the case asserting the opposite of what it says.");
+        }
+    }
+
     public enum UnitKind {
 
         /**
@@ -491,29 +633,62 @@ public record ParityCase(
      * {@link Normalisation#CARDXREF_FILLER_PAD_36_TO_50} against that dataset, and the pad is then
      * applied once, at seed time, before anything decodes the row.
      *
-     * <p>The two shapes are mutually exclusive and one of them is mandatory - a dataset entry that
-     * declared neither would seed nothing while appearing to seed something, which is exactly the
+     * <p><strong>Empty</strong> - {@code empty} is {@code true} and the input declares a dataset that
+     * <em>exists and holds no row</em>, carrying the {@code recordLength} and the {@code copybook} that
+     * describe the rows it would hold.
+     *
+     * <h2>Why an empty dataset needs a shape of its own</h2>
+     * <p>Before this shape existed, a dataset with zero rows could not be declared at all: the model
+     * demanded exactly one of a non-empty {@code rows} list or a {@code fixture}, and a case whose
+     * subject was an empty input had to <em>omit the dataset entirely</em>. Omission and emptiness then
+     * looked identical to the harness, and they are not the same assertion at all:
+     * <ul>
+     *   <li>an <strong>omitted</strong> dataset is a dataset the case says nothing about. A unit that
+     *       read it would read nothing, and nobody would know whether that was intended;</li>
+     *   <li>an <strong>empty</strong> dataset is a positive statement that the unit opened a real
+     *       dataset and reached end-of-file on its first read. That is a branch the COBOL genuinely
+     *       has - every one of the five read-and-print programs takes it, the posting job takes it when
+     *       the daily file is empty, and it is the only way to reach a {@code FILE STATUS} of
+     *       {@code '10'} on the first {@code READ} - and no seeded row can produce it.</li>
+     * </ul>
+     * The width and the copybook are mandatory with this shape because they are what make it a
+     * <em>dataset</em> rather than an absence: a unit that opens an empty file still knows how wide its
+     * records are, and a fingerprint that reports the dataset must report it at that width.
+     *
+     * <p>The three shapes are mutually exclusive and exactly one is mandatory - a dataset entry that
+     * declared none would seed nothing while appearing to seed something, which is exactly the
      * silent-pass failure this model exists to prevent. The constructor enforces the exclusivity, so
-     * {@link #inline()} and {@link #fixtureBacked()} are strict complements and a consumer may
-     * branch on either with confidence.
+     * {@link #inline()}, {@link #fixtureBacked()} and {@link #declaredEmpty()} partition the space and
+     * a consumer may branch on any of them with confidence.
      *
      * @param rows inline record images in seeding order; never {@code null} - empty for a
-     *     fixture-backed input
-     * @param fixture one of the nine permitted fixture file names, or {@code null} for an inline
-     *     input
+     *     fixture-backed or an empty input
+     * @param fixture one of the nine permitted fixture file names, or {@code null} for an inline or an
+     *     empty input
      * @param fromRow the zero-based index of the first fixture row to seed; normalised to {@code 0}
-     *     when a fixture is named without one, and always {@code null} for an inline input
+     *     when a fixture is named without one, and always {@code null} for an inline or an empty input
      * @param rowCount how many fixture rows to seed, or {@code null} for every remaining row from
-     *     {@code fromRow} to the end of the fixture; always {@code null} for an inline input, and at
-     *     least {@code 1} when present
+     *     {@code fromRow} to the end of the fixture; always {@code null} for an inline or an empty
+     *     input, and at least {@code 1} when present
+     * @param empty {@code TRUE} to declare a dataset that exists and holds no row; {@code null} for
+     *     the other two shapes. Never {@code FALSE}, which would be a third way of saying nothing
+     * @param recordLength the declared record width of an empty dataset, at least 1; mandatory with
+     *     {@code empty} and absent otherwise
+     * @param copybook the copybook that describes the rows an empty dataset would hold - for example
+     *     {@code CVACT01Y} - so the declaration names what it is empty of; mandatory with {@code empty}
+     *     and absent otherwise
      */
     @JsonIgnoreProperties(ignoreUnknown = false)
-    @JsonPropertyOrder({"rows", "fixture", "fromRow", "rowCount"})
+    @JsonPropertyOrder({"rows", "fixture", "fromRow", "rowCount", "empty", "recordLength",
+        "copybook"})
     public record DatasetInput(
         @JsonProperty("rows") List<String> rows,
         @JsonProperty("fixture") String fixture,
         @JsonProperty("fromRow") Integer fromRow,
-        @JsonProperty("rowCount") Integer rowCount) {
+        @JsonProperty("rowCount") Integer rowCount,
+        @JsonProperty("empty") Boolean empty,
+        @JsonProperty("recordLength") Integer recordLength,
+        @JsonProperty("copybook") String copybook) {
 
         /**
          * The single classpath directory a fixture may be resolved from. A case names a file, this
@@ -553,25 +728,56 @@ public record ParityCase(
          * Validates that exactly one shape is declared, that a named fixture is one of the nine,
          * and freezes the row list.
          *
-         * @throws IllegalArgumentException if both shapes or neither shape is declared, if a row
-         *     range accompanies an inline input, if {@code fixture} is blank, is not a bare file
-         *     name, or is not one of {@link #PERMITTED_FIXTURES}, if {@code fromRow} is negative or
-         *     if {@code rowCount} is less than one
+         * @throws NullPointerException never - an absent member is a legitimate part of two of the
+         *     three shapes
+         * @throws IllegalArgumentException if more than one shape or no shape is declared, if a row
+         *     range accompanies an inline or an empty input, if {@code fixture} is blank, is not a bare
+         *     file name, or is not one of {@link #PERMITTED_FIXTURES}, if {@code fromRow} is negative,
+         *     if {@code rowCount} is less than one, if {@code empty} is {@code FALSE}, or if an empty
+         *     input omits its width or its copybook
          */
+        @JsonCreator
         public DatasetInput {
             rows = freezeRows(rows);
             fixture = requireFixtureName(fixture);
 
             boolean hasRows = !rows.isEmpty();
             boolean hasFixture = fixture != null;
-            if (hasRows == hasFixture) {
+            boolean hasEmpty = requireEmptyFlag(empty);
+            int shapes = (hasRows ? 1 : 0) + (hasFixture ? 1 : 0) + (hasEmpty ? 1 : 0);
+            if (shapes != 1) {
                 throw new IllegalArgumentException(
-                    "DatasetInput must declare exactly one of \"rows\" or \"fixture\", but "
-                        + (hasRows
-                            ? "both were declared; put the literal rows in \"rows\" or name the "
-                                + "fixture in \"fixture\", never both"
-                            : "neither was declared; an input that seeds nothing must be omitted "
-                                + "from \"inputs\" rather than declared empty"));
+                    "DatasetInput must declare exactly one of \"rows\", \"fixture\" or "
+                        + "\"empty\": true, but " + (shapes == 0
+                            ? "none was declared; a dataset the case says nothing about must be "
+                                + "omitted from \"inputs\" altogether, and a dataset that exists and "
+                                + "holds no row must say so with \"empty\": true plus its "
+                                + "\"recordLength\" and \"copybook\" - the two are different "
+                                + "assertions and only the second reaches the first-read "
+                                + "end-of-file branch"
+                            : shapes + " were declared; put the literal rows in \"rows\", or name "
+                                + "the fixture in \"fixture\", or declare \"empty\": true - never "
+                                + "more than one"));
+            }
+
+            if (hasEmpty) {
+                if (fromRow != null || rowCount != null) {
+                    throw new IllegalArgumentException(
+                        "DatasetInput declares \"empty\": true so \"fromRow\" and \"rowCount\" "
+                            + "are meaningless and must be omitted; a row range narrows a fixture, and "
+                            + "an empty dataset has no row to narrow");
+                }
+                recordLength = requireEmptyRecordLength(recordLength);
+                copybook = requireEmptyCopybook(copybook);
+            } else {
+                if (recordLength != null || copybook != null) {
+                    throw new IllegalArgumentException(
+                        "DatasetInput declares \"recordLength\" or \"copybook\" without "
+                            + "\"empty\": true. Those two describe a dataset that holds no row; a "
+                            + "seeded row measures its own width, and a fixture's width is the "
+                            + "fixture's. Declaring them here would create a second, unchecked opinion "
+                            + "about how wide a record is.");
+                }
             }
 
             if (hasRows) {
@@ -581,7 +787,11 @@ public record ParityCase(
                             + "meaningless and must be omitted; a row range narrows a fixture, and "
                             + "inline rows are already exactly the rows to seed");
                 }
-            } else {
+            } else if (hasFixture) {
+                // Only a fixture-backed input has a range to validate or a name to check. The
+                // declared-empty shape reaches here too, and its own members were validated above;
+                // treating "not inline" as "must be a fixture" would demand a fixture name it has
+                // deliberately not got.
                 requirePermittedFixture(fixture);
                 fromRow = fromRow == null ? Integer.valueOf(0) : fromRow;
                 if (fromRow < 0) {
@@ -616,13 +826,31 @@ public record ParityCase(
         }
 
         /**
+         * The shape of an input that is not empty: the four members that existed before the empty
+         * declaration did.
+         *
+         * <p>Every inline and fixture-backed call site uses this form, which is why it exists: adding
+         * the empty shape must not require an edit at a site that is not about emptiness. It delegates
+         * to the canonical constructor with the three empty-only members absent, so it can never
+         * produce a value the canonical constructor would have rejected.
+         *
+         * @param rows inline record images in seeding order, or an empty list
+         * @param fixture one of the nine permitted fixture file names, or {@code null}
+         * @param fromRow the zero-based first fixture row, or {@code null}
+         * @param rowCount how many fixture rows, or {@code null} for all of them
+         */
+        public DatasetInput(List<String> rows, String fixture, Integer fromRow, Integer rowCount) {
+            this(rows, fixture, fromRow, rowCount, null, null, null);
+        }
+
+        /**
          * Seeds a dataset from literal record images.
          *
          * @param rows the record images in seeding order, verbatim and not empty
          * @return an inline input
          */
         public static DatasetInput ofRows(List<String> rows) {
-            return new DatasetInput(rows, null, null, null);
+            return new DatasetInput(rows, null, null, null, null, null, null);
         }
 
         /**
@@ -632,7 +860,21 @@ public record ParityCase(
          * @return a fixture-backed input covering the whole fixture
          */
         public static DatasetInput ofFixture(String fixture) {
-            return new DatasetInput(List.of(), fixture, null, null);
+            return new DatasetInput(List.of(), fixture, null, null, null, null, null);
+        }
+
+        /**
+         * Declares a dataset that exists and holds no row - the only way a case can reach the branch a
+         * unit takes when its first {@code READ} meets end-of-file.
+         *
+         * @param recordLength the declared record width, at least 1
+         * @param copybook the copybook describing the rows it would hold, for example {@code CVACT01Y}
+         * @return an empty input
+         * @throws IllegalArgumentException if the width is below 1 or the copybook name is malformed
+         */
+        public static DatasetInput ofEmpty(int recordLength, String copybook) {
+            return new DatasetInput(List.of(), null, null, null, Boolean.TRUE, recordLength,
+                copybook);
         }
 
         /**
@@ -650,7 +892,7 @@ public record ParityCase(
         }
 
         /**
-         * Whether this input names a classpath fixture. Strict complement of {@link #inline()}.
+         * Whether this input names a classpath fixture.
          *
          * <p>Excluded from JSON for the same reason as {@link #inline()}.
          *
@@ -659,6 +901,19 @@ public record ParityCase(
         @JsonIgnore
         public boolean fixtureBacked() {
             return fixture != null;
+        }
+
+        /**
+         * Whether this input declares a dataset that exists and holds no row.
+         *
+         * <p>The third member of the partition with {@link #inline()} and {@link #fixtureBacked()};
+         * exactly one of the three is true for any valid instance.
+         *
+         * @return {@code true} when {@code empty} was declared
+         */
+        @JsonIgnore
+        public boolean declaredEmpty() {
+            return Boolean.TRUE.equals(empty);
         }
 
         /**
@@ -691,6 +946,10 @@ public record ParityCase(
          */
         @Override
         public String toString() {
+            if (declaredEmpty()) {
+                return "DatasetInput[empty, recordLength=" + recordLength + ", copybook=" + copybook
+                    + ']';
+            }
             return fixture == null
                 ? "DatasetInput[inline, " + rows.size() + " row(s)]"
                 : "DatasetInput[fixture=" + resourcePath() + ", fromRow=" + fromRow + ", rowCount="
@@ -734,6 +993,74 @@ public record ParityCase(
                     + "the permitted set is closed: "
                     + String.join(", ", new TreeSet<>(PERMITTED_FIXTURES)) + '.');
             }
+        }
+
+        /**
+         * Requires the empty flag to be either absent or {@code TRUE}.
+         *
+         * <p>{@code "empty": false} is refused rather than read as "not empty". It would be a second
+         * way of saying nothing, and a fixture author who wrote it plainly meant something - most
+         * likely that the dataset is not empty, which is already said by declaring rows or a fixture.
+         * Leaving it legal would let a case declare {@code "empty": false} and no rows and no fixture,
+         * and that case seeds nothing at all.
+         *
+         * @param empty the declared flag
+         * @return {@code true} when the empty shape was declared
+         * @throws IllegalArgumentException if the flag is {@code FALSE}
+         */
+        private static boolean requireEmptyFlag(Boolean empty) {
+            if (Boolean.FALSE.equals(empty)) {
+                throw new IllegalArgumentException("DatasetInput.empty is false, which says nothing: "
+                    + "a dataset that holds rows declares them in \"rows\" or names a \"fixture\", "
+                    + "and a dataset that exists and holds no row declares \"empty\": true. Omit the "
+                    + "member entirely for the first two shapes.");
+            }
+            return Boolean.TRUE.equals(empty);
+        }
+
+        /**
+         * Requires an empty dataset to state the width of the records it would hold.
+         *
+         * @param recordLength the declared width
+         * @return the validated width
+         * @throws IllegalArgumentException if it is absent or below 1
+         */
+        private static int requireEmptyRecordLength(Integer recordLength) {
+            if (recordLength == null) {
+                throw new IllegalArgumentException("DatasetInput declares \"empty\": true but no "
+                    + "\"recordLength\". An empty dataset is still a fixed-width dataset: a unit that "
+                    + "opens one knows how wide its records are, and a fingerprint reporting the "
+                    + "dataset has to report it at that width. Without the width, an empty declaration "
+                    + "would be indistinguishable from the absence it exists to be distinguished from.");
+            }
+            if (recordLength < 1) {
+                throw new IllegalArgumentException("DatasetInput.recordLength is " + recordLength
+                    + ", which is not a record width; a record occupies at least 1 byte");
+            }
+            return recordLength;
+        }
+
+        /**
+         * Requires an empty dataset to name the copybook describing the rows it would hold.
+         *
+         * @param copybook the declared copybook name
+         * @return the validated name
+         * @throws IllegalArgumentException if it is absent or is not a copybook member name
+         */
+        private static String requireEmptyCopybook(String copybook) {
+            if (copybook == null) {
+                throw new IllegalArgumentException("DatasetInput declares \"empty\": true but no "
+                    + "\"copybook\". Naming it is what makes the declaration say what the dataset is "
+                    + "empty OF, which is the difference between an assertion a reviewer can check "
+                    + "against app/cpy and a bare width nobody can trace.");
+            }
+            if (!COPYBOOK_NAME.matcher(copybook).matches()) {
+                throw new IllegalArgumentException("DatasetInput.copybook is \"" + copybook
+                    + "\", which is not a copybook member name. The names are one to eight upper-case "
+                    + "alphanumerics beginning with a letter, exactly as app/cpy spells them - "
+                    + "CVACT01Y, CVTRA05Y, CSUSR01Y, COSTM01, CUSTREC.");
+            }
+            return copybook;
         }
     }
 
@@ -787,7 +1114,7 @@ public record ParityCase(
         @JsonProperty("charset") String charset,
         @JsonProperty("commarea") Map<String, String> commarea,
         @JsonProperty("mapFields") Map<String, String> mapFields,
-        @JsonProperty("forcedOutcomes") Map<String, ForcedOutcome> forcedOutcomes) {
+        @JsonProperty("forcedOutcomes") Map<RepositoryOperation, ForcedOutcome> forcedOutcomes) {
 
         /**
          * Validates and freezes the request.
@@ -841,7 +1168,20 @@ public record ParityCase(
                 + ", pinnedClock=" + pinnedClock + ", charset=" + charset
                 + ", commarea=" + commarea.keySet()
                 + ", mapFields=" + mapFields.keySet()
-                + ", forcedOutcomes=" + forcedOutcomes.keySet() + ']';
+                + ", forcedOutcomes=" + forcedOutcomeKeys() + ']';
+        }
+
+        /**
+         * The forced-outcome operations by their case-file spelling, for the rendering above.
+         *
+         * @return the declared operation names in declaration order
+         */
+        private List<String> forcedOutcomeKeys() {
+            List<String> keys = new ArrayList<>(forcedOutcomes.size());
+            for (RepositoryOperation operation : forcedOutcomes.keySet()) {
+                keys.add(operation.key());
+            }
+            return keys;
         }
     }
 
@@ -1126,7 +1466,10 @@ public record ParityCase(
      *
      * @param dataset the dataset binding key - never a literal dataset name
      * @param rowIndex the <strong>zero-based</strong> write position or row index, as described
-     *     above; never negative
+     *     above; never negative. <strong>Mandatory</strong>, and boxed for exactly that reason: as a
+     *     primitive {@code int} an omitted {@code "rowIndex"} key bound silently to {@code 0}, so an
+     *     expectation meant for another row of a dataset silently addressed the first one, and either
+     *     passed against a record nobody meant to pin or reported a difference nobody could act on
      * @param fields copybook field name to expected value, verbatim and in declaration order; never
      *     {@code null}, and empty only when {@code expectedBytes} is present
      * @param expectedBytes the complete expected record image, or {@code null} when the case pins
@@ -1136,13 +1479,15 @@ public record ParityCase(
     @JsonPropertyOrder({"dataset", "rowIndex", "fields", "expectedBytes"})
     public record ExpectedRecord(
         @JsonProperty("dataset") String dataset,
-        @JsonProperty("rowIndex") int rowIndex,
+        @JsonProperty("rowIndex") Integer rowIndex,
         @JsonProperty("fields") Map<String, String> fields,
         @JsonProperty("expectedBytes") String expectedBytes) {
 
         /**
          * Validates the expectation and freezes the field map.
          *
+         * @throws NullPointerException if {@code rowIndex} is {@code null}, which is what an absent
+         *     JSON member arrives as
          * @throws IllegalArgumentException if {@code dataset} is missing or is not a binding key, if
          *     {@code rowIndex} is negative, if a field name is blank, if a field value is
          *     {@code null}, if {@code expectedBytes} is zero-length, or if the expectation pins
@@ -1150,6 +1495,12 @@ public record ParityCase(
          */
         public ExpectedRecord {
             dataset = requireDatasetKey(dataset, "ExpectedRecord.dataset");
+            Objects.requireNonNull(rowIndex, "ExpectedRecord.rowIndex is required and is never "
+                + "defaulted for dataset " + dataset + ": state the zero-based write position or row "
+                + "index the expectation addresses. An omitted member used to bind to 0, so an "
+                + "expectation intended for another row silently addressed the first one - which "
+                + "either passed against a record nobody meant to pin, or reported a difference "
+                + "nobody could act on.");
             if (rowIndex < 0) {
                 throw new IllegalArgumentException(
                     "ExpectedRecord.rowIndex is zero-based and must not be negative, but was "
@@ -1184,6 +1535,134 @@ public record ParityCase(
             return "ExpectedRecord[" + dataset + " row " + rowIndex + ", fields=" + fields.keySet()
                 + ", expectedBytes=" + (expectedBytes == null ? "absent"
                     : expectedBytes.length() + " char(s)") + ']';
+        }
+    }
+
+    /**
+     * Which of the two record channels a dataset-level expectation is about.
+     *
+     * <p>The two are not interchangeable and a case has to say which it means. "The reject file was
+     * created and nothing was written to it" is an assertion about {@link #WRITES}; "the account file
+     * still holds its fifty rows" is an assertion about {@link #FINAL_STATE}. A dataset commonly appears
+     * on both, with different counts.
+     */
+    public enum DatasetChannel {
+
+        /**
+         * The records the unit wrote, in write order - what a {@code WRITE} or a {@code REWRITE}
+         * produced.
+         */
+        WRITES,
+
+        /** What a dataset holds after the run, row by row, whether or not the unit wrote to it. */
+        FINAL_STATE
+    }
+
+    /**
+     * A dataset-level expectation: that a dataset exists on a channel, and exactly how many rows it
+     * holds there.
+     *
+     * <h2>What a row-level expectation cannot say</h2>
+     * <p>Every other expectation in this model addresses a <em>row</em>, and there is one statement no
+     * collection of row expectations can make: <strong>this dataset was opened, or created, and
+     * remained empty.</strong> An empty {@code expectedWrites} list asserts that nothing was written
+     * <em>anywhere</em>, which is a different and much weaker claim - it cannot distinguish a job that
+     * created its reject file and wrote no reject from one that never opened it at all. Both of those
+     * are real behaviours of this system, and the difference between them is exactly what a
+     * {@code COND} gate downstream of the job reacts to.
+     *
+     * <p>The reverse gap is just as sharp on the observed side. A dataset that a unit opened and left
+     * empty has zero rows, so no row-driven scan can reach it, and a differ that reports it as
+     * unexpected output is reporting correct behaviour as a difference. Naming the dataset here is what
+     * makes that behaviour assertable rather than merely tolerable.
+     *
+     * <p>{@code rowCount} is <strong>mandatory and may be zero</strong>. Zero is the whole point: it is
+     * the only value that turns "I have no expectation for this dataset" into "I assert this dataset
+     * produced nothing", and boxing it is what stops an omitted member from claiming that by accident.
+     *
+     * <p>A dataset-level expectation <em>adds</em> to the row-level ones rather than replacing them: a
+     * case that declares {@code rowCount} 3 and pins two of the rows still has its third row reported as
+     * unaccounted for. That is deliberate - a count is not a substitute for reading the bytes.
+     *
+     * @param dataset the dataset binding key - never a literal dataset name
+     * @param channel which record channel the expectation is about; never {@code null}
+     * @param rowCount how many rows the dataset holds on that channel; mandatory, never negative, and
+     *     {@code 0} to assert that it exists and produced nothing
+     * @param recordLength the declared record width the observed dataset must report, or {@code null}
+     *     to leave the width unasserted. Stating it is how a case pins the identity of a dataset it
+     *     expects to be empty, since an empty dataset has no row whose width could be checked
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    @JsonPropertyOrder({"dataset", "channel", "rowCount", "recordLength"})
+    public record ExpectedDataset(
+        @JsonProperty("dataset") String dataset,
+        @JsonProperty("channel") DatasetChannel channel,
+        @JsonProperty("rowCount") Integer rowCount,
+        @JsonProperty("recordLength") Integer recordLength) {
+
+        /**
+         * Validates the expectation.
+         *
+         * @throws NullPointerException if {@code channel} or {@code rowCount} is absent
+         * @throws IllegalArgumentException if {@code dataset} is not a binding key, if
+         *     {@code rowCount} is negative, or if {@code recordLength} is present and below 1
+         */
+        public ExpectedDataset {
+            dataset = requireDatasetKey(dataset, "ExpectedDataset.dataset");
+            Objects.requireNonNull(channel, "ExpectedDataset.channel is required for dataset "
+                + dataset + ": declare WRITES for what the unit wrote, or FINAL_STATE for what the "
+                + "dataset holds afterwards. A dataset commonly appears on both with different "
+                + "counts, so the two cannot be conflated.");
+            Objects.requireNonNull(rowCount, "ExpectedDataset.rowCount is required for dataset "
+                + dataset + " on the " + channel + " channel and is never defaulted: state the exact "
+                + "number of rows, which is 0 when the assertion is that the dataset exists and "
+                + "produced nothing. An omitted member binding to 0 would make that assertion by "
+                + "accident, and it is the strongest one this type can make.");
+            if (rowCount < 0) {
+                throw new IllegalArgumentException("ExpectedDataset.rowCount is " + rowCount
+                    + " for dataset " + dataset + "; a dataset cannot hold a negative number of rows");
+            }
+            if (recordLength != null && recordLength < 1) {
+                throw new IllegalArgumentException("ExpectedDataset.recordLength is " + recordLength
+                    + " for dataset " + dataset + ", which is not a record width; a record occupies at "
+                    + "least 1 byte. Omit the member to leave the width unasserted.");
+            }
+        }
+
+        /**
+         * Asserts that a dataset exists on a channel and holds no row.
+         *
+         * @param dataset the dataset binding key
+         * @param channel the channel the assertion is about
+         * @param recordLength the width the dataset must report
+         * @return the expectation
+         */
+        public static ExpectedDataset empty(String dataset, DatasetChannel channel,
+                                            int recordLength) {
+            return new ExpectedDataset(dataset, channel, 0, recordLength);
+        }
+
+        /**
+         * Asserts that a dataset exists on a channel and holds exactly that many rows.
+         *
+         * @param dataset the dataset binding key
+         * @param channel the channel the assertion is about
+         * @param rowCount the exact row count, which may be zero
+         * @return the expectation, with the width left unasserted
+         */
+        public static ExpectedDataset of(String dataset, DatasetChannel channel, int rowCount) {
+            return new ExpectedDataset(dataset, channel, rowCount, null);
+        }
+
+        /**
+         * Renders the expectation, which carries no value and so needs no masking.
+         *
+         * @return the dataset, the channel, the count and the width
+         */
+        @Override
+        public String toString() {
+            return "ExpectedDataset[" + dataset + " on " + channel + ", rowCount=" + rowCount
+                + ", recordLength=" + (recordLength == null ? "unasserted" : recordLength) + ']';
         }
     }
 
@@ -1654,13 +2133,135 @@ public record ParityCase(
         public static final String MASK = "<redacted>";
 
         /**
+         * How a value is rendered once it is classified as anything other than {@link #PUBLIC}.
+         *
+         * <p>Three classes rather than one, because the three need different renderings and lumping
+         * them together would either disclose too much or destroy the diagnostic. A credential
+         * discloses <em>nothing</em>; a name or an identifier discloses its length and a digest, which
+         * is enough to tell "expected and observed differ" from "they are equal" without putting the
+         * value itself into a build log.
+         */
+        public enum Sensitivity {
+
+            /**
+             * A password. Rendered as {@link #MASK} and its length, and never anything else - not a
+             * digest either, because the credential space here is small enough that a digest of an
+             * eight-character password is a reversible disclosure.
+             */
+            CREDENTIAL,
+
+            /**
+             * Personal data about a real-shaped person: a name, an address, a telephone number, a
+             * social-security number, a government-issued identifier, a date of birth, an
+             * electronic-funds account or a credit score. Rendered as a class marker, a length and a
+             * truncated digest.
+             */
+            PERSONAL,
+
+            /**
+             * An identifier that names an individual account, card, customer or user - including the
+             * {@code CDEMO-} commarea fields that carry those identifiers between transactions.
+             * Rendered as a class marker, a length and a truncated digest.
+             */
+            IDENTIFIER,
+
+            /**
+             * Everything else: a balance, a status byte, a message text, a transaction identifier, a
+             * {@code FILLER} span. Rendered verbatim, because a difference in one of these is what a
+             * reviewer has to read in order to act on it.
+             */
+            PUBLIC
+        }
+
+        /**
          * The field names whose values are credentials, spelled as the copybook and the symbolic
          * maps spell them: the stored password field, the received screen field and the sent screen
          * field. All three carry the same eight bytes at some point in a sign-on or user-update
          * path.
          */
-        public static final Set<String> SENSITIVE_FIELDS =
+        public static final Set<String> CREDENTIAL_FIELDS =
             Set.of("SEC-USR-PWD", "PASSWDI", "PASSWDO");
+
+        /**
+         * The field names carrying personal data, taken from the copybooks and the symbolic maps that
+         * declare them rather than inferred from a name pattern.
+         *
+         * <p>{@code app/cpy/CVCUS01Y.cpy} and its near-duplicate {@code app/cpy/CUSTREC.cpy} supply
+         * the customer spans - and both spellings of the date of birth are listed, because the two
+         * copybooks disagree ({@code CUST-DOB-YYYY-MM-DD} against {@code CUST-DOB-YYYYMMDD}) and that
+         * disagreement is deliberately preserved elsewhere in this migration.
+         * {@code app/cpy/CSUSR01Y.cpy} supplies the two security-user names. The remaining entries are
+         * the symbolic-map items through which the same values reach and leave a screen: the received
+         * {@code xxxI} items and the sent {@code xxxO} items of {@code COACTUP}, {@code COACTVW},
+         * {@code COUSR01}, {@code COUSR02} and the ten numbered rows of {@code COUSR00}.
+         *
+         * <p>An explicit set rather than a pattern, for the same reason the fixture list is explicit:
+         * a pattern over "anything containing NAME" would classify {@code PGMNAMEI} - the program-name
+         * item every one of the seventeen screens carries - as a person's name and mask the single
+         * value a navigation failure is diagnosed from.
+         */
+        public static final Set<String> PERSONAL_FIELDS = personalFields();
+
+        /**
+         * The field names that identify one account, card, customer or user.
+         *
+         * <p>Includes the {@code CDEMO-} commarea carriers from {@code app/cpy/COCOM01Y.cpy}, because
+         * the navigation context travels in the response payload under rule R6 and is therefore
+         * rendered by every navigation difference - which is exactly where these values were escaping
+         * unmasked.
+         */
+        public static final Set<String> IDENTIFIER_FIELDS = identifierFields();
+
+        /**
+         * The credential values the shipped fixtures actually carry, so an occurrence of one can be
+         * scrubbed out of free text that was never field-classified at all.
+         *
+         * <p>One value, because there is one: all ten {@code USRSEC} rows transcribed from
+         * {@code app/jcl/DUSRSECJ.jcl} carry the literal {@code PASSWORD} in their
+         * {@code SEC-USR-PWD} span. Kept as a set so a second seeded credential is a one-line
+         * addition rather than a redesign.
+         */
+        public static final Set<String> CREDENTIAL_LITERALS = Set.of("PASSWORD");
+
+        /**
+         * A credential quoted as a labelled value inside foreign text -
+         * {@code password=SECRET99}, {@code pwd: hunter2}, {@code secret = x}.
+         *
+         * <p>This is how a credential that is <em>not</em> one of the fixture literals still reaches a
+         * log: something outside this package - a driver, a repository, a validator - names it and
+         * prints it. The label is matched, and the value after the separator is what gets masked.
+         *
+         * <p>A separator is <strong>required</strong>, and that requirement is the whole design. Without
+         * it the pattern would also match ordinary prose, and the prose in question is not hypothetical:
+         * {@code COUSR01C} emits {@code 'Password can NOT be empty...'} as a screen message, and a
+         * pattern that masked the word after {@code Password} would turn that expectation into
+         * {@code 'Password <redacted> NOT be empty...'} - destroying the diagnosability of a real
+         * program message in order to protect a value that was never there. Applied only by
+         * {@link #sanitiseDiagnostic(String)}, never to a line the program itself emitted.
+         */
+        private static final Pattern LABELLED_CREDENTIAL = Pattern.compile(
+            "(?i)\\b(pass(?:word|wd)?|pwd|secret|credential|token)(\\s*[:=]\\s*)(\\S+)");
+
+        /**
+         * The longest diagnostic text that is rendered in full.
+         *
+         * <p>A bound rather than a filter, and it exists for one shape in particular: an exception
+         * raised deep inside a repository routinely quotes the whole record it was handed, which for a
+         * customer row is 500 bytes of names, address and social-security number. Field classification
+         * cannot help there, because free text carries no field names. Truncating bounds what such a
+         * message can disclose while leaving every ordinary message - which is far shorter than this -
+         * completely intact.
+         */
+        public static final int MAX_DIAGNOSTIC_LENGTH = 320;
+
+        /** What {@link #sanitiseDiagnostic(String)} appends when it has truncated. */
+        public static final String TRUNCATION_MARKER = "... (truncated)";
+
+        /** What {@link #sanitiseDiagnostic(String)} returns for a message that carries no text. */
+        public static final String NO_MESSAGE = "(no message)";
+
+        /** How many hexadecimal characters of a digest a masked value discloses. */
+        public static final int DIGEST_LENGTH = 8;
 
         /**
          * The dataset whose record image contains a credential span, and where that span sits:
@@ -1690,28 +2291,83 @@ public record ParityCase(
         }
 
         /**
-         * Whether a field name identifies a credential.
+         * Which class a field name falls into.
+         *
+         * <p>Case-sensitive and exact, because copybook and symbolic-map names are. A lower-cased
+         * {@code sec-usr-pwd} names nothing in this system and is deliberately <em>not</em>
+         * classified: matching it would mean matching on a shape rather than on a declaration, and
+         * the whole point of these sets is that every entry is traceable to the copybook line that
+         * declares it.
          *
          * @param fieldName the COBOL or symbolic-map field name; may be {@code null}
-         * @return {@code true} when the field's value must be masked in any rendering
+         * @return the class, {@link Sensitivity#PUBLIC} for an unclassified or absent name
          */
-        public static boolean sensitiveField(String fieldName) {
-            return fieldName != null && SENSITIVE_FIELDS.contains(fieldName);
+        public static Sensitivity classify(String fieldName) {
+            if (fieldName == null) {
+                return Sensitivity.PUBLIC;
+            }
+            if (CREDENTIAL_FIELDS.contains(fieldName)) {
+                return Sensitivity.CREDENTIAL;
+            }
+            if (PERSONAL_FIELDS.contains(fieldName)) {
+                return Sensitivity.PERSONAL;
+            }
+            if (IDENTIFIER_FIELDS.contains(fieldName)) {
+                return Sensitivity.IDENTIFIER;
+            }
+            return Sensitivity.PUBLIC;
         }
 
         /**
-         * Masks a value when its field name identifies a credential, preserving the length so a
-         * width difference is still diagnosable.
+         * Whether a field's value must be masked in every rendering.
+         *
+         * @param fieldName the COBOL or symbolic-map field name; may be {@code null}
+         * @return {@code true} for any classified field - a credential, personal data or an
+         *     individual identifier
+         */
+        public static boolean sensitiveField(String fieldName) {
+            return classify(fieldName) != Sensitivity.PUBLIC;
+        }
+
+        /**
+         * Whether a field's value is a credential specifically, which is the one class that discloses
+         * nothing at all.
+         *
+         * @param fieldName the COBOL or symbolic-map field name; may be {@code null}
+         * @return {@code true} for the three names that carry the eight password bytes
+         */
+        public static boolean credentialField(String fieldName) {
+            return classify(fieldName) == Sensitivity.CREDENTIAL;
+        }
+
+        /**
+         * Masks a value according to its field's class, preserving the length so a width difference
+         * is still diagnosable.
+         *
+         * <p>The length is disclosed for every class because it is the difference between "the value
+         * is wrong" and "the field was space-padded to the wrong width", and a parity report that
+         * could not distinguish those two would be unusable. A digest accompanies the two data
+         * classes for the same reason: two renderings of the same value carry the same digest, so a
+         * reviewer can still see whether the expected and observed sides differ at all, and can still
+         * correlate one row against another, without either value being written down.
          *
          * @param fieldName the field the value belongs to
          * @param value the raw value; may be {@code null}
-         * @return the value, or a mask naming its length
+         * @return the value for an unclassified field, otherwise a mask naming its class, its length
+         *     and - for personal data and identifiers - a truncated digest
          */
         public static String maskFieldValue(String fieldName, String value) {
-            if (value == null || !sensitiveField(fieldName)) {
-                return value;
+            if (value == null) {
+                return null;
             }
-            return MASK + "(len=" + value.length() + ')';
+            return switch (classify(fieldName)) {
+                case CREDENTIAL -> MASK + "(len=" + value.length() + ')';
+                case PERSONAL -> "<personal>(len=" + value.length() + ",sha256=" + digest(value)
+                    + ')';
+                case IDENTIFIER -> "<identifier>(len=" + value.length() + ",sha256=" + digest(value)
+                    + ')';
+                case PUBLIC -> value;
+            };
         }
 
         /**
@@ -1776,21 +2432,306 @@ public record ParityCase(
         }
 
         /**
-         * Masks a free-text line that consists of nothing but a credential.
+         * One addressable span of a record image, as the caller that holds the layout sees it.
          *
-         * <p>Deliberately narrow. An emitted line is not generally sensitive - {@code 'User
-         * ADMIN003 has been updated ...'} must be shown in full or the expectation cannot be
-         * diagnosed - so this masks only a line that is exactly a known credential value, which is
-         * what a mis-channelled password expectation would look like.
+         * <p>Declared here rather than reusing {@code FixedWidthRecord.FieldSpan} so that the policy
+         * depends on nothing but its own inputs: a caller maps whatever it holds onto this, and the
+         * masking rule stays readable next to the classification it applies.
+         *
+         * @param fieldName the name the span is addressed by, which is what gets classified
+         * @param offset the span's zero-based offset within the record
+         * @param length the span's width in characters
+         */
+        public record Span(String fieldName, int offset, int length) {
+
+            /**
+             * Validates the geometry, because a negative offset or width would silently mask the
+             * wrong bytes.
+             *
+             * @throws NullPointerException if {@code fieldName} is {@code null}
+             * @throws IllegalArgumentException if {@code offset} is negative or {@code length} is
+             *     below 1
+             */
+            public Span {
+                Objects.requireNonNull(fieldName, "A Span needs the name it is addressed by: the "
+                    + "name is what Redaction classifies, so a span without one cannot be masked");
+                if (offset < 0) {
+                    throw new IllegalArgumentException("Span " + fieldName + " has offset " + offset
+                        + ", which is not a position within a record");
+                }
+                if (length < 1) {
+                    throw new IllegalArgumentException("Span " + fieldName + " has length " + length
+                        + "; a span occupies at least one byte");
+                }
+            }
+        }
+
+        /**
+         * Masks every classified span of a record image, given the layout the caller holds.
+         *
+         * <p>This is the general form of {@link #maskRecordImage(String, String)}, and the reason it
+         * exists is the reason that method exists at all: masking a named field's value while printing
+         * the whole record image beside it discloses the same bytes twice over, and the second
+         * disclosure is the one nobody notices. A caller that knows the layout - which
+         * {@code FieldDiffer} always does, since it has already resolved the addressable spans in
+         * order to compare them - can therefore mask the credential, the names, the address, the
+         * social-security number and the account and card identifiers wherever the copybook puts
+         * them, in any dataset, rather than only the one span of the one dataset whose offsets are
+         * hard-coded.
+         *
+         * <p>A span is masked with asterisks at exactly its own width, so the image keeps its declared
+         * length and a width difference stays diagnosable. Spans reaching past the end of a
+         * short image are masked as far as the image goes, because a truncated row still discloses the
+         * part of the span it kept - which is precisely the defect a truncation test exists to catch.
+         *
+         * @param image the record image; may be {@code null}
+         * @param spans every addressable span of the record, in any order; may be empty
+         * @return the image with every classified span replaced by asterisks, at the same length
+         * @throws NullPointerException if {@code spans} is {@code null}
+         */
+        public static String maskImage(String image, List<Span> spans) {
+            Objects.requireNonNull(spans, "The spans of the record are required to mask it; pass an "
+                + "empty list when no layout is known and use maskRecordImage(String, String) "
+                + "instead, which falls back to the one dataset whose geometry is fixed here");
+            if (image == null || image.isEmpty()) {
+                return image;
+            }
+            char[] masked = null;
+            for (Span span : spans) {
+                if (!sensitiveField(span.fieldName()) || span.offset() >= image.length()) {
+                    continue;
+                }
+                if (masked == null) {
+                    masked = image.toCharArray();
+                }
+                int end = Math.min(span.offset() + span.length(), image.length());
+                for (int index = span.offset(); index < end; index++) {
+                    masked[index] = '*';
+                }
+            }
+            return masked == null ? image : new String(masked);
+        }
+
+        /**
+         * Renders a record image whose geometry is not known, as its length and a truncated digest.
+         *
+         * <p>Used on the one path where no layout is available: a {@code MISSING_RECORD} difference
+         * for a dataset the unit produced nothing at all for, so there is no observed output to take a
+         * layout from. Without a layout there are no offsets to trust, and almost every dataset in this
+         * system carries something classified - a customer row is names, address and a
+         * social-security number; an account, card or cross-reference row leads with an identifier; a
+         * {@code USRSEC} row carries the legacy plaintext password; a statement line carries a name.
+         * Masking span by span is impossible and printing the image whole is a disclosure, so the image
+         * is rendered as what the review of this harness asked for in that situation: its length and a
+         * digest, and nothing else.
+         *
+         * <p>Nothing diagnostic is lost that the difference does not already carry. The length is
+         * stated, so a width difference is still visible; the digest is stable, so the expected and
+         * observed sides of two renderings can still be told apart or matched up; and the dataset, the
+         * row index and the field names the expectation pinned are all reported beside it. The fixture
+         * that declared the image is in the repository, which is where a developer reads it.
+         *
+         * @param image the record image; may be {@code null}
+         * @return the length-and-digest rendering, or {@code null} for a {@code null} image
+         */
+        public static String maskUnlocatedImage(String image) {
+            if (image == null) {
+                return null;
+            }
+            return "<image>(len=" + image.length() + ",sha256=" + digest(image) + ')';
+        }
+
+        /**
+         * Masks a free-text line, scrubbing any credential value it carries.
+         *
+         * <p>Deliberately narrow about what it removes. An emitted line is not generally sensitive -
+         * {@code 'User ADMIN003 has been updated ...'} must be shown in full or the expectation cannot
+         * be diagnosed - so a line is only ever reduced to {@link #MASK} when it is nothing but a
+         * credential, which is what a mis-channelled password expectation looks like. A line that
+         * <em>contains</em> a credential among other text keeps the other text and loses the
+         * credential, because a {@code DISPLAY} that concatenated the password into a diagnostic is a
+         * real leak and dropping the whole line would hide the defect instead of the value.
          *
          * @param text the line; may be {@code null}
-         * @return the line, or a mask
+         * @return the line with every credential occurrence masked, or {@link #MASK} for a line that
+         *     is nothing else
          */
         public static String maskIfSensitiveText(String text) {
             if (text == null) {
                 return null;
             }
-            return text.strip().equals("PASSWORD") ? MASK : text;
+            if (CREDENTIAL_LITERALS.contains(text.strip())) {
+                return MASK;
+            }
+            return scrubCredentialLiterals(text);
+        }
+
+        /**
+         * Renders a diagnostic that came from outside this package - an exception message, a
+         * repository failure, a driver's complaint - with nothing sensitive in it and nothing
+         * unbounded about it.
+         *
+         * <p>Free text carries no field names, so classification cannot reach it. Three rules apply
+         * instead, and between them they close the disclosure without closing the diagnostic:
+         * <ul>
+         *   <li>every occurrence of a known credential value is masked, wherever in the text it
+         *       sits;</li>
+         *   <li>a credential quoted as a labelled value - {@code password=...}, {@code pwd: ...} -
+         *       loses the value and keeps the label, which catches a credential this package has never
+         *       seen;</li>
+         *   <li>the result is bounded at {@value #MAX_DIAGNOSTIC_LENGTH} characters. That bound is
+         *       what handles the shape neither rule can: a failure raised while decoding a
+         *       customer row routinely quotes the whole 500-byte image, names, address and
+         *       social-security number included, with nothing in it to match on. Every ordinary message
+         *       is far shorter than the bound and survives untouched.</li>
+         * </ul>
+         *
+         * @param text the diagnostic text; may be {@code null} or blank
+         * @return sanitised, bounded text, or {@link #NO_MESSAGE} when there was none
+         */
+        public static String sanitiseDiagnostic(String text) {
+            if (text == null || text.isBlank()) {
+                return NO_MESSAGE;
+            }
+            String scrubbed = LABELLED_CREDENTIAL.matcher(scrubCredentialLiterals(text))
+                .replaceAll(match -> Matcher.quoteReplacement(
+                    match.group(1) + match.group(2) + MASK));
+            if (scrubbed.length() <= MAX_DIAGNOSTIC_LENGTH) {
+                return scrubbed;
+            }
+            return scrubbed.substring(0, MAX_DIAGNOSTIC_LENGTH) + TRUNCATION_MARKER;
+        }
+
+        /**
+         * Describes a throwable as its type and its sanitised message - the only form in which one
+         * raised by a unit under test may be quoted.
+         *
+         * <p>The type is the part a reader acts on, and it is safe by construction: a class name
+         * carries no data. The message is the part that is not safe, so it goes through
+         * {@link #sanitiseDiagnostic(String)}. The throwable itself is still chained as the
+         * {@code cause} by every caller here, so a developer running the suite locally loses no
+         * detail; what changes is that the harness's own rendered text never repeats it raw.
+         *
+         * @param failure the throwable; may be {@code null}
+         * @return a description naming the type and the sanitised message
+         */
+        public static String describeThrowable(Throwable failure) {
+            if (failure == null) {
+                return NO_MESSAGE;
+            }
+            return failure.getClass().getName() + ": " + sanitiseDiagnostic(failure.getMessage());
+        }
+
+        /** Replaces every occurrence of every known credential value with {@link #MASK}. */
+        private static String scrubCredentialLiterals(String text) {
+            String scrubbed = text;
+            for (String literal : CREDENTIAL_LITERALS) {
+                if (scrubbed.contains(literal)) {
+                    scrubbed = scrubbed.replace(literal, MASK);
+                }
+            }
+            return scrubbed;
+        }
+
+        /**
+         * The first {@value #DIGEST_LENGTH} hexadecimal characters of the SHA-256 of a value.
+         *
+         * <p>Truncated on purpose. The digest exists so that two renderings of one value can be seen
+         * to match and two renderings of different values can be seen to differ; it is not an
+         * integrity check, and a full 64-character digest per field would make a multi-field failure
+         * unreadable. {@code UTF-8} is named rather than defaulted so the same value digests
+         * identically on every machine.
+         */
+        private static String digest(String value) {
+            try {
+                byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+                StringBuilder hex = new StringBuilder(DIGEST_LENGTH);
+                for (int index = 0; hex.length() < DIGEST_LENGTH && index < hash.length; index++) {
+                    hex.append(Character.forDigit((hash[index] >> 4) & 0xF, 16));
+                    hex.append(Character.forDigit(hash[index] & 0xF, 16));
+                }
+                return hex.substring(0, DIGEST_LENGTH);
+            } catch (NoSuchAlgorithmException impossible) {
+                // Every conformant Java platform provides SHA-256, so this cannot happen. It is
+                // still handled rather than declared, because a rendering routine that could throw
+                // would turn a reported difference into a lost one.
+                throw new IllegalStateException("SHA-256 is required to render a masked value and is "
+                    + "mandated by the platform, so its absence is an unusable JVM", impossible);
+            }
+        }
+
+        /**
+         * The personal-data field names, assembled from the copybooks and symbolic maps that declare
+         * them.
+         *
+         * <p>Built in a method rather than written as one {@code Set.of(...)} call so that each group
+         * can carry the source it came from, which is what makes the set auditable against those
+         * files during review.
+         */
+        private static Set<String> personalFields() {
+            Set<String> names = new LinkedHashSet<>();
+            // app/cpy/CVCUS01Y.cpy, and app/cpy/CUSTREC.cpy for the second spelling of the date of
+            // birth - the two copybooks genuinely disagree and both spellings are preserved.
+            names.addAll(List.of(
+                "CUST-FIRST-NAME", "CUST-MIDDLE-NAME", "CUST-LAST-NAME",
+                "CUST-ADDR-LINE-1", "CUST-ADDR-LINE-2", "CUST-ADDR-LINE-3", "CUST-ADDR-ZIP",
+                "CUST-PHONE-NUM-1", "CUST-PHONE-NUM-2",
+                "CUST-SSN", "CUST-GOVT-ISSUED-ID",
+                "CUST-DOB-YYYY-MM-DD", "CUST-DOB-YYYYMMDD",
+                "CUST-EFT-ACCOUNT-ID", "CUST-FICO-CREDIT-SCORE"));
+            // app/cpy/CSUSR01Y.cpy, and the name embossed on a card from app/cpy/CVACT02Y.cpy - a
+            // person's name wherever it is stored.
+            names.addAll(List.of("SEC-USR-FNAME", "SEC-USR-LNAME", "CARD-EMBOSSED-NAME"));
+            // The symbolic-map items the same values pass through: COACTUP, COACTVW, COUSR01 and
+            // COUSR02 carry them singly, and COUSR00 carries ten numbered rows of names.
+            for (String stem : List.of("FNAME", "LNAME", "MIDNAME", "CRDNAME", "ADDRLN1", "ADDRLN2",
+                "ADDRLN3", "ADDRZIP", "ACTPHNUM1", "ACTPHNUM2", "SSN", "SSN1", "SSN2", "SSN3", "DOB",
+                "DOBYEAR", "DOBMON", "DOBDAY", "FICOSCR", "EFTAC")) {
+                names.add(stem + 'I');
+                names.add(stem + 'O');
+            }
+            for (int row = 1; row <= 10; row++) {
+                String ordinal = row < 10 ? "0" + row : Integer.toString(row);
+                names.add("FNAME" + ordinal + 'I');
+                names.add("FNAME" + ordinal + 'O');
+                names.add("LNAME" + ordinal + 'I');
+                names.add("LNAME" + ordinal + 'O');
+            }
+            return Collections.unmodifiableSet(names);
+        }
+
+        /**
+         * The identifier field names: the copybook spans that name one account, card, customer or
+         * user, the symbolic-map items that carry them, and the {@code CDEMO-} commarea fields that
+         * carry them between transactions.
+         */
+        private static Set<String> identifierFields() {
+            Set<String> names = new LinkedHashSet<>();
+            // app/cpy/CVACT01Y.cpy, CVACT02Y.cpy, CVACT03Y.cpy, CVCUS01Y.cpy, CVTRA05Y.cpy,
+            // CVTRA06Y.cpy, COSTM01.CPY and CSUSR01Y.cpy.
+            names.addAll(List.of(
+                "ACCT-ID", "CARD-NUM", "CARD-ACCT-ID",
+                "XREF-CARD-NUM", "XREF-ACCT-ID", "XREF-CUST-ID",
+                "CUST-ID", "TRAN-CARD-NUM", "DALYTRAN-CARD-NUM", "TRNX-CARD-NUM",
+                "SEC-USR-ID"));
+            // The symbolic-map items the same identifiers reach and leave a screen through.
+            for (String stem : List.of("ACCTSID", "CARDSID", "CARDNUM", "USRIDIN", "XREFNBR")) {
+                names.add(stem + 'I');
+                names.add(stem + 'O');
+            }
+            for (int row = 1; row <= 10; row++) {
+                String ordinal = row < 10 ? "0" + row : Integer.toString(row);
+                names.add("USRID" + ordinal + 'I');
+                names.add("USRID" + ordinal + 'O');
+            }
+            // app/cpy/COCOM01Y.cpy - the navigation context, which travels in the response payload
+            // under rule R6 and is rendered by every navigation difference.
+            names.addAll(List.of(
+                "CDEMO-USER-ID", "CDEMO-ACCT-ID", "CDEMO-CARD-NUM", "CDEMO-CUST-ID",
+                "CDEMO-CU01-USR-SELECTED", "CDEMO-CU02-USR-SELECTED",
+                "CDEMO-CU03-USR-SELECTED"));
+            return Collections.unmodifiableSet(names);
         }
     }
 
@@ -1941,11 +2882,24 @@ public record ParityCase(
      * mistake that actually happens - a negative value from a sign error - without freezing a set
      * that a legitimately-discovered path could extend.
      *
-     * @param value the candidate return code
+     * <p>An <strong>absent</strong> value is refused rather than defaulted. A case states what the
+     * step ended with, and {@code 0} is the most common answer - so a defaulted zero is the one wrong
+     * value most likely to look right, and a fixture that omitted the member would assert a normal
+     * completion where the COBOL abends with 8 or 12. Refusing it costs a fixture author one line and
+     * names the line.
+     *
+     * @param value the candidate return code, or {@code null} when the member was absent
      * @return the validated return code
+     * @throws NullPointerException if {@code value} is {@code null}
      * @throws IllegalArgumentException if the value is negative or above 4095
      */
-    private static int requireReturnCode(int value) {
+    private static int requireReturnCode(Integer value) {
+        Objects.requireNonNull(value, "ParityCase.expectedReturnCode is required and is never "
+            + "defaulted: state the RETURN-CODE the run ends with - 0 for a normal completion, or 3, "
+            + "4, 8, 12 or 16 for the paths this system actually produces. An omitted member used to "
+            + "bind to 0, which is the most common correct answer and therefore the one wrong value "
+            + "hardest to notice: a case expecting an abend would have asserted a normal completion "
+            + "and passed.");
         if (value < 0 || value > MAX_RETURN_CODE) {
             throw new IllegalArgumentException(
                 "ParityCase.expectedReturnCode must be between 0 and " + MAX_RETURN_CODE
@@ -2254,12 +3208,56 @@ public record ParityCase(
                     + "copied case or a misunderstanding of what the pad does. Seeded here: "
                     + inputs.keySet() + '.');
             }
+            if (inputs.get(normalisation.dataset()).declaredEmpty()) {
+                throw new IllegalArgumentException("ParityCase.normalisations[" + i + "] normalises "
+                    + "dataset " + normalisation.dataset() + ", which this case declares empty. A "
+                    + "normalisation pads seeded rows to the copybook width and an empty dataset has "
+                    + "no row to pad, so the declaration can never fire - the same defect as naming a "
+                    + "dataset the case does not seed at all. The empty declaration already carries "
+                    + "the width, which is what the pad would otherwise have supplied.");
+            }
             String identity = normalisation.dataset() + ':' + normalisation.kind();
             if (!seen.add(identity)) {
                 throw new IllegalArgumentException("ParityCase.normalisations declares "
                     + normalisation.kind() + " for dataset " + normalisation.dataset()
                     + " more than once. The pad is applied once and is idempotent, so a second "
                     + "declaration changes nothing and means the case was edited by hand twice.");
+            }
+        }
+        return List.copyOf(source);
+    }
+
+    /**
+     * Copies the dataset-level expectations into an unmodifiable list, rejecting a repeat.
+     *
+     * <p>The same {@code (dataset, channel)} pair twice is refused rather than resolved. Two counts for
+     * one dataset on one channel cannot both hold, so whichever the differ honoured, the other would be
+     * an assertion the case appears to make and nobody checks - and if the two agreed, the duplicate is
+     * an editing slip worth naming. Unlike a normalisation, an expectation is <em>not</em> required to
+     * name a seeded dataset: a case legitimately asserts a dataset that only exists as output, which is
+     * what the reject file and the report file are.
+     *
+     * @param source the declared expectations, possibly {@code null}
+     * @return an unmodifiable list in declaration order, empty when nothing was declared
+     * @throws IllegalArgumentException if any element is {@code null} or repeats a dataset and channel
+     */
+    private static List<ExpectedDataset> freezeExpectedDatasets(List<ExpectedDataset> source) {
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (int i = 0; i < source.size(); i++) {
+            ExpectedDataset expectation = source.get(i);
+            if (expectation == null) {
+                throw new IllegalArgumentException(
+                    "ParityCase.expectedDatasets[" + i + "] is null; remove the entry instead");
+            }
+            String identity = expectation.dataset() + ':' + expectation.channel();
+            if (!seen.add(identity)) {
+                throw new IllegalArgumentException("ParityCase.expectedDatasets declares dataset "
+                    + expectation.dataset() + " on the " + expectation.channel() + " channel more "
+                    + "than once. Two row counts for one dataset on one channel cannot both hold, so "
+                    + "one of them is an assertion the case appears to make and nothing checks.");
             }
         }
         return List.copyOf(source);
@@ -2522,25 +3520,24 @@ public record ParityCase(
      * @throws IllegalArgumentException if an operation name is malformed or an outcome is
      *     {@code null}
      */
-    private static Map<String, ForcedOutcome> freezeForcedOutcomes(
-        Map<String, ForcedOutcome> source) {
+    private static Map<RepositoryOperation, ForcedOutcome> freezeForcedOutcomes(
+        Map<RepositoryOperation, ForcedOutcome> source) {
         if (source == null || source.isEmpty()) {
             return Collections.emptyMap();
         }
-        Map<String, ForcedOutcome> copy = new LinkedHashMap<>();
-        for (Map.Entry<String, ForcedOutcome> entry : source.entrySet()) {
-            String operation = entry.getKey();
-            if (operation == null || !REPOSITORY_OPERATION.matcher(operation).matches()) {
-                throw new IllegalArgumentException("ScreenRequest.forcedOutcomes key \"" + operation
-                    + "\" must name a repository operation in lower camel case - read, "
-                    + "readForUpdate, readNext, startBrowse, write, rewrite or delete - so the "
-                    + "harness knows which call site to force.");
-            }
+        // No name check here any more: the key is a RepositoryOperation, so a spelling that matches no
+        // call site cannot reach this method. It is refused where the spelling still exists as text -
+        // by RepositoryOperation.fromKey, on the way in from a case file.
+        Map<RepositoryOperation, ForcedOutcome> copy = new LinkedHashMap<>();
+        for (Map.Entry<RepositoryOperation, ForcedOutcome> entry : source.entrySet()) {
+            RepositoryOperation operation = entry.getKey();
+            Objects.requireNonNull(operation, "ScreenRequest.forcedOutcomes carries a null key; name "
+                + "the repository operation whose outcome is being forced");
             ForcedOutcome outcome = entry.getValue();
             if (outcome == null) {
-                throw new IllegalArgumentException("ScreenRequest.forcedOutcomes[\"" + operation
-                    + "\"] is null; declare the outcome to force, or omit the entry to let the "
-                    + "seeded data decide");
+                throw new IllegalArgumentException("ScreenRequest.forcedOutcomes[\""
+                    + operation.key() + "\"] is null; declare the outcome to force, or omit the "
+                    + "entry to let the seeded data decide");
             }
             copy.put(operation, outcome);
         }

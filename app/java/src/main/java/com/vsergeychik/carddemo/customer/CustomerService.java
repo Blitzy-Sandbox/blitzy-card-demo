@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.customer;
 
 import com.vsergeychik.carddemo.common.AbendException;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.customer.CustomerRepository.CustomerFile;
@@ -11,6 +12,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -42,6 +44,20 @@ import java.util.Objects;
  * directly: business logic sits in services so the parity cases reach it with no batch launcher and no
  * HTTP in the path. A test constructs this class with a repository and nothing else, and this file
  * references no batch type at all.
+ *
+ * <h2>Three entry points, one implementation</h2>
+ * {@link #readAndPrintCustomerFileTo(SysoutSink)} is the <strong>production</strong> shape: it streams
+ * every {@code DISPLAY} to a destination - {@link #standardOutputSysoutSink()} is the
+ * {@code //SYSOUT DD SYSOUT=*} equivalent - and keeps none of it. {@link #readAndPrintCustomerFile()}
+ * and {@link #readAndPrintCustomerFile(Sysout)} accumulate the whole sequence into an {@link Execution}
+ * instead, which is what a parity case and a unit test are made of and what a batch run must not do:
+ * every customer contributes {@link #DISPLAYS_PER_RECORD} lines of {@link #RECORD_LENGTH} characters and
+ * the customer master has no record ceiling, so retaining the sequence costs memory proportional to the
+ * dataset for output that has already been written.
+ *
+ * <p>All three run one private {@code runProgram}, so the emitted line sequence, its order and its bytes
+ * are decided in one place and streaming cannot drift away from capturing. The only difference between
+ * them is whether a copy is kept.
  *
  * <h2>The program, paragraph by paragraph</h2>
  * <pre>
@@ -480,7 +496,72 @@ public class CustomerService {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required: the displayed line sequence is this "
                 + "program's entire observable output, so there is nothing to run without somewhere to "
                 + "put it");
+        if (!sysout.retains()) {
+            throw new IllegalArgumentException("This overload returns an " + Execution.class
+                    .getSimpleName() + ", which carries the emitted line sequence, but the supplied sink "
+                    + "streams to a destination and keeps nothing. Run a streaming sink through "
+                    + "readAndPrintCustomerFileTo(SysoutSink) - which returns nothing, because there is "
+                    + "nothing left to return - or supply a capturing sink here.");
+        }
 
+        int recordsRead = runProgram(sysout);
+
+        // GOBACK - RETURN-CODE is never moved into, so a normal end is zero.                       L87
+        return new Execution(sysout.lines(), RETURN_CODE_NORMAL_END, recordsRead);
+    }
+
+    /**
+     * Runs {@code CBCUS01C} end to end, streaming every {@code DISPLAY} straight to {@code sysout} and
+     * retaining none of it.
+     *
+     * <p><strong>This is the production entry point.</strong> {@code app/jcl/READCUST.jcl:11} binds
+     * {@code //SYSOUT DD SYSOUT=*} - the job's print stream - and a print stream is written to and
+     * forgotten. The two {@link Execution}-returning overloads accumulate the whole sequence instead,
+     * which is what a parity case and a unit test need and what a batch run must not do: every customer
+     * contributes {@link #DISPLAYS_PER_RECORD} lines of {@link #RECORD_LENGTH} characters, the customer
+     * master has no record ceiling, and holding all of it costs memory proportional to the dataset for
+     * output that has already been written.
+     *
+     * <p>Behaviourally identical to the capturing overloads in every respect that is observable. The
+     * same lines are emitted, in the same order, with the same bytes, from the same code - all three
+     * shapes call one private {@link #runProgram(Sysout)} - and the preserved duplicate display of
+     * {@code L96} then {@code L78} is intact here too. The only difference is that nothing keeps a copy.
+     *
+     * <p>Nothing is returned, and that is deliberate rather than a shortcut. A normal end sets
+     * {@link #RETURN_CODE_NORMAL_END}, because {@code CBCUS01C} never moves into {@code RETURN-CODE}
+     * ({@code L87}), so a return value could only ever be that one constant; and a fatal open, read or
+     * close leaves by {@link AbendException}, which carries the code the run ended with. A caller that
+     * needs the line count for a diagnostic can read it from its own sink.
+     *
+     * @param sysout where every emitted line goes, one call per {@code DISPLAY}; must not be
+     *               {@code null}. {@link #standardOutputSysoutSink()} is the {@code SYSOUT=*} equivalent
+     * @throws NullPointerException if {@code sysout} is {@code null}
+     * @throws AbendException       if the open, any read, or the close reports a status the program
+     *                              treats as fatal - the Java form of {@code CALL 'CEE3ABD'} at
+     *                              {@code L158}. Its three lines reach {@code sysout} before the throw
+     * @see #readAndPrintCustomerFile() for the capturing form a parity case uses
+     */
+    public void readAndPrintCustomerFileTo(SysoutSink sysout) {
+        Objects.requireNonNull(sysout, "A SYSOUT destination is required: the displayed line sequence is "
+                + "this program's entire observable output, so there is nothing to run without somewhere "
+                + "to put it");
+
+        runProgram(new Sysout(sysout));
+    }
+
+    /**
+     * The whole {@code PROCEDURE DIVISION} - {@code app/cbl/CBCUS01C.cbl:L69-L87}.
+     *
+     * <p>One implementation behind all three public shapes, so that streaming and capturing cannot drift
+     * apart: the line sequence, its order and its bytes are decided here, and whether a copy is kept is
+     * decided by the {@link Sysout} handed in. A second implementation for the streaming path would be
+     * the obvious way to write this and the obvious way for the two to diverge silently.
+     *
+     * @param sysout this run's SYSOUT façade, capturing or streaming
+     * @return the number of records the browse returned and displayed
+     * @throws AbendException if the open, any read, or the close reports a fatal status
+     */
+    private int runProgram(Sysout sysout) {
         // WORKING-STORAGE for this run - L61-L67. Never a field of this singleton.
         WorkingStorage workingStorage = new WorkingStorage();
 
@@ -490,17 +571,73 @@ public class CustomerService {
         // PERFORM 0000-CUSTFILE-OPEN.                                                             L72
         CustomerFile custFile = custfileOpen(sysout, workingStorage);
 
-        // PERFORM UNTIL END-OF-FILE = 'Y' … END-PERFORM.                                      L74-L81
-        int recordsRead = custfileDisplayLoop(sysout, workingStorage, custFile);
+        // Everything from here on holds an open browse, so everything from here on is released on the
+        // way out - see releaseHandle. The open itself is outside the boundary because a failed open
+        // throws without returning a handle, and there is then nothing to release.
+        try {
+            // PERFORM UNTIL END-OF-FILE = 'Y' … END-PERFORM.                                  L74-L81
+            int recordsRead = custfileDisplayLoop(sysout, workingStorage, custFile);
 
-        // PERFORM 9000-CUSTFILE-CLOSE.                                                            L83
-        custfileClose(sysout, workingStorage, custFile);
+            // PERFORM 9000-CUSTFILE-CLOSE.                                                        L83
+            custfileClose(sysout, workingStorage, custFile);
 
-        // DISPLAY 'END OF EXECUTION OF PROGRAM CBCUS01C'.                                          L85
-        sysout.display(END_OF_EXECUTION);
+            // DISPLAY 'END OF EXECUTION OF PROGRAM CBCUS01C'.                                      L85
+            sysout.display(END_OF_EXECUTION);
 
-        // GOBACK - RETURN-CODE is never moved into, so a normal end is zero.                       L87
-        return new Execution(sysout.lines(), RETURN_CODE_NORMAL_END, recordsRead);
+            // GOBACK.                                                                              L87
+            return recordsRead;
+        } finally {
+            releaseHandle(custFile);
+        }
+    }
+
+    /**
+     * Releases the customer master browse on every path out of
+     * {@link #readAndPrintCustomerFile(Sysout)}, silently.
+     *
+     * <p>This is <strong>not</strong> a second {@code CLOSE}. Three properties keep it from changing
+     * anything the program does:
+     * <ul>
+     *   <li><strong>Idempotent.</strong> Only a handle that is still open is touched, and
+     *       {@link CustomerFile#closeFile()} is idempotent in its own right. On the normal path
+     *       {@code 9000-CUSTFILE-CLOSE} has already closed it at {@code L83} and this does nothing at
+     *       all.</li>
+     *   <li><strong>Silent.</strong> No {@code DISPLAY}, no status returned, nothing branched on. The
+     *       close at {@code L138} is the program's only close of this file and it is already translated
+     *       in {@link #custfileClose}, with its {@code '00'}-or-12 ladder and its
+     *       {@value #ERROR_CLOSING_CUSTOMER_FILE} text intact. Repeating either here would emit output
+     *       the program never writes.</li>
+     *   <li><strong>Non-throwing.</strong> A failure here is swallowed, because this runs in a
+     *       {@code finally}: throwing would replace the {@link AbendException} the caller needs with a
+     *       cleanup fault, and the abend is always the more important of the two. The swallowed
+     *       condition is logged instead, so it stays diagnosable.</li>
+     * </ul>
+     *
+     * <p>Why it is needed at all, when {@code CBCUS01C} has no such statement: {@code CALL 'CEE3ABD'}
+     * ends a z/OS task and the operating system reclaims its open files, whereas an
+     * {@link AbendException} ends one step inside a JVM that keeps running, and a browse left open there
+     * is held for the life of the process.
+     *
+     * @param custFile the handle {@code 0000-CUSTFILE-OPEN} returned; never {@code null} here, because a
+     *                 failed open throws instead of returning one
+     */
+    private static void releaseHandle(CustomerFile custFile) {
+        if (custFile.isClosed()) {
+            return;
+        }
+        try {
+            custFile.closeFile();
+        } catch (RuntimeException cleanupFailure) {
+            // The throwable is deliberately not handed to the logger, and neither is its message: a
+            // driver composes its message around the value it refused, and a customer master row carries
+            // CUST-SSN, CUST-DOB-YYYY-MM-DD and the customer's names (CWE-532), with a newline in that
+            // text able to forge a second entry (CWE-117). BackendDiagnostic carries the SQLSTATE, the
+            // vendor code and the exception type, and has no component for a message.
+            LOG.warn("Releasing the " + DD_NAME + " browse of " + PROGRAM_ID + " after an incomplete run "
+                    + "failed - " + BackendDiagnostic.of(cleanupFailure).describe()
+                    + ". The run's own outcome is reported to the caller unchanged, because the run's own "
+                    + "failure is the one that matters.");
+        }
     }
 
     /**
@@ -1050,12 +1187,24 @@ public class CustomerService {
     // =================================================================================================
 
     /**
-     * The {@code SYSOUT} of one execution: an ordered, append-only line list that also reaches the
+     * The {@code SYSOUT} of one execution: an ordered, append-only line sequence that also reaches the
      * module's logger.
      *
-     * <p>Package-private and created per call, so it is neither shared nor visible beyond the execution
-     * that owns it. Not thread-safe, and it does not need to be: one execution appends to one of these
-     * from one thread, and two executions never see the same instance.
+     * <p>Created per call, so it is neither shared nor visible beyond the execution that owns it. Not
+     * thread-safe, and it does not need to be: one execution emits through one of these from one thread,
+     * and two executions never see the same instance.
+     *
+     * <h2>Capturing or streaming, and the run cannot tell</h2>
+     * {@link #Sysout()} keeps every line, which is what a parity fingerprint and a unit test are made of.
+     * {@link #Sysout(SysoutSink)} hands each line to a destination and keeps nothing, which is what a
+     * batch run does: every customer contributes {@link #DISPLAYS_PER_RECORD} lines of
+     * {@link #RECORD_LENGTH} characters and the customer master has no record ceiling, so retaining the
+     * sequence costs memory proportional to the dataset for output already written.
+     *
+     * <p>Both modes emit through one {@code destination} field and one {@code emit} method, so the two
+     * cannot produce different bytes or a different order. What differs is only whether a copy is kept:
+     * {@link #lines()} refuses on a streaming sink rather than answering with an empty list, while
+     * {@link #lineCount()} and {@link #recordImageCount()} are counters and stay answerable in both.
      *
      * <h2>Two emission methods, and why they differ</h2>
      * {@link #display(String)} appends a line and logs it verbatim. It carries the two banners, the three
@@ -1077,12 +1226,29 @@ public class CustomerService {
      * whose expected outcome for some cases <em>is</em> an abend - can create one, hand it to
      * {@link CustomerService#readAndPrintCustomerFile(Sysout)} and read what was emitted after catching the
      * exception. The two emission methods are package-private, so only this service can append: the line
-     * sequence is a program's output, not something a caller may edit into a shape it prefers.
+     * sequence is a program's output, not something a caller may edit into a shape it prefers. That holds
+     * for a streaming sink too - the caller supplies the destination, and the service decides what reaches
+     * it.
      */
     public static final class Sysout {
 
-        /** The lines emitted so far, in emission order. Appended to, never rewritten. */
-        private final List<String> lines = new ArrayList<>();
+        /**
+         * The lines emitted so far, in emission order, or {@code null} when this sink streams.
+         *
+         * <p>Appended to, never rewritten. {@code null} rather than an empty list for a streaming sink,
+         * so that {@link #lines()} can refuse instead of answering "nothing was emitted" about a run that
+         * emitted everything it was asked to.
+         */
+        private final List<String> lines;
+
+        /**
+         * Where an emitted line goes.
+         *
+         * <p>One seam for both modes: a capturing sink points this at its own list, a streaming sink
+         * points it at the caller's destination, and {@link #display} and {@link #displayCustomerRecord}
+         * are then identical in both. That is what keeps the two modes from producing different bytes.
+         */
+        private final SysoutSink destination;
 
         /**
          * How many record images have been emitted, for the ordinal in the per-record log entry.
@@ -1094,13 +1260,52 @@ public class CustomerService {
         private int recordImageCount;
 
         /**
+         * How many lines have been emitted, counted rather than derived.
+         *
+         * <p>A counter because a streaming sink has no list to size, and because the count is the thing
+         * {@link Execution}'s invariant is stated in - so it stays answerable in both modes.
+         */
+        private int lineCount;
+
+        /**
          * Creates an empty sink.
          *
          * <p>Declared explicitly rather than left to the compiler's default so that it can be documented:
          * a sink is always created empty, and one execution owns exactly one of them.
          */
         public Sysout() {
-            // The two fields carry their declared initial state. Intentionally nothing else to do.
+            List<String> captured = new ArrayList<>();
+            this.lines = captured;
+            this.destination = captured::add;
+        }
+
+        /**
+         * Creates a sink that streams every line to {@code destination} and keeps none of them.
+         *
+         * <p>For a batch run, where SYSOUT is a print stream that has already consumed the line by the
+         * time the next one is emitted. {@link #lines()} refuses on a sink built this way, because there
+         * is nothing to answer with and an empty list would read as a run that displayed nothing.
+         *
+         * <p>{@link #lineCount()} and {@link #recordImageCount()} both still work: they are counters, not
+         * derived from a retained list, which is exactly why they were written that way.
+         *
+         * @param destination where each emitted line goes, one call per {@code DISPLAY}; must not be
+         *                    {@code null}
+         * @throws NullPointerException if {@code destination} is {@code null}
+         */
+        public Sysout(SysoutSink destination) {
+            this.lines = null;
+            this.destination = Objects.requireNonNull(destination, "A streaming SYSOUT sink needs "
+                    + "somewhere to stream to");
+        }
+
+        /**
+         * Whether this sink keeps what it emits.
+         *
+         * @return {@code true} for a capturing sink, {@code false} for a streaming one
+         */
+        public boolean retains() {
+            return lines != null;
         }
 
         /**
@@ -1117,7 +1322,7 @@ public class CustomerService {
          */
         void display(String line) {
             Objects.requireNonNull(line, "A DISPLAY writes a line, and a COBOL literal is never null");
-            lines.add(line);
+            emit(line);
             LOG.info(line);
         }
 
@@ -1144,7 +1349,7 @@ public class CustomerService {
                         + "is " + recordImage.length() + ". A short image means the FILLER was omitted, "
                         + "which breaks every offset downstream of it.");
             }
-            lines.add(recordImage);
+            emit(recordImage);
             recordImageCount++;
             if (LOG.isDebugEnabled()) {
                 // Deliberately NOT the image: it holds CUST-SSN, CUST-DOB-YYYY-MM-DD,
@@ -1177,6 +1382,12 @@ public class CustomerService {
          * @return an immutable snapshot in emission order; never {@code null}
          */
         public List<String> lines() {
+            if (lines == null) {
+                throw new IllegalStateException("This sink streamed its " + lineCount + " lines to a "
+                        + "destination and kept none of them, so there is no sequence to hand back. A "
+                        + "caller that needs the sequence - a parity case, or a test - constructs a "
+                        + "capturing sink with the no-argument constructor.");
+            }
             return Collections.unmodifiableList(new ArrayList<>(lines));
         }
 
@@ -1187,8 +1398,92 @@ public class CustomerService {
          *         {@link #recordImageCount()} on a normal end
          */
         public int lineCount() {
-            return lines.size();
+            return lineCount;
         }
+
+        /**
+         * Hands one line to the destination and counts it.
+         *
+         * <p>The single place a line leaves this sink. Counting here rather than at the two call sites is
+         * what makes the count and the emission impossible to get out of step.
+         *
+         * @param line the line, already validated by the caller
+         */
+        private void emit(String line) {
+            destination.write(line);
+            lineCount++;
+        }
+    }
+
+    /**
+     * Where a {@code DISPLAY} goes.
+     *
+     * <p>{@code app/jcl/READCUST.jcl:11} binds {@code //SYSOUT DD SYSOUT=*}, the job's print stream.
+     * This is that binding as one method, so a batch run can write each line and forget it while a
+     * parity case can keep every one.
+     *
+     * <p><strong>Undecorated, and that is the whole point.</strong> An implementation must not prefix a
+     * timestamp, a severity or a logger name, must not trim, wrap or re-encode, and must not reorder.
+     * Trailing spaces are significant and a record image is exactly {@link #RECORD_LENGTH} characters of
+     * it. A parity case compares the emitted sequence line for line against what the COBOL writes, so any
+     * decoration fails every case while the translation underneath is correct.
+     */
+    @FunctionalInterface
+    public interface SysoutSink {
+
+        /**
+         * Accepts one line of output.
+         *
+         * @param line the line exactly as {@code DISPLAY} writes it, with no line terminator of its own
+         *             and no decoration of any kind; never {@code null}
+         */
+        void write(String line);
+    }
+
+    /**
+     * A {@link SysoutSink} over a {@link PrintStream}.
+     *
+     * <p>A named type rather than a lambda, so the one place this program's output reaches a stream is
+     * visible and directly testable. Order is preserved because a print stream preserves it.
+     *
+     * @param stream the stream to write to, one line per call; never {@code null}
+     */
+    public record PrintStreamSysoutSink(PrintStream stream) implements SysoutSink {
+
+        /**
+         * Rejects a missing stream.
+         *
+         * @throws NullPointerException if {@code stream} is {@code null}
+         */
+        public PrintStreamSysoutSink {
+            Objects.requireNonNull(stream, "A print stream is required to emit SYSOUT lines");
+        }
+
+        /**
+         * Writes the line and terminates it, which is what one {@code DISPLAY} produces.
+         *
+         * @param line the line; never {@code null}
+         * @throws NullPointerException if {@code line} is {@code null}
+         */
+        @Override
+        public void write(String line) {
+            Objects.requireNonNull(line, "A DISPLAY never writes an absent line");
+            stream.println(line);
+        }
+    }
+
+    /**
+     * The {@code //SYSOUT DD SYSOUT=*} equivalent: a sink over the standard output stream.
+     *
+     * <p>The stream is handed to the adapter as a value rather than reached statically at each emission
+     * point, so every {@code DISPLAY} in a run goes through one seam and a test can replace all of them
+     * at once. This is also why the module's logger is not the destination: it is for diagnostics about
+     * the run, not for the run's own output.
+     *
+     * @return a sink over the standard output stream; never {@code null}
+     */
+    public static SysoutSink standardOutputSysoutSink() {
+        return new PrintStreamSysoutSink(System.out);
     }
 
     // =================================================================================================

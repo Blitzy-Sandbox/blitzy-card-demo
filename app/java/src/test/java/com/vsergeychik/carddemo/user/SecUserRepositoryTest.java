@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user;
 
 import com.vsergeychik.carddemo.common.CicsResponse;
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.RecordImageForm;
@@ -12,12 +13,15 @@ import com.vsergeychik.carddemo.user.SecUserRepository.ReadResult;
 import com.vsergeychik.carddemo.user.SecUserRepository.WriteResult;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -51,10 +55,10 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -172,8 +176,45 @@ class SecUserRepositoryTest {
     /** The declared key width, from {@code SEC-USR-ID PIC X(08)}. */
     private static final int EIGHT = 8;
 
-    /** Makes each in-memory relation private to its test. */
-    private static final AtomicInteger DATABASE_SEQUENCE = new AtomicInteger();
+
+    /**
+     * Every in-memory database this test created, so the teardown can dispose of all of them.
+     *
+     * <p>An instance field, populated only by this test's own helpers: nothing is shared between tests
+     * and no static holds it (gate G53, practice B9).
+     */
+    private final List<DataSource> createdDatabases = new ArrayList<>();
+
+    /**
+     * Drops and shuts down every database this test created.
+     *
+     * <p>{@code DB_CLOSE_DELAY=-1} is what makes the seed usable at all - without it each connection
+     * {@code DriverManagerDataSource} opens would get its own empty database - and it is also what keeps
+     * every one of them alive for the rest of the JVM once the test that made it has finished. Over a
+     * suite this size that is hundreds of live schemas held to the end of the run, each one still
+     * addressable by name; and a name that outlives its test is a name a later test could reach, which
+     * is the shared state the per-test database exists to avoid. Dropping the objects and shutting the
+     * database down closes both, and it frees the name for reuse - which is why the ordinal below can
+     * restart at zero for each test instead of needing a counter that outlives one.
+     */
+    @AfterEach
+    void disposeCreatedDatabases() {
+        for (DataSource created : createdDatabases) {
+            JdbcTemplate template = new JdbcTemplate(created);
+            template.execute("DROP ALL OBJECTS");
+            template.execute("SHUTDOWN");
+        }
+        createdDatabases.clear();
+    }
+
+    /**
+     * Distinguishes the in-memory databases one test creates.
+     *
+     * <p>An instance field rather than a static counter: a static counter is mutable static state,
+     * which gate G53 and practice B9 forbid. {@link #disposeCreatedDatabases()} shuts each database down
+     * when its test ends, which frees the name and makes a per-test ordinal sufficient.
+     */
+    private int databaseOrdinal;
 
     // =============================================================================================
     // Harness
@@ -222,7 +263,7 @@ class SecUserRepositoryTest {
      *             a row whose column holds nothing
      * @return a template over the seeded relation
      */
-    private static JdbcTemplate seeded(List<String> rows) {
+    private JdbcTemplate seeded(List<String> rows) {
         return seeded(rows, EIGHTY);
     }
 
@@ -236,7 +277,7 @@ class SecUserRepositoryTest {
      * @param columnWidth the declared width of the record-image column
      * @return a template over the seeded relation
      */
-    private static JdbcTemplate seeded(List<String> rows, int columnWidth) {
+    private JdbcTemplate seeded(List<String> rows, int columnWidth) {
         JdbcTemplate template = emptyRelation("CREATE TABLE \"" + TEST_DSNAME + "\" ("
                 + RECORD_IMAGE_COLUMN + " VARCHAR(" + columnWidth + "))");
         for (String row : rows) {
@@ -251,11 +292,12 @@ class SecUserRepositoryTest {
      * @param ddl the statement to execute, or {@code null} to leave the database empty
      * @return a template over the database
      */
-    private static JdbcTemplate emptyRelation(String ddl) {
+    private JdbcTemplate emptyRelation(String ddl) {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:secuser" + DATABASE_SEQUENCE.incrementAndGet()
+                "jdbc:h2:mem:secuser" + (++databaseOrdinal)
                         + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
         dataSource.setDriverClassName("org.h2.Driver");
+        createdDatabases.add(dataSource);
         JdbcTemplate template = new JdbcTemplate(dataSource);
         if (ddl != null) {
             template.execute(ddl);
@@ -268,7 +310,7 @@ class SecUserRepositoryTest {
      *
      * @return a template over an empty database
      */
-    private static JdbcTemplate missingRelation() {
+    private JdbcTemplate missingRelation() {
         return emptyRelation(null);
     }
 
@@ -1276,6 +1318,97 @@ class SecUserRepositoryTest {
         }
 
         @Test
+        @DisplayName("the browse orders by code-page BYTES, not by the backend's character collation")
+        void theBrowseOrdersByBytesAndNotByCollation() {
+            // The one case where the two genuinely disagree, and the reason this repository does its own
+            // comparison. SEC-USR-ID is PIC X(08) and is the estate's ONLY alphanumeric key: under
+            // IBM037 the letters sort BELOW the digits, under ASCII and every common Unicode collation
+            // the digits sort below the letters. A mixed-domain key set therefore paginates differently
+            // depending on who compares it, and only one of those answers is VSAM's.
+            //
+            // The seed below is deliberately mixed: two ids beginning with a digit and two with a letter.
+            // Ordered as UNSIGNED BYTES under US-ASCII - the code page this profile configures - '1' is
+            // x'31' and 'A' is x'41', so the digits come first. That is the order asserted, and it is
+            // asserted as a property of the code page rather than of H2.
+            List<String> mixed = List.of(row("1USER001", "ONE", "DIGIT", "PASSWORD", "U"),
+                    row("A0000001", "ALPHA", "LETTER", "PASSWORD", "U"),
+                    row("9USER999", "NINE", "DIGIT", "PASSWORD", "U"),
+                    row("Z9999999", "ZED", "LETTER", "PASSWORD", "A"));
+
+            List<String> walked = new ArrayList<>();
+            try (BrowseCursor cursor =
+                         repository(seeded(mixed)).startBrowse(SecUserRepository.LOW_VALUES_KEY)) {
+                for (ReadResult read = cursor.readNext(); read.isFound(); read = cursor.readNext()) {
+                    walked.add(read.requireRecord().secUsrId());
+                }
+            }
+
+            assertThat(walked)
+                    .as("unsigned-byte order over the encoded key, which is the VSAM collating sequence")
+                    .containsExactly("1USER001", "9USER999", "A0000001", "Z9999999");
+        }
+
+        @Test
+        @DisplayName("HIGH-VALUES is genuinely maximal and LOW-VALUES genuinely minimal - gate DBP-18")
+        void theFigurativeSentinelsAreMaximalAndMinimal() {
+            // COUSR00C:L263 anchors PF8 on HIGH-VALUES precisely so that nothing is at or after it, which
+            // is what makes L600-L606 report "You are at the top of the page". That only holds if the
+            // sentinel really is the highest value a key byte can take - x'FF' - and a sentinel encoded
+            // through the code page would not be: IBM037 maps U+00FF to x'DF', below every letter.
+            SecUserRepository repository = repository(seeded(List.of(
+                    row("ZZZZZZZZ", "LAST", "RECORD", "PASSWORD", "A"))));
+
+            try (BrowseCursor forward = repository.startBrowse(SecUserRepository.HIGH_VALUES_KEY)) {
+                assertThat(forward.openOutcome()).isEqualTo(Outcome.NOT_FOUND);
+                assertThat(forward.openCicsResp()).hasValue(FileStatus.NOTFND);
+            }
+            // And the other end: LOW-VALUES is at or before every key, so it positions at the first
+            // record - COUSR00C:L240.
+            try (BrowseCursor backward = repository.startBrowse(SecUserRepository.LOW_VALUES_KEY)) {
+                assertThat(backward.openOutcome()).isEqualTo(Outcome.OK);
+                assertThat(backward.readNext().requireRecord().secUsrId()).isEqualTo("ZZZZZZZZ");
+            }
+        }
+
+        @Test
+        @DisplayName("the sentinels are the raw bytes x'00' and x'FF', eight of each")
+        void theSentinelsAreRawBytes() {
+            assertThat(SecUserRepository.LOW_VALUES_KEY.getBytes(java.nio.charset.StandardCharsets
+                    .ISO_8859_1))
+                    .as("COBOL LOW-VALUES is the byte x'00', not the character zero")
+                    .containsOnly((byte) 0x00)
+                    .hasSize(SecUserRepository.KEY_LENGTH);
+            assertThat(SecUserRepository.HIGH_VALUES_KEY.getBytes(java.nio.charset.StandardCharsets
+                    .ISO_8859_1))
+                    .as("COBOL HIGH-VALUES is the byte x'FF', which is why it cannot be encoded through "
+                            + "the dataset code page - IBM037 would make it x'DF' and US-ASCII cannot "
+                            + "represent it at all")
+                    .containsOnly((byte) 0xFF)
+                    .hasSize(SecUserRepository.KEY_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a backward walk from HIGH-VALUES returns the last record first - PF7 from the end")
+        void aBackwardWalkFromHighValuesStartsAtTheLastRecord() {
+            SecUserRepository repository = repository(seeded(seedRows()));
+            // STARTBR at HIGH-VALUES reports NOTFND (nothing is at or after it), which is exactly what
+            // COUSR00C observes; the browse is not positioned, so a READPREV from it reports the open's
+            // own outcome rather than reading. That is the shape asserted here - the sentinel's effect,
+            // not a workaround for it.
+            try (BrowseCursor cursor = repository.startBrowse(SecUserRepository.HIGH_VALUES_KEY)) {
+                assertThat(cursor.openOutcome()).isEqualTo(Outcome.NOT_FOUND);
+                assertThat(cursor.readPrevious().isFound()).isFalse();
+            }
+            // Anchoring on the highest REAL key does position, and the previous record is the one before
+            // it in byte order.
+            try (BrowseCursor cursor = repository.startBrowse("USER0002")) {
+                assertThat(cursor.readNext().requireRecord().secUsrId()).isEqualTo("USER0002");
+                assertThat(cursor.readPrevious().requireRecord().secUsrId()).isEqualTo("USER0001");
+                assertThat(cursor.readPrevious().requireRecord().secUsrId()).isEqualTo("ADMIN002");
+            }
+        }
+
+        @Test
         @DisplayName("both directions read one position, as one STARTBR serves both paragraphs")
         void bothDirectionsShareOnePosition() {
             try (BrowseCursor cursor =
@@ -1582,11 +1715,53 @@ class SecUserRepositoryTest {
         }
 
         @Test
-        @DisplayName("the repository declares no mutable field, so nothing can be shared by accident")
+        @DisplayName("the relation is described ONCE, and every later operation reuses the statements")
+        void theRelationIsDescribedOnceAndTheStatementsAreReused() {
+            // Six logical CICS operations, each of which used to describe the relation again first. The
+            // describe answers a question that cannot change while the dataset exists, and for
+            // COUSR02C and COUSR03C the extra round trip lands INSIDE the window a READ ... UPDATE holds
+            // its lock - which is the worst possible place to put an avoidable query.
+            JdbcTemplate real = seeded(seedRows());
+            JdbcTemplate counting = Mockito.spy(real);
+            SecUserRepository repository = repository(counting);
+            String describe = DatasetRelation.of(TEST_DSNAME, EIGHTY).describeStatement();
+
+            repository.read("ADMIN001");
+            try (BrowseCursor cursor = repository.startBrowse(SecUserRepository.LOW_VALUES_KEY)) {
+                cursor.readNext();
+            }
+            repository.add(SecUserRecord.decode(
+                    row("USER0009", "NEW", "USER", "PASSWORD", "U").getBytes(ASCII), ASCII));
+            transactionOver(counting).executeWithoutResult(status -> {
+                ReadResult held = repository.readForUpdate("ADMIN001");
+                repository.rewrite(held.requireRecord());
+                ReadResult toDelete = repository.readForUpdate("ADMIN002");
+                repository.deleteHeld(toDelete.hold().orElseThrow());
+            });
+
+            Mockito.verify(counting, Mockito.times(1))
+                    .query(ArgumentMatchers.eq(describe),
+                            ArgumentMatchers.<ResultSetExtractor<String>>any());
+        }
+
+        @Test
+        @DisplayName("the repository declares no per-call mutable field, so nothing is shared by accident")
         void theRepositoryDeclaresNoMutableField() {
             for (Field field : SecUserRepository.class.getDeclaredFields()) {
-                assertThat(Modifier.isFinal(field.getModifiers()))
-                        .as("field %s must be final", field.getName()).isTrue();
+                if (Modifier.isFinal(field.getModifiers())) {
+                    continue;
+                }
+                // The one non-final field is the composed statement set, and it is per-DATASET rather
+                // than per-call: it holds a deeply immutable record of Strings, published through a
+                // volatile write, and recomposing it yields an equal value. Nothing a browse or a hold
+                // owns can travel through it.
+                assertThat(Modifier.isVolatile(field.getModifiers()))
+                        .as("field %s is not final, so it must at least be volatile", field.getName())
+                        .isTrue();
+                assertThat(field.getType())
+                        .as("field %s is not final, so the value it publishes must be immutable",
+                                field.getName())
+                        .isEqualTo(SecUserRepository.Statements.class);
             }
         }
 
@@ -2176,6 +2351,30 @@ class SecUserRepositoryTest {
     @DisplayName("Migration constraints - no schema, no dataset literal, no float, no shared state")
     class MigrationConstraints {
 
+        @Test
+        @DisplayName("a test's database is disposed of when the test ends, name and schema alike")
+        void aTestsDatabaseIsDisposedOf() {
+            // DB_CLOSE_DELAY=-1 is required for the seed to work at all and, left alone, keeps every
+            // database this suite created alive and addressable by name until the JVM exits. A name
+            // that outlives its test is a name another test can reach, and per-test isolation then
+            // rests on nobody ever reusing one.
+            JdbcTemplate template = seeded(seedRows());
+            DataSource created = template.getDataSource();
+
+            assertThat(new JdbcTemplate(created).queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class))
+                    .as("the relation holds this test's rows while the test is using it")
+                    .isPositive();
+
+            disposeCreatedDatabases();
+
+            assertThatExceptionOfType(BadSqlGrammarException.class)
+                    .as("and afterwards the schema is gone, so the name addresses nothing a later "
+                            + "test could see")
+                    .isThrownBy(() -> new JdbcTemplate(created).queryForObject(
+                            "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class));
+        }
+
         /** The configuration that owns every dataset name in the estate. */
         private static final String APPLICATION_YAML = "app/java/src/main/resources/application.yml";
 
@@ -2435,7 +2634,12 @@ class SecUserRepositoryTest {
                 if (isStatic && !isFinal) {
                     staticMutableFields.add(field.getName());
                 }
-                if (!isStatic && !isFinal) {
+                if (!isStatic && !isFinal
+                        // The composed statement set is per-dataset, deeply immutable and volatile - see
+                        // theRepositoryDeclaresNoMutableField, which asserts both of those properties
+                        // rather than assuming them. It carries no browse position and no held record.
+                        && !(Modifier.isVolatile(field.getModifiers())
+                                && field.getType() == SecUserRepository.Statements.class)) {
                     nonFinalInstanceFields.add(field.getName());
                 }
             }
@@ -2475,9 +2679,10 @@ class SecUserRepositoryTest {
             }
 
             assertThat(staticsOfMutableType)
-                    .as("the only static of a mutable type is the database-name counter, which isolates "
-                            + "tests rather than sharing anything between them")
-                    .containsExactly("DATABASE_SEQUENCE");
+                    .as("no static of a mutable type at all: the database-name counter that used to be "
+                            + "the sole exception is now per-test instance state, because a test suite "
+                            + "with no shared mutable state cannot have an ordering dependency")
+                    .isEmpty();
         }
 
         @Test
@@ -2599,7 +2804,7 @@ class SecUserRepositoryTest {
      *
      * @return a hold over a private relation
      */
-    private static HeldRecord forgedHold() {
+    private HeldRecord forgedHold() {
         JdbcTemplate template = seeded(seedRows());
         SecUserRepository repository = repository(template);
         HeldRecord[] captured = new HeldRecord[1];

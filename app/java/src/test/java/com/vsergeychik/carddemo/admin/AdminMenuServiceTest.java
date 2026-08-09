@@ -641,12 +641,27 @@ class AdminMenuServiceTest {
         @Test
         @DisplayName("every outcome carries the RETURN TRANSID, the mapset and the map")
         void everyOutcomeCarriesTheScreenIdentity() {
-            AdminMenuOutcome outcome = service().handle(
+            // A re-entry on option 01 transfers, and a transfer states no map: neither XCTL names one -
+            // line 143 names only CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION) - and which map the successor
+            // paints is its decision. Naming COADM01 / COADM1A here would tell the client to repaint the
+            // screen it is leaving.
+            AdminMenuOutcome transferred = service().handle(
                     new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, "01"));
 
-            assertThat(outcome.transactionId()).isEqualTo("CA00");
-            assertThat(outcome.mapsetName()).isEqualTo("COADM01");
-            assertThat(outcome.mapName()).isEqualTo("COADM1A");
+            assertThat(transferred.transactionId()).isEqualTo("CA00");
+            assertThat(transferred.hasNextProgram()).isTrue();
+            assertThat(transferred.mapsetName()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(transferred.mapName()).isBlank().hasSize(NavigationContext.LAST_MAP_LENGTH);
+
+            // A SEND is the other case, and it names this screen - lines 180 to 181.
+            AdminMenuOutcome painted = service().handle(
+                    new AdminMenuInput(NavigationContext.empty(), CicsAid.DFHENTER, "01"));
+
+            assertThat(painted.screenPainted()).isTrue();
+            assertThat(painted.transactionId()).isEqualTo("CA00");
+            assertThat(painted.mapsetName()).isEqualTo("COADM01");
+            assertThat(painted.mapName()).isEqualTo("COADM1A");
         }
 
         @Test

@@ -34,6 +34,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -925,6 +926,80 @@ class DalyRejectWriterTest {
     class JdbcSinkTests {
 
         @Test
+        @DisplayName("the open establishes the generation and empties it - one describe, one delete "
+                + "(0300-DALYREJS-OPEN, POSTTRAN.jcl:L34-L38)")
+        void theOpenEstablishesAndClearsTheGeneration() throws SQLException {
+            // DISP=(NEW,CATLG,DELETE) over DALYREJS(+1) means this run writes into an empty generation.
+            // The describe resolves the destination and transfers nothing; the delete is what NEW means.
+            // Neither is a data-definition statement (gate G44).
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            PreparedStatement insert = Mockito.mock(PreparedStatement.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(insert);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+
+            DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "F"), RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+
+            String describe = "SELECT * FROM \"" + TEST_DSNAME + "\" WHERE 1 = 0";
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+            Mockito.verify(plain).execute(describe);
+            Mockito.verify(plain).executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
+            // Nothing was rejected yet, so no reject record was bound: the open makes the generation
+            // ready, it does not write into it.
+            Mockito.verifyNoInteractions(insert);
+
+            // 9300-DALYREJS-CLOSE probes again and clears nothing - exactly one DELETE per run.
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            Mockito.verify(plain, Mockito.times(2)).execute(describe);
+            Mockito.verify(plain, Mockito.times(1))
+                    .executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
+        }
+
+        @Test
+        @DisplayName("a destination that cannot be opened is reported by the open, not by the first "
+                + "reject (CBTRN02C.cbl 0300-DALYREJS-OPEN)")
+        void aRefusedOpenIsReportedByTheOpen() throws SQLException {
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Mockito.when(dataSource.getConnection())
+                    .thenThrow(new SQLException("dataset unavailable"));
+
+            DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "F"), RecordImageForm.CHARACTER);
+
+            try (RejectsFile file = subject.openOutput()) {
+                assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OTHER);
+                // The same unreachable destination is reported by the close too. A close reporting OK
+                // over a dataset that was never there would tell the posting job the run completed.
+                assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
+            }
+        }
+
+        @Test
+        @DisplayName("a destination that goes away mid-run is reported by the close "
+                + "(9300-DALYREJS-CLOSE)")
+        void aRefusedCloseIsReported() throws SQLException {
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+            Mockito.when(plain.execute(Mockito.anyString()))
+                    .thenReturn(true)
+                    .thenThrow(new SQLException("dataset dropped"));
+
+            DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "F"), RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+
+            assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
         @DisplayName("binds the whole 430-byte image as one positional parameter")
         void bindsTheWholeImage() throws SQLException {
             DataSource dataSource = Mockito.mock(DataSource.class);
@@ -932,6 +1007,7 @@ class DalyRejectWriterTest {
             PreparedStatement statement = Mockito.mock(PreparedStatement.class);
             Mockito.when(dataSource.getConnection()).thenReturn(connection);
             Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(Mockito.mock(Statement.class));
             Mockito.when(statement.executeUpdate()).thenReturn(1);
 
             DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
@@ -940,10 +1016,64 @@ class DalyRejectWriterTest {
                 assertThat(file.writeRejectRec(image('T'), 102)).isEqualTo(FileStatus.Outcome.OK);
             }
 
-            Mockito.verify(connection).prepareStatement(subject.insertStatement());
+            // Once, and it is the write's own: the open resolves the destination with a describe and
+            // clears the generation, neither of which prepares an insert. The statement TEXT is what this
+            // test is asserting - the whole 430-byte image is bound to it as one value.
+            Mockito.verify(connection, Mockito.times(1)).prepareStatement(subject.insertStatement());
             Mockito.verify(statement).setString(Mockito.eq(1), Mockito.argThat(
                     value -> value != null && value.length() == LRECL
                             && value.startsWith("T") && value.substring(350, 354).equals("0102")));
+        }
+
+        @Test
+        @DisplayName("the open probes the destination, and a refusal is reported there, not by a write")
+        void theOpenProbesTheDestination() throws SQLException {
+            // OPEN OUTPUT DALYREJS-FILE is status-checked at app/cbl/CBTRN02C.cbl:293-302. Leaving the
+            // open unable to fail mattered more here than anywhere else in the module: a posting run whose
+            // input is entirely clean writes no reject at all, so an unaddressable destination would have
+            // gone unnoticed for the whole run.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.createStatement())
+                    .thenThrow(new SQLException("no such table", "42S02", 42102));
+
+            DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "F"), RecordImageForm.CHARACTER);
+
+            try (RejectsFile file = subject.openOutput()) {
+                assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OTHER);
+            }
+
+            // Nothing was prepared for insert: an open that could not resolve its destination writes
+            // no row, exactly as the COBOL's abend arm leaves the generation untouched.
+            Mockito.verify(connection, Mockito.never()).prepareStatement(Mockito.anyString());
+        }
+
+        @Test
+        @DisplayName("a reachable destination reports OK at open, with no row written")
+        void aReachableDestinationReportsOkAtOpen() throws SQLException {
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            PreparedStatement statement = Mockito.mock(PreparedStatement.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+
+            DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "F"), RecordImageForm.CHARACTER);
+
+            try (RejectsFile file = subject.openOutput()) {
+                assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OK);
+            }
+
+            // Resolved and emptied, never written to: the open issues its describe and its clear over a
+            // plain statement and prepares no insert, so a rejects generation whose open the caller
+            // abends on is left exactly as empty as the COBOL leaves it.
+            Mockito.verify(plain, Mockito.atLeastOnce()).close();
+            Mockito.verify(connection, Mockito.never()).prepareStatement(Mockito.anyString());
+            Mockito.verify(statement, Mockito.never()).executeUpdate();
         }
 
         @Test
@@ -954,6 +1084,7 @@ class DalyRejectWriterTest {
             PreparedStatement statement = Mockito.mock(PreparedStatement.class);
             Mockito.when(dataSource.getConnection()).thenReturn(connection);
             Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(Mockito.mock(Statement.class));
             Mockito.when(statement.executeUpdate())
                     .thenThrow(new SQLException("refused", "23000", 1));
 
@@ -973,6 +1104,7 @@ class DalyRejectWriterTest {
             PreparedStatement statement = Mockito.mock(PreparedStatement.class);
             Mockito.when(dataSource.getConnection()).thenReturn(connection);
             Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(Mockito.mock(Statement.class));
             Mockito.when(statement.executeUpdate()).thenReturn(1);
 
             DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,

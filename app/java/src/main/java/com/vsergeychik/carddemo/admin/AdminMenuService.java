@@ -1609,6 +1609,15 @@ public class AdminMenuService {
      * <p>No screen is painted and no menu line is composed, because neither {@code XCTL} is preceded by
      * a {@code SEND} - so the twelve lines stay as the spaces they were.
      *
+     * <h4>The mapset and map are blank here, and that is deliberate</h4>
+     * An {@code XCTL} hands control to another program, and which map that program will paint is its
+     * decision, made after this one has ended. Neither statement names a map: line 143 names only
+     * {@code CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION)} and line 166 only {@code CDEMO-TO-PROGRAM}. Naming
+     * {@value #MAPSET_NAME} and {@value #MAP_NAME} on a transfer would tell the client to paint the
+     * screen it is leaving, which is the one answer that is certainly wrong. Blank means "not stated
+     * here": the client follows the successor named in {@code nextProgram}, and the target's own reply
+     * names its map. The {@code SEND} path is the other case, and it still names this screen.
+     *
      * @param targetProgram   the transfer target, exactly
      *                        {@value NavigationContext#TO_PROGRAM_LENGTH} characters
      * @param context         {@code CARDDEMO-COMMAREA} as it stands at the transfer
@@ -1638,8 +1647,8 @@ public class AdminMenuService {
                 false,
                 context,
                 TRANSACTION_ID,
-                MAPSET_NAME,
-                MAP_NAME,
+                spaces(NavigationContext.LAST_MAPSET_LENGTH),
+                spaces(NavigationContext.LAST_MAP_LENGTH),
                 receive);
     }
 

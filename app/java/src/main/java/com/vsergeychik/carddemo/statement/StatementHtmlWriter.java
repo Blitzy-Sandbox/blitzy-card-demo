@@ -234,6 +234,22 @@ public final class StatementHtmlWriter {
     public static final int RECORD_LENGTH = 100;
 
     /**
+     * The record format the creating JCL step declares: {@code FB}, fixed blocked, from
+     * {@code DCB=(LRECL=100,BLKSIZE=800,RECFM=FB)} at {@code app/jcl/CREASTMT.JCL:L94}.
+     *
+     * <p><strong>Validated, unlike {@value #BLOCK_SIZE}.</strong> {@code FB} is the attribute that
+     * makes "every record is exactly {@value #RECORD_LENGTH} bytes" true: it is what the
+     * right-space padding of every emitted line rests on, and a variable format would make that
+     * padding meaningless while leaving every other number in this class unchanged - a divergence the
+     * width check alone would never catch. Checked at construction for the same reason
+     * {@value #RECORD_LENGTH} is. Gate <strong>G20</strong>.
+     *
+     * <p>The pre-delete step at {@code L69} declares {@code RECFM=FB} too, so unlike the record
+     * length there is no conflict between the two declarations to resolve here.
+     */
+    public static final String RECORD_FORMAT = "FB";
+
+    /**
      * The block size the creating JCL step declares: {@code BLKSIZE=800}
      * ({@code app/jcl/CREASTMT.JCL:L94}).
      *
@@ -1448,6 +1464,18 @@ public final class StatementHtmlWriter {
          * @param recordImageForm how a record image crosses JDBC in this deployment
          * @param charset      the dataset code page
          */
+        /**
+         * A read-only statement that resolves and describes the destination without transferring any of
+         * it - the probe both {@link #open()} and {@link #close()} issue.
+         */
+        private final String describeStatement;
+
+        /**
+         * Empties the destination, which is what {@code DISP=(NEW,CATLG,DELETE)} means for a relation
+         * that already exists. Issued by {@link #open()} and nowhere else.
+         */
+        private final String clearStatement;
+
         private JdbcHtmlRecordSink(final JdbcTemplate jdbcTemplate, final DatasetRelation relation,
                                    final RecordImageForm recordImageForm, final Charset charset) {
             this.jdbcTemplate = jdbcTemplate;
@@ -1458,6 +1486,67 @@ public final class StatementHtmlWriter {
             this.insertStatement = ANSI_IDENTIFIER_QUOTE.equals(this.identifierQuote)
                     ? relation.insertRecordImage()
                     : StatementHtmlWriter.insertStatement(this.dsname, this.identifierQuote);
+            this.describeStatement = relation.describeStatement();
+            this.clearStatement = relation.deleteAll();
+        }
+
+        /**
+         * Establishes the generation this run writes into: {@code OPEN OUTPUT HTML-FILE} at
+         * {@code app/cbl/CBSTM03A.CBL:L293}, over a dataset {@code app/jcl/CREASTMT.JCL:L92-L96}
+         * declares {@code DISP=(NEW,CATLG,DELETE)} with {@code LRECL=100 BLKSIZE=800}.
+         *
+         * <p>The <strong>describe</strong> resolves the DD name to a real destination and fails if it
+         * cannot - read-only, its predicate false on every row, so nothing is transferred - which is how
+         * an absent, unreachable or refused destination is reported once rather than record by record.
+         * The <strong>clear</strong> is what {@code NEW} means: the run writes into an empty generation,
+         * so the previous run's HTML is not part of this one, and a run that produces no statement still
+         * leaves the empty dataset the JCL created rather than nothing at all. Nothing touches the
+         * relation's definition - no data-definition statement is issued anywhere in this module
+         * (gate G44).
+         *
+         * <p>The failure is remembered in {@link #lastFailure} exactly as a rejected write is, so an
+         * operator sees the backend's own SQLSTATE and vendor code, and reported as
+         * {@value #PERMANENT_ERROR_STATUS} - the status a destination that cannot be opened has.
+         *
+         * @return {@link FileStatus#OK} when the destination is established, or
+         *         {@value #PERMANENT_ERROR_STATUS} when it could not be
+         */
+        @Override
+        public String open() {
+            try {
+                this.jdbcTemplate.execute(this.describeStatement);
+                this.jdbcTemplate.update(this.clearStatement);
+                this.lastFailure = null;
+                return FileStatus.OK;
+            } catch (DataAccessException failure) {
+                this.lastFailure = BackendDiagnostic.of(failure);
+                return PERMANENT_ERROR_STATUS;
+            }
+        }
+
+        /**
+         * Confirms the destination survived the run: {@code CLOSE HTML-FILE} at
+         * {@code app/cbl/CBSTM03A.CBL:L339}.
+         *
+         * <p>Nothing is buffered - each record was inserted as it was written, through a connection
+         * borrowed and returned per record - so what a close can still discover is that the destination
+         * is no longer there: a relation dropped, revoked or unreachable part-way through the run. The
+         * same read-only describe {@link #open()} used answers that, and a close that could not fail
+         * would make {@link StatementHtmlWriter#close(HtmlStatementFile)}'s failure outcome unreachable.
+         *
+         * @return {@link FileStatus#OK} when the destination is still addressable, or
+         *         {@value #PERMANENT_ERROR_STATUS} when it is not
+         */
+        @Override
+        public String close() {
+            try {
+                this.jdbcTemplate.execute(this.describeStatement);
+                this.lastFailure = null;
+                return FileStatus.OK;
+            } catch (DataAccessException failure) {
+                this.lastFailure = BackendDiagnostic.of(failure);
+                return PERMANENT_ERROR_STATUS;
+            }
         }
 
         /**
@@ -1592,7 +1681,8 @@ public final class StatementHtmlWriter {
      *                        {@value RecordImageForm#FORM_PROPERTY}
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if no {@code HTMLFILE} binding is configured, or if it declares
-     *                               a record length other than {@link #RECORD_LENGTH}
+     *                               a record length other than {@link #RECORD_LENGTH}, or a record
+     *                               format other than {@value #RECORD_FORMAT}
      */
     public StatementHtmlWriter(
             final JdbcTemplate jdbcTemplate,
@@ -1626,6 +1716,30 @@ public final class StatementHtmlWriter {
                     + "Restore record-length: " + RECORD_LENGTH + "; do not use 80 and do not "
                     + "average the two (gate G20, risk R-G).");
         }
+        if (!RECORD_FORMAT.equalsIgnoreCase(this.binding.recordFormat())) {
+            throw new IllegalStateException("carddemo.datasets." + HTMLFILE_DD_NAME
+                    + ".record-format is " + describeConfiguredRecordFormat() + " but "
+                    + "app/jcl/CREASTMT.JCL declares RECFM=" + RECORD_FORMAT + " at L94, the STEP040 "
+                    + "step that creates the dataset - and at L69, its pre-delete, so the two "
+                    + "declarations agree on the format even though they disagree on the width. Fixed "
+                    + "blocked is what makes every HTML record exactly " + RECORD_LENGTH + " bytes, so "
+                    + "it is required rather than assumed. Set record-format: " + RECORD_FORMAT
+                    + " in application.yml (gate G20).");
+        }
+    }
+
+    /**
+     * Renders the configured record format for the constructor's diagnostic, distinguishing an
+     * omitted key from a wrong value.
+     *
+     * <p>They are different mistakes with different fixes - one is "the key is missing", the other is
+     * "the key says {@code F}" - and a message that rendered {@code null} as the text {@code "null"}
+     * would read as though the value were the four-letter word.
+     *
+     * @return {@code "absent"} when no record format is configured, or the configured value in quotes
+     */
+    private String describeConfiguredRecordFormat() {
+        return this.binding.recordFormat() == null ? "absent" : "'" + this.binding.recordFormat() + "'";
     }
 
     // =============================================================================================

@@ -254,6 +254,14 @@ class TranCategoryRepositoryTest {
      * @param jdbcTemplate the mocked template
      * @return its backend
      */
+    /** Four TRANCATG rows spanning two type codes, enough to stand in for four report detail lines. */
+    private static List<String> seedRows() {
+        return List.of(image("01", 1, "Regular Sales Draft"),
+                image("01", 2, "Cash Advance"),
+                image("02", 1, "Refund"),
+                image("05", 1, "Payment"));
+    }
+
     private Backend backend(JdbcTemplate jdbcTemplate) {
         return backends.computeIfAbsent(jdbcTemplate, Backend::new);
     }
@@ -1181,6 +1189,68 @@ class TranCategoryRepositoryTest {
         }
 
         @Test
+        @DisplayName("the open's describe is the only one: four reads after it add no metadata query")
+        void theDescribeHappensOnceAtOpenAndIsReusedByEveryRead() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            Backend stub = backend(template).storing(seedRows());
+            TranCategoryRepository repository = repository(template);
+
+            assertThat(repository.open()).isEqualTo(FileStatus.OK);
+            String probe = repository.columnProbeSql();
+            assertThat(stub.statementsSent()).containsExactly(probe);
+
+            // CBTRN03C performs 1500-C-LOOKUP-TRANCATG once per report line (:195). Four lines here.
+            repository.readByKey("01", 1);
+            repository.readByKey("01", 2);
+            repository.readByKey("02", 1);
+            repository.readByKey("05", 1);
+
+            assertThat(stub.statementsSent())
+                    .as("one describe at OPEN INPUT and one keyed read per report line - describing "
+                            + "before each lookup would double the detail loop's query count and would "
+                            + "answer a question that cannot have changed while the dataset is open")
+                    .filteredOn(probe::equals)
+                    .hasSize(1);
+            assertThat(stub.statementsSent()).hasSize(5);
+        }
+
+        @Test
+        @DisplayName("a CLOSE forgets the statement, so the next read describes the dataset again")
+        void aCloseForgetsWhatTheOpenLearned() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            Backend stub = backend(template).storing(seedRows());
+            TranCategoryRepository repository = repository(template);
+            String probe = repository.columnProbeSql();
+
+            assertThat(repository.open()).isEqualTo(FileStatus.OK);
+            repository.readByKey("01", 1);
+            assertThat(repository.close()).isEqualTo(FileStatus.OK);
+            // A read after a CLOSE must not reuse a statement over a relation that may since have been
+            // de-allocated, so it describes the dataset afresh.
+            repository.readByKey("01", 1);
+
+            assertThat(stub.statementsSent())
+                    .filteredOn(probe::equals)
+                    .as("one describe for the open, one for the close, and one for the read that "
+                            + "followed the close")
+                    .hasSize(3);
+        }
+
+        @Test
+        @DisplayName("a read on an unopened dataset still works, describing it once and then reusing it")
+        void aReadWithoutAnOpenResolvesOnceAndCaches() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            Backend stub = backend(template).storing(seedRows());
+            TranCategoryRepository repository = repository(template);
+            String probe = repository.columnProbeSql();
+
+            assertThat(repository.readByKey("01", 1).isFound()).isTrue();
+            assertThat(repository.readByKey("01", 2).isFound()).isTrue();
+
+            assertThat(stub.statementsSent()).filteredOn(probe::equals).hasSize(1);
+        }
+
+        @Test
         @DisplayName("an unreachable dataset reports the permanent-error status, and does not throw")
         void anUnreachableDatasetIsReported() {
             JdbcTemplate template = mock(JdbcTemplate.class);
@@ -1957,15 +2027,32 @@ class TranCategoryRepositoryTest {
         @Test
         @DisplayName("every instance field is final, so an instance is immutable and shareable")
         void everyInstanceFieldIsFinal() {
+            List<String> unsafe = new ArrayList<>();
             for (Field field : TranCategoryRepository.class.getDeclaredFields()) {
-                if (!Modifier.isStatic(field.getModifiers()) && !field.isSynthetic()) {
-                    assertThat(Modifier.isFinal(field.getModifiers()))
-                            .as("%s must be final: a @Repository is a singleton and this dataset is "
-                                    + "never browsed, so no per-call state belongs on the bean",
-                                    field.getName())
-                            .isTrue();
+                if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) {
+                    continue;
+                }
+                if (Modifier.isFinal(field.getModifiers())) {
+                    continue;
+                }
+                // The one exception, and it is the same one TranTypeRepository makes for the same
+                // reason: the keyed-read statement cannot be final because composing it needs the
+                // record-image column's name, which is discovered by describing the backend and so is
+                // not available at construction. It holds an immutable String published through a
+                // volatile write, recomposing it yields the same text, and it is per-dataset rather
+                // than per-call - so no request state and no lock.
+                boolean safelyPublished = Modifier.isVolatile(field.getModifiers())
+                        && field.getType() == String.class;
+                if (!safelyPublished) {
+                    unsafe.add(field.getName() + " (" + field.getType().getSimpleName() + ")");
                 }
             }
+
+            assertThat(unsafe)
+                    .as("a @Repository is a singleton shared across threads, so a non-final instance "
+                            + "field must be a volatile reference to an immutable type and must hold "
+                            + "nothing per-call")
+                    .isEmpty();
         }
 
         @Test

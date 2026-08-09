@@ -25,9 +25,11 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.stereotype.Repository;
 
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -221,6 +223,35 @@ public class SecUserRepository {
     public static final int RECORD_IMAGE_COLUMN_INDEX = DatasetRelation.RECORD_IMAGE_COLUMN_INDEX;
 
     /**
+     * The raw byte COBOL {@code LOW-VALUES} is: {@code x'00'}, the lowest value a byte can hold.
+     *
+     * <p>Named as a byte rather than as a character because that is what it is. A figurative constant is
+     * a value in the record's code page, not a character in the JVM's, and the two only coincide by
+     * accident.
+     */
+    private static final byte LOW_VALUES_BYTE = (byte) 0x00;
+
+    /**
+     * The raw byte COBOL {@code HIGH-VALUES} is: {@code x'FF'}, the highest value a byte can hold.
+     *
+     * <p>See {@link #HIGH_VALUES_KEY} for why naming the byte - rather than a character that happens to
+     * render as one - is what makes the sentinel genuinely maximal.
+     */
+    private static final byte HIGH_VALUES_BYTE = (byte) 0xFF;
+
+    /**
+     * A key-width run of one raw byte: the byte image of a figurative constant.
+     *
+     * @param value the byte to repeat
+     * @return a fresh {@value #KEY_LENGTH}-byte array, so no caller can mutate a shared one
+     */
+    private static byte[] figurativeKeyBytes(byte value) {
+        byte[] image = new byte[KEY_LENGTH];
+        Arrays.fill(image, value);
+        return image;
+    }
+
+    /**
      * The key image meaning "before every possible key": COBOL {@code LOW-VALUES} at
      * {@value #KEY_LENGTH} characters.
      *
@@ -230,7 +261,8 @@ public class SecUserRepository {
      * {@value #KEY_LENGTH} NUL characters rather than spaces - spaces are an ordinary printable value
      * that a real key could equal or fall below.
      */
-    public static final String LOW_VALUES_KEY = "\u0000".repeat(KEY_LENGTH);
+    public static final String LOW_VALUES_KEY =
+            new String(figurativeKeyBytes(LOW_VALUES_BYTE), StandardCharsets.ISO_8859_1);
 
     /**
      * The key image meaning "after every possible key": COBOL {@code HIGH-VALUES} at
@@ -241,10 +273,22 @@ public class SecUserRepository {
      * browse opens {@link Outcome#NOT_FOUND} and {@code L600-L606} reports "You are at the top of the
      * page...". <strong>That outcome is reproduced, not corrected.</strong> It is what the program does.
      *
-     * <p>{@code \u00ff} and not {@code \uffff}: the dataset code page is single-byte - the record-image
+     * <p>{@code x'FF'} and not {@code \uffff}: the dataset code page is single-byte - the record-image
      * form requires that - so the highest representable value is one byte of {@code x'FF'}.
+     *
+     * <p><strong>The value is derived from the raw byte, and the browse compares raw bytes.</strong> That
+     * distinction is the whole of it. Encoding this string <em>through the dataset code page</em> would
+     * not produce {@code x'FF'}: under {@code IBM037} the character {@code U+00FF} encodes to
+     * {@code x'DF'}, which sits below every upper-case letter, so the sentinel would stop being maximal
+     * and PF8's "no key is at or after high values" would find records; under {@code US-ASCII} the
+     * character is not representable at all. So this constant is the {@code ISO-8859-1} rendering of the
+     * raw sentinel byte - that code page maps byte to code point one for one, which is what makes it the
+     * right choice for naming a byte rather than a character - and
+     * {@link #keyImageBytes(String)} maps it back to the raw byte instead of encoding it. The comparison
+     * that then uses it is unsigned-byte, so {@code x'FF'} really is greater than every other byte.
      */
-    public static final String HIGH_VALUES_KEY = "\u00ff".repeat(KEY_LENGTH);
+    public static final String HIGH_VALUES_KEY =
+            new String(figurativeKeyBytes(HIGH_VALUES_BYTE), StandardCharsets.ISO_8859_1);
 
     /**
      * The {@code RESP2} value reported when the condition has no reason code, which is every condition
@@ -288,6 +332,17 @@ public class SecUserRepository {
     private static final int SINGLE_ROW = 1;
 
     /**
+     * The driver fetch size the browse scan asks for: {@value}.
+     *
+     * <p>The scan reads the relation once and hands back at most one record, so nothing needs to be
+     * buffered beyond a page. A positive value stated here is what stops a driver from choosing to
+     * materialise the whole result set on the client, which is the bound a source-faithful sequential
+     * read is entitled to; the JDBC contract makes the value a hint, so it can only reduce buffering and
+     * never change which record is returned.
+     */
+    private static final int BROWSE_SCAN_FETCH_SIZE = 32;
+
+    /**
      * The cap on the probe that establishes how many rows a key selects.
      *
      * <p>Two, because "none, one, or more than one" is the whole question a unique KSDS key can raise.
@@ -309,6 +364,17 @@ public class SecUserRepository {
 
     /** The resolved dataset name, from configuration. Surfaced for diagnostics only. */
     private final String datasetName;
+
+    /**
+     * This dataset's composed statements, resolved on first use and reused thereafter.
+     *
+     * <p>See {@link #resolveStatements()} for why they are cached rather than recomposed per operation.
+     * {@code volatile} so the deeply immutable {@link Statements} record is published safely to every
+     * thread that may enter this singleton; recomposing it yields an equal value, so no lock is needed
+     * and none is taken. Never {@code static} - that would be shared mutable state across datasets, which
+     * practice B9 and gate G53 forbid.
+     */
+    private volatile Statements statements;
 
     /** How this deployment's driver presents a record image over JDBC. Configured, never chosen here. */
     private final RecordImageForm recordImageForm;
@@ -1092,22 +1158,97 @@ public class SecUserRepository {
      * @return whether a row arrived and, if it did, the image it carried; never {@code null}
      * @throws DataAccessException if the backend refused the read
      */
-    private Row browseStep(String statement, String keyOperand, byte[] positionImage) {
+    private Row browseByKeyOrder(String scanStatement, byte[] boundKey, boolean forward,
+            boolean inclusive) {
         PreparedStatementCreator creator = connection -> {
-            PreparedStatement prepared = limited(connection.prepareStatement(statement));
-            if (keyOperand != null) {
-                // The anchor compares against the key: "at or after this key" is exactly what an
-                // eight-byte key expresses, and it is bound as a comparison operand.
-                recordImageForm.bindOperand(prepared, 1, keyOperand, codec.charset());
-            } else {
-                // Every step after the anchor compares against the whole image. The whole image and not
-                // the key alone, because a bare key sorts BELOW the record that carries it, so a browse
-                // positioned by key would return the same record for ever.
-                recordImageForm.bindImage(prepared, 1, positionImage, codec.charset());
-            }
+            // The single-argument overload, which JDBC defines as TYPE_FORWARD_ONLY and
+            // CONCUR_READ_ONLY - exactly what this scan wants, and stated here rather than restated as
+            // arguments so the statement is prepared the same way every other read in this class
+            // prepares one. A small fetch size is asked for because the scan hands back at most one
+            // record: the driver is to buffer a page, not the relation.
+            PreparedStatement prepared = connection.prepareStatement(scanStatement);
+            prepared.setFetchSize(BROWSE_SCAN_FETCH_SIZE);
             return prepared;
         };
-        return firstRow(creator);
+        ResultSetExtractor<Row> extractor = resultSet -> {
+            byte[] best = null;
+            while (resultSet.next()) {
+                byte[] candidate = recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX,
+                        codec.charset());
+                if (candidate == null || candidate.length < KEY_OFFSET + KEY_LENGTH) {
+                    // A row with no image, or one too short to carry a key, cannot be placed in the key
+                    // order at all - so it is REPORTED rather than skipped, and reported at once. Handing
+                    // it straight back is what routes the caller to the same arm the previous
+                    // collation-ordered read reached when such a row was the next one: a null image
+                    // becomes the invalid-request response and a short one the length error, each naming
+                    // what was observed. Skipping it instead would let a browse walk past a row the
+                    // dataset genuinely holds and report a clean end of file over a damaged relation.
+                    return new Row(true, candidate);
+                }
+                int against = compareKeys(candidate, boundKey);
+                boolean admissible = forward
+                        ? (inclusive ? against >= 0 : against > 0)
+                        : against < 0;
+                if (!admissible) {
+                    continue;
+                }
+                // Forward wants the smallest admissible key, backward the largest: that is READNEXT and
+                // READPREV, and it is decided here rather than by an ORDER BY so the ordering is the code
+                // page's and not the backend collation's.
+                if (best == null || (forward ? compareKeys(candidate, best) < 0
+                        : compareKeys(candidate, best) > 0)) {
+                    best = candidate;
+                }
+            }
+            return best == null ? Row.none() : new Row(true, best);
+        };
+        Row row = jdbcTemplate.query(creator, extractor);
+        return row == null ? Row.none() : row;
+    }
+
+    /**
+     * Compares two key spans as unsigned bytes: the VSAM collating sequence, in the dataset's own code
+     * page.
+     *
+     * <p>The first argument is a whole record image and the key is read out of it at
+     * {@value #KEY_OFFSET}; the second is a bare {@value #KEY_LENGTH}-byte key. Comparing the key span
+     * rather than the whole image is what lets a position be a key - which is what {@code RIDFLD} is -
+     * instead of needing the trailing bytes to break a tie.
+     *
+     * <p>{@link Arrays#compareUnsigned(byte[], int, int, byte[], int, int)} and not signed comparison:
+     * a signed {@code byte} makes {@code x'FF'} negative, which would place {@code HIGH-VALUES} below
+     * every printable character and invert the sentinel this browse depends on.
+     *
+     * @param recordImage a whole record image, at least {@value #KEY_OFFSET} + {@value #KEY_LENGTH} bytes
+     * @param key         a bare key image of exactly {@value #KEY_LENGTH} bytes
+     * @return negative, zero or positive as the record's key sorts before, with or after {@code key}
+     */
+    private static int compareKeys(byte[] recordImage, byte[] key) {
+        return Arrays.compareUnsigned(recordImage, KEY_OFFSET, KEY_OFFSET + KEY_LENGTH,
+                key, 0, key.length);
+    }
+
+    /**
+     * The raw bytes of a key image, honouring the two figurative constants.
+     *
+     * <p>An ordinary key is encoded through the dataset's code page, because that is what it is: eight
+     * characters a program moved into {@code SEC-USR-ID}, stored as eight bytes in the dataset's
+     * encoding. The two figurative constants are <strong>not</strong> encoded, and that is the whole
+     * point of {@link #HIGH_VALUES_KEY}'s note: {@code HIGH-VALUES} is the byte {@code x'FF'} and
+     * {@code LOW-VALUES} the byte {@code x'00'} regardless of code page, and encoding them as characters
+     * would produce {@code x'DF'} under {@code IBM037} or fail outright under {@code US-ASCII}.
+     *
+     * @param keyImage exactly {@value #KEY_LENGTH} characters, possibly one of the two sentinels
+     * @return the {@value #KEY_LENGTH} bytes to compare against; a fresh array in every case
+     */
+    private byte[] keyImageBytes(String keyImage) {
+        if (LOW_VALUES_KEY.equals(keyImage)) {
+            return figurativeKeyBytes(LOW_VALUES_BYTE);
+        }
+        if (HIGH_VALUES_KEY.equals(keyImage)) {
+            return figurativeKeyBytes(HIGH_VALUES_BYTE);
+        }
+        return codec.encodeImage(keyImage, SecUserRecord.FIELD_SEC_USR_ID);
     }
 
     // =================================================================================================
@@ -1159,7 +1300,7 @@ public class SecUserRepository {
      * @throws DataAccessException if the backend refused the read
      */
     private boolean anyRowFromKey(Statements sql, String anchorKey) {
-        return browseStep(sql.browseAnchor(), anchorKey, null).present();
+        return browseByKeyOrder(sql.browseScan(), keyImageBytes(anchorKey), true, true).present();
     }
 
     /**
@@ -1235,17 +1376,34 @@ public class SecUserRepository {
      * configuration key, because a name this file made up would be exactly the kind of unverifiable
      * literal the migration forbids.
      *
-     * <p>Nothing is cached, so this repository holds no mutable field and two callers cannot pull a
-     * resolved shape out from under each other.
+     * <p><strong>Resolved once and reused.</strong> Five logical CICS operations reach this method - the
+     * keyed read, the locking keyed read, {@code STARTBR}, {@code WRITE}, {@code REWRITE} and
+     * {@code DELETE} - and each one used to describe the relation again first. That is a metadata round
+     * trip per operation for a name that cannot change while the dataset exists, and the cost lands
+     * exactly where it hurts most: {@code COUSR02C} and {@code COUSR03C} describe the dataset a second
+     * time <em>after</em> a read has already taken a lock, so the extra query sits inside the window the
+     * lock is held. The composed shape is cached instead.
+     *
+     * <p>{@link Statements} is a {@code record} of nine {@link String}s, so what is cached is deeply
+     * immutable and two callers cannot pull a resolved shape out from under each other - they either see
+     * the same one or each composes an identical one. The field is {@code volatile} for safe publication
+     * and is never {@code static}: it is per-dataset instance state on a singleton, which is what practice
+     * B9 and gate G53 permit, and what {@link DatasetRelation}'s own discovered column name already is.
      *
      * @return the composed statements; never {@code null}
      * @throws DataAccessException   if the dataset cannot be described
      * @throws IllegalStateException if the dataset presents no usable record-image column
      */
     private Statements resolveStatements() {
+        Statements resolved = this.statements;
+        if (resolved != null) {
+            return resolved;
+        }
         ResultSetExtractor<String> columnNameExtractor = SecUserRepository::extractRecordImageColumnName;
         String columnName = jdbcTemplate.query(relation.describeStatement(), columnNameExtractor);
-        return Statements.over(relation, requireUsableColumnName(columnName));
+        Statements composed = Statements.over(relation, requireUsableColumnName(columnName));
+        this.statements = composed;
+        return composed;
     }
 
     /**
@@ -1602,9 +1760,12 @@ public class SecUserRepository {
      *
      * @param selectByKey            the keyed read, taking the keyed pattern
      * @param selectByKeyForUpdate   the locking keyed read, taking the keyed pattern
-     * @param browseAnchor           the {@code STARTBR} with {@code GTEQ}, taking the key image
-     * @param browseForward          the {@code READNEXT} advance, taking the previous whole image
-     * @param browseBackward         the {@code READPREV} advance, taking the previous whole image
+     * @param browseScan             the browse read: the whole relation, with <strong>no</strong>
+     *                               predicate and <strong>no</strong> {@code ORDER BY}, because
+     *                               positioning and ordering are decided by unsigned-byte comparison of
+     *                               the encoded key and not by the backend's character collation. See
+     *                               {@link SecUserRepository#browseByKeyOrder(String, byte[], boolean,
+     *                               boolean)}
      * @param insert                 the {@code WRITE}, taking the record image
      * @param rewrite                the {@code REWRITE}, taking the new image then the keyed pattern
      * @param selectByImageForUpdate the locking whole-image probe, taking the held image
@@ -1612,9 +1773,7 @@ public class SecUserRepository {
      */
     record Statements(String selectByKey,
                       String selectByKeyForUpdate,
-                      String browseAnchor,
-                      String browseForward,
-                      String browseBackward,
+                      String browseScan,
                       String insert,
                       String rewrite,
                       String selectByImageForUpdate,
@@ -1626,7 +1785,7 @@ public class SecUserRepository {
         /**
          * Composes every statement over one relation and one discovered column name.
          *
-         * <p>Seven of the nine come straight from {@link DatasetRelation}. The remaining two - the
+         * <p>Five of the seven come straight from {@link DatasetRelation}. The remaining two - the
          * whole-image probe and the held-record delete - are composed here because
          * {@link DatasetRelation} offers no delete builder, and it offers none because
          * {@value SecUserRepository#CICS_FILE_NAME} is the only dataset any program in this codebase deletes from. They are
@@ -1634,6 +1793,13 @@ public class SecUserRepository {
          * {@link DatasetRelation#delimit(String)} - the same identifier and the same quoting every other
          * statement uses - rather than by hand, so the delete cannot quote a name differently from the
          * read that found it.
+         *
+         * <p>The browse statement is deliberately {@link DatasetRelation#selectAll()} - no predicate and
+         * no {@code ORDER BY}. {@link DatasetRelation}'s ordered builders exist and are correct for every
+         * other dataset in the estate, whose keys are digits and spaces; they are not used here because
+         * {@code SEC-USR-ID} is the estate's only <strong>alphanumeric</strong> key, and letters and
+         * digits are the one domain where the code page's byte order and a SQL character collation
+         * genuinely disagree.
          *
          * @param relation the relation to address
          * @param column   the record-image column's name, as discovered from the backend
@@ -1644,9 +1810,7 @@ public class SecUserRepository {
             return new Statements(
                     relation.selectByKey(column),
                     relation.selectByKeyForUpdate(column),
-                    relation.selectFromKeyAscending(column),
-                    relation.selectAfterAscending(column),
-                    relation.selectBeforeDescending(column),
+                    relation.selectAll(),
                     relation.insertRecordImage(column),
                     relation.rewriteByKey(column),
                     "SELECT * FROM " + relation.identifier() + wholeImagePredicate + FOR_UPDATE,
@@ -2279,12 +2443,18 @@ public class SecUserRepository {
         private final Optional<BackendDiagnostic> openDiagnostic;
 
         /**
-         * The exact bytes of the record last returned, or {@code null} before the first read.
+         * The key bytes of the record last returned, or {@code null} before the first read.
          *
-         * <p>The whole image and not the key alone: a bare key sorts <em>below</em> the record that carries
-         * it, so a browse positioned by key would return the same record for ever. And the bytes the
-         * backend gave rather than a re-encoding of the record decoded from them, because those two differ
-         * for any stored row that does not already hold exactly what the model would write.
+         * <p><strong>The key, and the exact bytes the backend presented for it.</strong> A key is what
+         * {@code RIDFLD} holds and what VSAM sequences on, so the key alone is a complete position: the
+         * next record is the one whose key is the smallest strictly greater than this, which is precisely
+         * {@code READNEXT}. That is only expressible because the comparison is this class's own -
+         * unsigned-byte over the encoded key - rather than the backend's, where a bare key would sort
+         * below the record carrying it and the browse would return the same record for ever.
+         *
+         * <p>The bytes are taken from the stored image rather than re-encoded from the decoded record,
+         * because those two differ for any stored row that does not already hold exactly what the model
+         * would write, and a position must be what the dataset actually contains.
          */
         private byte[] position;
 
@@ -2401,7 +2571,7 @@ public class SecUserRepository {
          */
         public Optional<String> positionKey() {
             return positioned
-                    ? Optional.of(SecUserRecord.decode(position, repository.codec).key())
+                    ? Optional.of(repository.codec.decodeImage(position, SecUserRecord.FIELD_SEC_USR_ID))
                     : Optional.empty();
         }
 
@@ -2479,12 +2649,17 @@ public class SecUserRepository {
                         .orElseGet(() -> ReadResult.of(openStatus, openResponse));
             }
 
-            String advancing = forward ? statements.browseForward() : statements.browseBackward();
             Row row;
             try {
+                // The anchor step is inclusive - STARTBR's GTEQ default positions AT or after the RIDFLD
+                // and the first read returns that record - and every step after it is exclusive, which is
+                // READNEXT and READPREV. The bound is a KEY in both cases, so no trailing byte of the
+                // previous record is needed to break a tie, and the comparison is unsigned-byte in the
+                // dataset's own code page rather than the backend's character collation.
                 row = positioned
-                        ? repository.browseStep(advancing, null, position)
-                        : repository.browseStep(statements.browseAnchor(), anchorKey, null);
+                        ? repository.browseByKeyOrder(statements.browseScan(), position, forward, false)
+                        : repository.browseByKeyOrder(statements.browseScan(),
+                                repository.keyImageBytes(anchorKey), true, true);
             } catch (DataAccessException refused) {
                 return repository.reportRead(refused, "read " + (forward ? "the next" : "the previous")
                         + " record of a browse of the security-user dataset '" + datasetName() + "'");
@@ -2503,7 +2678,9 @@ public class SecUserRepository {
                 // Advance only on a record, and advance to the bytes the backend actually presented. A
                 // failure likewise leaves the position alone, so a caller that retries retries the same
                 // step rather than skipping one.
-                position = row.image().clone();
+                // The key span of the record just returned. Copied out rather than aliased, so a later
+                // read cannot be steered by a caller that kept a reference to the image.
+                position = Arrays.copyOfRange(row.image(), KEY_OFFSET, KEY_OFFSET + KEY_LENGTH);
                 positioned = true;
                 returned++;
             }

@@ -7,16 +7,20 @@ import com.fasterxml.jackson.databind.JsonMappingException;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.metadata.ConstraintDescriptor;
 
+import java.nio.charset.Charset;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -40,7 +44,6 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -474,6 +477,55 @@ public class WebConfig implements WebMvcConfigurer {
         private static final String INTERNAL_STATE_DETAIL = "The server is not in a state to serve "
                 + "this request. The detail is in the server log rather than in this response.";
 
+        /**
+         * The code Bean Validation reports for {@code jakarta.validation.constraints.Size}, which is
+         * every width constraint on every request DTO in this module: a {@code DFHMDF} field declared
+         * {@code LENGTH=8} is a {@code @Size(max = 8)}.
+         */
+        private static final String SIZE_CONSTRAINT = "Size";
+
+        /** The code Bean Validation reports for {@code jakarta.validation.constraints.Pattern}. */
+        private static final String PATTERN_CONSTRAINT = "Pattern";
+
+        /** The codes that mean a value had to be there and was not. */
+        private static final Set<String> PRESENCE_CONSTRAINTS =
+                Set.of("NotNull", "NotBlank", "NotEmpty");
+
+        /** The codes that mean a value was outside a declared numeric range. */
+        private static final Set<String> RANGE_CONSTRAINTS = Set.of("Min",
+                "Max",
+                "DecimalMin",
+                "DecimalMax",
+                "Digits",
+                "Positive",
+                "PositiveOrZero",
+                "Negative",
+                "NegativeOrZero");
+
+        /**
+         * What is said about a {@code @Size} breach whose declared maximum is not a quotable width -
+         * a constraint that states only a minimum.
+         */
+        private static final String LENGTH_DETAIL =
+                "does not satisfy the length declared for its screen field";
+
+        /** What is said about a value that had to be present. */
+        private static final String PRESENCE_DETAIL = "is required";
+
+        /** What is said about a value outside its declared numeric range. */
+        private static final String RANGE_DETAIL = "is outside the range declared for its screen field";
+
+        /** What is said about a value that did not match its declared form. */
+        private static final String PATTERN_DETAIL =
+                "does not match the form declared for its screen field";
+
+        /**
+         * What is said about any other violated constraint. This is the default of a total mapping, so
+         * a constraint annotation introduced later publishes this rather than its own wording.
+         */
+        private static final String CONSTRAINT_DETAIL =
+                "is not valid for its screen field";
+
         public CobolErrorHandler() {
             // Intentionally empty. The advice derives every response solely from its argument.
         }
@@ -796,43 +848,25 @@ public class WebConfig implements WebMvcConfigurer {
             return new ValidationResponse(HttpStatus.BAD_REQUEST.getReasonPhrase(), rejected);
         }
 
-        /**
-         * Maps a path variable or query parameter that could not be converted to its declared type
-         * onto {@code 400 Bad Request}.
-         *
-         * <p>The parameter name and the type it had to become are reported; the value that failed to
-         * become it is not. An account identifier arriving where an eleven-digit number was expected
-         * is precisely the case, and precisely the value not to echo.
-         *
-         * @param mismatch the conversion failure Spring raised
-         * @return {@code 400} naming the parameter and the type required
-         */
-        @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-        public ResponseEntity<ValidationResponse> handleArgumentTypeMismatch(
-                final MethodArgumentTypeMismatchException mismatch) {
-            return ResponseEntity.badRequest().body(typeMismatchResponse(mismatch));
-        }
-
-        /**
-         * Builds the body for a type mismatch, and is the directly testable form of
-         * {@link #handleArgumentTypeMismatch(MethodArgumentTypeMismatchException)}.
-         *
-         * <p>{@link MethodArgumentTypeMismatchException#getRequiredType()} is nullable, so the message
-         * degrades to naming no type rather than failing while an error response is being built.
-         * Reporting a validation failure imprecisely beats not reporting it.
-         *
-         * @param mismatch the conversion failure; must not be {@code null}
-         * @return the response body, naming the parameter and the required type but no value
-         */
-        static ValidationResponse typeMismatchResponse(
-                final MethodArgumentTypeMismatchException mismatch) {
-            final Class<?> required = mismatch.getRequiredType();
-            final String detail = required == null
-                    ? "is not of the required type"
-                    : "is not a valid " + required.getSimpleName();
-            return new ValidationResponse(HttpStatus.BAD_REQUEST.getReasonPhrase(),
-                    List.of(new FieldMessage(mismatch.getName(), detail)));
-        }
+        // There is deliberately NO handler for MethodArgumentTypeMismatchException here.
+        //
+        // It is a subclass of TypeMismatchException, so Spring's closest-match resolution would give
+        // it precedence over handleTypeMismatch(TypeMismatchException) below - and the narrower
+        // handler this class used to declare answered with the required type's simple name, so a
+        // caller who put a word where a number belonged was told the field is "not a valid Integer"
+        // or "not a valid long". That is the internal Java type of a screen field, published to an
+        // unauthenticated caller, and it defeated the whole point of the fixed
+        // TYPE_MISMATCH_MESSAGE the broader handler already returns: whichever handler wins must say
+        // the same value-free, type-free sentence.
+        //
+        // Removing the narrower handler rather than rewording it is the stronger fix. Two handlers
+        // for one failure family means one of them can drift, and a future reader adding a "helpful"
+        // detail to the specific one would silently reintroduce the disclosure. With a single
+        // handler for the whole family, a path variable, a query parameter and a conversion refused
+        // during binding all take the same route to the same body, and there is no narrower arm left
+        // to widen. The parameter name is not reported either: it reaches the caller for a rejected
+        // request BODY field, where the caller named it, but a failed conversion is reported by the
+        // container against its own bound parameter name, which is Java identifier detail.
 
         /**
          * Maps a value a domain guard rejected onto {@code 400 Bad Request}.
@@ -918,11 +952,29 @@ public class WebConfig implements WebMvcConfigurer {
         /**
          * Converts one rejected field into its response entry.
          *
+         * <p><strong>The validator's own message is not copied.</strong> Every {@code @Size} in this
+         * module is annotated with prose written for the engineer maintaining the DTO, and that prose
+         * names the symbolic-map item, its {@code PICTURE} clause and the copybook path and line the
+         * width was read from - for example {@code "CARDSID is CARDSIDI PIC X(16) at
+         * app/cpy-bms/COCRDSL.CPY:66 and holds at most 16 characters"}. Forwarding it would publish
+         * this module's copybook inventory, its line numbers and its internal naming to an
+         * unauthenticated caller, one rejected field at a time. Nor is the annotation's own default
+         * text ({@code "size must be between 0 and 8"}) a safe substitute in general, because it is
+         * whatever the constraint implementation happens to word it as and can change under a
+         * validator upgrade.
+         *
+         * <p>{@link #publicConstraintText(String, Map)} therefore derives the message from the
+         * constraint's <em>code and its declared bound</em>, which are the two facts a caller needs
+         * and the two that are already part of the published wire contract. The field name is still
+         * reported: the caller supplied that member itself, so naming it discloses nothing and is
+         * what lets the caller correct the input.
+         *
          * @param error the field error Spring produced
-         * @return the entry naming the field and the validator's message
+         * @return the entry naming the field and a stable, public description of the violation
          */
         private static FieldMessage fieldMessage(final FieldError error) {
-            return new FieldMessage(error.getField(), error.getDefaultMessage());
+            return new FieldMessage(error.getField(),
+                    publicConstraintText(error.getCode(), constraintAttributes(error)));
         }
 
         /**
@@ -933,11 +985,85 @@ public class WebConfig implements WebMvcConfigurer {
          * error response is being built. Failing to report a validation failure would be worse than
          * reporting one imprecisely.
          *
+         * <p>{@link ConstraintViolation#getMessage()} is deliberately not copied, for the reason given
+         * on {@link #fieldMessage(FieldError)}: on this module's DTOs that message is copybook
+         * provenance written for a maintainer.
+         *
          * @param violation the violation the validator produced
-         * @return the entry naming the property path and the validator's message
+         * @return the entry naming the property path and a stable, public description of the violation
          */
         private static FieldMessage fieldMessage(final ConstraintViolation<?> violation) {
-            return new FieldMessage(String.valueOf(violation.getPropertyPath()), violation.getMessage());
+            final ConstraintDescriptor<?> descriptor = violation.getConstraintDescriptor();
+            final String code = descriptor == null || descriptor.getAnnotation() == null
+                    ? null
+                    : descriptor.getAnnotation().annotationType().getSimpleName();
+            final Map<String, Object> attributes =
+                    descriptor == null ? Map.of() : descriptor.getAttributes();
+            return new FieldMessage(String.valueOf(violation.getPropertyPath()),
+                    publicConstraintText(code, attributes));
+        }
+
+        /**
+         * The declared attributes of the constraint a field error came from, or an empty map when the
+         * error did not come from Bean Validation.
+         *
+         * <p>Spring's {@code SpringValidatorAdapter} wraps each {@link ConstraintViolation} inside the
+         * {@link FieldError} it creates, so the constraint's declared attributes - {@code max} for a
+         * {@code @Size} - are reachable without depending on the order of
+         * {@link FieldError#getArguments()}, which is an implementation detail of the adapter.
+         *
+         * @param error the field error; must not be {@code null}
+         * @return the constraint's attributes, or {@link Map#of()} for a plain binding error
+         */
+        private static Map<String, Object> constraintAttributes(final FieldError error) {
+            if (!error.contains(ConstraintViolation.class)) {
+                return Map.of();
+            }
+            final ConstraintDescriptor<?> descriptor =
+                    error.unwrap(ConstraintViolation.class).getConstraintDescriptor();
+            return descriptor == null ? Map.of() : descriptor.getAttributes();
+        }
+
+        /**
+         * The client-facing text for one violated constraint, derived from the constraint's code and
+         * its declared bound and from nothing else.
+         *
+         * <p>Total by construction: an unrecognised or absent code answers
+         * {@value #CONSTRAINT_DETAIL}, so a constraint added later cannot leak its own wording by
+         * default. Nothing here reads the rejected value, the annotation's message, the DTO's class
+         * name or any Java type.
+         *
+         * @param code       the constraint's code, which for Bean Validation is the annotation's
+         *                   simple name - {@code "Size"}, {@code "Pattern"}, {@code "NotNull"} - and
+         *                   may be {@code null}
+         * @param attributes the constraint's declared attributes; must not be {@code null}
+         * @return the text to publish, never {@code null} and never carrying internal detail
+         */
+        static String publicConstraintText(final String code, final Map<String, Object> attributes) {
+            // An absent code is answered first, because Set.of(...).contains(null) throws - and a
+            // response being built is the last place to raise a second failure.
+            if (code == null) {
+                return CONSTRAINT_DETAIL;
+            }
+            if (SIZE_CONSTRAINT.equals(code)) {
+                final Object max = attributes.get("max");
+                // A @Size that declares only a minimum leaves max at Integer.MAX_VALUE, which is not
+                // a width worth quoting back.
+                if (max instanceof Integer declared && declared != Integer.MAX_VALUE) {
+                    return "must be at most " + declared + " characters";
+                }
+                return LENGTH_DETAIL;
+            }
+            if (PRESENCE_CONSTRAINTS.contains(code)) {
+                return PRESENCE_DETAIL;
+            }
+            if (RANGE_CONSTRAINTS.contains(code)) {
+                return RANGE_DETAIL;
+            }
+            if (PATTERN_CONSTRAINT.equals(code)) {
+                return PATTERN_DETAIL;
+            }
+            return CONSTRAINT_DETAIL;
         }
 
         /**
@@ -1263,6 +1389,30 @@ public class WebConfig implements WebMvcConfigurer {
      * configuration, and would confuse "this path is not permitted", which is a configuration defect,
      * with "this path does not exist yet", which is the writer's ordinary first-run condition.
      *
+     * <h2>Why path algebra is only half the defence</h2>
+     * Precisely because it never touches the filesystem, everything above is blind to a
+     * <strong>symbolic link</strong>. A link planted at the destination, or at a directory on the way
+     * to it, satisfies every test here - it is absolute, carries no {@code ".."}, names no reference
+     * tree and lies inside {@code approvedRoot} - while sending eighty-byte records wherever it points
+     * (CWE-59). Nothing that runs once at startup can close that, either, because a link can be
+     * planted after startup and swapped between a check and an open (CWE-367).
+     *
+     * <p>So the defence is in two halves, and this record is explicitly the first of them.
+     * {@code ReportRequestController.InternalReaderJobSubmissionPort} performs the second on
+     * <em>every</em> write: it resolves {@link #approvedRootPath()} through
+     * {@link Path#toRealPath(java.nio.file.LinkOption...)}, descends to the destination one name
+     * element at a time refusing any component that is a symbolic link, re-verifies the completed
+     * parent against the real root, and opens the record's own file with
+     * {@code LinkOption.NOFOLLOW_LINKS} so the platform refuses a linked leaf atomically with the
+     * open. Read the two together: this record decides which tree output may go in, and the port
+     * proves that the file it is about to append to is really in it.
+     *
+     * <p>That division is also why {@code approvedRoot} must be a directory the operator provisions
+     * and controls rather than a path this module defaults for them. A root under a world-writable
+     * shared temporary directory would let any local user plant the very links the port then has to
+     * refuse, turning a defence in depth into the only defence; neither key is defaulted in
+     * {@code application.yml} for that reason.
+     *
      * <h2>Why the {@code ".."} check runs before normalization</h2>
      * {@link Path#normalize()} resolves {@code ".."} away, so a check made afterwards can only ever
      * see the result and never the intent. A configured
@@ -1273,9 +1423,13 @@ public class WebConfig implements WebMvcConfigurer {
      * untrue about where output goes. Rejecting the segment itself, before normalizing, reports the
      * actual defect.
      *
-     * @param queueName    the TDQ name, {@code JOBS} in the CSD. Carried so the port can name the
-     *                     queue it is standing in for; required to be present
-     * @param ddName       the {@code DDNAME}, {@code INREADER} in the CSD. Required to be present
+     * @param queueName    the TDQ name; required to be exactly {@value #TDQ_QUEUE_NAME}, which is what
+     *                     {@code app/csd/CARDDEMO.CSD:L499} declares
+     * @param ddName       the {@code DDNAME}; required to be exactly {@value #TDQ_DD_NAME}, which is
+     *                     what {@code app/csd/CARDDEMO.CSD:L501} declares
+     * @param charset      the code page the 80-byte records are encoded in. Required, and required to
+     *                     be a total single-byte code page, because a fixed-width record is addressed
+     *                     by absolute byte offset
      * @param recordLength the {@code RECORDSIZE}; must be exactly {@value #TDQ_RECORD_LENGTH}
      * @param recordFormat the {@code RECORDFORMAT}; must be {@code FIXED}
      * @param blockFormat  the {@code BLOCKFORMAT}; must be {@code UNBLOCKED}
@@ -1291,12 +1445,35 @@ public class WebConfig implements WebMvcConfigurer {
     public record JobSubmissionProperties(
             String queueName,
             String ddName,
+            String charset,
             int recordLength,
             String recordFormat,
             String blockFormat,
             String disposition,
             String approvedRoot,
             String destination) {
+
+        /**
+         * The queue this port stands in for: {@code DEFINE TDQUEUE(JOBS)}
+         * ({@code app/csd/CARDDEMO.CSD:L499}), and the only name permitted.
+         *
+         * <p>Required to be exactly this rather than merely present. The name is not decoration: it is
+         * the queue {@code app/cbl/CORPT00C.cbl:L517-L523} writes to by literal, so a configuration
+         * naming any other queue describes a destination the program never writes to while the port
+         * goes on appending to the same file - a diagnostic that would name the wrong queue for the
+         * lifetime of the deployment.
+         */
+        public static final String TDQ_QUEUE_NAME = "JOBS";
+
+        /**
+         * The dataset the queue is bound to: {@code DDNAME(INREADER)}
+         * ({@code app/csd/CARDDEMO.CSD:L501}), and the only name permitted.
+         *
+         * <p>{@code TYPE(EXTRA)} makes {@code JOBS} an extrapartition queue, which means the records
+         * leave CICS entirely and land on the dataset this DD names - the region's internal reader.
+         * Any other DD name claims the records go somewhere they do not.
+         */
+        public static final String TDQ_DD_NAME = "INREADER";
 
         /** The {@code RECORDSIZE(80)} of {@code TDQUEUE(JOBS)}, and the only length permitted. */
         public static final int TDQ_RECORD_LENGTH = 80;
@@ -1351,10 +1528,46 @@ public class WebConfig implements WebMvcConfigurer {
             requirePresent(ddName, "dd-name",
                     "It is the DDNAME the CSD binds the queue to - DDNAME(INREADER) - and it is the "
                             + "dataset the region's internal reader consumes.");
+            requireCsdIdentity();
+            requireQueueCharset();
             requireByteContract();
+            if (isUnconfigured()) {
+                return;
+            }
             Path root = requireUsablePath(approvedRoot, "approved-root");
             Path target = requireUsablePath(destination, "destination");
             requireContainment(root, target);
+        }
+
+        /**
+         * Whether the deployment has declared no job-submission location at all - neither the approved
+         * root nor the destination.
+         *
+         * <h4>Why this is a permitted state and not a configuration error</h4>
+         * Neither path is defaulted in {@code application.yml}: they used to fall back to
+         * {@code ${java.io.tmpdir}/carddemo}, a shared, world-writable, predictably named location
+         * that is precisely where a planted symbolic link does the most damage, so the fallbacks were
+         * removed rather than replaced. A deployment that has not yet provisioned a root therefore
+         * arrives here with both keys empty, and there are two possible answers to that.
+         *
+         * <p>Refusing to start is one, and it is the wrong one. Sixteen of this module's seventeen
+         * screens have nothing to do with the internal reader, and an unconfigured outbound port is
+         * not a reason to take the account, card and user screens down with it. The other answer is
+         * the one CICS itself gives: {@code ERROROPTION(IGNORE)} on {@code TDQUEUE(JOBS)} means a queue
+         * that cannot be written does not abend its caller, it reports a condition -
+         * {@code DFHRESP(NOTOPEN)} - and {@code app/cbl/CORPT00C.cbl:525-535} handles exactly that by
+         * displaying {@code 'Unable to write TDQ (JOBS)'} and re-painting the screen.
+         *
+         * <p>So an unconfigured port starts, and fails <strong>closed</strong> at the moment of use:
+         * the writer finds no destination, reports {@code NOTOPEN} per write, and the operator sees
+         * the program's own message. A <em>partially</em> or <em>unsafely</em> configured port is a
+         * different thing entirely and still refuses at startup - someone stated an intention there,
+         * and stating it wrongly is a defect worth failing on.
+         *
+         * @return {@code true} when neither path carries text
+         */
+        private boolean isUnconfigured() {
+            return !StringUtils.hasText(approvedRoot) && !StringUtils.hasText(destination);
         }
 
         /**
@@ -1373,6 +1586,25 @@ public class WebConfig implements WebMvcConfigurer {
         }
 
         /**
+         * The approved root as an absolute, normalized path, for the writer that opens beneath it.
+         *
+         * <p>Exposed for the same reason {@link #destinationPath()} is, and used for more. Containment
+         * checked here is <strong>lexical</strong>: {@link #validate()} compares name elements of two
+         * normalized paths, which settles that the configuration <em>names</em> a destination inside the
+         * root. It cannot settle where those names <em>lead</em> - a symbolic link anywhere along either
+         * path redirects the write while both strings still read as contained, and normalizing does not
+         * resolve links. So the writer resolves this root to its real path and opens beneath it without
+         * following links; see {@code InternalReaderJobSubmissionPort}.
+         *
+         * @return the normalized approved-root path
+         * @throws InvalidPathException if called on an instance that was never validated and whose
+         *                              approved root is not a syntactically valid path
+         */
+        public Path approvedRootPath() {
+            return Paths.get(approvedRoot).normalize();
+        }
+
+        /**
          * Requires a value to be present and non-blank.
          *
          * <p>A blank value is treated as absence rather than as a value, because in this file that is
@@ -1388,6 +1620,93 @@ public class WebConfig implements WebMvcConfigurer {
                 throw new IllegalStateException(invalid(key)
                         + " it declares no value. " + purpose);
             }
+        }
+
+        /**
+         * Requires the queue and DD names to be the ones the CSD defines, not merely present.
+         *
+         * <p>Present-but-wrong was the gap: two values that named a different queue and a different
+         * dataset passed every check while the port kept writing 80-byte records to the same
+         * destination, so every diagnostic, every log line and every operator reading the
+         * configuration was told about a queue this application does not stand in for.
+         *
+         * <p>Compared case-insensitively, for the same reason the three textual byte-contract values
+         * are: the CSD writes them in upper case and the case of a name is not part of the contract.
+         *
+         * @throws IllegalStateException if either name is not the CSD's
+         */
+        private void requireCsdIdentity() {
+            if (!TDQ_QUEUE_NAME.equalsIgnoreCase(queueName)) {
+                throw new IllegalStateException(invalid("queue-name") + " it is '" + queueName
+                        + "', but app/csd/CARDDEMO.CSD:L499 defines TDQUEUE(" + TDQ_QUEUE_NAME
+                        + ") and app/cbl/CORPT00C.cbl:L517-L523 writes to that queue by literal. This "
+                        + "port stands in for exactly one queue; renaming it here would not repoint "
+                        + "anything, it would only misdescribe where the records go.");
+            }
+            if (!TDQ_DD_NAME.equalsIgnoreCase(ddName)) {
+                throw new IllegalStateException(invalid("dd-name") + " it is '" + ddName
+                        + "', but app/csd/CARDDEMO.CSD:L501 binds TDQUEUE(" + TDQ_QUEUE_NAME
+                        + ") to DDNAME(" + TDQ_DD_NAME + "). TYPE(EXTRA) means the records leave CICS "
+                        + "onto that dataset, so the DD name is the internal reader's own; it is not a "
+                        + "label a deployment chooses.");
+            }
+        }
+
+        /**
+         * Requires the configured code page to exist on this platform and to be a total single-byte one.
+         *
+         * <p>The code page is <strong>required</strong> rather than defaulted, and that is the point of
+         * the property: a region whose internal reader consumes EBCDIC needs {@code IBM037}, and a port
+         * that hard-wired {@code US-ASCII} would emit 80 bytes of the wrong encoding while reporting
+         * success. Which one it is cannot be inferred from anything inside this process, so it is
+         * declared - and declared once, here, rather than chosen by whichever constructor happened to
+         * be wired.
+         *
+         * <p>Single-byte is not a preference either: {@code RECORDFORMAT(FIXED)} with
+         * {@code RECORDSIZE(80)} means 80 characters must encode to exactly 80 bytes, so a code page
+         * that emits two bytes for some character cannot satisfy the queue's own definition.
+         *
+         * @throws IllegalStateException if the code page is absent, unknown to this platform, or not a
+         *                               total single-byte code page
+         */
+        private void requireQueueCharset() {
+            requirePresent(charset, "charset",
+                    "It is the code page the 80-byte records are encoded in, and it cannot be inferred: "
+                            + "a region whose internal reader consumes EBCDIC needs IBM037 where one "
+                            + "reading ASCII needs US-ASCII, and guessing would emit the right bytes on "
+                            + "one deployment and the wrong ones on the next.");
+            Charset resolved;
+            try {
+                resolved = Charset.forName(charset.trim());
+            } catch (IllegalArgumentException unknownCharset) {
+                throw new IllegalStateException(invalid("charset") + " '" + charset + "' is not a code "
+                        + "page this platform provides (" + unknownCharset.getClass().getSimpleName()
+                        + "). Name one the JVM supports - US-ASCII for an ASCII internal reader, "
+                        + "IBM037 for an EBCDIC one.", unknownCharset);
+            }
+            try {
+                RecordImageForm.requireSingleByteCodePage(resolved);
+            } catch (IllegalArgumentException notSingleByte) {
+                throw new IllegalStateException(invalid("charset") + " " + notSingleByte.getMessage()
+                        + " TDQUEUE(" + TDQ_QUEUE_NAME + ") declares RECORDFORMAT("
+                        + TDQ_RECORD_FORMAT + ") with RECORDSIZE(" + TDQ_RECORD_LENGTH + "), so "
+                        + TDQ_RECORD_LENGTH + " characters must encode to exactly " + TDQ_RECORD_LENGTH
+                        + " bytes.", notSingleByte);
+            }
+        }
+
+        /**
+         * The code page the records are encoded in, resolved.
+         *
+         * <p>Exposed so the port encodes in the very code page {@link #validate()} approved rather than
+         * resolving the string again, and so a test can assert which one reached the runtime.
+         *
+         * @return the charset
+         * @throws IllegalArgumentException if called on an instance that was never validated and whose
+         *                                  charset names nothing this platform provides
+         */
+        public Charset queueCharset() {
+            return Charset.forName(charset.trim());
         }
 
         /**
@@ -1479,6 +1798,15 @@ public class WebConfig implements WebMvcConfigurer {
 
         /**
          * Requires the destination to resolve strictly inside the approved root.
+         *
+         * <p><strong>This check is lexical, and it is not the whole of containment.</strong> It settles
+         * that the configuration names a destination inside the root, which is what can be settled without
+         * touching the filesystem - and it is checked here, at startup, so a misconfiguration is refused
+         * before any record is written. What it cannot settle is where those names lead: a symbolic link
+         * at the root, at the destination, or at any directory between them redirects the write while both
+         * strings still read as contained, and {@link Path#normalize()} does not resolve links. The real
+         * containment check therefore happens where the file is opened, against real paths and without
+         * following links; see {@code ReportRequestController.InternalReaderJobSubmissionPort}.
          *
          * <p>Uses {@link Path#startsWith(Path)}, which compares whole name elements, so a sibling
          * directory whose name merely begins with the root's name - {@code /var/carddemo-backup}

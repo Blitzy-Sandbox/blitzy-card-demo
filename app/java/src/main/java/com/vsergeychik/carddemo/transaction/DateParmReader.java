@@ -15,6 +15,7 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 
 import java.nio.charset.Charset;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -27,8 +28,8 @@ import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.ResultSetExtractor;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Component;
 
 /**
@@ -407,6 +408,12 @@ public class DateParmReader {
     private static final String NEVER_TRUE_PREDICATE = "1 = 0";
 
     /**
+     * The row limit this reader asks for: {@code CBTRN03C} performs one {@code READ} of
+     * {@code DATE-PARM-FILE} and consumes exactly one record.
+     */
+    private static final int SINGLE_ROW = 1;
+
+    /**
      * The module's single {@link JdbcTemplate}, constructor-injected. The only collaborator that
      * touches the backend, and the seam a unit test replaces.
      */
@@ -734,8 +741,7 @@ public class DateParmReader {
     public ReadResult read() {
         List<byte[]> rows;
         try {
-            RowMapper<byte[]> recordImageMapper = this::mapRecordImage;
-            rows = jdbcTemplate.query(relation.selectAll(), recordImageMapper);
+            rows = jdbcTemplate.query(firstRowOnly(relation.selectAll()), this::mapRecordImage);
         } catch (DataAccessException translated) {
             // WHEN OTHER. An I/O failure, reported as a status so the caller's own guard chain decides
             // what to do about it - which, in CBTRN03C, is to display and abend - and carrying the
@@ -790,6 +796,39 @@ public class DateParmReader {
      */
     private byte[] mapRecordImage(ResultSet resultSet, int rowNumber) throws SQLException {
         return recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX, codec.charset());
+    }
+
+    /**
+     * Bounds a statement to the one row this reader consumes.
+     *
+     * <p>{@code CBTRN03C} performs a single {@code READ} of {@code DATE-PARM-FILE} and never resumes from
+     * it, so exactly one record is ever consumed. Asking the backend for the relation and then taking
+     * element zero would ask for every record and discard all but that one - which costs the transfer and
+     * the heap of the whole dataset to satisfy a read of 80 bytes, and does so on a dataset whose size is
+     * a deployment's business rather than this class's.
+     *
+     * <p>Both limits are set, and they bound different things.
+     * {@link java.sql.Statement#setMaxRows(int)} bounds what the backend will produce at all, so a
+     * surplus row is never built into a result set; {@link java.sql.Statement#setFetchSize(int)} bounds
+     * what one network round trip carries. Together they make the read cost one row rather than one
+     * dataset, whatever the deployment's driver defaults are.
+     *
+     * <p><strong>No {@code ORDER BY} is added, and that is the parity point.</strong> {@code DATEPARM} is
+     * a physical-sequential dataset ({@code app/proc/TRANREPT.prc:65-66} binds it with no key), so its
+     * records are in the order they were written and {@code READ} returns the first of them. Ordering the
+     * statement would change <em>which</em> record the single read sees; limiting it does not. The row
+     * returned here is the same first record the unbounded form returned as element zero.
+     *
+     * @param statement the statement to bound
+     * @return a creator that produces the bounded statement; never {@code null}
+     */
+    private static PreparedStatementCreator firstRowOnly(String statement) {
+        return connection -> {
+            PreparedStatement prepared = connection.prepareStatement(statement);
+            prepared.setMaxRows(SINGLE_ROW);
+            prepared.setFetchSize(SINGLE_ROW);
+            return prepared;
+        };
     }
 
     // =================================================================================================

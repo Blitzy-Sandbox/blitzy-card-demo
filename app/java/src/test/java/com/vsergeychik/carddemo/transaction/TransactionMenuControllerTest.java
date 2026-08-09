@@ -7,6 +7,8 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenResponse;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -1748,6 +1750,50 @@ final class TransactionMenuControllerTest {
             assertThat(TransactionMenuController.TRANSACTIONS_PATH).isEqualTo("/api/transactions");
             assertThat(TransactionMenuController.class.getAnnotation(
                     org.springframework.web.bind.annotation.RestController.class)).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the metadata travels beside the screen, keyed by DFHMDF prefix")
+        void theMetadataTravelsBesideTheScreen() {
+            forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+
+            ScreenResponse<TransactionListResponse> answer =
+                    controller.getTransactions(request(true), ENTER_PARAM);
+
+            ScreenMetadata metadata = answer.screenMetadata();
+            assertThat(metadata.cursorField())
+                    .as("MOVE -1 TO TRNIDINL is the cursor request, an xxxL item and not a payload "
+                            + "member")
+                    .isEqualTo(TransactionListResponse.TRNIDIN);
+            assertThat(metadata.fields())
+                    .hasSize(answer.screen().allAttributes().size());
+            assertThat(metadata.field(TransactionListResponse.ERRMSG)).isNotNull();
+            assertThat(metadata.messageColour()).isEqualTo(Byte.toUnsignedInt(
+                    answer.screen().attributesOf(TransactionListResponse.ERRMSG).colour()));
+            assertThat(metadata.resetAllOutputFields())
+                    .as("WS-SEND-ERASE-FLG chooses SEND ... ERASE at :533-549, and had no other route")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the envelope leaves the screen flat and adds exactly one sibling member")
+        void theEnvelopeLeavesTheScreenFlat() throws Exception {
+            forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+            String body = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(request(true));
+
+            mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
+                            .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                            .content(body)
+                            .param(TransactionMenuController.EIBAID_PARAM,
+                                    String.valueOf(ENTER_PARAM)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.trnid01O").value(idOf(1)))
+                    .andExpect(jsonPath("$.screenMetadata.cursorField")
+                            .value(TransactionListResponse.TRNIDIN))
+                    .andExpect(jsonPath("$.screenMetadata.resetAllOutputFields").value(true))
+                    .andExpect(jsonPath("$.screen").doesNotExist())
+                    .andExpect(jsonPath("$.cursorField").doesNotExist());
         }
 
         @Test

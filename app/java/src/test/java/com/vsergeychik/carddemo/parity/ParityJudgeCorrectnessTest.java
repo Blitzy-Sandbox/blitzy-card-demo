@@ -20,6 +20,7 @@ import com.vsergeychik.carddemo.parity.ParityCase.Normalisation;
 import com.vsergeychik.carddemo.parity.ParityCase.UnitKind;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -77,6 +78,71 @@ class ParityJudgeCorrectnessTest {
      * @param expectedImage the expectation, written as the case author would write it
      * @return the case
      */
+
+    /**
+     * The differences this suite is about, excluding {@link DiffKind#INCOMPLETE_EXPECTATION}.
+     *
+     * <p>Every fixture in this file names one or two fields deliberately, because isolating a single
+     * comparison behaviour is the whole method: a test about how a wrong balance is reported must not
+     * also have to state the account id, the group id and the {@code FILLER}. Under the completeness
+     * contract such an expectation is <em>also</em> reported as not accounting for its whole record,
+     * which is a true finding about the fixture and a distraction from the behaviour under test.
+     *
+     * <p>Nothing hides behind this filter. The kind is proved reachable, proved to name every uncovered
+     * span, and proved to count toward {@link DiffResult#count()} exactly like every other kind, in the
+     * {@code Completeness} nest of {@code FieldDifferTest}; and the gate itself reads the unfiltered
+     * {@link DiffResult#count()}, so a partial fixture still fails a real module gate. This filter
+     * exists only so a test about one comparison keeps saying one thing.
+     *
+     * @param result the comparison result
+     * @return its differences about the output, in traversal order
+     */
+    private static List<Diff> outputDiffs(DiffResult result) {
+        List<Diff> output = new ArrayList<>();
+        for (Diff diff : result.entries()) {
+            if (diff.kind() != DiffKind.INCOMPLETE_EXPECTATION) {
+                output.add(diff);
+            }
+        }
+        return output;
+    }
+
+    /**
+     * How many differences the result carries about the output, on the same footing as
+     * {@link #outputDiffs(DiffResult)}.
+     *
+     * @param result the comparison result
+     * @return the count of differences about the output
+     */
+    private static int outputCount(DiffResult result) {
+        return outputDiffs(result).size();
+    }
+
+    /**
+     * Whether the result is clean about the output, on the same footing as
+     * {@link #outputDiffs(DiffResult)}.
+     *
+     * @param result the comparison result
+     * @return {@code true} when nothing about the output differs
+     */
+    private static boolean outputIsClean(DiffResult result) {
+        return outputDiffs(result).isEmpty();
+    }
+
+    /**
+     * Every kind the result carries, filtering nothing - the view a producibility claim needs.
+     *
+     * @param result the comparison result
+     * @return every kind present, in traversal order
+     */
+    private static List<DiffKind> allKindsOf(DiffResult result) {
+        List<DiffKind> kinds = new ArrayList<>();
+        for (Diff diff : result.entries()) {
+            kinds.add(diff.kind());
+        }
+        return kinds;
+    }
+
     private static ParityCase amountCase(final String expectedImage) {
         return new ParityCase("CBACT04C", "case01", "one signed amount", UnitKind.BATCH_JOB,
             Map.of(), Map.of(), null, null,
@@ -118,11 +184,11 @@ class ParityJudgeCorrectnessTest {
 
             DiffResult result = DIFFER.compare(amountCase(expected), amountFingerprint(observed));
 
-            assertThat(result.isClean())
+            assertThat(outputIsClean(result))
                 .as("expected %s against observed %s must not pass", expected, observed)
                 .isFalse();
-            assertThat(result.count()).isEqualTo(1);
-            assertThat(result.entries()).singleElement().satisfies(diff -> {
+            assertThat(outputCount(result)).isEqualTo(1);
+            assertThat(outputDiffs(result)).singleElement().satisfies(diff -> {
                 assertThat(diff.kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
                 assertThat(diff.expected()).isEqualTo(expected);
                 assertThat(diff.actual()).isEqualTo(observed);
@@ -137,8 +203,8 @@ class ParityJudgeCorrectnessTest {
 
             // Both images decode to 0.00, so a numeric comparison finds nothing. The explanation has
             // to say that plainly, or it reads as a self-contradiction.
-            assertThat(result.count()).isEqualTo(1);
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputCount(result)).isEqualTo(1);
+            assertThat(outputDiffs(result).get(0).explanation())
                 .contains("right value but the wrong bytes")
                 .contains("overpunch")
                 .contains("0.00");
@@ -150,8 +216,8 @@ class ParityJudgeCorrectnessTest {
             DiffResult result = DIFFER.compare(amountCase("00000019400{"),
                 amountFingerprint("00000019500{"));
 
-            assertThat(result.count()).isEqualTo(1);
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputCount(result)).isEqualTo(1);
+            assertThat(outputDiffs(result).get(0).explanation())
                 .contains("denoting")
                 .contains("1940.00")
                 .contains("1950.00")
@@ -161,12 +227,12 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("Identical images still pass: the fix adds no false failure")
         void identicalImagesStillPass() {
-            assertThat(DIFFER.compare(amountCase("00000019400{"),
-                amountFingerprint("00000019400{")).isClean()).isTrue();
-            assertThat(DIFFER.compare(amountCase("00000019400}"),
-                amountFingerprint("00000019400}")).isClean()).isTrue();
-            assertThat(DIFFER.compare(amountCase("000000194000"),
-                amountFingerprint("000000194000")).isClean()).isTrue();
+            assertThat(outputIsClean(DIFFER.compare(amountCase("00000019400{"),
+                amountFingerprint("00000019400{")))).isTrue();
+            assertThat(outputIsClean(DIFFER.compare(amountCase("00000019400}"),
+                amountFingerprint("00000019400}")))).isTrue();
+            assertThat(outputIsClean(DIFFER.compare(amountCase("000000194000"),
+                amountFingerprint("000000194000")))).isTrue();
         }
 
         @Test
@@ -180,29 +246,29 @@ class ParityJudgeCorrectnessTest {
             // positive zero for a "-0.00" expectation, which are the two byte differences the signed
             // codec exists to preserve. The judge would then be blind to exactly the defects it is
             // here to catch.
-            assertThat(DIFFER.compare(amountCase("1940.00"),
-                amountFingerprint("00000019400{")).isClean())
+            assertThat(outputIsClean(DIFFER.compare(amountCase("1940.00"),
+                amountFingerprint("00000019400{"))))
                 .as("the canonical image of 1940.00 is the positive-overpunch form")
                 .isTrue();
-            assertThat(DIFFER.compare(amountCase("-1940.00"),
-                amountFingerprint("00000019400}")).isClean())
+            assertThat(outputIsClean(DIFFER.compare(amountCase("-1940.00"),
+                amountFingerprint("00000019400}"))))
                 .as("and a negative literal encodes to the negative overpunch")
                 .isTrue();
 
             DiffResult zoneF = DIFFER.compare(amountCase("1940.00"),
                 amountFingerprint("000000194000"));
-            assertThat(zoneF.isClean())
+            assertThat(outputIsClean(zoneF))
                 .as("the unsigned zone-F rendering is not the image a COBOL store produces")
                 .isFalse();
-            assertThat(zoneF.entries()).singleElement().satisfies(diff -> {
+            assertThat(outputDiffs(zoneF)).singleElement().satisfies(diff -> {
                 assertThat(diff.kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
                 assertThat(diff.explanation())
                     .contains("the canonical image of the literal")
                     .contains("right value but the wrong bytes");
             });
 
-            assertThat(DIFFER.compare(amountCase("1940.00"),
-                amountFingerprint("00000019500{")).isClean())
+            assertThat(outputIsClean(DIFFER.compare(amountCase("1940.00"),
+                amountFingerprint("00000019500{"))))
                 .as("and a genuinely different quantity is reported as before")
                 .isFalse();
         }
@@ -210,15 +276,15 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("A negative-zero literal is not satisfied by a positive zero, which decodes alike")
         void aNegativeZeroLiteralIsNotSatisfiedByAPositiveZero() {
-            assertThat(DIFFER.compare(amountCase("-0.00"),
-                amountFingerprint("00000000000}")).isClean())
+            assertThat(outputIsClean(DIFFER.compare(amountCase("-0.00"),
+                amountFingerprint("00000000000}"))))
                 .as("the literal reader honours a leading minus on an all-zero value")
                 .isTrue();
 
             DiffResult flipped = DIFFER.compare(amountCase("-0.00"),
                 amountFingerprint("00000000000{"));
-            assertThat(flipped.count()).isEqualTo(1);
-            assertThat(flipped.entries().get(0).explanation())
+            assertThat(outputCount(flipped)).isEqualTo(1);
+            assertThat(outputDiffs(flipped).get(0).explanation())
                 .contains("differ in SIGN")
                 .contains("opposite overpunch of a zero");
         }
@@ -229,8 +295,8 @@ class ParityJudgeCorrectnessTest {
             DiffResult result = DIFFER.compare(amountCase("00000019400{"),
                 amountFingerprint("0000001940**"));
 
-            assertThat(result.count()).isEqualTo(1);
-            assertThat(result.entries().get(0).kind()).isEqualTo(DiffKind.UNDECODABLE_FIELD);
+            assertThat(outputCount(result)).isEqualTo(1);
+            assertThat(outputDiffs(result).get(0).kind()).isEqualTo(DiffKind.UNDECODABLE_FIELD);
         }
     }
 
@@ -264,12 +330,12 @@ class ParityJudgeCorrectnessTest {
             // - rather than the entries multiplying with the unit's output volume. That is the same
             // rule that makes a missing record one difference and not one per pinned field, and it
             // keeps the diff count a count of things wrong.
-            assertThat(result.isClean()).isFalse();
-            assertThat(result.entries()).extracting(Diff::kind)
+            assertThat(outputIsClean(result)).isFalse();
+            assertThat(outputDiffs(result)).extracting(Diff::kind)
                 .containsExactly(DiffKind.EXTRA_DATASET);
-            assertThat(result.entries().get(0).dataset()).isEqualTo("DALYREJS");
-            assertThat(result.entries().get(0).actual()).isEqualTo("2 row(s)");
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputDiffs(result).get(0).dataset()).isEqualTo("DALYREJS");
+            assertThat(outputDiffs(result).get(0).actual()).isEqualTo("2 row(s)");
+            assertThat(outputDiffs(result).get(0).explanation())
                 .contains("which the case expects nothing from")
                 .contains("2 row(s)")
                 .contains(TRANSACT);
@@ -288,9 +354,9 @@ class ParityJudgeCorrectnessTest {
 
             // The one shape a row-driven check can never see: a unit that opened an output the COBOL
             // does not have, and wrote nothing to it.
-            assertThat(result.count()).isEqualTo(1);
-            assertThat(result.entries().get(0).kind()).isEqualTo(DiffKind.EXTRA_DATASET);
-            assertThat(result.entries().get(0).explanation()).contains("0 row(s)");
+            assertThat(outputCount(result)).isEqualTo(1);
+            assertThat(outputDiffs(result).get(0).kind()).isEqualTo(DiffKind.EXTRA_DATASET);
+            assertThat(outputDiffs(result).get(0).explanation()).contains("0 row(s)");
         }
 
         @Test
@@ -311,9 +377,9 @@ class ParityJudgeCorrectnessTest {
             // first: the datasets the case addresses are examined before the datasets it never
             // mentions, so the rendered order does not depend on the order the unit happened to open
             // its outputs in.
-            assertThat(first.entries()).extracting(Diff::dataset)
+            assertThat(outputDiffs(first)).extracting(Diff::dataset)
                 .containsExactly(TRANSACT, "DALYREJS", "TCATBALF");
-            assertThat(first.entries()).extracting(Diff::kind)
+            assertThat(outputDiffs(first)).extracting(Diff::kind)
                 .containsExactly(DiffKind.EXTRA_RECORD, DiffKind.EXTRA_DATASET,
                     DiffKind.EXTRA_DATASET);
             assertThat(first.render()).isEqualTo(second.render());
@@ -322,8 +388,8 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("A case whose datasets all match still passes: no false failure is introduced")
         void aMatchingCaseStillPasses() {
-            assertThat(DIFFER.compare(caseExpectingOnlyTransact(),
-                amountFingerprint("00000019400{")).isClean()).isTrue();
+            assertThat(outputIsClean(DIFFER.compare(caseExpectingOnlyTransact(),
+                amountFingerprint("00000019400{")))).isTrue();
         }
 
         @Test
@@ -336,7 +402,7 @@ class ParityJudgeCorrectnessTest {
 
             DiffResult result = DIFFER.compare(caseExpectingOnlyTransact(), oneRowTooMany);
 
-            assertThat(result.entries()).singleElement()
+            assertThat(outputDiffs(result)).singleElement()
                 .satisfies(diff -> assertThat(diff.kind()).isEqualTo(DiffKind.EXTRA_RECORD));
         }
 
@@ -354,10 +420,10 @@ class ParityJudgeCorrectnessTest {
                     List.of("00000019400{"), StandardCharsets.US_ASCII)), List.of(), null, 0,
                     report));
 
-            assertThat(result.entries()).extracting(Diff::kind)
+            assertThat(outputDiffs(result)).extracting(Diff::kind)
                 .containsExactly(DiffKind.EXTRA_DATASET);
-            assertThat(result.entries().get(0).actual()).isEqualTo("1 row(s)");
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputDiffs(result).get(0).actual()).isEqualTo("1 row(s)");
+            assertThat(outputDiffs(result).get(0).explanation())
                 .as("a case that pins nothing still says so, and the verdict names the datasets it "
                     + "does expect - which here is the empty set")
                 .contains("which the case expects nothing from")
@@ -426,7 +492,7 @@ class ParityJudgeCorrectnessTest {
 
             DiffResult result = DIFFER.compare(parityCase, fingerprintOver(dataset));
 
-            assertThat(result.isClean()).as("%s must still be padded", dataset).isTrue();
+            assertThat(outputIsClean(result)).as("%s must still be padded", dataset).isTrue();
             assertThat(parityCase.normalisations()).singleElement().satisfies(declared -> {
                 assertThat(declared.dataset()).isEqualTo(dataset);
                 assertThat(declared.kind().copybook()).isEqualTo("CVACT03Y");
@@ -453,8 +519,8 @@ class ParityJudgeCorrectnessTest {
             DiffResult result = DIFFER.compare(unpaddedCaseOver("TCATBALF"),
                 unpaddedFingerprintOver("TCATBALF"));
 
-            assertThat(result.isClean()).isFalse();
-            assertThat(result.entries()).anySatisfy(diff ->
+            assertThat(outputIsClean(result)).isFalse();
+            assertThat(outputDiffs(result)).anySatisfy(diff ->
                 assertThat(diff.kind()).isEqualTo(DiffKind.RECORD_WIDTH_MISMATCH));
         }
 
@@ -499,7 +565,7 @@ class ParityJudgeCorrectnessTest {
         })
         @DisplayName("Each of the nine fixtures derived from app/data/ASCII is accepted")
         void eachOfTheNineFixturesIsAccepted(final String fixture) {
-            DatasetInput input = new DatasetInput(List.of(), fixture, null, null);
+            DatasetInput input = new DatasetInput(List.of(), fixture, null, null, null, null, null);
 
             assertThat(input.fixture()).isEqualTo(fixture);
             assertThat(input.fixtureResourcePath()).isEqualTo("fixtures/" + fixture);
@@ -526,7 +592,7 @@ class ParityJudgeCorrectnessTest {
             // the whitelist says only "not a fixture", which tells a case author nothing about the
             // traversal they just wrote.
             assertThatIllegalArgumentException()
-                .isThrownBy(() -> new DatasetInput(List.of(), fixture, null, null))
+                .isThrownBy(() -> new DatasetInput(List.of(), fixture, null, null, null, null, null))
                 .withMessageContaining("DatasetInput.fixture must be a bare file name")
                 .withMessageContaining("could address something outside it");
         }
@@ -538,10 +604,10 @@ class ParityJudgeCorrectnessTest {
             // and a plausible non-fixture is refused by the whitelist even though it is structurally
             // a perfectly ordinary file name. Neither check is doing the other's work.
             assertThatIllegalArgumentException()
-                .isThrownBy(() -> new DatasetInput(List.of(), "../acctdata.txt", null, null))
+                .isThrownBy(() -> new DatasetInput(List.of(), "../acctdata.txt", null, null, null, null, null))
                 .withMessageContaining("must be a bare file name");
             assertThatIllegalArgumentException()
-                .isThrownBy(() -> new DatasetInput(List.of(), "acctdata.dat", null, null))
+                .isThrownBy(() -> new DatasetInput(List.of(), "acctdata.dat", null, null, null, null, null))
                 .withMessageContaining("not one of the nine fixtures");
         }
 
@@ -549,7 +615,7 @@ class ParityJudgeCorrectnessTest {
         @DisplayName("A bare name that is not one of the nine is refused, and the nine are listed")
         void aBareNameOutsideTheWhitelistIsRefused() {
             assertThatIllegalArgumentException()
-                .isThrownBy(() -> new DatasetInput(List.of(), "application.yml", null, null))
+                .isThrownBy(() -> new DatasetInput(List.of(), "application.yml", null, null, null, null, null))
                 .withMessageContaining("not one of the nine fixtures")
                 .withMessageContaining("acctdata.txt");
         }
@@ -558,10 +624,10 @@ class ParityJudgeCorrectnessTest {
         @DisplayName("Blank and whitespace-padded names are refused with their own diagnostics")
         void blankAndPaddedNamesAreRefused() {
             assertThatIllegalArgumentException()
-                .isThrownBy(() -> new DatasetInput(List.of(), "   ", null, null))
+                .isThrownBy(() -> new DatasetInput(List.of(), "   ", null, null, null, null, null))
                 .withMessageContaining("present but blank");
             assertThatIllegalArgumentException()
-                .isThrownBy(() -> new DatasetInput(List.of(), " acctdata.txt ", null, null))
+                .isThrownBy(() -> new DatasetInput(List.of(), " acctdata.txt ", null, null, null, null, null))
                 .withMessageContaining("padded with whitespace");
         }
 
@@ -571,7 +637,7 @@ class ParityJudgeCorrectnessTest {
             // Whatever a case says, the resolved path is the root plus a name from a closed set, so
             // there is no input from which a path outside the root could be built.
             for (String fixture : ParityCase.FIXTURE_NAMES) {
-                DatasetInput input = new DatasetInput(List.of(), fixture, null, null);
+                DatasetInput input = new DatasetInput(List.of(), fixture, null, null, null, null, null);
 
                 assertThat(input.fixtureResourcePath())
                     .startsWith(ParityCase.FIXTURE_ROOT)
@@ -583,7 +649,7 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("An inline input has no fixture and therefore no resource path")
         void anInlineInputHasNoResourcePath() {
-            DatasetInput inline = new DatasetInput(List.of("0000000001"), null, null, null);
+            DatasetInput inline = new DatasetInput(List.of("0000000001"), null, null, null, null, null, null);
 
             assertThat(inline.fixture()).isNull();
             assertThat(inline.fixtureResourcePath()).isNull();

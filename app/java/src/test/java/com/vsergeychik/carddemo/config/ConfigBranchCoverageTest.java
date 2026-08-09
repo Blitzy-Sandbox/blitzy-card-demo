@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.transaction.ReportRequestController;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.JobDatasetBinding;
@@ -34,6 +35,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.batch.core.JobParameters;
@@ -122,8 +124,14 @@ class ConfigBranchCoverageTest {
      * An obviously synthetic dataset location, used wherever a test needs a valid one and does not
      * care what it is. It could not be mistaken for a default supplied from inside Java, which is the
      * property several of these assertions turn on.
+     *
+     * <p>It is also a <em>well-formed</em> z/OS dataset name - three dot-separated qualifiers of eight
+     * characters or fewer - because a job-scoped {@code dsname} is now held to that grammar at startup,
+     * exactly as a global one always has been. A synthetic name that could never become a delimited
+     * SQL identifier would make every inline-override assertion below fail on the name rather than on
+     * the thing it is asserting.
      */
-    private static final String LOCATION = "SENTINEL.CATALOGUE.ENTRY";
+    private static final String LOCATION = "SENTINEL.CATALOG.ENTRY";
 
     /**
      * What makes a {@code "default"} arm of the two {@code runnerFor} helpers below actually read
@@ -271,7 +279,7 @@ class ConfigBranchCoverageTest {
             DataSource dataSource = new DataSourceConfig().dataSource(properties);
 
             assertThat(dataSource).isNotNull();
-            assertThat(new DataSourceConfig().jdbcTemplate(dataSource).getDataSource())
+            assertThat(new DataSourceConfig().jdbcTemplate(dataSource, "60").getDataSource())
                     .isSameAs(dataSource);
         }
 
@@ -747,6 +755,34 @@ class ConfigBranchCoverageTest {
         }
 
         @Test
+        @DisplayName("an inline override whose dsname is a filesystem path is refused at startup, not "
+                + "when a job first opens it")
+        void anInlineOverrideWithAFilesystemPathIsRefused() {
+            // A job-scoped dsname becomes a delimited SQL identifier exactly as a global one does, so
+            // it is held to the same z/OS dataset-name grammar. The point of checking it HERE is where
+            // the failure lands: TransactionReportJob resolves its TRANFILE binding while the bean is
+            // being constructed and StatementGenerationJobA resolves SORTOUT and INFILE the moment a
+            // utility step runs, so a path left unchecked fails the whole context, or fails deep inside
+            // a job, with a message about SQL rather than about the key that is wrong.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithOverride("SORTIN",
+                            inlineAt("/tmp/carddemo-test/transact-bkup.txt"))
+                            .validate(validCatalogue()))
+                    .withMessageContaining("is not a z/OS dataset name")
+                    .withMessageContaining("SORTIN");
+        }
+
+        @Test
+        @DisplayName("an inline override may name a generation, because a GDG suffix is part of the "
+                + "grammar")
+        void anInlineOverrideMayNameAGeneration() {
+            // The global catalogue binds DALYREJS, TRANREPT and SYSTRAN to GDG names, so the job-scoped
+            // grammar has to accept the same shape rather than a stricter one.
+            assertThatNoException().isThrownBy(() -> jobsWithOverride("SORTIN",
+                    inlineAt(LOCATION + "(+1)")).validate(validCatalogue()));
+        }
+
+        @Test
         @DisplayName("a declared parameter of any type but string is refused, because the one PARM in "
                 + "the estate is never parsed")
         void aParameterOfAnyOtherTypeIsRefused() {
@@ -857,6 +893,12 @@ class ConfigBranchCoverageTest {
         /** An inline override with a valid width and the given block size. */
         private static JobDatasetBinding inlineWithBlockSize(int blockSize) {
             return new JobDatasetBinding(null, LOCATION, "sequential", false, "FB", blockSize, 350,
+                    "CVTRA05Y", null, null, null, null);
+        }
+
+        /** An inline override with a valid width, at the given dataset name. */
+        private static JobDatasetBinding inlineAt(String dsname) {
+            return new JobDatasetBinding(null, dsname, "sequential", false, "FB", 0, 350,
                     "CVTRA05Y", null, null, null, null);
         }
 
@@ -999,7 +1041,7 @@ class ConfigBranchCoverageTest {
 
         @ParameterizedTest(name = "the {0} profile's job-submission port binds and validates")
         @ValueSource(strings = { "default", "test" })
-        @DisplayName("both shipped profiles satisfy the job-submission contract")
+        @DisplayName("both shipped profiles satisfy the job-submission byte contract")
         void bothShippedProfilesSatisfyTheJobSubmissionContract(String profile) {
             runnerFor(profile).run(context -> {
                 assertThat(context).hasNotFailed();
@@ -1013,6 +1055,46 @@ class ConfigBranchCoverageTest {
                         .isEqualTo(JobSubmissionProperties.TDQ_RECORD_FORMAT);
                 assertThat(port.blockFormat()).isEqualTo(JobSubmissionProperties.TDQ_BLOCK_FORMAT);
                 assertThat(port.disposition()).isEqualTo(JobSubmissionProperties.TDQ_DISPOSITION);
+                // The byte contract is transcribed from the CSD and is identical in both profiles.
+                // The two PATHS are not, and deliberately so - see the two tests below.
+                assertThatNoException().isThrownBy(port::validate);
+            });
+        }
+
+        @Test
+        @DisplayName("the shipped default profile provisions no job-submission location at all")
+        void theDefaultProfileProvisionsNoLocation() {
+            runnerFor("default").run(context -> {
+                assertThat(context).hasNotFailed();
+                JobSubmissionProperties port = context.getBean(JobSubmissionProperties.class);
+
+                // Neither key is defaulted. They used to fall back to ${java.io.tmpdir}/carddemo - a
+                // shared, world-writable, predictably named location, which is exactly where a planted
+                // symbolic link at the destination or at a directory above it does the most damage
+                // (CWE-59, CWE-367). The fallbacks were removed rather than replaced: the root has to
+                // be provisioned by the operator, whose permissions on it are the control.
+                assertThat(port.approvedRoot()).isEmpty();
+                assertThat(port.destination()).isEmpty();
+
+                // An unconfigured port still starts - sixteen of the seventeen screens have nothing to
+                // do with the internal reader - and fails CLOSED at the moment of use: the writer finds
+                // no destination and reports NOTOPEN, which is the condition ERROROPTION(IGNORE)
+                // reports and which app/cbl/CORPT00C.cbl:525-535 already handles by displaying
+                // 'Unable to write TDQ (JOBS)'.
+                assertThatNoException().isThrownBy(port::validate);
+                assertThat(new ReportRequestController.InternalReaderJobSubmissionPort(port)
+                        .writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                        .isEqualTo(FileStatus.NOTOPEN);
+            });
+        }
+
+        @Test
+        @DisplayName("the test profile provisions its own root, and the destination is inside it")
+        void theTestProfileProvisionsAnIsolatedRoot() {
+            runnerFor("test").run(context -> {
+                assertThat(context).hasNotFailed();
+                JobSubmissionProperties port = context.getBean(JobSubmissionProperties.class);
+
                 assertThatNoException().isThrownBy(port::validate);
                 // Compared with Path's own segment-wise operations rather than AssertJ's path
                 // assertions: those canonicalise through toRealPath, which would require the
@@ -1020,7 +1102,7 @@ class ConfigBranchCoverageTest {
                 // as the validation itself does not.
                 Path resolved = port.destinationPath();
                 assertThat(resolved.isAbsolute()).isTrue();
-                assertThat(resolved.startsWith(Paths.get(port.approvedRoot()).normalize())).isTrue();
+                assertThat(resolved.startsWith(port.approvedRootPath())).isTrue();
                 assertThat(resolved.endsWith(Paths.get("inreader", "JOBS"))).isTrue();
             });
         }
@@ -1474,7 +1556,7 @@ class ConfigBranchCoverageTest {
          * @return the contract
          */
         private JobSubmissionProperties paths(String root, String target) {
-            return new JobSubmissionProperties("JOBS", "INREADER",
+            return new JobSubmissionProperties("JOBS", "INREADER", "US-ASCII",
                     JobSubmissionProperties.TDQ_RECORD_LENGTH,
                     JobSubmissionProperties.TDQ_RECORD_FORMAT,
                     JobSubmissionProperties.TDQ_BLOCK_FORMAT,
@@ -1491,8 +1573,120 @@ class ConfigBranchCoverageTest {
          * @return the contract
          */
         private JobSubmissionProperties bytes(int length, String format, String block, String mode) {
-            return new JobSubmissionProperties("JOBS", "INREADER", length, format, block, mode,
-                    ROOT, TARGET);
+            return new JobSubmissionProperties("JOBS", "INREADER", "US-ASCII", length, format,
+                    block, mode, ROOT, TARGET);
+        }
+
+        /**
+         * Builds a contract whose queue identifiers are overridden and whose everything else is valid.
+         *
+         * @param queueName the queue name
+         * @param ddName    the DD name
+         * @return the contract
+         */
+        private JobSubmissionProperties identity(String queueName, String ddName) {
+            return new JobSubmissionProperties(queueName, ddName, "US-ASCII", 80, "FIXED",
+                    "UNBLOCKED", "MOD", ROOT, TARGET);
+        }
+
+        /**
+         * Builds a contract whose code page is overridden and whose everything else is valid.
+         *
+         * @param charset the code page
+         * @return the contract
+         */
+        private JobSubmissionProperties charset(String charset) {
+            return new JobSubmissionProperties("JOBS", "INREADER", charset, 80, "FIXED",
+                    "UNBLOCKED", "MOD", ROOT, TARGET);
+        }
+
+        @ParameterizedTest(name = "queue-name [{0}] is refused")
+        @ValueSource(strings = { "JOBSX", "JOB", "SUBMIT", "INREADER" })
+        @DisplayName("a queue name that is not the CSD's TDQUEUE(JOBS) refuses startup")
+        void aForeignQueueNameRefusesStartup(String foreign) {
+            // CORPT00C names the queue in the program text - EXEC CICS WRITEQ TD QUEUE('JOBS') at
+            // CORPT00C.cbl:L517-L523 - so it is not a deployment choice. A profile that renamed it would
+            // send the records somewhere the program never wrote to, and every write would still report
+            // NORMAL because the port cannot tell one destination from another.
+            assertThatIllegalStateException().isThrownBy(identity(foreign, "INREADER")::validate)
+                    .withMessageContaining("queue-name")
+                    .withMessageContaining("JOBS");
+        }
+
+        @ParameterizedTest(name = "dd-name [{0}] is refused")
+        @ValueSource(strings = { "INREADR", "READER", "JOBS", "SYSIN" })
+        @DisplayName("a DD name that is not the CSD's DDNAME(INREADER) refuses startup")
+        void aForeignDdNameRefusesStartup(String foreign) {
+            assertThatIllegalStateException().isThrownBy(identity("JOBS", foreign)::validate)
+                    .withMessageContaining("dd-name")
+                    .withMessageContaining("INREADER");
+        }
+
+        @ParameterizedTest(name = "[{0}] and [{1}] are accepted")
+        @CsvSource({ "JOBS,INREADER", "jobs,inreader", "Jobs,InReader", " JOBS , INREADER " })
+        @DisplayName("the CSD identifiers are matched without regard to case or surrounding space")
+        void theCsdIdentifiersAreMatchedCaseInsensitively(String queueName, String ddName) {
+            // A YAML document may carry either case; what must not vary is WHICH queue is addressed.
+            assertThatNoException().isThrownBy(identity(queueName, ddName)::validate);
+        }
+
+        @ParameterizedTest(name = "a blank charset [{0}] is refused")
+        @ValueSource(strings = { "", "   " })
+        @DisplayName("the code page must be configured, because it cannot be inferred")
+        void theCodePageMustBePresent(String blank) {
+            assertThatIllegalStateException().isThrownBy(charset(blank)::validate)
+                    .withMessageContaining("charset")
+                    .withMessageContaining("IBM037")
+                    .withMessageContaining("US-ASCII");
+        }
+
+        @Test
+        @DisplayName("an absent charset is refused rather than defaulted")
+        void anAbsentCodePageIsRefused() {
+            assertThatIllegalStateException().isThrownBy(charset(null)::validate)
+                    .withMessageContaining("charset");
+        }
+
+        @ParameterizedTest(name = "an unknown charset [{0}] is refused")
+        @ValueSource(strings = { "IBM037X", "not a charset", "EBCDIC" })
+        @DisplayName("a code page this JVM does not have is refused at startup, not at the first write")
+        void anUnknownCodePageIsRefused(String unknown) {
+            assertThatIllegalStateException().isThrownBy(charset(unknown)::validate)
+                    .withMessageContaining("charset")
+                    .withMessageContaining("the JVM supports");
+        }
+
+        @ParameterizedTest(name = "a multi-byte charset [{0}] is refused")
+        @ValueSource(strings = { "UTF-8", "UTF-16", "IBM930" })
+        @DisplayName("a variable-width code page is refused, because an 80-byte record needs one byte "
+                + "per character")
+        void aMultiByteCodePageIsRefused(String multiByte) {
+            // RECORDSIZE(80) counts bytes. In a variable-width encoding, 80 characters of JCL is not 80
+            // bytes, so the record the internal reader reads would not be the record CORPT00C composed.
+            assertThatIllegalStateException().isThrownBy(charset(multiByte)::validate)
+                    .withMessageContaining("charset");
+        }
+
+        @ParameterizedTest(name = "[{0}] is accepted and resolves")
+        @ValueSource(strings = { "IBM037", "US-ASCII", "ISO-8859-1", " ibm037 " })
+        @DisplayName("a single-byte code page is accepted and published for the writer to encode with")
+        void aSingleByteCodePageIsAcceptedAndPublished(String single) {
+            JobSubmissionProperties port = charset(single);
+
+            assertThatNoException().isThrownBy(port::validate);
+            assertThat(port.queueCharset()).isEqualTo(Charset.forName(single.trim()));
+        }
+
+        @Test
+        @DisplayName("the approved root is published as a normalised path for the writer to bound "
+                + "itself with")
+        void theApprovedRootIsPublished() {
+            JobSubmissionProperties port = paths(ROOT, TARGET);
+
+            assertThat(port.approvedRootPath()).isEqualTo(Paths.get(ROOT));
+            // Compared as path algebra, not with AssertJ's startsWith, which resolves real paths and so
+            // would assert something about this machine's filesystem rather than about the contract.
+            assertThat(port.destinationPath().startsWith(port.approvedRootPath())).isTrue();
         }
 
         @Test
@@ -1509,7 +1703,7 @@ class ConfigBranchCoverageTest {
         @DisplayName("the queue name must be present")
         void theQueueNameMustBePresent(String blank) {
             JobSubmissionProperties port = new JobSubmissionProperties(blank, "INREADER",
-                    80, "FIXED", "UNBLOCKED", "MOD", ROOT, TARGET);
+                    "US-ASCII", 80, "FIXED", "UNBLOCKED", "MOD", ROOT, TARGET);
 
             assertThatIllegalStateException().isThrownBy(port::validate)
                     .withMessageContaining("queue-name")
@@ -1520,7 +1714,7 @@ class ConfigBranchCoverageTest {
         @DisplayName("an absent DD name is refused, naming the CSD DDNAME it should carry")
         void theDdNameMustBePresent() {
             JobSubmissionProperties port = new JobSubmissionProperties("JOBS", null,
-                    80, "FIXED", "UNBLOCKED", "MOD", ROOT, TARGET);
+                    "US-ASCII", 80, "FIXED", "UNBLOCKED", "MOD", ROOT, TARGET);
 
             assertThatIllegalStateException().isThrownBy(port::validate)
                     .withMessageContaining("dd-name")
@@ -1694,6 +1888,7 @@ class ConfigBranchCoverageTest {
                     .withPropertyValues(
                             "carddemo.job-submission.queue-name=JOBS",
                             "carddemo.job-submission.dd-name=INREADER",
+                            "carddemo.job-submission.charset=US-ASCII",
                             "carddemo.job-submission.record-length=80",
                             "carddemo.job-submission.record-format=FIXED",
                             "carddemo.job-submission.block-format=UNBLOCKED",
@@ -1714,6 +1909,7 @@ class ConfigBranchCoverageTest {
                     .withPropertyValues(
                             "carddemo.job-submission.queue-name=JOBS",
                             "carddemo.job-submission.dd-name=INREADER",
+                            "carddemo.job-submission.charset=US-ASCII",
                             "carddemo.job-submission.record-length=80",
                             "carddemo.job-submission.record-format=FIXED",
                             "carddemo.job-submission.block-format=UNBLOCKED",
@@ -1754,6 +1950,29 @@ class ConfigBranchCoverageTest {
 
             assertThat(resolved.isAbsolute()).isTrue();
             assertThat(resolved).isEqualTo(Paths.get(TARGET));
+        }
+
+        @Test
+        @DisplayName("approvedRootPath normalizes the same way, so the two paths compare as names")
+        void theApprovedRootPathIsNormalized() {
+            Path resolved = paths("/var/carddemo/./", TARGET).approvedRootPath();
+
+            assertThat(resolved.isAbsolute()).isTrue();
+            assertThat(resolved).isEqualTo(Paths.get(ROOT));
+        }
+
+        @Test
+        @DisplayName("the approved root is a prefix of the destination once both are normalized")
+        void theTwoPathsAreComparableAsNames() {
+            JobSubmissionProperties port = paths(ROOT, TARGET);
+
+            // The writer re-proves containment immediately before it opens the destination, and it does
+            // so by comparing these two paths. That comparison is only sound if both sides normalize
+            // the same way and neither touches the filesystem, which is what this pins: the accessors
+            // are pure, so they answer identically whether or not the tree exists yet.
+            assertThat(port.destinationPath().startsWith(port.approvedRootPath())).isTrue();
+            assertThat(port.approvedRootPath().relativize(port.destinationPath()))
+                    .isEqualTo(Paths.get("inreader", "JOBS"));
         }
     }
 

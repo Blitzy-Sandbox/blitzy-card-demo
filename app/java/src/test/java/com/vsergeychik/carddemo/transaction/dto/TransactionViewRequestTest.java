@@ -2260,4 +2260,3 @@ class TransactionViewRequestTest {
         }
     }
 }
-

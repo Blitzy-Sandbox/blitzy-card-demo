@@ -2,6 +2,9 @@ package com.vsergeychik.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -22,13 +25,16 @@ import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.metadata.ConstraintDescriptor;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.MethodParameter;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -37,6 +43,9 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.validation.BeanPropertyBindingResult;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -234,7 +243,7 @@ class WebConfigErrorContractTest {
     class ValidationMapping {
 
         @Test
-        @DisplayName("a constraint violation becomes one entry naming the property and its message")
+        @DisplayName("a constraint violation becomes one entry naming the property and the width")
         void constraintViolationBecomesFieldEntry() {
             ValidationResponse body =
                     CobolErrorHandler.validationResponse(violationsOf(new Screen("CU00", "123456789")));
@@ -243,7 +252,58 @@ class WebConfigErrorContractTest {
             assertThat(body.fieldErrors()).hasSize(1);
             FieldMessage rejected = body.fieldErrors().get(0);
             assertThat(rejected.field()).isEqualTo("usrIdIn");
-            assertThat(rejected.message()).isNotBlank();
+            assertThat(rejected.message()).isEqualTo("must be at most 8 characters");
+        }
+
+        @Test
+        @DisplayName("the violation's own message never reaches the caller")
+        void theViolationMessageIsNotForwarded() {
+            // The DTOs in this module annotate every @Size with maintainer prose that names the
+            // symbolic-map item, its PICTURE clause and the copybook path and LINE NUMBER the width was
+            // read from. Forwarding it would publish the copybook inventory to an unauthenticated
+            // caller, one rejected field at a time.
+            Provenance payload = new Provenance("NINECHARS");
+
+            ValidationResponse body = CobolErrorHandler.validationResponse(violationsOf(payload));
+
+            assertThat(body.fieldErrors()).singleElement().satisfies(entry -> {
+                assertThat(entry.field()).isEqualTo("usrIdIn");
+                assertThat(entry.message())
+                        .isEqualTo("must be at most 8 characters")
+                        .doesNotContain("app/cpy-bms")
+                        .doesNotContain("PIC X(")
+                        .doesNotContain(":72");
+            });
+        }
+
+        @Test
+        @DisplayName("each constraint family maps to its own fixed public sentence")
+        void eachConstraintFamilyHasFixedText() {
+            assertThat(CobolErrorHandler.publicConstraintText("Size", Map.of("max", 11)))
+                    .isEqualTo("must be at most 11 characters");
+            // A @Size that states only a minimum leaves max at Integer.MAX_VALUE, which is not a width
+            // worth quoting back at a caller.
+            assertThat(CobolErrorHandler.publicConstraintText("Size",
+                    Map.of("max", Integer.MAX_VALUE)))
+                    .isEqualTo("does not satisfy the length declared for its screen field");
+            assertThat(CobolErrorHandler.publicConstraintText("Size", Map.of()))
+                    .isEqualTo("does not satisfy the length declared for its screen field");
+            assertThat(CobolErrorHandler.publicConstraintText("NotNull", Map.of()))
+                    .isEqualTo("is required");
+            assertThat(CobolErrorHandler.publicConstraintText("NotBlank", Map.of()))
+                    .isEqualTo("is required");
+            assertThat(CobolErrorHandler.publicConstraintText("Max", Map.of("value", 9L)))
+                    .isEqualTo("is outside the range declared for its screen field");
+            assertThat(CobolErrorHandler.publicConstraintText("Digits", Map.of()))
+                    .isEqualTo("is outside the range declared for its screen field");
+            assertThat(CobolErrorHandler.publicConstraintText("Pattern", Map.of()))
+                    .isEqualTo("does not match the form declared for its screen field");
+            // Total by construction: a constraint annotation introduced later publishes the default
+            // rather than its own wording, so no future annotation can leak through this seam.
+            assertThat(CobolErrorHandler.publicConstraintText("SomeFutureConstraint", Map.of()))
+                    .isEqualTo("is not valid for its screen field");
+            assertThat(CobolErrorHandler.publicConstraintText(null, Map.of()))
+                    .isEqualTo("is not valid for its screen field");
         }
 
         @Test
@@ -265,10 +325,104 @@ class WebConfigErrorContractTest {
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         }
 
-        private ConstraintViolationException violationsOf(Screen screen) {
+        /**
+         * The mapping is total over what a validator may hand it, and that matters here more than it
+         * usually would: this method runs while an error response is being built, so a failure inside it
+         * turns a {@code 400} the caller could act on into a {@code 500} that names an internal class.
+         *
+         * <p>A {@link ConstraintViolation} created programmatically rather than by a
+         * {@code @Size}-style annotation can carry no descriptor at all - the interface permits it - and
+         * a descriptor can carry no annotation. Both are answered with the same fixed default sentence
+         * as an unrecognised constraint.
+         */
+        @Test
+        @DisplayName("a violation carrying no descriptor, or none carrying an annotation, still answers")
+        void aViolationWithNoConstraintMetadataIsStillAnswered() {
+            ConstraintViolation<?> noDescriptor = mock(ConstraintViolation.class);
+
+            ValidationResponse withoutDescriptor = CobolErrorHandler
+                    .validationResponse(new ConstraintViolationException(Set.of(noDescriptor)));
+
+            assertThat(withoutDescriptor.fieldErrors()).singleElement().satisfies(entry ->
+                    assertThat(entry.message()).isEqualTo("is not valid for its screen field"));
+
+            ConstraintDescriptor<?> withoutAnnotation = mock(ConstraintDescriptor.class);
+            when(withoutAnnotation.getAttributes()).thenReturn(Map.of());
+            ConstraintViolation<?> violation = mock(ConstraintViolation.class);
+            doReturn(withoutAnnotation).when(violation).getConstraintDescriptor();
+
+            ValidationResponse withoutCode = CobolErrorHandler
+                    .validationResponse(new ConstraintViolationException(Set.of(violation)));
+
+            assertThat(withoutCode.fieldErrors()).singleElement().satisfies(entry ->
+                    assertThat(entry.message()).isEqualTo("is not valid for its screen field"));
+        }
+
+        /**
+         * A field error that did not come from Bean Validation at all - a plain binding or conversion
+         * failure - has no constraint to read a bound from, and answers the default rather than reaching
+         * for arguments that are not there.
+         */
+        @Test
+        @DisplayName("a plain binding error carries no constraint, and is answered without one")
+        void aPlainBindingErrorHasNoConstraintToRead() throws Exception {
+            FieldError conversionFailure = new FieldError("screen", "acctsid", null, false,
+                    new String[] {"typeMismatch"}, null, "Failed to convert value of type ...");
+
+            ValidationResponse body =
+                    CobolErrorHandler.validationResponse(bindingFailure(conversionFailure));
+
+            assertThat(body.fieldErrors()).singleElement().satisfies(entry -> {
+                assertThat(entry.field()).isEqualTo("acctsid");
+                assertThat(entry.message())
+                        .as("no constraint, so no width to quote - and the framework's own text, which "
+                                + "names the Java type, is never forwarded")
+                        .isEqualTo("is not valid for its screen field");
+            });
+        }
+
+        /**
+         * The other half of the same guard: a field error that <em>does</em> wrap a violation, but one
+         * whose descriptor is absent, must not fail while the bound is being read.
+         */
+        @Test
+        @DisplayName("a field error wrapping a violation with no descriptor reads no bound and answers")
+        void aWrappedViolationWithNoDescriptorReadsNoBound() throws Exception {
+            FieldError error = new FieldError("screen", "acctsid", null, false,
+                    new String[] {"Size"}, null, "irrelevant");
+            error.wrap(mock(ConstraintViolation.class));
+
+            ValidationResponse body = CobolErrorHandler.validationResponse(bindingFailure(error));
+
+            assertThat(body.fieldErrors()).singleElement().satisfies(entry -> assertThat(entry.message())
+                    .as("the code is Size but there is no max to quote, so the length default answers")
+                    .isEqualTo("does not satisfy the length declared for its screen field"));
+        }
+
+        /** A body-binding failure carrying exactly the errors given, as Spring would raise it. */
+        private MethodArgumentNotValidException bindingFailure(FieldError... errors) throws Exception {
+            BeanPropertyBindingResult binding =
+                    new BeanPropertyBindingResult(new Screen("CU00", "1"), "screen");
+            for (FieldError error : errors) {
+                binding.addError(error);
+            }
+            MethodParameter parameter = new MethodParameter(
+                    BindingHost.class.getDeclaredMethod("handle", Screen.class), 0);
+            return new MethodArgumentNotValidException(parameter, binding);
+        }
+
+        /** Supplies a real {@link MethodParameter}; never invoked. */
+        private static final class BindingHost {
+            void handle(Screen screen) {
+                throw new UnsupportedOperationException(
+                        "This method exists only so a MethodParameter can be constructed");
+            }
+        }
+
+        private ConstraintViolationException violationsOf(Object payload) {
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 Validator validator = factory.getValidator();
-                Set<ConstraintViolation<Screen>> violations = validator.validate(screen);
+                Set<? extends ConstraintViolation<?>> violations = validator.validate(payload);
                 return new ConstraintViolationException(violations);
             }
         }
@@ -282,6 +436,19 @@ class WebConfigErrorContractTest {
          * @param usrIdIn a {@code PIC X(8)} field
          */
         private record Screen(@Size(max = 4) String trnName, @Size(max = 8) String usrIdIn) {
+        }
+
+        /**
+         * A stand-in whose constraint message is written the way every request DTO in this module
+         * writes one: copybook path, line number and {@code PICTURE} clause, for the engineer
+         * maintaining the field rather than for a caller.
+         *
+         * @param usrIdIn a {@code PIC X(8)} field carrying provenance in its message
+         */
+        private record Provenance(
+                @Size(max = 8,
+                        message = "USRIDIN is USRIDINI PIC X(8) at app/cpy-bms/COUSR02.CPY:72 and "
+                                + "holds at most 8 characters") String usrIdIn) {
         }
     }
 

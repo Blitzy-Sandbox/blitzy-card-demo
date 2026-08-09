@@ -74,6 +74,19 @@ public final class DatasetUnitOfWork {
     private final TransactionTemplate transactionTemplate;
 
     /**
+     * The template that persists one verb on its own, independent of whatever encloses it.
+     *
+     * <p>{@link TransactionDefinition#PROPAGATION_REQUIRES_NEW}, which is the whole point:
+     * {@link #persistVerb(String, Supplier)} exists for the non-CICS batch programs, whose datasets are
+     * defined {@code RECOVERY(NONE)} ({@code app/csd/CARDDEMO.CSD:9} and its seven siblings) and which
+     * issue no syncpoint at all. There, each {@code WRITE} and {@code REWRITE} is durable the moment it
+     * completes, and an abend leaves everything already written in place. A suspended-and-committed
+     * inner transaction reproduces that; joining the enclosing one would let a later failure undo work
+     * the COBOL had already made permanent.
+     */
+    private final TransactionTemplate verbTemplate;
+
+    /**
      * @param transactionManager the module's single transaction manager, declared by
      *                           {@link BatchConfig#transactionManager(javax.sql.DataSource)} over the
      *                           same {@code DataSource} the repositories read through - the same manager
@@ -89,6 +102,12 @@ public final class DatasetUnitOfWork {
         template.setIsolationLevel(TransactionDefinition.ISOLATION_DEFAULT);
         template.afterPropertiesSet();
         this.transactionTemplate = template;
+
+        TransactionTemplate verb = new TransactionTemplate(transactionManager);
+        verb.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        verb.setIsolationLevel(TransactionDefinition.ISOLATION_DEFAULT);
+        verb.afterPropertiesSet();
+        this.verbTemplate = verb;
     }
 
     /**
@@ -125,6 +144,75 @@ public final class DatasetUnitOfWork {
             work.run();
             return null;
         });
+    }
+
+    /**
+     * Persists one COBOL I/O verb on its own, so that nothing which happens afterwards can undo it.
+     *
+     * <p><strong>This is the non-CICS batch contract, and it is the opposite of
+     * {@link #execute(String, Supplier)}.</strong> The two exist because the estate has two genuinely
+     * different persistence models and using one for the other loses parity in one direction or the
+     * other:
+     * <ul>
+     *   <li>The <strong>online</strong> programs run under CICS and reach a syncpoint at task end, so a
+     *       paragraph that rewrites two datasets either applies both or neither. {@code execute} joins
+     *       one boundary around the pair, which is what {@code 9600-WRITE-PROCESSING} needs.</li>
+     *   <li>The <strong>batch</strong> programs open their datasets directly, issue no syncpoint of any
+     *       kind, and every file they touch is defined {@code RECOVERY(NONE)}
+     *       ({@code app/csd/CARDDEMO.CSD:9, 21, 33, 46, 59, 72, 84, 96}). A {@code REWRITE} there is
+     *       durable when it completes, and {@code CALL 'CEE3ABD'} afterwards terminates the step without
+     *       taking it back. {@code CBACT04C} depends on this: {@code 1050-UPDATE-ACCOUNT} rewrites the
+     *       <em>previous</em> account at {@code app/cbl/CBACT04C.cbl:356} and processing then continues
+     *       into the next account group, where a failed read, a failed rate lookup or a failed
+     *       {@code WRITE} abends at {@code :632}. The rewritten account stays rewritten.</li>
+     * </ul>
+     *
+     * <p>Without this, a chunk transaction would roll the rewrite back and a re-run would apply the same
+     * interest a second time to an account whose cycle amounts had never been zeroed - a financial
+     * difference, not a bookkeeping one.
+     *
+     * <p>Suspending the enclosing transaction is deliberate and is what {@code REQUIRES_NEW} means here:
+     * the step's own transaction still exists for Spring Batch's bookkeeping, and this verb commits
+     * outside it.
+     *
+     * @param verb the COBOL verb and paragraph being persisted, used only to name it in a failure
+     * @param work the body: exactly one dataset-mutating call, and nothing else
+     * @param <T>  the body's result type
+     * @return the body's result
+     * @throws NullPointerException if {@code verb} or {@code work} is {@code null}
+     */
+    public <T> T persistVerb(String verb, Supplier<T> work) {
+        Objects.requireNonNull(verb, "A verb name is required so a failed write can name what it was "
+                + "persisting");
+        Objects.requireNonNull(work, "A body is required to persist as verb '" + verb + "'");
+        return verbTemplate.execute(status -> work.get());
+    }
+
+    /**
+     * Applies a DD statement's disposition, independently of any boundary the caller is inside.
+     *
+     * <p>The same independence {@link #persistVerb(String, Supplier)} gives a batch write, and for a
+     * closely related reason. A disposition is the initiator's work, not the program's: when a step ends,
+     * MVS applies each DD's normal or abnormal disposition, and it does so <em>after</em> the step -
+     * outside anything the step itself did. A disposition enrolled in the step's transaction would be
+     * undone by the very failure that triggered it, which is the one outcome that cannot be right.
+     *
+     * <p>Separate from {@code persistVerb} in name only - both need one new boundary - because a call site
+     * that reads {@code persistVerb("DELETE")} would suggest the program issued a verb it does not have.
+     * {@code CBACT04C} contains no statement that discards its output; {@code app/jcl/INTCALC.jcl:37}
+     * does, through {@code DISP=(NEW,CATLG,DELETE)}.
+     *
+     * @param <T>         what applying it reports
+     * @param disposition the DD name and disposition, for attribution in a diagnostic
+     * @param work        the body that applies it
+     * @return whatever {@code work} returns
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public <T> T persistDisposition(String disposition, Supplier<T> work) {
+        Objects.requireNonNull(disposition, "A disposition name is required so a failed disposition can "
+                + "name what it was applying");
+        Objects.requireNonNull(work, "A body is required to apply disposition '" + disposition + "'");
+        return verbTemplate.execute(status -> work.get());
     }
 
     /**

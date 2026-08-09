@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
+import static org.junit.jupiter.api.Assumptions.abort;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
@@ -11,8 +13,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.config.WebConfig;
 import com.vsergeychik.carddemo.config.WebConfig.JobSubmissionProperties;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.transaction.DateParmReader.DateParm;
 import com.vsergeychik.carddemo.transaction.ReportRequestController.InternalReaderJobSubmissionPort;
 import com.vsergeychik.carddemo.transaction.ReportRequestController.JobSubmissionPort;
@@ -20,25 +24,40 @@ import com.vsergeychik.carddemo.transaction.ReportRequestController.ProgramState
 import com.vsergeychik.carddemo.transaction.ReportRequestController.WriteQueueOutcome;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestRequest;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestResponse;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
 import com.vsergeychik.carddemo.util.DateUtilityJob.DateValidationResult;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystemException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.lang.reflect.Constructor;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.http.MediaType;
@@ -46,6 +65,8 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 /**
  * Proves {@link ReportRequestController} against {@code app/cbl/CORPT00C.cbl}, the 649-line CICS
@@ -75,6 +96,15 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 @DisplayName("ReportRequestController - CORPT00C, transaction CR00, POST /api/reports")
 class ReportRequestControllerTest {
 
+    /**
+     * The code page every test wires, which is the one {@code charset.dataset} declares.
+     *
+     * <p>{@code IBM037} rather than {@code US-ASCII} deliberately: the program's images and the
+     * eighty-byte queue records are encoded in the region's own code page, and this class asserts on the
+     * bytes that reach the destination, so it must use the code page a deployment uses.
+     */
+    private static final Charset DATASET_CHARSET = Charset.forName("IBM037");
+
     /** The AID token for {@code DFHENTER}, which is what {@code EVALUATE EIBAID} branches on first. */
     private static final String ENTER = "ENTER";
 
@@ -90,7 +120,7 @@ class ReportRequestControllerTest {
 
     private ReportRequestController controllerAt(String instant) {
         return new ReportRequestController(dateUtility, port,
-                Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
+                Clock.fixed(Instant.parse(instant), ZoneOffset.UTC), DATASET_CHARSET);
     }
 
     // =================================================================================================
@@ -112,8 +142,8 @@ class ReportRequestControllerTest {
     }
 
     private static JobSubmissionProperties properties(Path root, Path destination) {
-        return new JobSubmissionProperties("JOBS", "INREADER", 80, "FIXED", "UNBLOCKED", "MOD",
-                root.toString(), destination.toString());
+        return new JobSubmissionProperties("JOBS", "INREADER", "US-ASCII", 80, "FIXED",
+                "UNBLOCKED", "MOD", root.toString(), destination.toString());
     }
 
     /** Right-space-pads to the eighty bytes every skeleton record occupies. */
@@ -289,7 +319,7 @@ class ReportRequestControllerTest {
         void theMonthEndDerivation(String instant, String expectedRange) {
             CapturingPort local = new CapturingPort();
             ProgramState state = new ReportRequestController(dateUtility, local,
-                    Clock.fixed(Instant.parse(instant), ZoneOffset.UTC))
+                    Clock.fixed(Instant.parse(instant), ZoneOffset.UTC), DATASET_CHARSET)
                     .mainPara(reenter().withMonthly("Y").withConfirm("Y"));
 
             assertThat(state.parmStartDate2() + " " + state.parmEndDate2()).isEqualTo(expectedRange);
@@ -442,6 +472,11 @@ class ReportRequestControllerTest {
             assertThat(other.message()).startsWith("Invalid key pressed. Please see below...");
             assertThat(other.cursorRequestedOn(ReportRequestRequest.ScreenField.MONTHLY)).isTrue();
             assertThat(other.submittedRecords()).isEmpty();
+
+            // The PF3 arm places no cursor - it transfers instead of sending - so the metadata names no
+            // field. Reporting a field the program never asked for would be worse than reporting none.
+            assertThat(pf3.screenMetadata().cursorField()).isNull();
+            assertThat(other.screenMetadata().cursorField()).isEqualTo("MONTHLY");
         }
 
         @Test
@@ -469,6 +504,26 @@ class ReportRequestControllerTest {
             assertThat(state.commarea().toProgram()).isEqualTo("COSGN00C");
             assertThat(state.commarea().isEnter()).isTrue();
             assertThat(state.response().getNextProgram()).isEqualTo("COSGN00C");
+            // An XCTL states no map: which map COSGN00C paints is its decision, made after this program
+            // has ended, and CORPT00C names none in the XCTL at :548-551. Publishing CORPT00 / CORPT0A
+            // here would tell the client to repaint the screen it is leaving.
+            assertThat(state.response().getNextMapset()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(state.response().getNextMap()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAP_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a SEND names this screen's own mapset and map, which is the other case")
+        void aSendNamesThisScreen() {
+            ProgramState state = new ProgramState();
+
+            controllerAt(FIXED_MIDNIGHT).sendTrnrptScreen(state);
+
+            assertThat(state.response().getNextMapset()).isEqualTo(ReportRequestResponse.MAPSET_NAME);
+            assertThat(state.response().getNextMap()).isEqualTo(ReportRequestResponse.MAP_NAME);
+            assertThat(state.response().getNextProgram())
+                    .isEqualTo(ReportRequestController.PROGRAM_NAME);
         }
     }
 
@@ -579,7 +634,7 @@ class ReportRequestControllerTest {
                            String edtyyyy, String expectedMessage) {
             CapturingPort local = new CapturingPort();
             ProgramState state = new ReportRequestController(dateUtility, local,
-                    Clock.fixed(Instant.parse(FIXED_MIDNIGHT), ZoneOffset.UTC))
+                    Clock.fixed(Instant.parse(FIXED_MIDNIGHT), ZoneOffset.UTC), DATASET_CHARSET)
                     .mainPara(customRequest(nullToEmpty(sdtmm), nullToEmpty(sdtdd),
                             nullToEmpty(sdtyyyy), nullToEmpty(edtmm), nullToEmpty(edtdd),
                             nullToEmpty(edtyyyy)));
@@ -695,7 +750,7 @@ class ReportRequestControllerTest {
             failing.failFrom = 3;
 
             ProgramState state = new ReportRequestController(dateUtility, failing,
-                    Clock.fixed(Instant.parse(FIXED_MIDNIGHT), ZoneOffset.UTC))
+                    Clock.fixed(Instant.parse(FIXED_MIDNIGHT), ZoneOffset.UTC), DATASET_CHARSET)
                     .mainPara(reenter().withMonthly("Y").withConfirm("Y"));
 
             assertThat(failing.records).hasSize(2);
@@ -820,7 +875,7 @@ class ReportRequestControllerTest {
         void theAppendSemantics(@TempDir Path root) throws IOException {
             Path destination = root.resolve("inreader").resolve("JOBS");
             InternalReaderJobSubmissionPort submitter =
-                    new InternalReaderJobSubmissionPort(properties(root, destination));
+                    new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
 
             assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01))
                     .isEqualTo(WriteQueueOutcome.NORMAL);
@@ -829,51 +884,577 @@ class ReportRequestControllerTest {
             assertThat(Files.readAllBytes(destination)).hasSize(160);
             assertThat(submitter.properties().queueName()).isEqualTo("JOBS");
             assertThat(submitter.properties().ddName()).isEqualTo("INREADER");
-            assertThat(submitter.queueCharset()).isEqualTo(StandardCharsets.US_ASCII);
+            assertThat(submitter.queueCharset())
+                    .as("the records are encoded in the configured code page, not in a hardwired one")
+                    .isEqualTo(DATASET_CHARSET);
             assertThat(WriteQueueOutcome.NORMAL.fileStatus()).isEqualTo(FileStatus.Outcome.OK);
             assertThat(WriteQueueOutcome.notOpen().fileStatus()).isEqualTo(FileStatus.Outcome.OTHER);
         }
 
         @Test
-        @DisplayName("a record of the wrong width, or in a multi-byte code page, is refused")
+        @DisplayName("a record of the wrong width, or one the code page cannot carry, is refused")
         void theRefusals(@TempDir Path root) throws IOException {
             Path destination = root.resolve("inreader").resolve("JOBS");
             InternalReaderJobSubmissionPort submitter =
-                    new InternalReaderJobSubmissionPort(properties(root, destination));
+                    new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
 
             assertThat(submitter.writeQueueTd("too short").resp()).isEqualTo(FileStatus.LENGERR);
             assertThat(submitter.writeQueueTd(" ".repeat(81)).resp()).isEqualTo(FileStatus.LENGERR);
+
+            // The premise is asserted rather than assumed, because the port's code page now comes from
+            // configuration: if a future binding could represent this character, the refusal below
+            // would stop being a refusal and this case would silently stop testing anything.
+            assertThat(DATASET_CHARSET.newEncoder().canEncode('\u20ac'))
+                    .as("%s cannot represent U+20AC, which is what makes the record unwritable",
+                            DATASET_CHARSET.name())
+                    .isFalse();
             assertThat(submitter.writeQueueTd("\u20ac".repeat(80)).resp()).isEqualTo(FileStatus.INVREQ);
 
             // A fixed-width record area is addressed by absolute byte offset, so a code page that
             // encodes one character to more than one byte cannot carry it: INVREQ, never a 160-byte
-            // "eighty-byte" record.
+            // "eighty-byte" record. U+00E9 is deliberately a character IBM037 does carry in one byte,
+            // so what this case isolates is the WIDTH, not the representability tested above.
+            assertThat(DATASET_CHARSET.newEncoder().canEncode('\u00e9')).isTrue();
             InternalReaderJobSubmissionPort utf8 = new InternalReaderJobSubmissionPort(
                     properties(root, destination), StandardCharsets.UTF_8);
             assertThat(utf8.writeQueueTd("\u00e9".repeat(80)).resp()).isEqualTo(FileStatus.INVREQ);
         }
 
         @Test
+        @DisplayName("every character the JCL skeletons actually contain survives the configured page")
+        void theSkeletonTextIsCarriedByTheConfiguredCodePage(@TempDir Path root) throws IOException {
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
+
+            // Gate G42 requires the emitted records to be byte-identical to the source's 80-byte
+            // skeleton records. Under a configured code page that means every character of every
+            // skeleton line must encode to exactly one byte in it - so all seventeen are written, and
+            // the resulting file is asserted to be exactly seventeen eighty-byte records.
+            List<String> skeleton = List.of(ReportRequestController.JOB_LINE_01,
+                    ReportRequestController.JOB_LINE_02, ReportRequestController.JOB_LINE_03,
+                    ReportRequestController.JOB_LINE_04, ReportRequestController.JOB_LINE_05,
+                    ReportRequestController.JOB_LINE_06, ReportRequestController.JOB_LINE_07,
+                    ReportRequestController.JOB_LINE_08, ReportRequestController.JOB_LINE_09,
+                    ReportRequestController.JOB_LINE_10, ReportRequestController.JOB_LINE_11,
+                    ReportRequestController.JOB_LINE_12, ReportRequestController.JOB_LINE_13,
+                    ReportRequestController.JOB_LINE_14, ReportRequestController.JOB_LINE_15,
+                    ReportRequestController.JOB_LINE_16, ReportRequestController.JOB_LINE_17);
+            assertThat(skeleton).hasSize(ReportRequestController.JOB_LINE_COUNT);
+
+            for (String line : skeleton) {
+                assertThat(submitter.writeQueueTd(line))
+                        .as("skeleton line '%s' is writable in %s", line.strip(), DATASET_CHARSET.name())
+                        .isEqualTo(WriteQueueOutcome.NORMAL);
+            }
+
+            assertThat(Files.readAllBytes(destination))
+                    .hasSize(skeleton.size() * JobSubmissionProperties.TDQ_RECORD_LENGTH);
+        }
+
+        @Test
         @DisplayName("an unusable destination reports NOTOPEN per write rather than failing start-up")
         void theUnusableDestination(@TempDir Path root) throws IOException {
             InternalReaderJobSubmissionPort rootless =
-                    new InternalReaderJobSubmissionPort(properties(root, Path.of("/")));
+                    new InternalReaderJobSubmissionPort(properties(root, Path.of("/")),
+                            DATASET_CHARSET);
             assertThat(rootless.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
                     .isEqualTo(FileStatus.NOTOPEN);
 
             Path occupied = Files.createFile(root.resolve("occupied"));
             InternalReaderJobSubmissionPort blocked = new InternalReaderJobSubmissionPort(
-                    properties(root, occupied.resolve("JOBS")));
+                    properties(root, occupied.resolve("JOBS")), DATASET_CHARSET);
             assertThat(blocked.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
                     .isEqualTo(FileStatus.NOTOPEN);
+        }
+
+        @Test
+        @DisplayName("a symbolic link at the destination itself is refused, not followed")
+        void aLinkedDestinationIsRefused(@TempDir Path root) throws IOException {
+            // The whole point of DISPOSITION(MOD): a wrong target does not fail, it succeeds against
+            // the wrong file. A link planted at the destination satisfies every lexical check the
+            // startup validation can make - it is absolute, has no '..' segment, names no reference
+            // tree and lies inside the approved root - while sending every 80-byte record to whatever
+            // it points at (CWE-59).
+            Path elsewhere = Files.createDirectories(root.resolve("elsewhere"));
+            Path stolen = elsewhere.resolve("STOLEN");
+            Path inreader = Files.createDirectories(root.resolve("inreader"));
+            Path destination = inreader.resolve("JOBS");
+            Files.createSymbolicLink(destination, stolen);
+
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.exists(stolen)).isFalse();
+        }
+
+        @Test
+        @DisplayName("a symbolic link on the way to the destination is refused too")
+        void aLinkedDirectoryComponentIsRefused(@TempDir Path root) throws IOException {
+            // The link need not be the leaf. A link where a directory is expected redirects everything
+            // beneath it, and no amount of path algebra performed at start-up can see it.
+            Path elsewhere = Files.createDirectories(root.resolve("elsewhere"));
+            Files.createSymbolicLink(root.resolve("inreader"), elsewhere);
+            Path destination = root.resolve("inreader").resolve("JOBS");
+
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.exists(elsewhere.resolve("JOBS"))).isFalse();
+        }
+
+        @Test
+        @DisplayName("an approved root that does not exist is a deployment fault, reported as NOTOPEN")
+        void anAbsentApprovedRootIsRefused(@TempDir Path root) {
+            // The root is operator-provisioned on purpose: it is the boundary every write is checked
+            // against, and a port that created its own boundary would be checking its own work. Its
+            // absence is therefore reported rather than repaired.
+            Path missing = root.resolve("never-provisioned");
+            InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
+                    properties(missing, missing.resolve("inreader").resolve("JOBS")));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+        }
+
+        @Test
+        @DisplayName("directories below the root are created one inspected level at a time")
+        void theDirectoriesBelowTheRootAreCreated(@TempDir Path root) throws IOException {
+            Path destination = root.resolve("inreader").resolve("today").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+
+            assertThat(Files.isDirectory(root.resolve("inreader"))).isTrue();
+            assertThat(Files.readAllBytes(destination)).hasSize(80);
+        }
+
+        /**
+         * The write-time containment re-check, driven directly.
+         *
+         * <p>It exists to catch a directory being substituted <em>after</em> the descent inspected it and
+         * <em>before</em> the leaf is opened. That race cannot be staged reliably from a single-threaded
+         * test, but the two states it would produce can be handed to the check as inputs, which is what
+         * makes the guard known to work rather than assumed to.
+         */
+        @Test
+        @DisplayName("a directory that resolves elsewhere than itself is refused before the open")
+        void aSubstitutedParentIsRefused(@TempDir Path root) throws IOException {
+            Path real = Files.createDirectory(root.resolve("real"));
+            Path substituted = Files.createSymbolicLink(root.resolve("inreader"), real);
+
+            assertThatExceptionOfType(IOException.class)
+                    .isThrownBy(() -> InternalReaderJobSubmissionPort
+                            .requireParentStillWithinRoot(substituted, root.toRealPath()))
+                    .withMessageContaining("resolves elsewhere");
+
+            // And the honest case passes: a real directory below the root resolves to itself.
+            InternalReaderJobSubmissionPort.requireParentStillWithinRoot(real.toRealPath(),
+                    root.toRealPath());
+        }
+
+        @Test
+        @DisplayName("a directory that resolves outside the approved root is refused before the open")
+        void aParentOutsideTheRootIsRefused(@TempDir Path root, @TempDir Path elsewhere)
+                throws IOException {
+            Path outside = Files.createDirectory(elsewhere.resolve("inreader")).toRealPath();
+
+            assertThatExceptionOfType(IOException.class)
+                    .isThrownBy(() -> InternalReaderJobSubmissionPort
+                            .requireParentStillWithinRoot(outside, root.toRealPath()))
+                    .withMessageContaining("resolves elsewhere");
         }
 
         @Test
         @DisplayName("a binding that is not the CSD's RECORDSIZE(80) is refused at construction")
         void theBindingIsCheckedAgainstTheCsd(@TempDir Path root) {
             assertThatIllegalStateException().isThrownBy(() -> new InternalReaderJobSubmissionPort(
-                    new JobSubmissionProperties("JOBS", "INREADER", 79, "FIXED", "UNBLOCKED", "MOD",
-                            root.toString(), root.resolve("JOBS").toString())));
+                    new JobSubmissionProperties("JOBS", "INREADER", "US-ASCII", 79, "FIXED",
+                            "UNBLOCKED", "MOD", root.toString(),
+                            root.resolve("JOBS").toString())));
+        }
+
+        @Test
+        @DisplayName("the code page comes from the configuration, not from a hard-wired default")
+        void theCodePageIsTheConfiguredOne(@TempDir Path root) throws IOException {
+            // An internal reader consumes EBCDIC. A port that hard-wired US-ASCII would append eighty
+            // bytes of the wrong code page and report NORMAL for each, which is the failure mode this
+            // property exists to remove: the bytes look like the right length and are the wrong text.
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            JobSubmissionProperties ebcdic = new JobSubmissionProperties("JOBS", "INREADER", "IBM037",
+                    80, "FIXED", "UNBLOCKED", "MOD", root.toString(), destination.toString());
+
+            InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(ebcdic);
+
+            assertThat(submitter.queueCharset()).isEqualTo(Charset.forName("IBM037"));
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+
+            byte[] written = Files.readAllBytes(destination);
+            assertThat(written).hasSize(80);
+            // Byte-for-byte the EBCDIC encoding of the record, and demonstrably NOT the ASCII one -
+            // which is the whole distinction the finding was about (gate G42).
+            assertThat(written).isEqualTo(
+                    ReportRequestController.JOB_LINE_01.getBytes(Charset.forName("IBM037")));
+            assertThat(written).isNotEqualTo(
+                    ReportRequestController.JOB_LINE_01.getBytes(StandardCharsets.US_ASCII));
+            // The text is recoverable, so the record is the record CORPT00C composed and not mojibake.
+            assertThat(new String(written, Charset.forName("IBM037")))
+                    .isEqualTo(ReportRequestController.JOB_LINE_01);
+        }
+
+        @Test
+        @DisplayName("a destination that is a symbolic link is refused rather than followed")
+        void aSymbolicLinkDestinationIsRefused(@TempDir Path root) throws IOException {
+            // CWE-59. The destination's path is in a configuration file, so it is knowable; if it is
+            // replaced by a link before the first write, an unhardened append lands on the link's
+            // target instead - job text naming datasets and users, written wherever somebody else chose.
+            Path outside = Files.createFile(root.resolve("elsewhere"));
+            Path directory = Files.createDirectories(root.resolve("inreader"));
+            Path destination = directory.resolve("JOBS");
+            assumeSymbolicLinksSupported(() -> Files.createSymbolicLink(destination, outside));
+
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            // The link's target is untouched: the refusal happened at the open, not after a partial
+            // write.
+            assertThat(Files.readAllBytes(outside)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a directory element that is a symbolic link is refused rather than followed")
+        void aSymbolicLinkDirectoryElementIsRefused(@TempDir Path root) throws IOException {
+            Path outside = Files.createDirectories(root.resolve("elsewhere"));
+            Path linked = root.resolve("inreader");
+            assumeSymbolicLinksSupported(() -> Files.createSymbolicLink(linked, outside));
+
+            InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
+                    properties(root, linked.resolve("JOBS")));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.exists(outside.resolve("JOBS"))).isFalse();
+        }
+
+        @Test
+        @DisplayName("a directory that resolves outside the approved root once links are followed is "
+                + "refused")
+        void anEscapingRealPathIsRefused(@TempDir Path parent) throws IOException {
+            // JobSubmissionProperties.validate() proved containment over the configured STRINGS, and
+            // deliberately touched no filesystem - so what it cannot see is a link that leaves the tree.
+            // The writer therefore re-establishes containment against real paths immediately before the
+            // open, which is also why it is re-checked per write rather than once at start-up.
+            Path root = Files.createDirectories(parent.resolve("approved"));
+            Path escape = Files.createDirectories(parent.resolve("outside").resolve("inreader"));
+            Path linked = root.resolve("inreader");
+            assumeSymbolicLinksSupported(() -> Files.createSymbolicLink(linked, escape));
+
+            InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
+                    properties(root, linked.resolve("JOBS")));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.exists(escape.resolve("JOBS"))).isFalse();
+        }
+
+        @Test
+        @DisplayName("the destination and every directory this port creates are owner-only")
+        void theCreatedPathIsOwnerOnly(@TempDir Path root) throws IOException {
+            // CWE-377. The previous default put the destination beneath the shared temporary directory,
+            // where a world-writable predictable path could be pre-created or read by any local account.
+            // The root moved out of it, and creation is owner-only so a wider-permissioned deployment
+            // directory does not re-open the same exposure through inheritance.
+            Path destination = root.resolve("inreader").resolve("deep").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+
+            assumeThat(FileSystems.getDefault().supportedFileAttributeViews()).contains("posix");
+            assertThat(Files.getPosixFilePermissions(destination))
+                    .containsExactlyInAnyOrder(PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE);
+            assertThat(Files.getPosixFilePermissions(root.resolve("inreader")))
+                    .containsExactlyInAnyOrder(PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
+            assertThat(Files.getPosixFilePermissions(destination.getParent()))
+                    .containsExactlyInAnyOrder(PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
+        }
+
+        @Test
+        @DisplayName("an existing directory tree is appended to rather than re-created or refused")
+        void anExistingTreeIsAppendedTo(@TempDir Path root) throws IOException {
+            // The hardened creation must not have made the ordinary case - a deployment whose directory
+            // already exists, with whatever permissions the deployment chose - into a failure.
+            Path directory = Files.createDirectories(root.resolve("inreader"));
+            Path destination = directory.resolve("JOBS");
+            Files.write(destination, "existing".getBytes(StandardCharsets.US_ASCII));
+
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+
+            // DISPOSITION(MOD): the eight bytes already there survive and the record follows them.
+            assertThat(Files.readAllBytes(destination)).hasSize(88);
+            assertThat(new String(Files.readAllBytes(destination), StandardCharsets.US_ASCII))
+                    .startsWith("existing")
+                    .endsWith(ReportRequestController.JOB_LINE_01);
+        }
+
+        /**
+         * Creates a symbolic link, skipping the calling test where the filesystem will not have one.
+         *
+         * <p>Every hardening these tests assert is about links, so a filesystem without them - a Windows
+         * volume without the privilege, for instance - has nothing to assert rather than something
+         * broken. Skipped rather than passed vacuously, so a run that could not exercise the hardening
+         * says so.
+         *
+         * @param link the link to create
+         * @throws IOException if the link cannot be created for a reason other than lack of support
+         */
+        private void assumeSymbolicLinksSupported(LinkCreation link) throws IOException {
+            try {
+                link.create();
+            } catch (UnsupportedOperationException | FileSystemException unsupported) {
+                abort("This filesystem does not support symbolic links, so there is no link-following "
+                        + "hazard to assert against here: " + unsupported.getClass().getName());
+            }
+        }
+
+        /** A symbolic-link creation that may not be supported. */
+        @FunctionalInterface
+        private interface LinkCreation {
+
+            /**
+             * Creates the link.
+             *
+             * @throws IOException if it cannot be created
+             */
+            void create() throws IOException;
+        }
+
+        // ----------------------------------------------------- the code page the records actually carry
+
+        @Test
+        @DisplayName("the injected code page is the one the records are encoded in, EBCDIC included")
+        void theInjectedCodePageIsWhatTheRecordsCarry(@TempDir Path root) throws IOException {
+            // A region whose internal reader expects EBCDIC gets EBCDIC. Under IBM037 a '/' is 0x61, so
+            // the two leading slashes of every JCL record are observable in the destination's bytes - and
+            // they are NOT 0x2F, which is what US-ASCII would have written.
+            Charset ebcdic = Charset.forName("IBM037");
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
+                    properties(root, destination), ebcdic);
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+
+            byte[] written = Files.readAllBytes(destination);
+            assertThat(written).hasSize(80);
+            assertThat(written).isEqualTo(ReportRequestController.JOB_LINE_01.getBytes(ebcdic));
+            assertThat(written[0]).isEqualTo((byte) 0x61);
+            assertThat(submitter.queueCharset()).isEqualTo(ebcdic);
+        }
+
+        @Test
+        @DisplayName("Spring injects the dataset code page, not a hard-wired US-ASCII")
+        void theInjectedConstructorIsTheOneSpringSelects() throws Exception {
+            // The defect this closes was a wiring one: @Autowired sat on the constructor that hard-wires
+            // US-ASCII, so a production region configured for IBM037 submitted ASCII bytes and nothing
+            // said so. The annotation belongs on the constructor that takes the code page.
+            Constructor<?> injected = InternalReaderJobSubmissionPort.class.getConstructor(
+                    JobSubmissionProperties.class, Charset.class);
+            Constructor<?> defaulted = InternalReaderJobSubmissionPort.class.getConstructor(
+                    JobSubmissionProperties.class);
+
+            assertThat(injected.isAnnotationPresent(Autowired.class))
+                    .as("the code page must be injected")
+                    .isTrue();
+            assertThat(defaulted.isAnnotationPresent(Autowired.class))
+                    .as("the US-ASCII default must not be the injection point")
+                    .isFalse();
+            assertThat(injected.getParameters()[1].getAnnotation(Qualifier.class).value())
+                    .isEqualTo(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME);
+
+            // Same wiring on the controller, whose working-storage images are rendered the same way.
+            Constructor<?> controller = ReportRequestController.class.getConstructor(
+                    DateUtilityJob.class, JobSubmissionPort.class, Clock.class, Charset.class);
+            assertThat(controller.isAnnotationPresent(Autowired.class)).isTrue();
+            assertThat(controller.getParameters()[3].getAnnotation(Qualifier.class).value())
+                    .isEqualTo(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME);
+            // Stronger than "the three-argument constructor is not the injection point": there IS no
+            // three-argument constructor any more. A convenience overload that defaulted the code page
+            // was the path by which US-ASCII reached a region configured for IBM037, so it was removed
+            // rather than merely left unannotated - nothing can default the code page now.
+            assertThat(ReportRequestController.class.getConstructors())
+                    .as("one constructor, and it takes the code page")
+                    .hasSize(1);
+            assertThat(ReportRequestController.class.getConstructors()[0].getParameterTypes())
+                    .containsExactly(DateUtilityJob.class, JobSubmissionPort.class, Clock.class,
+                            Charset.class);
+        }
+
+        // --------------------------------------------------- one complete record per write, in order
+
+        @Test
+        @DisplayName("concurrent writes each land as one whole 80-byte record, none interleaved")
+        void concurrentWritesAreWholeRecords(@TempDir Path root) throws Exception {
+            // RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) means the reader takes the destination eighty
+            // bytes at a time. A write that landed in two pieces with another request's bytes between
+            // them would not corrupt one record, it would corrupt two and shift every record after them.
+            //
+            // What this test proves, stated plainly: the invariant holds under contention. It does not
+            // prove the lock is what holds it here, because a POSIX provider's O_APPEND already writes
+            // eighty bytes indivisibly and this test cannot make it do otherwise. The lock is what makes
+            // the invariant independent of the provider - java.nio.file promises nothing about it - and
+            // what makes the containment check and the open one indivisible step.
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+            int writers = 8;
+            int perWriter = 25;
+            ExecutorService pool = Executors.newFixedThreadPool(writers);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<?>> submitted = new ArrayList<>();
+            for (int writer = 0; writer < writers; writer++) {
+                String record = pad("//W" + writer);
+                submitted.add(pool.submit(() -> {
+                    start.await();
+                    for (int written = 0; written < perWriter; written++) {
+                        assertThat(submitter.writeQueueTd(record).normal()).isTrue();
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> future : submitted) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+            pool.shutdown();
+            assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+            byte[] written = Files.readAllBytes(destination);
+            assertThat(written).hasSize(writers * perWriter * 80);
+            // Every 80-byte slot must be exactly one writer's record - not a splice of two.
+            Map<String, Integer> counts = new LinkedHashMap<>();
+            for (int offset = 0; offset < written.length; offset += 80) {
+                String slot = new String(written, offset, 80, StandardCharsets.US_ASCII);
+                assertThat(slot).matches("//W\\d {76}");
+                counts.merge(slot, 1, Integer::sum);
+            }
+            assertThat(counts).hasSize(writers);
+            assertThat(counts.values()).allMatch(count -> count == perWriter);
+        }
+
+        // ------------------------------------------------------------- CWE-59 and CWE-367 containment
+
+        @Test
+        @DisplayName("a symlinked approved root cannot redirect the append")
+        void aSymlinkedRootIsRefused(@TempDir Path scratch) throws IOException {
+            // The plainest form of the redirection: /tmp/carddemo is a link to somewhere else. Lexical
+            // containment cannot see it, because both configured paths still read as contained.
+            Path elsewhere = Files.createDirectories(scratch.resolve("elsewhere"));
+            Path root = scratch.resolve("approved");
+            assumeSymlinksSupported(() -> Files.createSymbolicLink(root, elsewhere));
+            Path destination = root.resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            // The write is refused rather than redirected, and NOTOPEN is what an extrapartition queue
+            // whose dataset cannot be opened reports.
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.exists(elsewhere.resolve("JOBS")))
+                    .as("nothing may be written through the link")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a symlinked destination file cannot redirect the append - NOFOLLOW_LINKS")
+        void aSymlinkedDestinationIsRefused(@TempDir Path root) throws IOException {
+            // The one a containment check cannot reach: the final component is where checking stops and
+            // opening begins, so it is the open that has to refuse. O_NOFOLLOW leaves no window at all.
+            Path outside = Files.createFile(root.resolve("outside.txt"));
+            Path directory = Files.createDirectories(root.resolve("inreader"));
+            Path destination = directory.resolve("JOBS");
+            assumeSymlinksSupported(() -> Files.createSymbolicLink(destination, outside));
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.size(outside))
+                    .as("the linked-to file must not have received the record")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("a symlinked directory between the root and the file cannot redirect the append")
+        void aSymlinkedParentIsRefused(@TempDir Path scratch) throws IOException {
+            Path root = Files.createDirectories(scratch.resolve("approved"));
+            Path elsewhere = Files.createDirectories(scratch.resolve("elsewhere"));
+            Path directory = root.resolve("inreader");
+            assumeSymlinksSupported(() -> Files.createSymbolicLink(directory, elsewhere));
+            Path destination = directory.resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.exists(elsewhere.resolve("JOBS"))).isFalse();
+        }
+
+        @Test
+        @DisplayName("containment is revalidated per write, so a root swapped mid-run stops the appends")
+        void containmentIsRevalidatedPerWrite(@TempDir Path scratch) throws IOException {
+            // The time-of-check window (CWE-367). The first write establishes a legitimate destination;
+            // the root is then replaced by a link, as an attacker who wins the race would arrange. The
+            // second write must refuse, which it can only do if it checks again rather than trusting what
+            // the first write established.
+            Path root = Files.createDirectories(scratch.resolve("approved"));
+            Path elsewhere = Files.createDirectories(scratch.resolve("elsewhere"));
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+            assertThat(Files.readAllBytes(destination)).hasSize(80);
+
+            Files.delete(destination);
+            Files.delete(destination.getParent());
+            Files.delete(root);
+            assumeSymlinksSupported(() -> Files.createSymbolicLink(root, elsewhere));
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_02).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.exists(elsewhere.resolve("inreader"))).isFalse();
+        }
+
+        /**
+         * Creates a symbolic link, skipping the test where the filesystem will not have one.
+         *
+         * @param link the link to create
+         */
+        private void assumeSymlinksSupported(SymlinkCreation link) {
+            try {
+                link.create();
+            } catch (IOException | UnsupportedOperationException unsupported) {
+                Assumptions.abort("this filesystem does not support symbolic links, so the redirection "
+                        + "these tests defend against cannot be constructed here: "
+                        + unsupported.getMessage());
+            }
+        }
+
+        /** A symbolic-link creation that may not be supported. */
+        private interface SymlinkCreation {
+            void create() throws IOException;
         }
     }
 
@@ -886,14 +1467,20 @@ class ReportRequestControllerTest {
     class TheHttpSurface {
 
         @Test
-        @DisplayName("the adapter adds nothing to MAIN-PARA")
+        @DisplayName("the adapter adds nothing to MAIN-PARA, and carries the metadata beside it")
         void theAdapterIsThin() {
-            ReportRequestResponse response = controllerAt(FIXED_INSTANT)
+            ScreenResponse<ReportRequestResponse> answer = controllerAt(FIXED_INSTANT)
                     .submitReportRequest(ReportRequestRequest.empty());
 
+            ReportRequestResponse response = answer.screen();
             assertThat(response.getNextProgram()).isEqualTo("CORPT00C");
             assertThat(response.getTrnnameo()).isEqualTo("CR00");
             assertThat(ReportRequestController.REPORTS_PATH).isEqualTo("/api/reports");
+            // The cursor request and all seventeen attribute quads are metadata by declaration, so they
+            // travel beside the screen rather than not travelling at all.
+            assertThat(answer.screenMetadata().fields())
+                    .hasSize(ReportRequestResponse.ScreenField.values().length);
+            assertThat(answer.screenMetadata().cursorField()).isEqualTo("MONTHLY");
         }
 
         @Test
@@ -979,7 +1566,7 @@ class ReportRequestControllerTest {
 
         NonNumericYearController(DateUtilityJob dateUtilityJob, JobSubmissionPort submissionPort,
                                  Clock clock, int failOnCall) {
-            super(dateUtilityJob, submissionPort, clock);
+            super(dateUtilityJob, submissionPort, clock, DATASET_CHARSET);
             this.failOnCall = failOnCall;
         }
 
@@ -995,7 +1582,7 @@ class ReportRequestControllerTest {
 
         BlankSkeletonController(DateUtilityJob dateUtilityJob, JobSubmissionPort submissionPort,
                                 Clock clock) {
-            super(dateUtilityJob, submissionPort, clock);
+            super(dateUtilityJob, submissionPort, clock, DATASET_CHARSET);
         }
 
         @Override
@@ -1009,7 +1596,7 @@ class ReportRequestControllerTest {
 
         SentinellessSkeletonController(DateUtilityJob dateUtilityJob, JobSubmissionPort submissionPort,
                                        Clock clock) {
-            super(dateUtilityJob, submissionPort, clock);
+            super(dateUtilityJob, submissionPort, clock, DATASET_CHARSET);
         }
 
         @Override
@@ -1026,7 +1613,7 @@ class ReportRequestControllerTest {
 
         FlagRaisingController(DateUtilityJob dateUtilityJob, JobSubmissionPort submissionPort,
                               Clock clock) {
-            super(dateUtilityJob, submissionPort, clock);
+            super(dateUtilityJob, submissionPort, clock, DATASET_CHARSET);
         }
 
         @Override

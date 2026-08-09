@@ -1163,8 +1163,18 @@ class ReportRequestResponseTest {
             response.echoNavigation(context);
 
             assertThat(response.getNextProgram()).isEqualTo("COMEN01C").hasSize(8);
-            assertThat(response.getNextMapset()).isEqualTo(ReportRequestResponse.MAPSET_NAME);
-            assertThat(response.getNextMap()).isEqualTo(ReportRequestResponse.MAP_NAME);
+            // echoNavigation is the transfer projection, and an XCTL states no map: which map COMEN01C
+            // will paint is its decision, not this program's, and CORPT00C names none in the XCTL at
+            // :548-551. Blank means "not stated here" - naming this screen's own map would tell the
+            // client to repaint the screen it is leaving.
+            assertThat(response.getNextMapset()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(response.getNextMap()).isBlank().hasSize(NavigationContext.LAST_MAP_LENGTH);
+            // A SEND is the other case, and the constructor still names this screen there.
+            assertThat(new ReportRequestResponse().getNextMapset())
+                    .isEqualTo(ReportRequestResponse.MAPSET_NAME);
+            assertThat(new ReportRequestResponse().getNextMap())
+                    .isEqualTo(ReportRequestResponse.MAP_NAME);
             assertThat(response.getNavigationContext()).isSameAs(context);
             assertThat(response.getNavigationContext().isReenter()).isTrue();
             assertThat(response.getNavigationContext().isAdmin()).isTrue();
@@ -1636,8 +1646,10 @@ class ReportRequestResponseTest {
             assertThat(loud).contains("ERRMSGO='boom")
                     .contains("DFHGREEN")
                     .contains("nextProgram='COSGN00C")
-                    .contains("nextMapset='CORPT00")
-                    .contains("nextMap='CORPT0A")
+                    // Blanked, because echoNavigation is the transfer projection and an XCTL states no
+                    // map. The rendering shows what the response actually carries.
+                    .contains("nextMapset='" + " ".repeat(NavigationContext.LAST_MAPSET_LENGTH))
+                    .contains("nextMap='" + " ".repeat(NavigationContext.LAST_MAP_LENGTH))
                     .contains(NavigationContext.TO_PROGRAM_FIELD);
         }
     }

@@ -114,14 +114,17 @@ class UserDeleteResponseTest {
     class MapProjection {
 
         @Test
-        @DisplayName("there are exactly 11 map-derived members and 15 components in all")
+        @DisplayName("there are exactly 11 map-derived members and 16 components in all")
         void componentCount() {
             assertThat(UserDeleteResponse.MAP_FIELD_COUNT).isEqualTo(11);
-            assertThat(componentNames()).hasSize(15);
+            assertThat(componentNames()).hasSize(16);
             assertThat(componentNames().subList(0, 11))
                     .containsExactlyElementsOf(MAP_MEMBERS);
             assertThat(componentNames().subList(11, 15))
                     .containsExactlyElementsOf(NAV_MEMBERS);
+            // The sixteenth is the commarea extension COUSR03C declares for itself at :50-58; it is
+            // conversation state, not a DFHMDF, so it sits outside the map-derived count.
+            assertThat(componentNames().get(15)).isEqualTo("cu03Info");
         }
 
         @Test
@@ -242,7 +245,7 @@ class UserDeleteResponseTest {
         void countStaysEleven() {
             assertThat(UserDeleteResponse.MAP_FIELD_COUNT).isEqualTo(11);
             assertThat(componentNames()).hasSize(UserDeleteResponse.MAP_FIELD_COUNT
-                    + NAV_MEMBERS.size());
+                    + NAV_MEMBERS.size() + 1);
         }
     }
 
@@ -501,13 +504,13 @@ class UserDeleteResponseTest {
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
-        @DisplayName("the JSON keys are the 15 components and nothing else")
+        @DisplayName("the JSON keys are the 16 components and nothing else")
         void keySetIsExactlyTheComponents() throws Exception {
             @SuppressWarnings("unchecked")
             Map<String, Object> json =
                     mapper.readValue(mapper.writeValueAsString(populated()), Map.class);
             assertThat(json.keySet()).containsExactlyInAnyOrderElementsOf(componentNames());
-            assertThat(json).hasSize(15);
+            assertThat(json).hasSize(16);
         }
 
         @Test
@@ -554,6 +557,41 @@ class UserDeleteResponseTest {
             UserDeleteResponse original = populated();
             assertThat(mapper.readValue(mapper.writeValueAsString(original),
                     UserDeleteResponse.class)).isEqualTo(original);
+        }
+    }
+    @Nested
+    @DisplayName("CDEMO-CU03-INFO on the way out - the extension the reply must carry back")
+    class Cu03InfoOnTheReply {
+
+        @Test
+        @DisplayName("empty() carries the extension in its VALUE-clause state, never absent")
+        void emptyCarriesTheInitialExtension() {
+            assertThat(UserDeleteResponse.empty().cu03Info())
+                    .isEqualTo(UserDeleteRequest.Cu03Info.initial());
+        }
+
+        @Test
+        @DisplayName("an absent extension normalises to its VALUE-clause state: the bytes always exist")
+        void anAbsentExtensionNormalises() {
+            UserDeleteResponse response = new UserDeleteResponse(" ".repeat(4), " ".repeat(40),
+                    " ".repeat(8), " ".repeat(8), " ".repeat(40), " ".repeat(8), " ".repeat(8),
+                    " ".repeat(20), " ".repeat(20), " ", " ".repeat(78), NavigationContext.empty(),
+                    " ".repeat(8), " ".repeat(7), " ".repeat(7), null);
+
+            assertThat(response.cu03Info()).isEqualTo(UserDeleteRequest.Cu03Info.initial());
+        }
+
+        @Test
+        @DisplayName("a supplied extension is carried through unchanged, byte for byte")
+        void aSuppliedExtensionIsCarriedThrough() {
+            UserDeleteRequest.Cu03Info paged = new UserDeleteRequest.Cu03Info("USER0001", "USER0010",
+                    3, UserDeleteRequest.Cu03Info.NEXT_PAGE_YES, "S", "USER0004");
+
+            UserDeleteResponse response = UserDeleteResponse.empty().withCu03Info(paged);
+
+            assertThat(response.cu03Info()).isEqualTo(paged);
+            assertThat(response.withCu03Info(null).cu03Info())
+                    .isEqualTo(UserDeleteRequest.Cu03Info.initial());
         }
     }
 }

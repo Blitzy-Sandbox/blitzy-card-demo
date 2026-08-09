@@ -13,6 +13,7 @@ import com.vsergeychik.carddemo.account.AccountUpdateService.NumvalArgument;
 import com.vsergeychik.carddemo.account.AccountUpdateService.WriteOutcome;
 import com.vsergeychik.carddemo.account.AccountUpdateService.WriteResult;
 import com.vsergeychik.carddemo.account.model.AccountRecord;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
@@ -26,6 +27,7 @@ import java.util.EnumSet;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.UUID;
 
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +40,11 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -75,13 +82,72 @@ class AccountUpdateServiceTest {
 
     private AccountRepository accountRepository;
     private CustomerRepository customerRepository;
+    private RecordingTransactionManager transactionManager;
     private AccountUpdateService service;
 
     @BeforeEach
     void setUp() {
         accountRepository = mock(AccountRepository.class);
         customerRepository = mock(CustomerRepository.class);
-        service = new AccountUpdateService(accountRepository, customerRepository);
+        transactionManager = new RecordingTransactionManager();
+        service = new AccountUpdateService(accountRepository, customerRepository,
+                new DatasetUnitOfWork(transactionManager));
+    }
+
+    /**
+     * A transaction manager that is real and also says what it did.
+     *
+     * <p>Real, because the two {@code READ ... UPDATE} locks the paragraph takes are only locks inside an
+     * actually-active transaction, and {@link DatasetUnitOfWork#active()} reports on the real thing rather
+     * than on a synchronisation - so a stub that merely pretended would let a test pass over a boundary
+     * that holds nothing. {@link DataSourceTransactionManager} over an in-memory database binds a
+     * connection to the thread exactly as a deployment's would.
+     *
+     * <p>Recording, because the property under test on the rollback path is not what the method returns -
+     * that is asserted separately - but that the unit of work <em>rolled back rather than committed</em>.
+     * Nothing else observes that: the repositories are doubles, so no row exists to have been un-written.
+     */
+    private static final class RecordingTransactionManager implements PlatformTransactionManager {
+
+        /** The real manager, over a database of this instance's own so no two tests share one. */
+        private final PlatformTransactionManager delegate = new DataSourceTransactionManager(
+                new SimpleDriverDataSource(new org.h2.Driver(),
+                        "jdbc:h2:mem:acctupd-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+
+        /** How many units of work committed. */
+        private int commits;
+
+        /** How many units of work rolled back. */
+        private int rollbacks;
+
+        /** How many times a body observed an actually-active transaction. */
+        private int activations;
+
+        @Override
+        public TransactionStatus getTransaction(TransactionDefinition definition) {
+            return delegate.getTransaction(definition);
+        }
+
+        @Override
+        public void commit(TransactionStatus status) {
+            commits++;
+            delegate.commit(status);
+        }
+
+        @Override
+        public void rollback(TransactionStatus status) {
+            rollbacks++;
+            delegate.rollback(status);
+        }
+
+        /**
+         * Records that a body saw an open transaction. Called from inside one.
+         */
+        void observeActive() {
+            if (DatasetUnitOfWork.active()) {
+                activations++;
+            }
+        }
     }
 
     // =================================================================================================
@@ -237,7 +303,8 @@ class AccountUpdateServiceTest {
         @DisplayName("the ACCTDAT repository is required")
         void accountRepositoryRequired() {
             Assertions.assertThatNullPointerException()
-                    .isThrownBy(() -> new AccountUpdateService(null, customerRepository))
+                    .isThrownBy(() -> new AccountUpdateService(null, customerRepository,
+                            new DatasetUnitOfWork(transactionManager)))
                     .withMessageContaining("ACCTDAT");
         }
 
@@ -245,7 +312,8 @@ class AccountUpdateServiceTest {
         @DisplayName("the CUSTDAT repository is required")
         void customerRepositoryRequired() {
             Assertions.assertThatNullPointerException()
-                    .isThrownBy(() -> new AccountUpdateService(accountRepository, null))
+                    .isThrownBy(() -> new AccountUpdateService(accountRepository, null,
+                            new DatasetUnitOfWork(transactionManager)))
                     .withMessageContaining("CUSTDAT");
         }
 
@@ -267,8 +335,11 @@ class AccountUpdateServiceTest {
             // One public constructor means Spring uses it without an @Autowired annotation, which is
             // what practice B9 asks for: no field injection and no setter injection anywhere.
             Assertions.assertThat(AccountUpdateService.class.getConstructors()).hasSize(1);
+            // The unit of work is a constructor dependency like any other, because the boundary the two
+            // locks need belongs to this paragraph rather than to whoever calls it.
             Assertions.assertThat(AccountUpdateService.class.getConstructors()[0].getParameterTypes())
-                    .containsExactly(AccountRepository.class, CustomerRepository.class);
+                    .containsExactly(AccountRepository.class, CustomerRepository.class,
+                            DatasetUnitOfWork.class);
             Assertions.assertThat(AccountUpdateService.class.getDeclaredMethods())
                     .noneMatch(method -> method.isAnnotationPresent(
                             org.springframework.beans.factory.annotation.Autowired.class));
@@ -287,6 +358,8 @@ class AccountUpdateServiceTest {
             try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
                 context.getBeanFactory().registerSingleton("accountRepository", accountRepository);
                 context.getBeanFactory().registerSingleton("customerRepository", customerRepository);
+                context.getBeanFactory().registerSingleton("datasetUnitOfWork",
+                        new DatasetUnitOfWork(transactionManager));
                 context.register(AccountUpdateService.class);
                 context.refresh();
 
@@ -1340,6 +1413,115 @@ class AccountUpdateServiceTest {
         }
 
         @Test
+        @DisplayName("the requested SYNCPOINT ROLLBACK is performed by the unit of work, not merely "
+                + "reported")
+        void theRequestedRollbackIsPerformed() {
+            // The finding: the result carried a rollback request and no boundary existed to honour it, so
+            // the account rewrite would have stood while the screen said the update failed - a state the
+            // CICS original cannot produce and has no code to recover from.
+            arrangeBothLocks();
+            when(accountRepository.rewrite(any(AccountRecord.class)))
+                    .thenReturn(AccountRepository.WriteResult.written());
+            when(customerRepository.rewrite(any(CustomerRecord.class)))
+                    .thenReturn(CustomerRepository.WriteResult.notFound());
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(transactionManager.rollbacks).isOne();
+            Assertions.assertThat(transactionManager.commits).isZero();
+            // And the task continues past the rollback, exactly as EXEC CICS SYNCPOINT ROLLBACK does: the
+            // paragraph still reaches its exit and the caller still gets the outcome to report.
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.LOCKED_BUT_UPDATE_FAILED);
+            Assertions.assertThat(result.syncpointRollbackRequested()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a successful pass commits once - the task's implicit syncpoint")
+        void aSuccessfulPassCommitsOnce() {
+            arrangeBothLocks();
+            arrangeBothRewrites();
+
+            service.writeProcessing(ACCT_ID_CHARS, commarea(), matchedOldDetails(), newDetails(), null,
+                    CODEC);
+
+            Assertions.assertThat(transactionManager.commits).isOne();
+            Assertions.assertThat(transactionManager.rollbacks).isZero();
+        }
+
+        @Test
+        @DisplayName("one unit of work spans both locks, the comparison and both rewrites")
+        void oneUnitOfWorkSpansTheWholeSequence() {
+            // Two units of work would release the account lock before the customer record was read, which
+            // is precisely the interleaving 9700-CHECK-CHANGE-IN-REC exists to detect and cannot detect
+            // from inside. So the count matters as much as the presence.
+            arrangeBothLocks();
+            arrangeBothRewrites();
+            java.util.List<String> observed = new java.util.ArrayList<>();
+            when(accountRepository.readForUpdate(anyString())).thenAnswer(invocation -> {
+                observed.add("read ACCTDAT active=" + DatasetUnitOfWork.active());
+                return AccountRepository.ReadResult.found(storedAccount());
+            });
+            when(customerRepository.readForUpdate(anyString())).thenAnswer(invocation -> {
+                observed.add("read CUSTDAT active=" + DatasetUnitOfWork.active());
+                return CustomerRepository.ReadResult.found(storedCustomer());
+            });
+            when(accountRepository.rewrite(any(AccountRecord.class))).thenAnswer(invocation -> {
+                observed.add("rewrite ACCTDAT active=" + DatasetUnitOfWork.active());
+                return AccountRepository.WriteResult.written();
+            });
+            when(customerRepository.rewrite(any(CustomerRecord.class))).thenAnswer(invocation -> {
+                observed.add("rewrite CUSTDAT active=" + DatasetUnitOfWork.active());
+                return CustomerRepository.WriteResult.written();
+            });
+
+            service.writeProcessing(ACCT_ID_CHARS, commarea(), matchedOldDetails(), newDetails(), null,
+                    CODEC);
+
+            // Every one of the four dataset operations saw the SAME open transaction, in source order.
+            Assertions.assertThat(observed).containsExactly(
+                    "read ACCTDAT active=true",
+                    "read CUSTDAT active=true",
+                    "rewrite ACCTDAT active=true",
+                    "rewrite CUSTDAT active=true");
+            // One boundary, opened once and closed once.
+            Assertions.assertThat(transactionManager.commits).isOne();
+            Assertions.assertThat(transactionManager.rollbacks).isZero();
+            // And nothing is left open afterwards.
+            Assertions.assertThat(DatasetUnitOfWork.active()).isFalse();
+        }
+
+        @Test
+        @DisplayName("an abandoned update still closes its unit of work")
+        void anAbandonedUpdateClosesItsUnitOfWork() {
+            // The lock could not be taken, so nothing was written - but a transaction was opened to try,
+            // and leaving it open would hold a connection for the life of the thread.
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.notFound());
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome())
+                    .isEqualTo(WriteOutcome.COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+            Assertions.assertThat(transactionManager.commits).isOne();
+            Assertions.assertThat(DatasetUnitOfWork.active()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a rejected argument opens no unit of work at all")
+        void aRejectedArgumentOpensNoUnitOfWork() {
+            // A wrong detail group is a programming error, not dataset work. Opening a transaction to
+            // reject one would put a connection behind a failure that never touches a dataset.
+            Assertions.assertThatNullPointerException()
+                    .isThrownBy(() -> service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                            matchedOldDetails(), newDetails(), null, null));
+
+            Assertions.assertThat(transactionManager.commits).isZero();
+            Assertions.assertThat(transactionManager.rollbacks).isZero();
+        }
+
+        @Test
         @DisplayName("everything succeeds: both records rewritten at full width, message left alone")
         void changesOkayedAndDone() {
             arrangeBothLocks();
@@ -1933,9 +2115,9 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("the customer subgroup withholds every identifying component")
         void customerDataWithholdsEveryIdentifyingComponent() {
-            // The shared fixture gives CUST-ID and CUST-SSN the same digits, and CUST-ID is legible by
-            // design, so a "does not contain 123456789" assertion could never distinguish the two. This
-            // case gives the social security number its own digits, which makes withholding it provable.
+            // The shared fixture gives CUST-ID and CUST-SSN the same digits, so a "does not contain
+            // 123456789" assertion could never distinguish the two. This case gives the social security
+            // number its own digits, which makes withholding it provable independently of the key.
             CustomerData data = new CustomerData(123456789, "JOHN", "Q", "PUBLIC",
                     "1 MAIN ST", "APT 2", "SPRINGFIELD", "IL", "USA", "62704-0001",
                     "(217)555-1234", "(217)555-9876", 555443333, "DL1234567890",
@@ -1956,8 +2138,11 @@ class AccountUpdateServiceTest {
                     .doesNotContain("19800704")
                     .doesNotContain("1980")
                     .doesNotContain("EFT0000001")
-                    // The key stays legible, for the reason SEC-USR-ID does.
-                    .contains("CUST-ID='123456789'");
+                    // The key is masked to its last four digits: enough to tell one record from another
+                    // while diagnosing a parity failure, and not enough to re-identify the person the
+                    // rest of this rendering is careful not to name.
+                    .contains("CUST-ID='*****6789'")
+                    .doesNotContain("123456789");
         }
 
         @Test
@@ -1967,11 +2152,16 @@ class AccountUpdateServiceTest {
             Assertions.assertThat(rendered)
                     .startsWith("ACUP-<group>-CUST-DATA[")
                     .endsWith("]")
-                    .contains("CUST-ID='123456789'")
-                    .contains("CUST-ADDR-STATE-CD='IL'")
-                    .contains("CUST-ADDR-COUNTRY-CD='USA'")
-                    .contains("CUST-PRI-CARD-HOLDER-IND='Y'")
-                    .contains("CUST-FICO-CREDIT-SCORE='750'");
+                    // The customer key is masked to its last four digits, which is the module's stated
+                    // treatment for an identifier and still tells one record from another.
+                    .contains("CUST-ID='*****6789'")
+                    .doesNotContain("123456789")
+                    // The geographic codes, the holder indicator and the score carry no personal data, so
+                    // they are retained - escaped rather than interpolated, because a PIC X span can hold
+                    // any byte and a CR or LF among it would forge a log line.
+                    .contains("IL")
+                    .contains("USA")
+                    .contains("750");
         }
 
         @Test
@@ -2046,9 +2236,66 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("the account subgroup carries no personal data, so it renders in full")
         void accountDataRendersPlainly() {
-            Assertions.assertThat(matchedAccountData().toString())
-                    .contains("12345678901")
+            String rendered = matchedAccountData().toString();
+
+            Assertions.assertThat(rendered)
+                    .startsWith("ACUP-<group>-ACCT-DATA[")
+                    .endsWith("]")
+                    // The account number is masked to its last four digits, and the whole number appears
+                    // nowhere - the generated rendering this replaced printed it in full.
+                    .contains("ACCT-ID='*******8901'")
+                    .doesNotContain("12345678901")
+                    // The group id carries no personal data and is retained.
                     .contains("GROUP01");
+        }
+
+        @Test
+        @DisplayName("the account rendering withholds every monetary item")
+        void accountDataWithholdsEveryMonetaryItem() {
+            // The five money fields were the point of the finding: a balance and two credit limits in a
+            // log line describe the account, and the generated record rendering published all of them.
+            String rendered = matchedAccountData().toString();
+
+            Assertions.assertThat(rendered)
+                    .contains("ACCT-CURR-BAL=<withheld>")
+                    .contains("ACCT-CREDIT-LIMIT=<withheld>")
+                    .contains("ACCT-CASH-CREDIT-LIMIT=<withheld>")
+                    .contains("ACCT-CURR-CYC-CREDIT=<withheld>")
+                    .contains("ACCT-CURR-CYC-DEBIT=<withheld>");
+            for (java.math.BigDecimal amount : java.util.List.of(matchedAccountData().currBal(),
+                    matchedAccountData().creditLimit(), matchedAccountData().cashCreditLimit(),
+                    matchedAccountData().currCycCredit(), matchedAccountData().currCycDebit())) {
+                Assertions.assertThat(rendered).doesNotContain(amount.toPlainString());
+            }
+            // And the accessors still answer, because those are the parity surface.
+            Assertions.assertThat(matchedAccountData().currBal()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the details group delegates to both subgroups' safe renderings")
+        void theDetailsGroupDelegates() {
+            String rendered = matchedOldDetails().toString();
+
+            Assertions.assertThat(rendered)
+                    .startsWith("ACUP-OLD-DETAILS[")
+                    .contains("ACUP-<group>-ACCT-DATA[")
+                    .contains("ACUP-<group>-CUST-DATA[")
+                    // Nothing the subgroups withhold reappears through the group.
+                    .doesNotContain("12345678901")
+                    .doesNotContain("123456789");
+        }
+
+        @Test
+        @DisplayName("no rendering can forge a second log line")
+        void noRenderingCanForgeALogLine() {
+            // CWE-117. A fixed-width field holds whatever was moved into it, control characters included,
+            // so every retained text field is escaped rather than interpolated.
+            CustomerData injected = new CustomerData(CUST_ID, "JOHN", "Q", "PUBLIC",
+                    "1 MAIN ST", "APT 2", "SPRINGFIELD", "I\n", "USA", "62704-0001",
+                    "(217)555-1234", "(217)555-9876", 123456789, "DL1234567890",
+                    "1980", "07", "04", "EFT0000001", "Y", 750);
+
+            Assertions.assertThat(injected.toString()).doesNotContain("\n").doesNotContain("\r");
         }
     }
 

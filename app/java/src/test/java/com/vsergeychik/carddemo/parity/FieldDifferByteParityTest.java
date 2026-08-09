@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.Charset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -62,6 +63,71 @@ class FieldDifferByteParityTest {
      *
      * @return the validated 50-byte transaction category balance layout
      */
+
+    /**
+     * The differences this suite is about, excluding {@link DiffKind#INCOMPLETE_EXPECTATION}.
+     *
+     * <p>Every fixture in this file names one or two fields deliberately, because isolating a single
+     * comparison behaviour is the whole method: a test about how a wrong balance is reported must not
+     * also have to state the account id, the group id and the {@code FILLER}. Under the completeness
+     * contract such an expectation is <em>also</em> reported as not accounting for its whole record,
+     * which is a true finding about the fixture and a distraction from the behaviour under test.
+     *
+     * <p>Nothing hides behind this filter. The kind is proved reachable, proved to name every uncovered
+     * span, and proved to count toward {@link DiffResult#count()} exactly like every other kind, in the
+     * {@code Completeness} nest of {@code FieldDifferTest}; and the gate itself reads the unfiltered
+     * {@link DiffResult#count()}, so a partial fixture still fails a real module gate. This filter
+     * exists only so a test about one comparison keeps saying one thing.
+     *
+     * @param result the comparison result
+     * @return its differences about the output, in traversal order
+     */
+    private static List<Diff> outputDiffs(DiffResult result) {
+        List<Diff> output = new ArrayList<>();
+        for (Diff diff : result.entries()) {
+            if (diff.kind() != DiffKind.INCOMPLETE_EXPECTATION) {
+                output.add(diff);
+            }
+        }
+        return output;
+    }
+
+    /**
+     * How many differences the result carries about the output, on the same footing as
+     * {@link #outputDiffs(DiffResult)}.
+     *
+     * @param result the comparison result
+     * @return the count of differences about the output
+     */
+    private static int outputCount(DiffResult result) {
+        return outputDiffs(result).size();
+    }
+
+    /**
+     * Whether the result is clean about the output, on the same footing as
+     * {@link #outputDiffs(DiffResult)}.
+     *
+     * @param result the comparison result
+     * @return {@code true} when nothing about the output differs
+     */
+    private static boolean outputIsClean(DiffResult result) {
+        return outputDiffs(result).isEmpty();
+    }
+
+    /**
+     * Every kind the result carries, filtering nothing - the view a producibility claim needs.
+     *
+     * @param result the comparison result
+     * @return every kind present, in traversal order
+     */
+    private static List<DiffKind> allKindsOf(DiffResult result) {
+        List<DiffKind> kinds = new ArrayList<>();
+        for (Diff diff : result.entries()) {
+            kinds.add(diff.kind());
+        }
+        return kinds;
+    }
+
     private static RecordLayout tranCatBalLayout() {
         return RecordLayout.of(50,
                 FieldSpan.unsignedNumeric("TRANCAT-ACCT-ID", 0, 11),
@@ -133,8 +199,8 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "0000123456C"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000123456C")));
 
-            assertThat(result.isClean()).isTrue();
-            assertThat(result.count()).isZero();
+            assertThat(outputIsClean(result)).isTrue();
+            assertThat(outputCount(result)).isZero();
         }
 
         @Test
@@ -148,8 +214,8 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "0000123456C"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("00001234563")));
 
-            assertThat(result.count()).isOne();
-            Diff diff = result.entries().get(0);
+            assertThat(outputCount(result)).isOne();
+            Diff diff = outputDiffs(result).get(0);
             assertThat(diff.kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
             assertThat(diff.fieldName()).isEqualTo("TRAN-CAT-BAL");
             assertThat(diff.offset()).isEqualTo(17);
@@ -172,9 +238,9 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "0000000000{"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000000000}")));
 
-            assertThat(result.count()).isOne();
-            assertThat(result.entries().get(0).kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputCount(result)).isOne();
+            assertThat(outputDiffs(result).get(0).kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
+            assertThat(outputDiffs(result).get(0).explanation())
                     .contains("difference in stored FORM, not in quantity")
                     .contains("differ in SIGN")
                     .as("a BigDecimal comparison cannot see this at all: it has no negative zero")
@@ -191,7 +257,7 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "12345.63"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000123456C")));
 
-            assertThat(clean.isClean())
+            assertThat(outputIsClean(clean))
                     .as("a literal states a value and gets the one stored form a COBOL store produces")
                     .isTrue();
 
@@ -199,8 +265,8 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "12345.63"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("00001234563")));
 
-            assertThat(zoneF.count()).isOne();
-            assertThat(zoneF.entries().get(0).explanation())
+            assertThat(outputCount(zoneF)).isOne();
+            assertThat(outputDiffs(zoneF).get(0).explanation())
                     .contains("the canonical image of the literal")
                     .contains("0000123456C");
         }
@@ -208,18 +274,16 @@ class FieldDifferByteParityTest {
         @Test
         @DisplayName("a negative-zero literal encodes to the negative-zero image, not the positive one")
         void aNegativeZeroLiteralEncodesToTheNegativeZeroImage() {
-            assertThat(differ.compare(
+            assertThat(outputIsClean(differ.compare(
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "-0.00"),
-                    fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000000000}")))
-                    .isClean())
+                    fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000000000}")))))
                     .as("this is the whole reason the literal reader honours a leading minus on an "
                             + "all-zero value")
                     .isTrue();
 
-            assertThat(differ.compare(
+            assertThat(outputCount(differ.compare(
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "-0.00"),
-                    fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000000000{")))
-                    .count())
+                    fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000000000{")))))
                     .isOne();
         }
 
@@ -230,8 +294,8 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "12345.63"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000123457C")));
 
-            assertThat(result.count()).isOne();
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputCount(result)).isOne();
+            assertThat(outputDiffs(result).get(0).explanation())
                     .contains("different quantities")
                     .contains("12345.63")
                     .contains("12345.73");
@@ -244,8 +308,8 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "12345.63"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("000012345$0")));
 
-            assertThat(result.count()).isPositive();
-            assertThat(result.entries())
+            assertThat(outputCount(result)).isPositive();
+            assertThat(outputDiffs(result))
                     .anyMatch(diff -> diff.kind() == DiffKind.UNDECODABLE_FIELD
                             || diff.kind() == DiffKind.RECORD_WIDTH_MISMATCH);
         }
@@ -257,9 +321,9 @@ class FieldDifferByteParityTest {
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "about twelve quid"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("0000123456C")));
 
-            assertThat(result.count()).isOne();
-            assertThat(result.entries().get(0).kind()).isEqualTo(DiffKind.MALFORMED_EXPECTATION);
-            assertThat(result.entries().get(0).explanation()).contains("00000001940{");
+            assertThat(outputCount(result)).isOne();
+            assertThat(outputDiffs(result).get(0).kind()).isEqualTo(DiffKind.MALFORMED_EXPECTATION);
+            assertThat(outputDiffs(result).get(0).explanation()).contains("00000001940{");
         }
     }
 
@@ -289,7 +353,7 @@ class FieldDifferByteParityTest {
 
             assertThat(thirtySixByteRow).hasSize(36);
             assertThat(seeded).hasSize(50).startsWith(thirtySixByteRow);
-            assertThat(result.isClean()).isTrue();
+            assertThat(outputIsClean(result)).isTrue();
             assertThat(pad.kind().name())
                     .as("a normalisation that fires must be visible to a reviewer: the case names it")
                     .isEqualTo("CARDXREF_FILLER_PAD_36_TO_50");
@@ -323,8 +387,8 @@ class FieldDifferByteParityTest {
                     fingerprintOf(TCATBALF, tranCatBalLayout(), thirtySixBytes));
 
             assertThat(thirtySixBytes).hasSize(36);
-            assertThat(result.count()).isPositive();
-            assertThat(result.entries())
+            assertThat(outputCount(result)).isPositive();
+            assertThat(outputDiffs(result))
                     .anyMatch(diff -> diff.kind() == DiffKind.RECORD_WIDTH_MISMATCH);
         }
 
@@ -338,7 +402,7 @@ class FieldDifferByteParityTest {
                     fingerprintOf(CCXREF, cardXrefLayout(), thirtySixByteRow));
 
             assertThat(undeclared.normalisations()).isEmpty();
-            assertThat(result.entries())
+            assertThat(outputDiffs(result))
                     .anyMatch(diff -> diff.kind() == DiffKind.RECORD_WIDTH_MISMATCH);
         }
 
@@ -416,12 +480,12 @@ class FieldDifferByteParityTest {
                     fingerprintOf(TCATBALF, tranCatBalLayout(),
                             tranCatBalRow("0000000000{") + "X"));
 
-            assertThat(tooWide.entries())
+            assertThat(outputDiffs(tooWide))
                     .as("a record whose width disagrees with its layout has every subsequent offset "
                             + "shifted, so it is reported once against the record rather than as a "
                             + "difference per field")
                     .hasSize(1);
-            assertThat(tooWide.entries().get(0).kind()).isEqualTo(DiffKind.RECORD_WIDTH_MISMATCH);
+            assertThat(outputDiffs(tooWide).get(0).kind()).isEqualTo(DiffKind.RECORD_WIDTH_MISMATCH);
             assertThatIllegalArgumentException()
                     .as("and no normalisation may rescue an over-wide row: padding is one-directional "
                             + "and truncating would hide the disagreement")

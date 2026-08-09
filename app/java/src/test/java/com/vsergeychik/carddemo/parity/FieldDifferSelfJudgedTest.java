@@ -472,8 +472,63 @@ class FieldDifferSelfJudgedTest {
         return rows;
     }
 
-    /** The kinds of every diff in a result, in traversal order. */
-    private static List<DiffKind> kindsOf(DiffResult result) {
+    /**
+     * The differences this suite is about, excluding {@link DiffKind#INCOMPLETE_EXPECTATION}.
+     *
+     * <p>Every fixture in this file names one or two fields deliberately, because isolating a single
+     * comparison behaviour is the whole method: a test about how a wrong balance is reported must not
+     * also have to state the account id, the group id and the {@code FILLER}. Under the completeness
+     * contract such an expectation is <em>also</em> reported as not accounting for its whole record,
+     * which is a true finding about the fixture and a distraction from the behaviour under test.
+     *
+     * <p>Nothing hides behind this filter. The kind is proved reachable, proved to name every uncovered
+     * span, and proved to count toward {@link DiffResult#count()} exactly like every other kind, in the
+     * {@code Completeness} nest of {@code FieldDifferTest}; {@link #allKindsOf(DiffResult)} is the
+     * unfiltered view this file uses where the claim is about producibility; and the gate itself reads
+     * the unfiltered {@link DiffResult#count()}, so a partial fixture still fails a real module gate.
+     *
+     * @param result the comparison result
+     * @return its differences about the output, in traversal order
+     */
+    private static List<Diff> outputDiffs(DiffResult result) {
+        List<Diff> output = new ArrayList<>();
+        for (Diff diff : result.entries()) {
+            if (diff.kind() != DiffKind.INCOMPLETE_EXPECTATION) {
+                output.add(diff);
+            }
+        }
+        return output;
+    }
+
+    /**
+     * How many differences the result carries about the output, on the same footing as
+     * {@link #outputDiffs(DiffResult)}.
+     *
+     * @param result the comparison result
+     * @return the count of differences about the output
+     */
+    private static int outputCount(DiffResult result) {
+        return outputDiffs(result).size();
+    }
+
+    /**
+     * Whether the result is clean about the output, on the same footing as
+     * {@link #outputDiffs(DiffResult)}.
+     *
+     * @param result the comparison result
+     * @return {@code true} when nothing about the output differs
+     */
+    private static boolean outputIsClean(DiffResult result) {
+        return outputDiffs(result).isEmpty();
+    }
+
+    /**
+     * Every kind the result carries, filtering nothing - the view a producibility claim needs.
+     *
+     * @param result the comparison result
+     * @return every kind present, in traversal order
+     */
+    private static List<DiffKind> allKindsOf(DiffResult result) {
         List<DiffKind> kinds = new ArrayList<>();
         for (Diff diff : result.entries()) {
             kinds.add(diff.kind());
@@ -481,11 +536,20 @@ class FieldDifferSelfJudgedTest {
         return kinds;
     }
 
+    /** The kinds of every diff about the output, in traversal order. */
+    private static List<DiffKind> kindsOf(DiffResult result) {
+        List<DiffKind> kinds = new ArrayList<>();
+        for (Diff diff : outputDiffs(result)) {
+            kinds.add(diff.kind());
+        }
+        return kinds;
+    }
+
     /** The single diff of a result that must carry exactly one. */
     private static Diff onlyDiff(DiffResult result) {
-        assertThat(result.entries()).as("expected exactly one difference: %s", result.render())
+        assertThat(outputDiffs(result)).as("expected exactly one difference: %s", result.render())
                 .hasSize(1);
-        return result.entries().get(0);
+        return outputDiffs(result).get(0);
     }
 
 
@@ -509,9 +573,9 @@ class FieldDifferSelfJudgedTest {
             DiffResult result =
                     differ.compare(parityCase, wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            assertThat(result.count()).isZero();
-            assertThat(result.isClean()).isTrue();
-            assertThat(result.entries()).isEmpty();
+            assertThat(outputCount(result)).isZero();
+            assertThat(outputIsClean(result)).isTrue();
+            assertThat(outputDiffs(result)).isEmpty();
             assertThat(parityCase.normalisations())
                     .as("a full-width row needs no pad, and none is declared")
                     .isEmpty();
@@ -525,7 +589,7 @@ class FieldDifferSelfJudgedTest {
                     caseOf(pinningImage(XREF, 0, xrefRow50())),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            assertThat(result.isClean()).isTrue();
+            assertThat(outputIsClean(result)).isTrue();
         }
 
         @Test
@@ -542,7 +606,7 @@ class FieldDifferSelfJudgedTest {
                             FILLER, " ".repeat(AccountRecord.FILLER_LENGTH)))),
                     wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow()));
 
-            assertThat(result.count()).as(result.render()).isZero();
+            assertThat(outputCount(result)).as(result.render()).isZero();
         }
 
         @Test
@@ -550,7 +614,7 @@ class FieldDifferSelfJudgedTest {
         void aUnitThatWroteNothingIsClean() {
             DiffResult result = differ.compare(caseOf(), Fingerprint.ofReturnCode(0));
 
-            assertThat(result.isClean()).isTrue();
+            assertThat(outputIsClean(result)).isTrue();
             assertThat(result.program()).isEqualTo(PROGRAM);
             assertThat(result.caseId()).isEqualTo(CASE_ID);
         }
@@ -579,8 +643,15 @@ class FieldDifferSelfJudgedTest {
             assertThat(diff.fieldName()).isEqualTo(XREF_CUST_ID);
             assertThat(diff.offset()).isEqualTo(CardXrefRecord.XREF_CUST_ID_OFFSET);
             assertThat(diff.length()).isEqualTo(CardXrefRecord.XREF_CUST_ID_LENGTH);
-            assertThat(diff.expected()).isEqualTo("000000051");
-            assertThat(diff.actual()).isEqualTo("000000050");
+            // XREF-CUST-ID names one customer. The difference is reported in full - dataset, row,
+            // field, offset, width - with the two values rendered as digests that differ.
+            assertThat(diff.expected())
+                    .doesNotContain("000000051")
+                    .contains("<identifier>", "len=9", "sha256=");
+            assertThat(diff.actual())
+                    .doesNotContain("000000050")
+                    .contains("<identifier>", "len=9", "sha256=");
+            assertThat(diff.expected()).isNotEqualTo(diff.actual());
         }
 
         @Test
@@ -593,11 +664,11 @@ class FieldDifferSelfJudgedTest {
                             XREF_ACCT_ID, "00000000051"))),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            assertThat(result.count()).isEqualTo(3);
-            assertThat(result.entries())
+            assertThat(outputCount(result)).isEqualTo(3);
+            assertThat(outputDiffs(result))
                     .extracting(Diff::fieldName)
                     .containsExactly(XREF_CARD_NUM, XREF_CUST_ID, XREF_ACCT_ID);
-            assertThat(result.entries()).extracting(Diff::kind)
+            assertThat(outputDiffs(result)).extracting(Diff::kind)
                     .containsOnly(DiffKind.VALUE_MISMATCH);
         }
 
@@ -613,7 +684,7 @@ class FieldDifferSelfJudgedTest {
                             XREF_CARD_NUM, "9999999999999999"))),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            assertThat(result.entries())
+            assertThat(outputDiffs(result))
                     .extracting(Diff::fieldName)
                     .containsExactly(XREF_CARD_NUM, XREF_CUST_ID, XREF_ACCT_ID);
         }
@@ -629,11 +700,11 @@ class FieldDifferSelfJudgedTest {
                     caseOf(pinningImage(XREF, 0, wrong)),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            assertThat(result.count()).isEqualTo(2);
-            assertThat(result.entries())
+            assertThat(outputCount(result)).isEqualTo(2);
+            assertThat(outputDiffs(result))
                     .extracting(Diff::fieldName)
                     .containsExactly(XREF_CUST_ID, XREF_ACCT_ID);
-            assertThat(result.entries()).extracting(Diff::offset).containsExactly(
+            assertThat(outputDiffs(result)).extracting(Diff::offset).containsExactly(
                     CardXrefRecord.XREF_CUST_ID_OFFSET, CardXrefRecord.XREF_ACCT_ID_OFFSET);
         }
 
@@ -646,7 +717,7 @@ class FieldDifferSelfJudgedTest {
                     caseOf(new ExpectedRecord(XREF, 0, fields(XREF_CUST_ID, "000000051"), wrong)),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            assertThat(result.count())
+            assertThat(outputCount(result))
                     .as("the diff count must count distinct findings: %s", result.render())
                     .isEqualTo(1);
             assertThat(onlyDiff(result).fieldName()).isEqualTo(XREF_CUST_ID);
@@ -673,7 +744,12 @@ class FieldDifferSelfJudgedTest {
 
             Diff diff = onlyDiff(result);
             assertThat(diff.kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
-            assertThat(diff.actual()).isEqualTo("GOLD                ").hasSize(20);
+            // SEC-USR-LNAME is a person's name, so both sides render as a class, a length and a digest.
+            // The lengths are the finding - 4 against the span's 20 - and they are both still stated.
+            assertThat(diff.actual())
+                    .doesNotContain("GOLD")
+                    .contains("<personal>", "len=20", "sha256=");
+            assertThat(diff.expected()).contains("<personal>", "len=4");
             assertThat(diff.explanation())
                     .contains("differ ONLY in trailing spaces")
                     .contains("space-padded to its declared width");
@@ -690,22 +766,25 @@ class FieldDifferSelfJudgedTest {
                     wrote(USRSEC, SecUserRecord.LAYOUT,
                             seeded(USRSEC, Normalisation.USRSEC_FILLER_PAD_57_TO_80, USRSEC_ROW_57)));
 
-            assertThat(result.count()).as(result.render()).isZero();
+            assertThat(outputCount(result)).as(result.render()).isZero();
         }
 
         @Test
         @DisplayName("render makes the invisible visible: trailing spaces counted, length stated")
         void renderCountsTrailingSpacesAndStatesLength() {
+            // Asserted on ACCT-GROUP-ID rather than on a name: this is a test about how a value is
+            // RENDERED, and a classified value renders as a class, a length and a digest, which has no
+            // trailing space left in it to count. ACCT-GROUP-ID is PIC X(10), unclassified, and ten
+            // spaces in the fixture - so the observed side is nothing but the padding this test is about.
             DiffResult result = differ.compare(
-                    caseOf(List.of(Normalisation.USRSEC_FILLER_PAD_57_TO_80),
-                            pinning(USRSEC, 0, fields(SEC_USR_LNAME, "GOLD"))),
-                    wrote(USRSEC, SecUserRecord.LAYOUT,
-                            seeded(USRSEC, Normalisation.USRSEC_FILLER_PAD_57_TO_80, USRSEC_ROW_57)));
+                    caseOf(pinning(ACCOUNT, 0, fields(AccountRecord.ACCT_GROUP_ID_NAME, "GOLD"))),
+                    wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow()));
 
             assertThat(onlyDiff(result).render())
-                    .contains("'GOLD' + 16 trailing space(s) (len=20)")
-                    .contains("offset " + SecUserRecord.SEC_USR_LNAME_OFFSET)
-                    .contains("length " + SecUserRecord.SEC_USR_LNAME_LENGTH);
+                    .contains("'GOLD' (len=4)")
+                    .contains("10 trailing space(s) (len=10)")
+                    .contains("offset " + AccountRecord.ACCT_GROUP_ID_OFFSET)
+                    .contains("length " + AccountRecord.ACCT_GROUP_ID_LENGTH);
         }
 
         @Test
@@ -753,7 +832,7 @@ class FieldDifferSelfJudgedTest {
                     caseOf(pinning(XREF, 0, fields(XREF_CUST_ID, "000000050"))),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            assertThat(result.isClean()).isTrue();
+            assertThat(outputIsClean(result)).isTrue();
         }
     }
 
@@ -786,7 +865,7 @@ class FieldDifferSelfJudgedTest {
                             ACCT_CREDIT_LIMIT, "2020.00"))),
                     wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow()));
 
-            assertThat(result.count()).as(result.render()).isZero();
+            assertThat(outputCount(result)).as(result.render()).isZero();
         }
 
         @Test
@@ -826,9 +905,8 @@ class FieldDifferSelfJudgedTest {
             assertThat(differ.codec().decodeSignedScaled(image, CobolDecimal.MONETARY_SCALE))
                     .as("%s denotes %s", image, value)
                     .isEqualByComparingTo(new BigDecimal(value));
-            assertThat(differ.compare(
-                    caseOf(pinning(ACCOUNT, 0, fields(ACCT_CURR_BAL, image))), fingerprint)
-                    .isClean())
+            assertThat(outputIsClean(differ.compare(
+                    caseOf(pinning(ACCOUNT, 0, fields(ACCT_CURR_BAL, image))), fingerprint)))
                     .as("pinning the exact bytes %s must always be clean", image)
                     .isTrue();
 
@@ -840,7 +918,7 @@ class FieldDifferSelfJudgedTest {
             DiffResult againstTheLiteral = differ.compare(
                     caseOf(pinning(ACCOUNT, 0, fields(ACCT_CURR_BAL, value))), fingerprint);
             if (canonical) {
-                assertThat(againstTheLiteral.isClean())
+                assertThat(outputIsClean(againstTheLiteral))
                         .as("%s is the canonical image of %s", image, value)
                         .isTrue();
             } else {
@@ -850,10 +928,9 @@ class FieldDifferSelfJudgedTest {
             }
 
             BigDecimal offByAPenny = new BigDecimal(value).add(new BigDecimal("0.01"));
-            assertThat(differ.compare(
+            assertThat(outputCount(differ.compare(
                     caseOf(pinning(ACCOUNT, 0, fields(ACCT_CURR_BAL, offByAPenny.toPlainString()))),
-                    fingerprint)
-                    .count())
+                    fingerprint)))
                     .as("%s must NOT compare equal to %s", image, offByAPenny)
                     .isEqualTo(1);
         }
@@ -901,7 +978,7 @@ class FieldDifferSelfJudgedTest {
             // comparison and hide every difference after it, which is the opposite of judging.
             assertThat(kindsOf(result))
                     .containsExactly(DiffKind.UNDECODABLE_FIELD, DiffKind.VALUE_MISMATCH);
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputDiffs(result).get(0).explanation())
                     .contains("not a valid signed zoned DISPLAY image")
                     .contains("neither a digit nor a recognised sign overpunch");
         }
@@ -975,7 +1052,7 @@ class FieldDifferSelfJudgedTest {
                     wrote(ACCOUNT, AccountRecord.LAYOUT, withoutFiller));
 
             assertThat(kindsOf(result)).containsExactly(DiffKind.RECORD_WIDTH_MISMATCH);
-            assertThat(result.entries().get(0).explanation())
+            assertThat(outputDiffs(result).get(0).explanation())
                     .contains("Field comparison is skipped for this record");
         }
 
@@ -1045,7 +1122,7 @@ class FieldDifferSelfJudgedTest {
 
             // The FILLER pin is the point: it proves the pad supplied fourteen SPACES, which is what
             // COBOL writes into a FILLER carrying no VALUE.
-            assertThat(result.count()).as(result.render()).isZero();
+            assertThat(outputCount(result)).as(result.render()).isZero();
         }
 
         @Test
@@ -1070,7 +1147,7 @@ class FieldDifferSelfJudgedTest {
                     wrote(USRSEC, SecUserRecord.LAYOUT, seeded(USRSEC,
                             Normalisation.USRSEC_FILLER_PAD_57_TO_80, USRSEC_ROW_57)));
 
-            assertThat(result.count()).as(result.render()).isZero();
+            assertThat(outputCount(result)).as(result.render()).isZero();
             assertThat(usrsecRow80()).hasSize(SecUserRecord.RECORD_LENGTH);
         }
 
@@ -1122,7 +1199,7 @@ class FieldDifferSelfJudgedTest {
                     wrote(XREF, CardXrefRecord.LAYOUT, seeded(XREF,
                             Normalisation.CARDXREF_FILLER_PAD_36_TO_50, xrefRow36())));
 
-            assertThat(result.isClean()).isTrue();
+            assertThat(outputIsClean(result)).isTrue();
 
             // The pad is applied by the seeding side, so its announcement is the case's own
             // declaration rather than a note appended to the verdict - and that declaration carries
@@ -1159,7 +1236,7 @@ class FieldDifferSelfJudgedTest {
                     wrote(XREF, CardXrefRecord.LAYOUT, seededRows.get(0), seededRows.get(1),
                             seededRows.get(2)));
 
-            assertThat(result.isClean()).isTrue();
+            assertThat(outputIsClean(result)).isTrue();
             assertThat(parityCase.normalisations()).hasSize(1);
             assertThat(seededRows).allSatisfy(row -> assertThat(row).hasSize(50));
         }
@@ -1241,12 +1318,14 @@ class FieldDifferSelfJudgedTest {
         @ValueSource(ints = {0, 3, 4, 8, 12, 16})
         @DisplayName("every return code this migration produces compares equal to itself")
         void everyProducedReturnCodeComparesEqualToItself(int returnCode) {
-            assertThat(differ.compare(caseOf(List.of(), returnCode, List.of(), List.of()),
-                    Fingerprint.ofReturnCode(returnCode)).isClean()).isTrue();
+            assertThat(outputIsClean(differ.compare(
+                    caseOf(List.of(), returnCode, List.of(), List.of()),
+                    Fingerprint.ofReturnCode(returnCode)))).isTrue();
 
             int different = returnCode == 0 ? 8 : 0;
-            assertThat(differ.compare(caseOf(List.of(), returnCode, List.of(), List.of()),
-                    Fingerprint.ofReturnCode(different)).count()).isEqualTo(1);
+            assertThat(outputCount(differ.compare(
+                    caseOf(List.of(), returnCode, List.of(), List.of()),
+                    Fingerprint.ofReturnCode(different)))).isEqualTo(1);
         }
     }
 
@@ -1320,11 +1399,13 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("an empty string is a legitimate expected line - COBOL DISPLAY emits one")
         void anEmptyLineIsALegitimateExpectation() {
-            assertThat(differ.compare(caseOf(List.of(), 0, List.of(""), List.of()),
-                    wrote(0, List.of(""))).isClean()).isTrue();
+            assertThat(outputIsClean(differ.compare(
+                    caseOf(List.of(), 0, List.of(""), List.of()),
+                    wrote(0, List.of(""))))).isTrue();
 
-            assertThat(differ.compare(caseOf(List.of(), 0, List.of(""), List.of()),
-                    wrote(0, List.of(" "))).count()).isEqualTo(1);
+            assertThat(outputCount(differ.compare(
+                    caseOf(List.of(), 0, List.of(""), List.of()),
+                    wrote(0, List.of(" "))))).isEqualTo(1);
         }
     }
 
@@ -1367,11 +1448,11 @@ class FieldDifferSelfJudgedTest {
             // that lets a wrong record pass.
             assertThat(kindsOf(result))
                     .containsExactly(DiffKind.MISSING_RECORD, DiffKind.EXTRA_RECORD);
-            Diff diff = result.entries().get(0);
+            Diff diff = outputDiffs(result).get(0);
             assertThat(diff.rowIndex()).isEqualTo(1);
             assertThat(diff.explanation())
                     .contains("holds 1 row(s), so there is no row at 0-based index 1");
-            assertThat(result.entries().get(1).rowIndex()).isZero();
+            assertThat(outputDiffs(result).get(1).rowIndex()).isZero();
         }
 
         @Test
@@ -1398,7 +1479,7 @@ class FieldDifferSelfJudgedTest {
             // is reported for it - the fields of a record that was never written are not independently
             // wrong, they are collectively absent. The row the unit did write at index 0 is a separate
             // finding of its own, and does not dilute this one.
-            assertThat(result.entries())
+            assertThat(outputDiffs(result))
                     .filteredOn(diff -> diff.kind() == DiffKind.MISSING_RECORD)
                     .singleElement()
                     .satisfies(diff -> assertThat(diff.expected())
@@ -1429,8 +1510,8 @@ class FieldDifferSelfJudgedTest {
                     caseOf(pinning(XREF, 0, fields(XREF_CUST_ID, "000000050"))),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50(), xrefRow50(), xrefRow50()));
 
-            assertThat(result.entries()).extracting(Diff::rowIndex).containsExactly(1, 2);
-            assertThat(result.entries()).extracting(Diff::kind)
+            assertThat(outputDiffs(result)).extracting(Diff::rowIndex).containsExactly(1, 2);
+            assertThat(outputDiffs(result)).extracting(Diff::kind)
                     .containsOnly(DiffKind.EXTRA_RECORD);
         }
 
@@ -1449,8 +1530,8 @@ class FieldDifferSelfJudgedTest {
             // whether the unit did what the COBOL does and nothing else. The pass is therefore driven
             // by what the unit produced: an expectation the case does not state is a positive
             // assertion that nothing was produced, not an absence of interest.
-            assertThat(result.isClean()).isFalse();
-            assertThat(result.entries()).singleElement().satisfies(diff -> {
+            assertThat(outputIsClean(result)).isFalse();
+            assertThat(outputDiffs(result)).singleElement().satisfies(diff -> {
                 assertThat(diff.kind()).isEqualTo(DiffKind.EXTRA_DATASET);
                 assertThat(diff.dataset()).isEqualTo(ACCOUNT);
                 assertThat(diff.actual()).isEqualTo("2 row(s)");
@@ -1474,9 +1555,9 @@ class FieldDifferSelfJudgedTest {
                     .as("app/cpy/CVACT01Y.cpy misspells it, and the model preserves the misspelling")
                     .isEqualTo(AccountRecord.ACCT_EXPIRAION_DATE_NAME);
 
-            assertThat(differ.compare(
+            assertThat(outputIsClean(differ.compare(
                     caseOf(pinning(ACCOUNT, 0, fields(ACCT_EXPIRAION_DATE, "2025-05-20"))),
-                    wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow())).isClean()).isTrue();
+                    wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow())))).isTrue();
 
             DiffResult corrected = differ.compare(
                     caseOf(pinning(ACCOUNT, 0, fields("ACCT-EXPIRATION-DATE", "2025-05-20"))),
@@ -1504,9 +1585,9 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("the first FILLER is addressed as FILLER, never as FILLER-1")
         void theFirstFillerIsAddressedWithoutAnOrdinal() {
-            assertThat(differ.compare(
+            assertThat(outputIsClean(differ.compare(
                     caseOf(pinning(XREF, 0, fields(FILLER, " ".repeat(XREF_FILLER_WIDTH)))),
-                    wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50())).isClean()).isTrue();
+                    wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50())))).isTrue();
 
             DiffResult withOrdinal = differ.compare(
                     caseOf(pinning(XREF, 0, fields("FILLER-1", " ".repeat(XREF_FILLER_WIDTH)))),
@@ -1520,13 +1601,13 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("a copybook-named filler keeps its own name, as SEC-USR-FILLER does")
         void aNamedFillerKeepsItsName() {
-            assertThat(differ.compare(
+            assertThat(outputIsClean(differ.compare(
                     caseOf(List.of(Normalisation.USRSEC_FILLER_PAD_57_TO_80),
                             pinning(USRSEC, 0,
                                     fields(SEC_USR_FILLER, " ".repeat(USRSEC_FILLER_WIDTH)))),
                     wrote(USRSEC, SecUserRecord.LAYOUT, seeded(USRSEC,
-                            Normalisation.USRSEC_FILLER_PAD_57_TO_80, USRSEC_ROW_57)))
-                    .isClean()).isTrue();
+                            Normalisation.USRSEC_FILLER_PAD_57_TO_80, USRSEC_ROW_57)))))
+                    .isTrue();
         }
     }
 
@@ -1554,7 +1635,7 @@ class FieldDifferSelfJudgedTest {
             DiffResult first = differ.compare(parityCase, fingerprint);
             DiffResult second = differ.compare(parityCase, fingerprint);
 
-            assertThat(second.count()).isEqualTo(first.count());
+            assertThat(outputCount(second)).isEqualTo(outputCount(first));
             assertThat(second.render()).isEqualTo(first.render());
             assertThat(kindsOf(second)).isEqualTo(kindsOf(first));
         }
@@ -1590,7 +1671,7 @@ class FieldDifferSelfJudgedTest {
                     wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow()));
 
             int spans = AccountRecord.LAYOUT.spans().size();
-            assertThat(result.count()).isEqualTo(spans);
+            assertThat(outputCount(result)).isEqualTo(spans);
             assertThat(result.render())
                     .contains(spans + " differences")
                     .contains("[1/" + spans + "]")
@@ -1636,7 +1717,11 @@ class FieldDifferSelfJudgedTest {
                     "RETURN_CODE_MISMATCH",
                     "MESSAGE_MISMATCH",
                     "MESSAGE_CHANNEL_MISMATCH",
-                    "MESSAGE_COUNT_MISMATCH");
+                    "MESSAGE_COUNT_MISMATCH",
+                    "INCOMPLETE_EXPECTATION",
+                    "MISSING_DATASET",
+                    "DATASET_ROW_COUNT_MISMATCH",
+                    "DATASET_WIDTH_MISMATCH");
         }
     }
 

@@ -1783,12 +1783,23 @@ public final class ReportRequestResponse {
     }
 
     /**
-     * Echoes a commarea into this response and derives the navigation trio from it: the program from
-     * {@link NavigationContext#toProgram()} - the field {@code CORPT00C.cbl:549} passes to
-     * {@code XCTL} - and the map and mapset from this screen's own names.
+     * Echoes a commarea into this response and derives the navigation trio from it for a
+     * <strong>transfer</strong>: the program from {@link NavigationContext#toProgram()} - the field
+     * {@code CORPT00C.cbl:549} passes to {@code XCTL} - and the mapset and map blank.
      *
-     * <p>The value is echoed exactly as supplied. The {@code LOW-VALUES}-or-{@code SPACES} fallback to
-     * {@link #DEFAULT_NEXT_PROGRAM} at {@code CORPT00C.cbl:542-543} runs <em>before</em> the transfer
+     * <h4>Why the two map names are blanked</h4>
+     * This method is reached only from {@code RETURN-TO-PREV-SCREEN}, and an {@code XCTL} hands control
+     * to another program: which map that program will paint is its decision, made after this one has
+     * ended. {@code CORPT00C} names no map in the {@code XCTL} at {@code :548-551}, and the
+     * {@code CDEMO-LAST-MAPSET} and {@code CDEMO-LAST-MAP} items it passes are the caller's, not the
+     * target's. Publishing this screen's own {@value #MAPSET_NAME} and {@value #MAP_NAME} here would
+     * tell the client to paint the screen it is leaving, which is the one answer that is certainly
+     * wrong. Blank means "not stated here": the client follows {@link #getNextProgram()}, and the
+     * target's own reply names its map. A {@code SEND} publishes this screen's names, and
+     * {@link #ReportRequestResponse()} still initialises them to exactly that.
+     *
+     * <p>The commarea is echoed exactly as supplied. The {@code LOW-VALUES}-or-{@code SPACES} fallback
+     * to {@link #DEFAULT_NEXT_PROGRAM} at {@code CORPT00C.cbl:542-543} runs <em>before</em> the transfer
      * and is the controller's decision, not this type's; {@link #isSpacesOrLowValues(String)} is
      * exposed so the controller can make it against the same rule this type uses.
      *
@@ -1798,8 +1809,8 @@ public final class ReportRequestResponse {
     public void echoNavigation(NavigationContext context) {
         setNavigationContext(context);
         setNextProgram(context.toProgram());
-        setNextMapset(MAPSET_NAME);
-        setNextMap(MAP_NAME);
+        setNextMapset(spaces(NavigationContext.LAST_MAPSET_LENGTH));
+        setNextMap(spaces(NavigationContext.LAST_MAP_LENGTH));
     }
 
     /**

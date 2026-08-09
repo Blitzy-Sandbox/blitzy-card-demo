@@ -6,6 +6,8 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -13,6 +15,7 @@ import com.vsergeychik.carddemo.user.SecUserRepository.HeldRecord;
 import com.vsergeychik.carddemo.user.SecUserRepository.ReadResult;
 import com.vsergeychik.carddemo.user.SecUserRepository.WriteResult;
 import com.vsergeychik.carddemo.user.dto.UserDeleteRequest;
+import com.vsergeychik.carddemo.user.dto.UserDeleteRequest.Cu03Info;
 import com.vsergeychik.carddemo.user.dto.UserDeleteResponse;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 import jakarta.validation.Valid;
@@ -171,6 +174,20 @@ import org.springframework.web.bind.annotation.RestController;
  * @see HeldRecord#deleteHeld() the keyless delete of lines 307 to 311
  * @see UserDeleteRequest the inbound projection of {@code 01 COUSR3AI}
  * @see UserDeleteResponse the outbound projection of {@code 01 COUSR3AO}
+ * <h2>This endpoint is unauthenticated and unauthorized - an accepted divergence (CWE-306 and CWE-862)</h2>
+ *
+ * <p>This controller deletes a record from {@code USRSEC} with no authentication and no role check.
+ * Nothing here establishes who is calling or that they administer users, so this endpoint can remove
+ * any security record - including the last administrator - for any caller that can reach it.
+ *
+ * <p>That is inherited from the legacy design rather than introduced here: in CICS the region controls
+ * which transactions an operator can reach and no COBOL program in {@code app/cbl} performs a check of
+ * its own. It is not remedied here because every remedy is either excluded from the migration's closed
+ * dependency set or changes an observable outcome that the parity diff compares. The full disposition -
+ * the three exposures, the evidence for each, why each remedy is unavailable, and what a deployment must
+ * do instead - is stated once in {@link SignOnService}, which owns this package's credential handling.
+ * Read it before changing anything on this path.
+
  */
 @RestController
 public class UserDeleteController {
@@ -479,8 +496,26 @@ public class UserDeleteController {
      *       into the map.</li>
      * </ul>
      *
-     * No mismatch between the two is reported, because the source has no such condition and inventing one
-     * would be new behaviour.
+     * <h4>Why a path that disagrees with the body is refused</h4>
+     * On re-entry the source reads the id from {@code USRIDIN}, so a request whose path names
+     * {@code USERA} while its {@code USRIDIN} carries {@code USERB} would delete {@code USERB} through a
+     * URI that names {@code USERA} - a resource identity that does not identify the resource acted on. The
+     * source cannot exhibit that, because on a real terminal the two are one value: the operator sees
+     * {@code USRIDIN} and there is no second statement of identity to disagree with it. The projection
+     * introduces the second statement, so it also refuses the disagreement, before the read-for-update
+     * takes its lock and before the delete runs.
+     *
+     * <p>Refusing is the faithful choice, and overriding is not. For a consistent conversation - which is
+     * every conversation a client following this contract can produce - refusal changes nothing at all,
+     * because there is nothing to refuse. Overriding the received {@code USRIDIN} with the path value, by
+     * contrast, would change what lines 145, 160, 177 and 189 read, which is observable. A blank or
+     * {@code LOW-VALUES} {@code USRIDIN} is not a disagreement: it is the empty field the source itself
+     * handles, and the path supplies the value exactly as {@code CDEMO-CU03-USR-SELECTED} would.
+     *
+     * <h4>The identity is refused rather than truncated</h4>
+     * {@code USRIDIN} is {@code PIC X(08)}. An alphanumeric {@code MOVE} would keep the leading eight
+     * characters, so {@code DELETE /api/users/USER0001EXTRA} would delete {@code USER0001} - a record the
+     * URI does not name, reached by a value no 3270 field could have held. Refused at the boundary.
      *
      * <h4>Why the body is optional</h4>
      * An absent body is {@code EIBCALEN = 0}: the cold start the source handles at lines 90 to 92 by
@@ -502,13 +537,79 @@ public class UserDeleteController {
      */
     @DeleteMapping(path = USERS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Transactional
-    public UserDeleteResponse deleteUser(
+    public ScreenResponse<UserDeleteResponse> deleteUser(
             @PathVariable(USER_ID_VARIABLE) String userId,
             @Valid @RequestBody(required = false) UserDeleteRequest request) {
         Objects.requireNonNull(userId, "A user id is required in the path: it is the record's key, and "
                 + "on first entry it is CDEMO-CU03-USR-SELECTED");
+        requireIdentityFits(userId);
+        requirePathAndBodyAgree(userId, request);
         String aidToken = request == null ? null : request.aid();
-        return mainPara(request, aidOfToken(aidToken), userId).response();
+        ProgramState state = mainPara(request, aidOfToken(aidToken), userId);
+        return ScreenResponse.of(state.response(), state.screenMetadata());
+    }
+
+    /**
+     * Requires the path identity to fit {@code USRIDIN PIC X(08)}, refusing it rather than truncating.
+     *
+     * @param userId the path variable
+     * @throws IllegalArgumentException if it is wider than {@value #USR_ID_IN_LENGTH} characters
+     */
+    static void requireIdentityFits(String userId) {
+        if (userId.length() > USR_ID_IN_LENGTH) {
+            throw new IllegalArgumentException("The user id in the path is " + userId.length()
+                    + " characters, but USRIDIN is USRIDINI PIC X(" + USR_ID_IN_LENGTH
+                    + ") and SEC-USR-ID is PIC X(" + USR_ID_IN_LENGTH + "). Padding it would keep the "
+                    + "leading " + USR_ID_IN_LENGTH + " characters and delete a different user than the "
+                    + "one the URI names.");
+        }
+    }
+
+    /**
+     * Requires the body's {@code USRIDIN} to name the same user the path does, when it names one at all.
+     *
+     * <p>Three states are not a disagreement: no body, an empty one, and a {@code USRIDIN} that is spaces
+     * or {@code LOW-VALUES} - the last being the field the source itself paints blank at lines 97 and 235
+     * and fills from {@code CDEMO-CU03-USR-SELECTED} at 101-102. Compared at the eight-byte
+     * {@code PIC X} image so that a client echoing a painted screen, which sends the field space-padded
+     * to its declared width, agrees with a path value that is not.
+     *
+     * @param userId  the path variable, already known to fit
+     * @param request the bound body, or {@code null}
+     * @throws IllegalArgumentException if the body names a different user
+     */
+    void requirePathAndBodyAgree(String userId, UserDeleteRequest request) {
+        if (request == null) {
+            return;
+        }
+        requireAgrees(userId, request.usrIdIn(), "USRIDIN", "On re-entry app/cbl/COUSR03C.cbl reads the "
+                + "id from USRIDIN - at lines 145, 160, 177 and 189");
+        requireAgrees(userId, request.cu03Info().usrSelected(), "CDEMO-CU03-USR-SELECTED",
+                "On first entry app/cbl/COUSR03C.cbl:99-102 reads the id from CDEMO-CU03-USR-SELECTED, "
+                        + "which the path variable projects");
+    }
+
+    /**
+     * Requires one statement of identity to agree with the path, or to state nothing at all.
+     *
+     * @param userId the path variable
+     * @param stated the value the payload carried; blank, spaces or {@code LOW-VALUES} states nothing
+     * @param item   the COBOL item name, for the refusal message
+     * @param why    the sentence explaining what the source reads that item for
+     * @throws IllegalArgumentException if {@code stated} names a different user
+     */
+    private void requireAgrees(String userId, String stated, String item, String why) {
+        if (isSpacesOrLowValues(stated)) {
+            return;
+        }
+        String statedImage = codec.movePicX(stated, USR_ID_IN_LENGTH);
+        String pathImage = codec.movePicX(userId, USR_ID_IN_LENGTH);
+        if (!statedImage.equals(pathImage)) {
+            throw new IllegalArgumentException("The request body's " + item + " names a user that is not "
+                    + "the one the path addresses. " + why + ", so the two cannot disagree without the "
+                    + "URI naming a different record than the one that would be deleted. Send " + item
+                    + " as spaces to let the path supply it.");
+        }
     }
 
     // =================================================================================================
@@ -608,6 +709,11 @@ public class UserDeleteController {
         Objects.requireNonNull(aidKey, "A resolved AID is required as an Optional, never null; empty is "
                 + "how PfKeyResolver reports that the byte matched none of the tested AIDs");
         ProgramState state = new ProgramState();
+
+        // The 34-byte extension arrives with the communication area and leaves with it, unchanged apart
+        // from the one item this program reads. Recorded on the state here so both terminals - the XCTL at
+        // lines 205-208 and the RETURN at 133-136 - hand back the same thirty-four bytes that arrived.
+        state.setCu03Info(request == null ? Cu03Info.initial() : request.cu03Info());
 
         // L84  SET ERR-FLG-OFF TO TRUE - the flag starts 'N', and ProgramState starts it false.
         state.setErrFlagOff();
@@ -1224,7 +1330,9 @@ public class UserDeleteController {
         // L205-208  EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)
         state.setResponse(state.response()
                 .withNextProgram(state.commarea().toProgram())
-                .withNavigationContext(state.commarea()));
+                .withNavigationContext(state.commarea())
+                // L207  COMMAREA(CARDDEMO-COMMAREA) - which is the 160 bytes plus these 34.
+                .withCu03Info(state.cu03Info()));
         state.markTransferred();
     }
 
@@ -1445,6 +1553,8 @@ public class UserDeleteController {
         }
         state.setResponse(state.response()
                 .withNavigationContext(state.commarea())
+                // L135  COMMAREA(CARDDEMO-COMMAREA) - the 160 bytes plus these 34.
+                .withCu03Info(state.cu03Info())
                 .withNextProgram(codec.movePicX(WS_PGMNAME, TO_PROGRAM_LENGTH))
                 .withNextMapset(codec.movePicX(WS_MAPSET, NEXT_MAPSET_LENGTH))
                 .withNextMap(codec.movePicX(WS_MAP, NEXT_MAP_LENGTH)));
@@ -1653,6 +1763,22 @@ public class UserDeleteController {
         public String lengthItem() {
             return lengthItem;
         }
+
+        /**
+         * The {@code DFHMDF} label behind the length item - {@code USRIDINL} yields {@code USRIDIN}.
+         *
+         * <p>Not string surgery for convenience: a BMS symbolic map names each of a field's items by
+         * suffixing the {@code DFHMDF} label, so {@code xxxL} is the label plus {@code 'L'} by the
+         * generator's own rule. {@code app/cpy-bms/COUSR03.CPY:55-58} shows the four items of
+         * {@code USRIDIN} - {@code USRIDINL}, {@code USRIDINF}, {@code USRIDINA} and {@code USRIDINI} -
+         * all built that way. Reporting the label rather than the length item keeps the cursor request
+         * readable next to the payload members, which carry the same labels.
+         *
+         * @return the label; never {@code null}
+         */
+        public String dfhmdfLabel() {
+            return lengthItem.substring(0, lengthItem.length() - 1);
+        }
     }
 
     // =================================================================================================
@@ -1742,6 +1868,12 @@ public class UserDeleteController {
 
         /** The most recent {@code MOVE -1 TO <field>L}: {@code xxxL} metadata, never a payload member. */
         private CursorField cursorField;
+
+        /**
+         * {@code 05 CDEMO-CU03-INFO} - the thirty-four bytes behind the communication area, carried
+         * through from the request to whichever terminal the task reaches.
+         */
+        private Cu03Info cu03Info = Cu03Info.initial();
 
         /**
          * {@code ERRMSGC OF COUSR3AO} - the message line's colour byte, {@code xxxC} metadata.
@@ -1993,6 +2125,53 @@ public class UserDeleteController {
          */
         public Optional<CursorField> cursorField() {
             return Optional.ofNullable(cursorField);
+        }
+
+        /**
+         * {@code 05 CDEMO-CU03-INFO} as it arrived, which is also how it leaves.
+         *
+         * @return the extension; never {@code null}
+         */
+        public Cu03Info cu03Info() {
+            return cu03Info;
+        }
+
+        /**
+         * Records the extension the communication area arrived with.
+         *
+         * @param info the extension, or {@code null} for {@link Cu03Info#initial()}
+         */
+        void setCu03Info(Cu03Info info) {
+            this.cu03Info = info == null ? Cu03Info.initial() : info;
+        }
+
+        /**
+         * This screen's presentation metadata, in the shared envelope every online response publishes.
+         *
+         * <p>{@code COUSR03} declares no {@code xxxC}, {@code xxxP}, {@code xxxH} or {@code xxxV} items
+         * beyond the message line, so there are no per-field quads to project and the field map is empty -
+         * an accurate empty rather than a missing one. The two things this program does write that are
+         * metadata by declaration, and that had no way to travel at all, are reported:
+         *
+         * <ul>
+         *   <li>{@code MOVE -1 TO <field>L} - the cursor request, named by its {@code DFHMDF} label. The
+         *       {@code xxxL} item is {@code COMP PIC S9(4)} input-group metadata and never a payload
+         *       member (gate G9); only {@code USRIDINL} and {@code FNAMEL} are ever named.</li>
+         *   <li>{@code MOVE <colour> TO ERRMSGC OF COUSR3AO} - the colour of the message line, as its
+         *       unsigned byte value. {@link BmsAttributes#DFHGREEN} on the successful delete at line 314
+         *       and {@link BmsAttributes#DFHRED} on every refusal.</li>
+         * </ul>
+         *
+         * <p>{@code resetAllOutputFields} is {@code false}: {@code MOVE LOW-VALUES TO COUSR3AO} at line 97
+         * has already been performed on this response, so the cleared state is in the eleven values the
+         * client receives and there is nothing left for it to repeat.
+         *
+         * @return the metadata, never {@code null}
+         */
+        public ScreenMetadata screenMetadata() {
+            return ScreenMetadata.of(cursorField().map(CursorField::dfhmdfLabel).orElse(null),
+                    errMsgColour,
+                    false);
         }
 
         /**

@@ -13,11 +13,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.card.CardRepository.CardReadResult;
 import com.vsergeychik.carddemo.card.CardSelectController.Conversation;
-import com.vsergeychik.carddemo.card.CardSelectController.ThisProgCommarea;
 import com.vsergeychik.carddemo.card.dto.CardScreenState;
 import com.vsergeychik.carddemo.card.dto.CardSelectRequest;
+import com.vsergeychik.carddemo.card.dto.CardSelectRequest.ThisProgCommarea;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse;
 import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.AbendException;
@@ -27,6 +28,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -168,6 +170,24 @@ class CardSelectControllerTest {
         Conversation task = new Conversation();
         controller.main0000(request, response, task, eibcalen, eibAid);
         return task;
+    }
+
+    /**
+     * The screen inside the envelope the mapping returns.
+     *
+     * <p>The handler answers {@link ScreenResponse}, which serialises the screen unwrapped at the top
+     * level of the JSON with the presentation metadata beside it. A test that wants the screen says so
+     * here once rather than at every call site.
+     *
+     * @param answer the mapping's return value
+     * @return the screen; never {@code null}
+     */
+    private static CardSelectResponse screenOf(
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer) {
+        ScreenResponse<CardSelectResponse> envelope = answer.getBody();
+        assertThat(envelope).isNotNull();
+        assertThat(envelope.screen()).isNotNull();
+        return envelope.screen();
     }
 
     /** A task with storage initialised, as {@code :254-256} leaves it. */
@@ -498,11 +518,74 @@ class CardSelectControllerTest {
         }
 
         @Test
-        @DisplayName("an unstated EIBCALEN is inferred from whether any commarea field was named")
-        void eibcalenInference() {
-            assertThat(CardSelectController.anyCommareaFieldSupplied(null, null, null)).isFalse();
-            assertThat(CardSelectController.anyCommareaFieldSupplied(null, "COCRDLIC", null)).isTrue();
-            assertThat(CardSelectController.anyCommareaFieldSupplied()).isFalse();
+        @DisplayName("an unstated EIBCALEN is derived from the carrier, not from the caller")
+        void eibcalenComesFromTheCarrierWhenUnstated() {
+            CardSelectRequest cold = new CardSelectRequest();
+            cold.initializeMapArea();
+            assertThat(CardSelectController.resolveEibcalen(null, cold))
+                    .isEqualTo(CardSelectController.NO_COMMAREA_LENGTH);
+
+            CardSelectRequest continuing = new CardSelectRequest();
+            continuing.initializeMapArea();
+            continuing.setNavigationContext(NavigationContext.empty()
+                    .withFromProgram(CardSelectControllerAccess.CCLIST_PGM));
+            assertThat(CardSelectController.resolveEibcalen(null, continuing))
+                    .isEqualTo(CardSelectController.PASSED_COMMAREA_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a stated EIBCALEN that agrees with the carrier is taken")
+        void aStatedEibcalenThatAgreesIsTaken() {
+            CardSelectRequest cold = new CardSelectRequest();
+            cold.initializeMapArea();
+            assertThat(CardSelectController.resolveEibcalen(
+                    CardSelectController.NO_COMMAREA_LENGTH, cold))
+                    .isEqualTo(CardSelectController.NO_COMMAREA_LENGTH);
+
+            CardSelectRequest continuing = new CardSelectRequest();
+            continuing.initializeMapArea();
+            continuing.setNavigationContext(NavigationContext.empty());
+            assertThat(CardSelectController.resolveEibcalen(
+                    CardSelectController.PASSED_COMMAREA_LENGTH, continuing))
+                    .isEqualTo(CardSelectController.PASSED_COMMAREA_LENGTH);
+        }
+
+        @ParameterizedTest(name = "eibcalen = {0} is refused")
+        @ValueSource(ints = {-1, 1, 159, 160, 171, 173, 2000})
+        @DisplayName("EIBCALEN can only be one of the two lengths CICS could have set")
+        void anImpossibleEibcalenIsRefused(int stated) {
+            CardSelectRequest cold = new CardSelectRequest();
+            cold.initializeMapArea();
+
+            assertThatThrownBy(() -> CardSelectController.resolveEibcalen(stated, cold))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("EIBCALEN cannot contradict what actually arrived, in either direction")
+        void aStatedEibcalenCannotContradictTheCarrier() {
+            CardSelectRequest cold = new CardSelectRequest();
+            cold.initializeMapArea();
+            assertThatThrownBy(() -> CardSelectController.resolveEibcalen(
+                    CardSelectController.PASSED_COMMAREA_LENGTH, cold))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("no communication area");
+
+            CardSelectRequest continuing = new CardSelectRequest();
+            continuing.initializeMapArea();
+            continuing.setNavigationContext(NavigationContext.empty());
+            assertThatThrownBy(() -> CardSelectController.resolveEibcalen(
+                    CardSelectController.NO_COMMAREA_LENGTH, continuing))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("a communication area");
+        }
+
+        @Test
+        @DisplayName("the passed length is CARDDEMO-COMMAREA plus the twelve-byte trailer")
+        void thePassedLengthIsTheSumOfTheTwoAreas() {
+            assertThat(CardSelectController.PASSED_COMMAREA_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH + ThisProgCommarea.RECORD_LENGTH)
+                    .isEqualTo(172);
         }
     }
 
@@ -1723,48 +1806,57 @@ class CardSelectControllerTest {
     class HttpContract {
 
         @Test
-        @DisplayName("a cold start with no parameters answers 200 and prompts for input")
+        @DisplayName("a cold start with no body answers 200 and prompts for input")
         void coldStart() {
-            ResponseEntity<CardSelectResponse> answer = controller.viewCardDetail(
-                    CARD_NUMBER, null, null, null, null, null, null, null, null, null, null, null,
-                    null);
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
+                    controller.viewCardDetail(CARD_NUMBER, null, null, null);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            CardSelectResponse body = answer.getBody();
-            assertThat(body).isNotNull();
+            CardSelectResponse body = screenOf(answer);
             assertThat(body.getInfomsgo()).isEqualTo(CardSelectController.WS_PROMPT_FOR_INPUT);
             assertThat(body.getTrnnameo()).isEqualTo("CCDL");
             verifyNoInteractions(repository);
         }
 
         @Test
-        @DisplayName("naming a commarea field infers a passed commarea, so the criteria are shown")
-        void namingACommareaFieldInfersOne() {
+        @DisplayName("a body carrying the commarea is a continuing conversation, so the criteria are shown")
+        void aBodyCarryingTheCommareaContinuesTheConversation() {
             when(repository.readByCardNumber(anyString()))
                     .thenReturn(CardReadResult.normal(card()));
 
-            ResponseEntity<CardSelectResponse> answer = controller.viewCardDetail(
-                    CARD_NUMBER, ACCOUNT_ID, (int) CicsAid.DFHENTER, null, 0,
-                    "CCLI", "COCRDLIC", "USER0001", "U", 11L, Long.parseLong(CARD_NUMBER),
-                    "COCRDLI", CARD_LIST_OWN_MAP);
+            CardSelectRequest sent = request(CARD_NUMBER, ACCOUNT_ID, fromCardList()
+                    .withUserId("USER0001")
+                    .withUserTypeUser()
+                    .withLastMapset(CardSelectControllerAccess.CCLIST_MAPSET)
+                    .withLastMap(CARD_LIST_OWN_MAP));
+            sent.setThisProgCommarea(new ThisProgCommarea("COCRDLIC", "CCLI"));
+
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
+                    controller.viewCardDetail(CARD_NUMBER, sent, (int) CicsAid.DFHENTER, null);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            CardSelectResponse body = answer.getBody();
-            assertThat(body).isNotNull();
+            CardSelectResponse body = screenOf(answer);
             assertThat(body.getCardsido()).isEqualTo(CARD_NUMBER);
             assertThat(body.getCrdnameo().strip()).isEqualTo("JOHN Q PUBLIC");
             assertThat(body.getInfomsgo()).isEqualTo(CardSelectController.FOUND_CARDS_FOR_ACCOUNT);
+            // The twelve-byte trailer COMMON-RETURN appends comes back, so the next turn can restore it.
+            //
+            // It comes back CARRYING WHAT ARRIVED. COCRDSLC never writes CA-FROM-PROGRAM or
+            // CA-FROM-TRANID: the only three statements that name WS-THIS-PROGCOMMAREA are the
+            // INITIALIZE at :272, the restore at :277-278 and the echo at :398-400. The area is a
+            // pass-through carrier for the calling program's identity, and reproducing that means
+            // returning it unchanged rather than stamping this program's own literals into it.
+            assertThat(body.getThisProgCommarea().caFromProgram()).isEqualTo("COCRDLIC");
+            assertThat(body.getThisProgCommarea().caFromTranid()).isEqualTo("CCLI");
         }
 
         @Test
-        @DisplayName("an explicit eibcalen of 0 beats the inference")
-        void anExplicitEibcalenWins() {
-            ResponseEntity<CardSelectResponse> answer = controller.viewCardDetail(
-                    CARD_NUMBER, ACCOUNT_ID, null, 0, 0, "CCLI", "COCRDLIC", null, null, 11L,
-                    Long.parseLong(CARD_NUMBER), "COCRDLI", CARD_LIST_OWN_MAP);
+        @DisplayName("a bodiless call with eibcalen = 0 is the cold start, stated explicitly")
+        void anExplicitZeroEibcalenIsTheColdStart() {
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
+                    CARD_NUMBER, null, null, CardSelectController.NO_COMMAREA_LENGTH);
 
-            CardSelectResponse body = answer.getBody();
-            assertThat(body).isNotNull();
+            CardSelectResponse body = screenOf(answer);
             assertThat(body.getInfomsgo()).isEqualTo(CardSelectController.WS_PROMPT_FOR_INPUT);
             verifyNoInteractions(repository);
         }
@@ -1772,37 +1864,131 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("PF3 over HTTP answers 200 with a nextProgram and never touches the file")
         void pf3OverHttp() {
-            ResponseEntity<CardSelectResponse> answer = controller.viewCardDetail(
-                    CARD_NUMBER, null, (int) CicsAid.DFHPF3, null, 0, null, null, null, null, null,
-                    null, null, null);
+            // 243, not -13: EIBAID travels as the UNSIGNED value of the byte, which is what the
+            // 0..255 guard requires and what a query string can carry.
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
+                    CARD_NUMBER, null, Byte.toUnsignedInt(CicsAid.DFHPF3), null);
 
-            CardSelectResponse body = answer.getBody();
-            assertThat(body).isNotNull();
+            CardSelectResponse body = screenOf(answer);
             assertThat(body.getNextProgram().strip()).isEqualTo("COMEN01C");
             verifyNoInteractions(repository);
         }
 
         @Test
-        @DisplayName("an over-wide card number is TRUNCATED by the PIC X move, never rejected")
-        void anOverWideCardNumberIsTruncated() {
+        @DisplayName("an over-wide card number in the path is REFUSED, never truncated into another card")
+        void anOverWideCardNumberIsRefused() {
+            assertThatThrownBy(() -> controller.viewCardDetail(
+                    CARD_NUMBER + "9999", null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CARDSID");
+
+            // Nothing was read: the refusal happens before the PIC X move and before the repository.
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("an over-wide ACCTSID in the body is refused before it can filter another account")
+        void anOverWideAccountFilterIsRefused() {
+            CardSelectRequest sent = request(CARD_NUMBER, "123456789012", null);
+
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, sent, null, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("ACCTSID");
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("a body naming a DIFFERENT card contradicts the URI and is refused")
+        void aContradictingCardNumberIsRefused() {
+            CardSelectRequest sent = request("4000000000000002", ACCOUNT_ID, null);
+
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, sent, null, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("path");
+            verifyNoInteractions(repository);
+        }
+
+        @ParameterizedTest(name = "a body stating CARDSID as \"{0}\" lets the path supply it")
+        @ValueSource(strings = {"", "   ", "*", CARD_NUMBER, CARD_NUMBER + "        "})
+        @DisplayName("the no-criterion states and the path value itself all agree with the URI")
+        void aNonContradictingCardsidIsAccepted(String stated) {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.notFound());
+                    .thenReturn(CardReadResult.normal(card()));
 
-            controller.viewCardDetail(CARD_NUMBER + "9999", ACCOUNT_ID, null, null, 1,
-                    "COBI", "COBIL00C", null, null, null, null, null, null);
+            // A continuing conversation, because a cold start paints an initialised map and echoes no
+            // filter at all - :268's EIBCALEN = 0 arm discards what was typed.
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
+                    CARD_NUMBER, request(stated, ACCOUNT_ID, fromCardList()), null, null);
 
-            // PIC X truncates on the right, keeping the leading sixteen.
-            verify(repository).readByCardNumber(CARD_NUMBER);
+            assertThat(screenOf(answer).getCardsido()).isEqualTo(CARD_NUMBER);
+        }
+
+        @Test
+        @DisplayName("a body that names no field at all binds: an absent PIC X field is spaces, not null")
+        void aBodyWithNoFieldsNamedStillBinds() {
+            when(repository.readByCardNumber(anyString()))
+                    .thenReturn(CardReadResult.normal(card()));
+
+            // A client that sends {} leaves every member null, because Jackson sets only what the JSON
+            // names. A COBOL alphanumeric field has no null state, so binding fills them at their
+            // declared widths rather than defending against null at every later read.
+            CardSelectRequest bound = controller.bind(CARD_NUMBER, new CardSelectRequest());
+
+            assertThat(bound.getCardsid()).isEqualTo(CARD_NUMBER);
+            assertThat(bound.getAcctsid())
+                    .hasSize(CardSelectRequest.ACCTSID_LENGTH)
+                    .isBlank();
+        }
+
+        @Test
+        @DisplayName("a null CARDSID does not contradict the URI - there is nothing to contradict with")
+        void anAbsentCardsidNamesNoOtherCard() {
+            assertThat(CardSelectController.statesADifferentCard(CARD_NUMBER, null)).isFalse();
+        }
+
+        @Test
+        @DisplayName("an EIBAID outside 0..255 is refused rather than narrowed to another key")
+        void anOutOfRangeAidIsRefused() {
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, 499, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("eibAid");
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, -14, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("an eibcalen the carrier does not support is refused")
+        void aContradictingEibcalenIsRefused() {
+            assertThatThrownBy(() -> controller.viewCardDetail(
+                    CARD_NUMBER, null, null, CardSelectController.PASSED_COMMAREA_LENGTH))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("eibcalen");
+            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, null, 99))
+                    .isInstanceOf(IllegalArgumentException.class);
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("the reply carries the fifteen attribute quads under screenMetadata, not beside the fields")
+        void theMetadataTravelsInTheEnvelope() {
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
+                    controller.viewCardDetail(CARD_NUMBER, null, null, null);
+
+            ScreenResponse<CardSelectResponse> envelope = answer.getBody();
+            assertThat(envelope).isNotNull();
+            assertThat(envelope.screen()).isSameAs(screenOf(answer));
+            assertThat(envelope.screenMetadata().fields()).hasSize(15)
+                    .containsKeys("ACCTSID", "CARDSID", "ERRMSG");
+            assertThat(envelope.screenMetadata().messageColour()).isNotNull();
         }
 
         @Test
         @DisplayName("every response member traces to an xxxO item of COCRDSL.CPY (gate G9)")
         void thePayloadIsTheSymbolicMap() {
-            ResponseEntity<CardSelectResponse> answer = controller.viewCardDetail(
-                    CARD_NUMBER, null, null, null, null, null, null, null, null, null, null, null,
-                    null);
-            CardSelectResponse body = answer.getBody();
-            assertThat(body).isNotNull();
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer =
+                    controller.viewCardDetail(CARD_NUMBER, null, null, null);
+            CardSelectResponse body = screenOf(answer);
 
             assertThat(CardSelectResponse.ScreenField.values()).hasSize(15);
             assertThat(body.getTrnnameo()).hasSize(4);
@@ -1916,24 +2102,66 @@ class CardSelectControllerTest {
                     .build();
         }
 
+        /** The bound request as a client would send it. */
+        private String body(CardSelectRequest request) throws Exception {
+            return new ObjectMapper().writeValueAsString(request);
+        }
+
         @Test
-        @DisplayName("GET /api/cards/{cardNum} routes, binds the path variable and answers 200 JSON")
-        void theMappingRoutesAndBindsThePathVariable() throws Exception {
+        @DisplayName("GET /api/cards/{cardNum} routes, binds the path variable and the body, and answers 200 JSON")
+        void theMappingRoutesAndBindsTheWholeRequest() throws Exception {
             when(repository.readByCardNumber(anyString()))
                     .thenReturn(CardReadResult.normal(card()));
 
+            CardSelectRequest sent = request("", ACCOUNT_ID, fromCardList());
+
             mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
-                            .param("acctId", ACCOUNT_ID)
                             .param("eibAid", String.valueOf((int) CicsAid.DFHENTER))
-                            .param("fromTranid", "CCLI")
-                            .param("fromProgram", CardSelectControllerAccess.CCLIST_PGM)
-                            .param("cdemoAcctId", "11")
-                            .param("cdemoCardNum", CARD_NUMBER))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(sent)))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     // The path variable reached CARDSIDI and came back on CARDSIDO at its X(16) width.
                     .andExpect(jsonPath("$.cardsido").value(CARD_NUMBER))
-                    .andExpect(jsonPath("$.acctsido").value(ACCOUNT_ID));
+                    .andExpect(jsonPath("$.acctsido").value(ACCOUNT_ID))
+                    // The whole 01 CCRDSLAI bound, so the commarea the body carried is the one that ran
+                    // and came back. CDEMO-FROM-PROGRAM is rewritten only on the transfer arm, at :324,
+                    // so on the paint path it still names the program that called this one.
+                    .andExpect(jsonPath("$.navigationContext.fromProgram")
+                            .value(CardSelectControllerAccess.CCLIST_PGM))
+                    // And the twelve-byte trailer of :200-203 is on the wire (finding F2), carrying what
+                    // arrived: initialised here, because this body sent none.
+                    .andExpect(jsonPath("$.thisProgCommarea.caFromProgram").exists())
+                    .andExpect(jsonPath("$.thisProgCommarea.caFromTranid").exists());
+        }
+
+        @Test
+        @DisplayName("the presentation metadata travels under screenMetadata, beside the unwrapped screen")
+        void theMetadataIsPublishedBesideTheScreen() throws Exception {
+            when(repository.readByCardNumber(anyString()))
+                    .thenReturn(CardReadResult.normal(card()));
+
+            mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("", ACCOUNT_ID, fromCardList()))))
+                    .andExpect(status().isOk())
+                    // Finding F3: the quads the COBOL writes are published rather than dropped, and they
+                    // are NOT siblings of the fifteen values.
+                    .andExpect(jsonPath("$.screenMetadata.fields.ERRMSG.colour").exists())
+                    .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.protection").exists())
+                    .andExpect(jsonPath("$.screenMetadata.messageColour").exists())
+                    .andExpect(jsonPath("$.errmsgc").doesNotExist())
+                    .andExpect(jsonPath("$.acctsidp").doesNotExist())
+                    // The screen itself is still at the top level, unwrapped.
+                    .andExpect(jsonPath("$.cardsido").value(CARD_NUMBER));
+        }
+
+        @Test
+        @DisplayName("an over-wide card number in the path is answered 400 by the advice, with no value echoed")
+        void anOverWidePathValueIsRejected() throws Exception {
+            mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER + "9999"))
+                    .andExpect(status().isBadRequest());
+            verifyNoInteractions(repository);
         }
 
         @Test
@@ -1944,7 +2172,9 @@ class CardSelectControllerTest {
 
             // The fifteen named DFHMDF fields of app/bms/COCRDSL.bms, each at the width its xxxO item
             // declares in app/cpy-bms/COCRDSL.CPY (gate G9).
-            mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER).param("acctId", ACCOUNT_ID))
+            mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("", ACCOUNT_ID, null))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.trnnameo").value(CardSelectController.LIT_THISTRANID))
                     .andExpect(jsonPath("$.pgmnameo").value(CardSelectController.LIT_THISPGM))
@@ -1975,9 +2205,11 @@ class CardSelectControllerTest {
         @DisplayName("PF3 answers 200 with the navigation fields, because XCTL is client-driven")
         void backNavigationSerialisesTheNextTarget() throws Exception {
             mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
-                            .param("eibAid", String.valueOf((int) CicsAid.DFHPF3))
+                            .param("eibAid", String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF3)))
                             .param("eibcalen", String.valueOf(
-                                    CardSelectController.PASSED_COMMAREA_LENGTH)))
+                                    CardSelectController.PASSED_COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("", "", fromCardList()))))
                     .andExpect(status().isOk())
                     // Gate G40: the response names the next target and the client makes the call.
                     .andExpect(jsonPath("$.nextProgram").exists())
@@ -1992,7 +2224,19 @@ class CardSelectControllerTest {
             // controller runs. This is the one status code the controller itself never produces, which
             // is exactly why it is asserted here and nowhere else.
             mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
-                            .param("cdemoAcctId", "not-a-number"))
+                            .param("eibAid", "not-a-number"))
+                    .andExpect(status().isBadRequest());
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("a field wider than its PICTURE is a 400 from Bean Validation, before the controller runs")
+        void anOverWideBodyFieldIsRejectedByValidation() throws Exception {
+            CardSelectRequest sent = request("", "123456789012", null);
+
+            mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(sent)))
                     .andExpect(status().isBadRequest());
             verifyNoInteractions(repository);
         }

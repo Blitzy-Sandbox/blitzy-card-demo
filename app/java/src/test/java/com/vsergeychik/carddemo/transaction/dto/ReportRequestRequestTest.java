@@ -41,7 +41,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -416,28 +415,38 @@ class ReportRequestRequestTest {
         return java.util.Collections.unmodifiableMap(table);
     }
 
+    /**
+     * The oracle lines every test below reads, snapshotted once and immutable.
+     *
+     * <p>Read eagerly into {@code static final} lists rather than assigned by a {@code @BeforeAll},
+     * because a mutable static is shared state between tests however carefully it is populated: any
+     * method could reassign one, a reader cannot tell from the declaration that nothing does, and the
+     * order in which the suite happens to run becomes part of what the tests mean. The AAP forbids
+     * static mutable state outright (gate G53, practice B9), and these are the files it exists to
+     * protect - the five parity oracles the whole class asserts against.
+     *
+     * <p>{@link #readLines(Path)} already returns an unmodifiable list and
+     * {@link #inputGroupOf(List)} / {@link #outputGroupOf(List)} are pure slices of one, so the
+     * snapshots are immutable in substance as well as in reference.
+     */
+    private static final List<String> SYMBOLIC_MAP =
+        readLines(repositoryRoot().resolve(SYMBOLIC_MAP_PATH));
+
     /** The {@code 01 CORPT0AI} group of the symbolic map, lines 17 to 120 inclusive. */
-    private static List<String> inputGroup;
+    private static final List<String> inputGroup = inputGroupOf(SYMBOLIC_MAP);
 
     /** The {@code 01 CORPT0AO REDEFINES CORPT0AI} overlay, line 121 to the end of the copybook. */
-    private static List<String> outputGroup;
+    private static final List<String> outputGroup = outputGroupOf(SYMBOLIC_MAP);
 
-    private static List<String> mapset;
-    private static List<String> program;
+    /** The BMS mapset lines - the 17 DFHMDF definitions this payload projects. */
+    private static final List<String> mapset = readLines(repositoryRoot().resolve(MAPSET_PATH));
+
+    /** The COBOL program lines, whose paragraph order several tests read. */
+    private static final List<String> program = readLines(repositoryRoot().resolve(PROGRAM_PATH));
 
     /** The payload's own source lines, for the two textual negatives. */
-    private static List<String> payloadSource;
-
-    @BeforeAll
-    static void readOracles() {
-        Path root = repositoryRoot();
-        List<String> symbolicMap = readLines(root.resolve(SYMBOLIC_MAP_PATH));
-        inputGroup = inputGroupOf(symbolicMap);
-        outputGroup = outputGroupOf(symbolicMap);
-        mapset = readLines(root.resolve(MAPSET_PATH));
-        program = readLines(root.resolve(PROGRAM_PATH));
-        payloadSource = readLines(root.resolve(PAYLOAD_SOURCE_PATH));
-    }
+    private static final List<String> payloadSource =
+        readLines(repositoryRoot().resolve(PAYLOAD_SOURCE_PATH));
 
     /**
      * Locates the repository root by walking up from the working directory until the symbolic map is
@@ -3874,10 +3883,17 @@ class ReportRequestRequestTest {
                         field.declaredLength() + 1).hasSize(1);
                 ConstraintViolation<ReportRequestRequest> violation = violations.iterator().next();
                 assertThat(violation.getPropertyPath()).hasToString(property);
+                // The message states the declared width and nothing else. It used to name the
+                // copybook item and its PICTURE clause, which is provenance written for a maintainer
+                // rather than a correction a caller can act on - and which, handed out one rejected
+                // field at a time, describes the estate behind the API. The item name and its width
+                // are still asserted against app/cpy-bms/CORPT00.CPY elsewhere in this class; they
+                // simply no longer travel to whoever sent the request.
                 assertThat(violation.getMessage())
-                        .as("the message names the copybook item and its PICTURE")
-                        .contains(field.inputItem())
-                        .contains("PIC X(" + field.declaredLength() + ")");
+                        .as("the message states the width and no internal provenance")
+                        .isEqualTo("must be at most " + field.declaredLength() + " characters")
+                        .doesNotContain(field.inputItem())
+                        .doesNotContain("PIC X(");
             }
         }
 
@@ -3965,7 +3981,9 @@ class ReportRequestRequestTest {
                 assertThat(violations).hasSize(1);
                 assertThat(violations.iterator().next().getPropertyPath()).hasToString("aid");
                 assertThat(violations.iterator().next().getMessage())
-                        .contains(ReportRequestRequest.AID_FIELD);
+                        .isEqualTo("must be at most " + ReportRequestRequest.AID_LENGTH
+                                + " characters")
+                        .doesNotContain(ReportRequestRequest.AID_FIELD);
             }
         }
 

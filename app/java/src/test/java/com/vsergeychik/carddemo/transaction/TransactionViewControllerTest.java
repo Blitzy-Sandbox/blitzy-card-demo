@@ -24,6 +24,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -1366,6 +1367,69 @@ class TransactionViewControllerTest {
         }
 
         @Test
+        @DisplayName("a READPREV that fails outright still ends the browse ADD-TRANSACTION opened")
+        void anUnmodelledReadFailureStillEndsTheBrowse() {
+            // L446's EVALUATE classifies a CICS response; it does not wrap the command, so a
+            // driver-level refusal propagates and bypasses L447's ENDBR. Under CICS the unended browse
+            // costs nothing because task termination releases it, and there is no implicit release here.
+            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            when(browse.readPrev()).thenThrow(new IllegalStateException("the read was refused"));
+            when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
+                    .thenReturn(browse);
+            ProgramState state = new ProgramState(controller.codec());
+
+            assertThatThrownBy(() -> controller.addTransaction(state))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("the read was refused");
+
+            verify(browse).endBrowse();
+            assertThat(state.browseOpen())
+                    .as("the request boundary released it, so no handle is left positioned")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a rejecting STARTBR arm ends the task, and the browse is released anyway")
+        void aRejectingStartbrStillReleasesTheBrowse() {
+            // startbrOutcome's OTHER arm sends a map and ends the task, so L447's ENDBR is skipped by
+            // the taskEnded guard rather than by an exception.
+            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult.endOfFile(
+                    TransactionRepository.CICS_FILE_NAME));
+            when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
+                    .thenReturn(browse);
+            ProgramState state = new ProgramState(controller.codec());
+            state.openBrowse(browse);
+            controller.startbrOutcome(state, FileStatus.Outcome.OTHER);
+
+            assertThat(state.taskEnded()).isTrue();
+            assertThat(state.browseOpen())
+                    .as("startbrOutcome itself leaves the handle positioned")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("COPY-LAST-TRAN-DATA releases its browse on an outright read failure too")
+        void copyLastTranDataAlsoReleasesTheBrowse() {
+            // The same three-statement browse as ADD-TRANSACTION, at L476-L478, and its own try/finally.
+            ProgramState state = new ProgramState(controller.codec());
+            state.setCommarea(reenterCommarea());
+            state.setActidinI(ACCOUNT_ID);
+            xrefByAccountFound();
+            TransactionRepository.Browse browse = mock(TransactionRepository.Browse.class);
+            when(browse.readPrev()).thenThrow(new IllegalStateException("refused"));
+            when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
+                    .thenReturn(browse);
+
+            assertThatThrownBy(() -> controller.copyLastTranData(state))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("refused");
+
+            verify(browse).endBrowse();
+            assertThat(state.browseOpen()).isFalse();
+        }
+
+        @Test
         @DisplayName("ending a browse that was never positioned does nothing")
         void endingAnUnopenedBrowseIsSafe() {
             ProgramState state = new ProgramState(controller.codec());
@@ -1689,7 +1753,6 @@ class TransactionViewControllerTest {
             "'  1234  ',        1234",
             "'+1234',           1234",
             "'-1234',          -1234",
-            "'1,234',           1234",
             "'12.34',           12.34",
             "'12.',             12",
             "'1234-',          -1234",
@@ -1708,7 +1771,7 @@ class TransactionViewControllerTest {
         @ParameterizedTest(name = "NUMVAL(\"{0}\") does not conform")
         @ValueSource(strings = {"", "   ", "+", "-", ".", "abc", "12ab", "$12", "1,,234", "12.3.4",
             "1234CRX", "12 34", "1,", "1,a", "1.2,3", ",1", "+1234-", "-1234+", ",", "1234C",
-            "1234D", "1234CD"})
+            "1234D", "1234CD", "1,234", "1,234,567", "-1,234", "1,234-"})
         @DisplayName("non-conforming arguments are reported and yield zero")
         void numvalRejects(String image) {
             assertThat(TransactionViewController.testNumval(image))
@@ -1719,22 +1782,38 @@ class TransactionViewControllerTest {
         }
 
         @Test
-        @DisplayName("the grouping comma is permitted only between integer digits")
+        @DisplayName("the grouping comma belongs to NUMVAL-C, and only between integer digits")
         void theGroupingComma() {
-            assertThat(TransactionViewController.numval("1,234,567"))
+            assertThat(TransactionViewController.numvalC("1,234,567"))
                     .isEqualByComparingTo(new BigDecimal("1234567"));
-            assertThat(TransactionViewController.testNumval("1,"))
+            assertThat(TransactionViewController.testNumvalC("1,"))
                     .as("a trailing comma has no following digit")
                     .isPositive();
-            assertThat(TransactionViewController.testNumval("1,a"))
+            assertThat(TransactionViewController.testNumvalC("1,a"))
                     .as("a comma must be followed by a digit")
                     .isPositive();
-            assertThat(TransactionViewController.testNumval("1.2,3"))
+            assertThat(TransactionViewController.testNumvalC("1.2,3"))
                     .as("a comma after the decimal point is not a grouping comma")
                     .isPositive();
-            assertThat(TransactionViewController.testNumval(",1"))
+            assertThat(TransactionViewController.testNumvalC(",1"))
                     .as("a comma with no preceding digit is not a grouping comma")
                     .isPositive();
+        }
+
+        @Test
+        @DisplayName("NUMVAL accepts no comma at all, not even a well-placed grouping one")
+        void numvalAcceptsNoComma() {
+            // The grouping comma is a NUMVAL-C extension. Both of this screen's NUMVAL call sites -
+            // COTRN02C lines 204 and 218 - are guarded by an IS NOT NUMERIC test, and a comma is not
+            // numeric, so the guard errors before the conversion is reached; tightening the grammar
+            // therefore changes no live path while making the intrinsic right about the language.
+            assertThat(TransactionViewController.testNumval("1,234"))
+                    .as("well-placed under NUMVAL-C, still not a NUMVAL argument")
+                    .isPositive();
+            assertThat(TransactionViewController.numval("1,234")).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(TransactionViewController.testNumvalC("1,234"))
+                    .as("the same argument under the wider grammar")
+                    .isEqualTo(TransactionViewController.NUMVAL_CONFORMS);
         }
 
         @Test
@@ -1751,8 +1830,8 @@ class TransactionViewControllerTest {
         }
 
         @Test
-        @DisplayName("the currency sign is the one difference between the two intrinsics")
-        void theCurrencySignIsTheDifference() {
+        @DisplayName("the two intrinsics differ in two places: the currency sign and the comma")
+        void theTwoDifferencesBetweenTheIntrinsics() {
             assertThat(TransactionViewController.testNumvalC("$1234"))
                     .isEqualTo(TransactionViewController.NUMVAL_CONFORMS);
             assertThat(TransactionViewController.numvalC("$1234"))
@@ -1760,10 +1839,30 @@ class TransactionViewControllerTest {
             assertThat(TransactionViewController.testNumval("$1234"))
                     .as("NUMVAL has no currency sign")
                     .isNotEqualTo(TransactionViewController.NUMVAL_CONFORMS);
+            assertThat(TransactionViewController.testNumval("1,234"))
+                    .as("and no grouping comma either - the second difference")
+                    .isNotEqualTo(TransactionViewController.NUMVAL_CONFORMS);
             assertThat(TransactionViewController.testNumvalC("- $ 1,234.56"))
                     .isEqualTo(TransactionViewController.NUMVAL_CONFORMS);
             assertThat(TransactionViewController.numvalC("- $ 1,234.56"))
                     .isEqualByComparingTo(new BigDecimal("-1234.56"));
+        }
+
+        @Test
+        @DisplayName("CR and DB belong to both intrinsics, which is the tempting wrong simplification")
+        void theCreditIndicatorsBelongToBoth() {
+            // A credit indicator reads as a currency-ish notion, so it looks as though it might be a
+            // NUMVAL-C extension like the '$' and the ','. It is not: both intrinsics accept CR and DB,
+            // and removing them from NUMVAL would itself be a parity defect.
+            for (String image : new String[] {"1234CR", "1234DB"}) {
+                assertThat(TransactionViewController.testNumval(image))
+                        .isEqualTo(TransactionViewController.NUMVAL_CONFORMS);
+                assertThat(TransactionViewController.testNumvalC(image))
+                        .isEqualTo(TransactionViewController.NUMVAL_CONFORMS);
+                assertThat(TransactionViewController.numval(image))
+                        .isEqualByComparingTo(TransactionViewController.numvalC(image))
+                        .isEqualByComparingTo(new BigDecimal("-1234"));
+            }
         }
 
         @Test
@@ -2292,6 +2391,13 @@ class TransactionViewControllerTest {
                     .as("L502-503: an unset CDEMO-TO-PROGRAM becomes COSGN00C")
                     .isEqualTo("COSGN00C");
             assertThat(state.response().getNextProgram()).isEqualTo("COSGN00C");
+            // An XCTL states no map: which map COSGN00C paints is its decision, made after this program
+            // has ended, and COTRN02C names none in the XCTL at L508-511. Publishing COTRN02 / COTRN2A
+            // here would tell the client to repaint the screen it is leaving.
+            assertThat(state.response().getNextMapset()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(state.response().getNextMap()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAP_LENGTH);
             assertThat(state.commarea().fromTranid()).isEqualTo("CT02");
             assertThat(state.commarea().fromProgram()).isEqualTo("COTRN02C");
             assertThat(state.commarea().isEnter())
@@ -2309,6 +2415,23 @@ class TransactionViewControllerTest {
             controller.returnToPrevScreen(state);
 
             assertThat(state.response().getNextProgram()).isEqualTo("COTRN00C");
+            assertThat(state.response().getNextMapset()).isBlank();
+            assertThat(state.response().getNextMap()).isBlank();
+            // And the caller's own two commarea items are untouched by the blanking: they are different
+            // storage, and COTRN02C never writes them.
+            assertThat(state.commarea().lastMapset()).isEqualTo(NavigationContext.empty().lastMapset());
+            assertThat(state.commarea().lastMap()).isEqualTo(NavigationContext.empty().lastMap());
+        }
+
+        @Test
+        @DisplayName("a SEND still names this screen's own mapset and map, which is the other case")
+        void aSendStillNamesThisScreen() {
+            ProgramState state = new ProgramState(controller.codec());
+
+            controller.sendTrnaddScreen(state);
+
+            assertThat(state.response().getNextMapset()).isEqualTo(TransactionViewResponse.MAPSET_NAME);
+            assertThat(state.response().getNextMap()).isEqualTo(TransactionViewResponse.MAP_NAME);
         }
     }
 
@@ -2458,12 +2581,18 @@ class TransactionViewControllerTest {
             browseWithLastId();
             writeSucceeds();
 
-            TransactionViewResponse viaAdapter = controller.addTransaction(completeRequest());
+            ScreenResponse<TransactionViewResponse> answer =
+                    controller.addTransaction(completeRequest());
 
+            TransactionViewResponse viaAdapter = answer.screen();
             assertThat(viaAdapter.getErrmsgo()).startsWith("Transaction added successfully.");
             assertThat(viaAdapter.getNextProgram()).isEqualTo("COTRN02C");
             assertThat(viaAdapter.getNextMapset()).isEqualTo("COTRN02");
             assertThat(viaAdapter.getNextMap()).isEqualTo("COTRN2A");
+            // The twenty-one attribute quads and the cursor request are metadata by declaration, so
+            // they travel beside the screen rather than not travelling at all.
+            assertThat(answer.screenMetadata().fields())
+                    .hasSize(TransactionViewResponse.ScreenField.values().length);
         }
 
         @Test

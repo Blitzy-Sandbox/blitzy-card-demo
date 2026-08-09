@@ -9,7 +9,10 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
@@ -262,6 +265,15 @@ public class AccountBalanceJob {
      * is how it is resolved.
      */
     public static final String CONFIGURATION_BEAN_NAME = "accountBalanceJobConfiguration";
+
+    /**
+     * Diagnostics for the one thing this program does that its SYSOUT cannot carry: a failure to release
+     * the account-master handle while unwinding from an abend.
+     *
+     * <p>Nothing on a successful path is logged here. The program's observable output is its
+     * {@code DISPLAY} line sequence, and adding to it would be a parity defect.
+     */
+    private static final Log LOG = LogFactory.getLog(AccountBalanceJob.class);
 
     /**
      * The COBOL {@code PROGRAM-ID} this job was translated from, as
@@ -690,14 +702,18 @@ public class AccountBalanceJob {
      * status and the process's exit code (gate G35); swallowing it would report a failed job as
      * complete.
      *
+     * <p>The chunk context is read for one thing only: the {@link StopSignal} the pass consults between
+     * records. A tasklet that runs once is checked for interruption once by the framework, at the top, so
+     * a stop requested during a full-file pass would otherwise not be seen until the pass had finished.
+     * Nothing else here comes from the context - this program has no per-chunk state and no restart
+     * semantics beyond re-reading the dataset from its first record.
+     *
      * @param contribution the step's contribution, which the read count is reported to
-     * @param chunkContext the framework's chunk context; unused, because a tasklet that runs once has no
-     *                     per-chunk state to consult, and this program has no restart semantics beyond
-     *                     re-reading the dataset from its first record
+     * @param chunkContext the framework's chunk context, read only for this step execution's stop signal
      * @return {@link RepeatStatus#FINISHED}, always
      */
     private RepeatStatus executeStep(StepContribution contribution, ChunkContext chunkContext) {
-        int recordsDisplayed = readAndPrintAccountFile(sysoutSink);
+        int recordsDisplayed = readAndPrintAccountFile(sysoutSink, StopSignal.of(chunkContext));
         for (int recorded = 0; recorded < recordsDisplayed; recorded++) {
             contribution.incrementReadCount();
         }
@@ -765,11 +781,23 @@ public class AccountBalanceJob {
      * <p>The sink is a parameter as well as a field so that a caller can capture one run's output
      * without reconfiguring the bean - which is exactly what a parity case does.
      *
-     * <p><strong>No {@code try}-with-resources, deliberately.</strong> An {@link AccountFile} holds no
-     * operating-system resource: the repository borrows and returns a connection per operation, and
-     * {@link AccountFile#closeFile()} only re-probes that the dataset is still addressable. So there is
-     * nothing to leak on the abend path, and wrapping the pass would add a JDBC round trip that the
-     * COBOL - which abends outright, without closing - never performs.
+     * <p><strong>The handle is released on every exit, including the abend path.</strong> An
+     * {@link AccountFile} holds no operating-system resource today - the repository borrows and returns a
+     * connection per operation - so nothing is leaked in the sense of a descriptor. The release is not
+     * there for that. It is there because {@link AccountFile} declares {@link AutoCloseable}, and a type
+     * consumed without any guarantee of closure relies on what its implementation happens to hold rather
+     * than on what its contract promises: the day the handle holds a real cursor, a held connection or a
+     * temporary table, this pass would start leaking with nothing to signal it.
+     *
+     * <p>The release is written so that it costs nothing on the path that matters. Its guard is the
+     * run's own record of having reached {@code 9000-ACCTFILE-CLOSE}, so on every successful run the
+     * release does not fire at all: <em>no</em> additional round trip is issued and no output changes.
+     * The guard is the program's control flow rather than {@link AccountFile#isClosed()} deliberately -
+     * "one {@code CLOSE} per run" is a property of the single statement at {@code L83}, so it should not
+     * depend on the handle tracking its own state. Only an abend reaches the release, and there the
+     * close probe emits no {@code DISPLAY}, cannot alter the {@link AbendException} the caller receives,
+     * and cannot alter the return code. The COBOL abends outright without closing; what it observably
+     * produces - the SYSOUT line sequence and the return code - is identical either way.
      *
      * @param sysout where every displayed line goes; must not be {@code null}
      * @return the number of account records read and displayed; {@code 0} for an empty dataset
@@ -778,9 +806,36 @@ public class AccountBalanceJob {
      *                              as fatal, carrying {@link #APPL_RESULT_FATAL} as its return code
      */
     public int readAndPrintAccountFile(SysoutSink sysout) {
+        return readAndPrintAccountFile(sysout, StopSignal.RUNNING);
+    }
+
+    /**
+     * Runs the program, yielding to the given stop signal between records.
+     *
+     * <p>The pass itself is identical to {@link #readAndPrintAccountFile(SysoutSink)} - same reads, same
+     * displayed lines, same order - and the signal changes nothing while no stop is pending. It exists
+     * because {@code CBACT01C} is one pass over a whole dataset inside a single tasklet invocation, so
+     * the framework's own interruption check at the step's repeat boundary happens once and cannot end a
+     * pass already under way. The probe is consulted at the <em>top of the loop body</em>, between
+     * records, which is where the record in flight is always complete: it has been read and displayed,
+     * or it has not been started. Nothing is retried; see {@link StopSignal}.
+     *
+     * @param sysout     where every displayed line goes; must not be {@code null}
+     * @param stopSignal the between-record cancellation probe; {@link StopSignal#RUNNING} for a caller
+     *                   outside a step; must not be {@code null}
+     * @return the number of account records read and displayed; {@code 0} for an empty dataset
+     * @throws NullPointerException if {@code sysout} or {@code stopSignal} is {@code null}
+     * @throws AbendException       if the open, a read or the close reports a status this program treats
+     *                              as fatal, carrying {@link #APPL_RESULT_FATAL} as its return code
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop, which abandons the pass
+     *                              between records
+     */
+    public int readAndPrintAccountFile(SysoutSink sysout, StopSignal stopSignal) {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required: the displayed line sequence is this "
                 + "program's entire observable output, so there is nothing to run without somewhere to "
                 + "write it");
+        Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING outside a "
+                + "step, which is what the single-argument overload does");
 
         // DISPLAY 'START OF EXECUTION OF PROGRAM CBACT01C'.                                        L71
         sysout.write(START_OF_EXECUTION);
@@ -790,20 +845,68 @@ public class AccountBalanceJob {
         WorkingStorage workingStorage = new WorkingStorage();
 
         // PERFORM 0000-ACCTFILE-OPEN.                                                              L72
+        // Outside the try: a failed open throws without yielding a handle, so there would be nothing
+        // for a finally to release.
         AccountFile acctFile = acctFileOpen(sysout, workingStorage);
 
-        // PERFORM UNTIL END-OF-FILE = 'Y' ... END-PERFORM.                                     L74-L81
-        int recordsDisplayed = acctFileDisplayLoop(sysout, workingStorage, acctFile);
+        // This run's own record of having reached L83. A local, never a field: the job is a singleton
+        // bean and per-run state on it would be shared between runs (practice B9, gate G53).
+        boolean closeIssued = false;
 
-        // PERFORM 9000-ACCTFILE-CLOSE.                                                             L83
-        acctFileClose(sysout, workingStorage, acctFile);
+        try {
+            // PERFORM UNTIL END-OF-FILE = 'Y' ... END-PERFORM.                                 L74-L81
+            int recordsDisplayed = acctFileDisplayLoop(sysout, workingStorage, acctFile, stopSignal);
 
-        // DISPLAY 'END OF EXECUTION OF PROGRAM CBACT01C'.                                           L85
-        sysout.write(END_OF_EXECUTION);
+            // PERFORM 9000-ACCTFILE-CLOSE.                                                         L83
+            closeIssued = true;
+            acctFileClose(sysout, workingStorage, acctFile);
 
-        // GOBACK. RETURN-CODE is untouched by this program, so a normal end is
-        // RETURN_CODE_NORMAL_END.                                                                   L87
-        return recordsDisplayed;
+            // DISPLAY 'END OF EXECUTION OF PROGRAM CBACT01C'.                                       L85
+            sysout.write(END_OF_EXECUTION);
+
+            // GOBACK. RETURN-CODE is untouched by this program, so a normal end is
+            // RETURN_CODE_NORMAL_END.                                                               L87
+            return recordsDisplayed;
+        } finally {
+            if (!closeIssued) {
+                releaseHandle(acctFile);
+            }
+        }
+    }
+
+    /**
+     * Releases the account-master handle on the way out of an incomplete run, silently and only if it is
+     * still open.
+     *
+     * <p>Three properties, each deliberate:
+     *
+     * <ul>
+     *   <li><strong>Never reached on a normal run.</strong> The caller's {@code closeIssued} local is
+     *       {@code true} once {@code L83} has been performed, so the successful path is provably
+     *       unchanged - same SYSOUT bytes, same round trips.</li>
+     *   <li><strong>Silent.</strong> Nothing is written to SYSOUT. The line sequence is this program's
+     *       entire observable output and {@code CBACT01C} has no such line, so emitting one here would
+     *       be a parity defect rather than a diagnostic.</li>
+     *   <li><strong>Non-throwing.</strong> A failure to release is logged and swallowed. The run is
+     *       already failing and the caller needs <em>that</em> exception, not one raised while tidying
+     *       up after it.</li>
+     * </ul>
+     *
+     * @param acctFile the handle the open returned; never {@code null} here
+     */
+    private static void releaseHandle(AccountFile acctFile) {
+        try {
+            acctFile.closeFile();
+        } catch (RuntimeException cleanupFailure) {
+            // Only the failure's TYPE is logged - never the throwable and never its message. A driver
+            // composes its message around the value it refused, and an account row carries
+            // ACCT-CURR-BAL and the credit limits (CWE-532); a newline in that text could forge a
+            // second log entry (CWE-117). A class name carries no data and no newline.
+            LOG.warn("Releasing the " + DD_NAME + " browse of " + PROGRAM_ID + " after an incomplete run "
+                    + "failed - " + cleanupFailure.getClass().getName()
+                    + ". The run's own outcome is reported to the caller unchanged, because the run's own "
+                    + "failure is the one that matters.");
+        }
     }
 
     /**
@@ -814,16 +917,25 @@ public class AccountBalanceJob {
      * the flag becomes {@code 'Y'}, which only {@link #acctFileGetNext} sets, and a fatal read leaves it
      * by throwing.
      *
+     * <p>The one thing here that has no COBOL counterpart is the stop probe at the top of the body. It
+     * is a call rather than a condition, so it adds no arm to the translated control flow: while no stop
+     * is pending it returns and the iteration proceeds exactly as before. Its position is the whole of
+     * its correctness - between records, before {@code 1000-ACCTFILE-GET-NEXT} reads the next one - so
+     * the record in flight is always complete. See {@link StopSignal}.
+     *
      * @param sysout         where displayed lines go
      * @param workingStorage this run's status register and end-of-file flag
      * @param acctFile       the opened account master
+     * @param stopSignal     the between-record cancellation probe
      * @return the number of records displayed
      * @throws AbendException if a read reports a fatal status
+     * @throws BatchConfig.StopRequestedException if the step is asked to stop
      */
     private int acctFileDisplayLoop(SysoutSink sysout, WorkingStorage workingStorage,
-            AccountFile acctFile) {
+            AccountFile acctFile, StopSignal stopSignal) {
         int recordsDisplayed = 0;
         while (!workingStorage.endOfFileIsYes()) {
+            stopSignal.checkStopRequested();
             recordsDisplayed += acctFileDisplayIteration(sysout, workingStorage, acctFile);
         }
         return recordsDisplayed;

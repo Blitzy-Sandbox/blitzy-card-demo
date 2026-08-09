@@ -7,6 +7,8 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -186,6 +188,20 @@ import java.util.OptionalInt;
  *
  * @see SecUserRepository the only route to {@code USRSEC}; no dataset name and no
  *      {@code JdbcTemplate} appears in this file
+ * <h2>This endpoint is unauthenticated and unauthorized - an accepted divergence (CWE-306, CWE-862 and CWE-522)</h2>
+ *
+ * <p>This controller lists the records in {@code USRSEC} with no authentication and no role check.
+ * Nothing here establishes who is calling or that they administer users, so this endpoint enumerates
+ * the security file - user identifiers, names and types - for any caller that can reach it.
+ *
+ * <p>That is inherited from the legacy design rather than introduced here: in CICS the region controls
+ * which transactions an operator can reach and no COBOL program in {@code app/cbl} performs a check of
+ * its own. It is not remedied here because every remedy is either excluded from the migration's closed
+ * dependency set or changes an observable outcome that the parity diff compares. The full disposition -
+ * the three exposures, the evidence for each, why each remedy is unavailable, and what a deployment must
+ * do instead - is stated once in {@link SignOnService}, which owns this package's credential handling.
+ * Read it before changing anything on this path.
+
  */
 @RestController
 public final class UserMenuController {
@@ -664,10 +680,51 @@ public final class UserMenuController {
      * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
      */
     @GetMapping(path = USER_LIST_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
-    public UserListResponse getUsers(
+    public ScreenResponse<UserListResponse> getUsers(
             @Valid @RequestBody(required = false) UserListRequest request,
             @RequestParam(name = EIBAID_PARAM, required = false) Integer eibaid) {
-        return listUsers(request, resolveEibAid(eibaid));
+        // The work area is created here rather than inside the two-argument overload so that the two
+        // values COUSR00C sets which are presentation metadata - the cursor request and the ERASE choice -
+        // are still reachable when the envelope is built. They are not payload members and never become
+        // any, which is exactly why they need the envelope to travel at all.
+        WorkArea ws = new WorkArea();
+        UserListResponse painted = listUsers(request, resolveEibAid(eibaid), ws);
+        return ScreenResponse.of(painted, screenMetadataOf(ws));
+    }
+
+    /**
+     * This screen's presentation metadata, in the shared envelope every online response publishes.
+     *
+     * <p>{@code COUSR00} moves no attribute or colour byte of its own - the class documentation above
+     * records that, and it is why {@code messageColour} is {@link BmsAttributes#DFHDFCOL}, the map's own
+     * declared default, rather than a value this program chose. The field map is empty for the same
+     * reason: there are no {@code xxxC}, {@code xxxP}, {@code xxxH} or {@code xxxV} items this program
+     * writes, and an empty map states that accurately rather than omitting the question.
+     *
+     * <p>The two facts it does set are reported:
+     *
+     * <ul>
+     *   <li>{@code MOVE -1 TO USRIDINL OF COUSR0AI} at {@code :108} and {@code :224} - the cursor
+     *       request, named by its {@code DFHMDF} label. {@code USRIDINL} is
+     *       {@code COMP PIC S9(4)} input-group metadata and never a payload member (gate G9), and
+     *       {@link UserListRequest} rejects a negative length by construction, so this is the only route
+     *       it has to a client.</li>
+     *   <li>{@code SEND ... ERASE} versus {@code SEND ... } without it - reported as
+     *       {@code resetAllOutputFields}. It is the terminal-level clear rather than the map-buffer
+     *       {@code MOVE LOW-VALUES}, and it is the same instruction to a client: clear what is on the
+     *       screen before painting what follows.</li>
+     * </ul>
+     *
+     * @param ws the work area the execution ran in; must not be {@code null}
+     * @return the metadata, never {@code null}
+     * @throws NullPointerException if {@code ws} is {@code null}
+     */
+    static ScreenMetadata screenMetadataOf(WorkArea ws) {
+        Objects.requireNonNull(ws, "A work area is required to read the metadata the execution set");
+        String cursorField = ws.usrIdInLength() == CURSOR_ON_USRIDIN
+                ? UserListResponse.USRIDIN_FIELD
+                : null;
+        return ScreenMetadata.of(cursorField, BmsAttributes.DFHDFCOL, ws.sendEraseYes());
     }
 
     /**
@@ -1052,6 +1109,26 @@ public final class UserMenuController {
         // :284  PERFORM STARTBR-USER-SEC-FILE
         BrowseCursor cursor = startBrowseUserSecFile(ws);
 
+        try {
+            pageForwardOverBrowse(ws, eibAid, cursor);
+        } finally {
+            releaseBrowse(cursor);
+        }
+    }
+
+    /**
+     * Everything {@code PROCESS-PAGE-FORWARD} performs once the {@code STARTBR} has been issued.
+     *
+     * <p>Split out so the browse can be released on every exit - including {@code :286}'s early return
+     * and any fault raised by a {@code READNEXT} - without the paragraph body acquiring a nesting level
+     * it does not have in the source.
+     *
+     * @param ws     the work area
+     * @param eibAid the raw {@code EIBAID} byte
+     * @param cursor the browse the {@code STARTBR} returned
+     */
+    private void pageForwardOverBrowse(WorkArea ws, byte eibAid, BrowseCursor cursor) {
+
         // :286  IF NOT ERR-FLG-ON. Note what this does NOT test: end of file. A STARTBR that reported
         // NOTFND sets the end-of-file flag but no error flag, so this body still runs - see
         // processPf8Key(WorkArea, byte).
@@ -1165,6 +1242,25 @@ public final class UserMenuController {
     void processPageBackward(WorkArea ws, byte eibAid) {
         // :338  PERFORM STARTBR-USER-SEC-FILE
         BrowseCursor cursor = startBrowseUserSecFile(ws);
+
+        try {
+            pageBackwardOverBrowse(ws, eibAid, cursor);
+        } finally {
+            releaseBrowse(cursor);
+        }
+    }
+
+    /**
+     * Everything {@code PROCESS-PAGE-BACKWARD} performs once the {@code STARTBR} has been issued.
+     *
+     * <p>Split out for the same reason as its forward counterpart: {@code :340}'s early return and any
+     * fault from a {@code READPREV} both bypass the {@code ENDBR} at {@code :374}.
+     *
+     * @param ws     the work area
+     * @param eibAid the raw {@code EIBAID} byte
+     * @param cursor the browse the {@code STARTBR} returned
+     */
+    private void pageBackwardOverBrowse(WorkArea ws, byte eibAid, BrowseCursor cursor) {
 
         // :340  IF NOT ERR-FLG-ON
         if (ws.errFlgOn) {
@@ -1654,6 +1750,49 @@ public final class UserMenuController {
      */
     void endBrowse(BrowseCursor cursor) {
         cursor.endBrowse();
+    }
+
+    /**
+     * Ends a browse that the paragraph's own {@code ENDBR} did not reach.
+     *
+     * <p>{@code :286} and {@code :340} are {@code IF NOT ERR-FLG-ON} guards that skip the remainder of
+     * their paragraph - the {@code ENDBR} at {@code :325} and {@code :374} included - so a
+     * {@code STARTBR} that reported anything other than {@code NORMAL} or {@code NOTFND} leaves the
+     * browse unended, and so does any fault raised by a read. This releases it, and changes nothing the
+     * transaction observably produces:
+     *
+     * <ul>
+     *   <li><strong>There is nothing observable to change.</strong> {@code :687-691} specifies no
+     *       {@code RESP} and no {@code EVALUATE} follows it, so the program already inspects no outcome
+     *       from its own {@code ENDBR}; and {@link BrowseCursor#endBrowse()} sets a flag without issuing
+     *       I/O. No map is sent, no message is set, no error flag is raised.</li>
+     *   <li><strong>It cannot end the same browse twice.</strong> The guard is
+     *       {@link BrowseCursor#isOpen()}, which a cursor reports as {@code false} once it has been
+     *       ended, so a request that reached its own {@code ENDBR} finds nothing left to do - and a
+     *       {@code STARTBR} that never resolved its statements is likewise skipped rather than
+     *       "ended".</li>
+     *   <li><strong>It cannot displace a failure.</strong> Anything raised while releasing is swallowed,
+     *       so a caller unwinding from a real fault still receives that fault.</li>
+     * </ul>
+     *
+     * @param cursor the cursor {@code STARTBR} returned; must not be {@code null}
+     */
+    private static void releaseBrowse(BrowseCursor cursor) {
+        if (!cursor.isOpen()) {
+            return;
+        }
+        try {
+            cursor.endBrowse();
+        } catch (RuntimeException cleanupFailure) {
+            // Only the failure's TYPE is logged - never the throwable and never its message. A driver
+            // composes its message around the value it refused, and a security row carries SEC-USR-PWD
+            // in plaintext (CWE-532); a newline in that text could forge a second log entry (CWE-117).
+            // A class name carries no data and no newline.
+            LOG.warn("Ending the " + WS_USRSEC_FILE + " browse of " + WS_PGMNAME + " after a request "
+                    + "that did not reach ENDBR failed - " + cleanupFailure.getClass().getName()
+                    + ". The request's own outcome is unchanged, because the request's own failure is "
+                    + "the one that matters.");
+        }
     }
 
     /**
