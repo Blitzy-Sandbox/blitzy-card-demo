@@ -30,6 +30,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,6 +76,33 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * characters eight times is deliberate: it means this suite tests the <em>seam between</em> the two
  * classes - the {@code MOVE <layout> TO FD-REPTFILE-REC PIC X(133)} - which is exactly where a missing
  * pad would hide.
+ *
+ * <h2>What is asserted about the record's interior, and why</h2>
+ *
+ * <p>A record of the right length can still be the wrong record, so five further families of
+ * assertion look inside the 133 bytes at absolute offsets (rule R5):
+ *
+ * <ul>
+ *   <li>{@link RecordFormatSemantics} - the pad is {@code 0x20}, never {@code NUL} and never the digit
+ *       zero; the rule line's byte at 0-based offset 132 is a hyphen rather than a pad space; every
+ *       line kind written in one run is the same length; and no record carries a newline, carriage
+ *       return or any other non-printable byte, because {@code RECFM=FB} has no record delimiter and a
+ *       delimiter inside the image would <em>be</em> the defect.</li>
+ *   <li>{@link NinetySevenColumnInvariant} - the {@code ALL '.'} leaders are 86, 84 and 86 because the
+ *       labels are 11, 13 and 11, so label + leader is 97 on all three total lines and the 15-byte
+ *       amount always occupies 1-based columns 98-112. {@code TRANSACTION-HEADER-1}'s {@code 'Amount'}
+ *       heading ends on column 112 for the same reason.</li>
+ *   <li>{@link EditMasks} - {@code PIC -ZZZ,ZZZ,ZZZ.ZZ} and {@code PIC +ZZZ,ZZZ,ZZZ.ZZ} rendered byte
+ *       for byte, including {@code Z} suppression, the suppression of a comma inside a suppressed run,
+ *       the all-{@code Z} zero rule, truncation with {@code RoundingMode.DOWN} rather than any
+ *       {@code HALF_*} mode (rule R2, gate G24), and the two {@code '-'}-valued {@code FILLER}s at
+ *       1-based columns 32 and 53 (gate G21).</li>
+ *   <li>{@link DescriptionTruncation} - {@code TRAN-TYPE-DESC PIC X(50)} into
+ *       {@code TRAN-REPORT-TYPE-DESC PIC X(15)} and {@code TRAN-CAT-TYPE-DESC PIC X(50)} into
+ *       {@code TRAN-REPORT-CAT-DESC PIC X(29)}, both truncating on the <em>right</em>.</li>
+ *   <li>{@link NotThisWritersJob} - the layouts are <em>not</em> pre-padded, so 133 appears in this one
+ *       class and nowhere else, and a write moves no line counter.</li>
+ * </ul>
  */
 @DisplayName("TranReportWriter - the 133-byte TRANREPT report record writer")
 class TranReportWriterTest {
@@ -267,6 +295,176 @@ class TranReportWriterTest {
         return count;
     }
 
+    /**
+     * Writes one layout image through a fresh handle and returns the single emitted record.
+     *
+     * <p>A new writer, a new handle and a new sink per call, so no assertion can depend on what ran
+     * before it and the suite stays order-independent (practice B7).
+     *
+     * @param layoutImage the rendered layout image to move and write
+     * @return the emitted record as characters, exactly {@link #LRECL} of them
+     */
+    private static String emitted(String layoutImage) {
+        return new String(emittedBytes(layoutImage), ASCII);
+    }
+
+    /**
+     * Writes one layout image through a fresh handle and returns the single emitted record's bytes.
+     *
+     * <p>The byte form is what the assertions about pad bytes, control characters and the {@code '-'}
+     * separators need: a {@code char} comparison cannot distinguish {@code 0x20} from any other
+     * whitespace, and it is the bytes that reach the dataset.
+     *
+     * @param layoutImage the rendered layout image to move and write
+     * @return the emitted record's bytes in the injected code page
+     */
+    private static byte[] emittedBytes(String layoutImage) {
+        Collector sink = new Collector();
+        try (ReportFile file = writer().openOutput(sink)) {
+            assertThat(file.writeLine(layoutImage)).isEqualTo(FileStatus.Outcome.OK);
+        }
+        assertThat(sink.records).hasSize(1);
+        return sink.records.get(0);
+    }
+
+    /**
+     * The names of a type's integer-valued <em>instance</em> fields, in declaration order.
+     *
+     * <p>Used to state which numbers a class owns, which is how "this writer does not keep a line
+     * counter" is asserted structurally rather than by matching field names against words - a name
+     * match would flag {@code WS_BLANK_LINE_IMAGE} and {@code REPORT_PAGE_TOTALS_PAD}, both of which
+     * are layout facts rather than pagination state.
+     *
+     * @param type the type to inspect
+     * @return the names of its {@code int}, {@code long}, {@code Integer} and {@code Long} instance
+     *         fields
+     */
+    private static List<String> numericFieldNames(Class<?> type) {
+        List<String> names = new ArrayList<>();
+        for (Field field : type.getDeclaredFields()) {
+            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+            Class<?> fieldType = field.getType();
+            if (fieldType == int.class || fieldType == long.class || fieldType == Integer.class
+                    || fieldType == Long.class) {
+                names.add(field.getName());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * A {@code REPORT-PAGE-TOTALS} image carrying the given amount, rendered at its natural 112.
+     *
+     * <p>The page total is used wherever an assertion needs one total line rather than all three,
+     * because it is the line the COBOL writes most often and the one whose amount
+     * {@code 1110-WRITE-PAGE-TOTALS} resets to zero after every page.
+     *
+     * @param pageTotal the amount to edit through {@code PIC +ZZZ,ZZZ,ZZZ.ZZ}
+     * @return the rendered layout image, 112 characters
+     */
+    private static String pageTotalOf(BigDecimal pageTotal) {
+        TranReportLayouts layouts = new TranReportLayouts(ASCII);
+        layouts.moveReptPageTotal(pageTotal);
+        return layouts.renderReportPageTotals();
+    }
+
+    /**
+     * The three total lines, each with its label text, both declared widths and the 15-byte amount image
+     * the line must carry.
+     *
+     * <p>The widths are transcribed from {@code app/cpy/CVTRA07Y.cpy} and the amount images are derived
+     * by hand from the {@code PIC +ZZZ,ZZZ,ZZZ.ZZ} mask, never read back from the subject. The three
+     * amounts are chosen to be different shapes on purpose - one positive, one negative, one zero - so
+     * a single hard-coded expectation cannot satisfy all three.
+     *
+     * @return name, label text, label width, leader width, rendered image, expected amount image
+     */
+    private static Stream<Arguments> theThreeTotalLines() {
+        TranReportLayouts layouts = new TranReportLayouts(ASCII);
+        layouts.moveReptPageTotal(new BigDecimal("1234.56"));
+        layouts.moveReptAccountTotal(new BigDecimal("-2345.67"));
+        layouts.moveReptGrandTotal(new BigDecimal("0.00"));
+        return Stream.of(
+                Arguments.of("REPORT-PAGE-TOTALS", "Page Total", 11, 86,
+                        layouts.renderReportPageTotals(), "+      1,234.56"),
+                Arguments.of("REPORT-ACCOUNT-TOTALS", "Account Total", 13, 84,
+                        layouts.renderReportAccountTotals(), "-      2,345.67"),
+                Arguments.of("REPORT-GRAND-TOTALS", "Grand Total", 11, 86,
+                        layouts.renderReportGrandTotals(), "               "));
+    }
+
+    /**
+     * Cases for {@code TRAN-REPORT-AMT PIC -ZZZ,ZZZ,ZZZ.ZZ}.
+     *
+     * <p>Every expected image is 15 characters derived by hand from the mask: position 1 is the fixed
+     * sign insertion, positions 2-4, 6-8 and 10-12 are the nine {@code Z} integer digit slots, positions
+     * 5 and 9 the two commas, position 13 the decimal point and 14-15 the two fractional {@code Z}s.
+     * Suppression replaces every leading zero - and every comma to the left of the first significant
+     * digit - with a space, and stops at the decimal point.
+     *
+     * @return rule described, sending value, expected 15-character image
+     */
+    private static Stream<Arguments> detailAmountCases() {
+        return Stream.of(
+                Arguments.of("zero blanks the whole item - every digit position is Z",
+                        new BigDecimal("0.00"), "               "),
+                Arguments.of("a negative shows '-' in position 1",
+                        new BigDecimal("-1234.56"), "-      1,234.56"),
+                Arguments.of("a positive leaves position 1 blank, because the mask's sign is '-'",
+                        new BigDecimal("1234.56"), "       1,234.56"),
+                Arguments.of("both commas are suppressed when both lie left of the first digit",
+                        new BigDecimal("100.00"), "         100.00"),
+                Arguments.of("a comma at or right of the first digit prints",
+                        new BigDecimal("1000000.00"), "   1,000,000.00"),
+                Arguments.of("a full-width value suppresses nothing",
+                        new BigDecimal("999999999.99"), " 999,999,999.99"),
+                Arguments.of("a full-width negative fills position 1 with the minus",
+                        new BigDecimal("-999999999.99"), "-999,999,999.99"),
+                Arguments.of("suppression stops at the decimal point, never past it",
+                        new BigDecimal("0.05"), "            .05"),
+                Arguments.of("a negative sub-unit value keeps its sign and its blank integer part",
+                        new BigDecimal("-0.05"), "-           .05"),
+                Arguments.of("excess fractional digits truncate DOWN - HALF_UP would render 2.00",
+                        new BigDecimal("1.999"), "           1.99"),
+                Arguments.of("truncation is toward zero, so -1.999 stores -1.99 and not -2.00",
+                        new BigDecimal("-1.999"), "-          1.99"),
+                Arguments.of("a value that truncates to zero blanks the item; HALF_UP would show .01",
+                        new BigDecimal("-0.009"), "               "));
+    }
+
+    /**
+     * Cases for {@code REPT-PAGE-TOTAL}, {@code REPT-ACCOUNT-TOTAL} and {@code REPT-GRAND-TOTAL}, all
+     * three {@code PIC +ZZZ,ZZZ,ZZZ.ZZ}.
+     *
+     * <p>Identical to the detail mask in every respect but one: position 1 carries a {@code '+'} when
+     * the value is not negative instead of a space. The zero case is the exception that proves the
+     * all-{@code Z} rule outranks the fixed sign - a total netting to zero prints a blank column, not
+     * {@code +0.00}.
+     *
+     * @return rule described, sending value, expected 15-character image
+     */
+    private static Stream<Arguments> totalAmountCases() {
+        return Stream.of(
+                Arguments.of("zero blanks the whole item, sign included",
+                        new BigDecimal("0.00"), "               "),
+                Arguments.of("a positive total always shows its '+'",
+                        new BigDecimal("1234.56"), "+      1,234.56"),
+                Arguments.of("a negative total shows '-' in the same position",
+                        new BigDecimal("-1234.56"), "-      1,234.56"),
+                Arguments.of("both commas are suppressed when both lie left of the first digit",
+                        new BigDecimal("100.00"), "+        100.00"),
+                Arguments.of("a comma at or right of the first digit prints",
+                        new BigDecimal("1000000.00"), "+  1,000,000.00"),
+                Arguments.of("a full-width total suppresses nothing",
+                        new BigDecimal("999999999.99"), "+999,999,999.99"),
+                Arguments.of("suppression stops at the decimal point",
+                        new BigDecimal("0.05"), "+           .05"),
+                Arguments.of("excess fractional digits truncate DOWN",
+                        new BigDecimal("1234567.891"), "+  1,234,567.89"));
+    }
+
     // =================================================================================================
     // The dataset contract.
     // =================================================================================================
@@ -445,6 +643,606 @@ class TranReportWriterTest {
 
             assertThat(sink.onlyImage()).hasSize(133).isEqualTo(" ".repeat(133))
                     .containsOnlyWhitespaces();
+        }
+    }
+
+    // =================================================================================================
+    // RECFM=FB. app/jcl/TRANREPT.jcl:L78 and app/proc/TRANREPT.prc:L76, both DCB=(LRECL=133,RECFM=FB).
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("RECFM=FB semantics - one uniform 133-byte image with nothing inside it but data")
+    class RecordFormatSemantics {
+
+        @ParameterizedTest(name = "{0}: pad {3} byte(s)")
+        @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#theEightLayouts")
+        @DisplayName("the pad is 0x20 - never NUL, never the digit zero, never any other whitespace")
+        void thePadIsSpacesAndNothingElse(String name, String image, int naturalWidth,
+                                         int expectedPad) {
+            assertThat(naturalWidth + expectedPad)
+                    .as("%s: the copybook's declared width plus its pad is the record width", name)
+                    .isEqualTo(LRECL);
+
+            byte[] record = emittedBytes(image);
+
+            assertThat(record).as("%s reaches the dataset as %d bytes", name, LRECL).hasSize(LRECL);
+            for (int offset = naturalWidth; offset < LRECL; offset++) {
+                // A COBOL alphanumeric MOVE space-fills the remainder of the receiver. Zero-filling it
+                // would be the PIC 9 rule applied to a PIC X receiver, and NUL-filling it would be a
+                // freshly allocated Java array left untouched - both produce a 133-byte record that
+                // looks correct to a length check and is wrong on the dataset.
+                assertThat(record[offset])
+                        .as("%s pad byte at 0-based offset %d", name, offset)
+                        .isEqualTo((byte) 0x20)
+                        .isNotEqualTo((byte) 0x00)
+                        .isNotEqualTo((byte) '0');
+            }
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#theEightLayouts")
+        @DisplayName("no newline, carriage return or control byte appears anywhere in the image")
+        void theImageCarriesNoRecordDelimiter(String name, String image, int naturalWidth,
+                                              int expectedPad) {
+            assertThat(naturalWidth + expectedPad).isEqualTo(LRECL);
+
+            byte[] record = emittedBytes(image);
+
+            for (int offset = 0; offset < record.length; offset++) {
+                // RECFM=FB carries no record delimiter: records are separated by their fixed length and
+                // nothing else. A newline inside the image would not delimit anything - it would be
+                // one of the 133 data bytes, silently displacing every column after it.
+                assertThat(record[offset])
+                        .as("%s byte at 0-based offset %d must be printable data", name, offset)
+                        .isNotEqualTo((byte) '\n')
+                        .isNotEqualTo((byte) '\r')
+                        .isNotEqualTo((byte) 0x00)
+                        .isBetween((byte) 0x20, (byte) 0x7E);
+            }
+        }
+
+        @Test
+        @DisplayName("every line kind written in one run is the same length - the F in RECFM=FB")
+        void everyLineKindInOneRunIsTheSameLength() {
+            TranReportLayouts layouts = populatedLayouts();
+            Collector sink = new Collector();
+            try (ReportFile file = writer().openOutput(sink)) {
+                file.writeLine(layouts.renderReportNameHeader());
+                file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE);
+                file.writeLine(layouts.renderTransactionHeader1());
+                file.writeLine(layouts.renderTransactionHeader2());
+                file.writeLine(layouts.renderTransactionDetailReport());
+                file.writeLine(layouts.renderReportPageTotals());
+                file.writeLine(layouts.renderReportAccountTotals());
+                file.writeLine(layouts.renderReportGrandTotals());
+            }
+
+            assertThat(sink.records).hasSize(8);
+            assertThat(sink.images().stream().map(String::length).distinct().toList())
+                    .as("eight line kinds of four different natural widths, one emitted width")
+                    .containsExactly(LRECL);
+        }
+
+        @Test
+        @DisplayName("TRANSACTION-HEADER-2's byte at 0-based offset 132 is a hyphen, not a pad space")
+        void theRuleLinesLastByteIsAHyphen() {
+            byte[] record = emittedBytes(new TranReportLayouts(ASCII).renderTransactionHeader2());
+
+            assertThat(record).hasSize(LRECL);
+            // 01 TRANSACTION-HEADER-2 PIC X(133) VALUE ALL '-' is an ELEMENTARY item that is already
+            // the record width, so it must pass through with no pad at all. A writer that padded it
+            // would still emit 133 hyphens - but only because the truncation happened to remove
+            // exactly what the pad added, and offset 132 is where that accident shows.
+            assertThat(record[132])
+                    .as("the 133rd byte of PIC X(133) VALUE ALL '-'")
+                    .isEqualTo((byte) '-');
+            assertThat(record[LRECL - 1]).isEqualTo((byte) '-');
+            for (int offset = 0; offset < LRECL; offset++) {
+                assertThat(record[offset]).as("0-based offset %d", offset).isEqualTo((byte) '-');
+            }
+            assertThat(TranReportLayouts.TRANSACTION_HEADER_2_RULE_CHARACTER).isEqualTo('-');
+        }
+
+        @Test
+        @DisplayName("WS-BLANK-LINE's 133 bytes are all 0x20, offset 132 included")
+        void theBlankLinesBytesAreAllSpaces() {
+            byte[] record = emittedBytes(TranReportWriter.WS_BLANK_LINE_IMAGE);
+
+            assertThat(record).hasSize(LRECL);
+            assertThat(record[132]).isEqualTo((byte) 0x20);
+            for (int offset = 0; offset < LRECL; offset++) {
+                assertThat(record[offset]).as("0-based offset %d", offset).isEqualTo((byte) 0x20);
+            }
+        }
+    }
+
+    // =================================================================================================
+    // The 97-column invariant. app/cpy/CVTRA07Y.cpy, the three total lines plus the detail line.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The 97-column invariant - why the ALL '.' leaders are 86, 84 and 86")
+    class NinetySevenColumnInvariant {
+
+        @ParameterizedTest(name = "{0}: label {2} + leader {3} = 97")
+        @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#theThreeTotalLines")
+        @DisplayName("label + leader is 97 on every total line, and the leader really is dots")
+        void labelPlusLeaderIsNinetySeven(String name, String label, int labelWidth, int leaderWidth,
+                                          String image, String expectedAmount) {
+            assertThat(labelWidth + leaderWidth)
+                    .as("%s: FILLER X(%d) label then FILLER X(%d) VALUE ALL '.'", name, labelWidth,
+                            leaderWidth)
+                    .isEqualTo(97);
+
+            String record = emitted(image);
+
+            assertThat(record).hasSize(LRECL);
+            assertThat(record.substring(0, labelWidth))
+                    .as("%s label, space-padded to its declared X(%d)", name, labelWidth)
+                    .isEqualTo(label + " ".repeat(labelWidth - label.length()));
+            assertThat(record.substring(labelWidth, 97))
+                    .as("%s leader: FILLER X(%d) VALUE ALL '.'", name, leaderWidth)
+                    .hasSize(leaderWidth)
+                    .matches("\\.{" + leaderWidth + "}");
+            assertThat(record.substring(97, 112))
+                    .as("%s amount, 1-based columns 98-112", name)
+                    .hasSize(15)
+                    .isEqualTo(expectedAmount);
+            assertThat(record.substring(112))
+                    .as("%s: the 21 pad spaces this writer added, 1-based columns 113-133", name)
+                    .isEqualTo(" ".repeat(21));
+        }
+
+        @Test
+        @DisplayName("one window - 1-based columns 98-112 - holds the amount on all three total lines")
+        void oneWindowHoldsTheAmountOnAllThreeTotalLines() {
+            // The three leaders differ - 86, 84, 86 - BECAUSE the three labels differ - 11, 13, 11.
+            // Only the sums agree: 11 + 86 == 13 + 84 == 97. That is what puts the 15-byte
+            // +ZZZ,ZZZ,ZZZ.ZZ mask in the same columns on every total line, so one window reads all
+            // three. Normalising the leaders to a single width would move the account total's amount
+            // two columns left of the other two and break the report's alignment. Never "tidy" them.
+            List<String> amounts = theThreeTotalLines()
+                    .map(line -> emitted((String) line.get()[4]).substring(97, 112))
+                    .toList();
+
+            assertThat(amounts).hasSize(3)
+                    .allSatisfy(amount -> assertThat(amount).hasSize(15))
+                    .containsExactly("+      1,234.56", "-      2,345.67", " ".repeat(15));
+        }
+
+        @Test
+        @DisplayName("the same window holds TRAN-REPORT-AMT on the detail line")
+        void theDetailLineSharesTheSameWindow() {
+            String record = emitted(populatedLayouts().renderTransactionDetailReport());
+
+            // 16+1+11+1+2+1+15+1+4+1+29+1+10+4 = 97 bytes precede TRAN-REPORT-AMT, which is the same
+            // 97 the totals reach through a label and a dot leader. Two entirely different item
+            // sequences, one amount column - and that is the whole design of CVTRA07Y.
+            assertThat(record.substring(97, 112)).hasSize(15).isEqualTo("-      1,234.56");
+            assertThat(record.substring(112, 114))
+                    .as("FILLER PIC X(02) VALUE SPACES closes the detail line at its natural 114")
+                    .isEqualTo("  ");
+            assertThat(TranReportLayouts.AMOUNT_OFFSET).isEqualTo(97);
+            assertThat(TranReportLayouts.AMOUNT_COLUMN_START)
+                    .as("the 1-based column of a 0-based offset is one greater")
+                    .isEqualTo(TranReportLayouts.AMOUNT_OFFSET + 1)
+                    .isEqualTo(98);
+            assertThat(TranReportLayouts.AMOUNT_COLUMN_END)
+                    .isEqualTo(TranReportLayouts.AMOUNT_COLUMN_START + 15 - 1)
+                    .isEqualTo(112);
+        }
+
+        @Test
+        @DisplayName("TRANSACTION-HEADER-1's 'Amount' heading ends on column 112, over that window")
+        void theHeadingAmountEndsOnColumnOneHundredAndTwelve() {
+            String record = emitted(new TranReportLayouts(ASCII).renderTransactionHeader1());
+
+            // The seventh and last item is FILLER PIC X(16) VALUE '        Amount' - fourteen
+            // characters with exactly eight leading spaces, in a sixteen-wide item. Those eight
+            // spaces are why the heading looks right: they push 'Amount' onto 1-based columns 107-112,
+            // so its last character sits on the last column of the amount window the 97-invariant
+            // establishes. Trim them and the heading floats away from the numbers it labels.
+            assertThat(record.substring(98, 106)).isEqualTo(" ".repeat(8));
+            assertThat(record.substring(106, 112)).isEqualTo("Amount");
+            assertThat(record.indexOf("Amount") + "Amount".length())
+                    .as("the 0-based offset just past 'Amount' is its 1-based end column")
+                    .isEqualTo(TranReportLayouts.AMOUNT_COLUMN_END);
+            assertThat(TranReportLayouts.HEADER_1_AMOUNT_LEADING_SPACES).isEqualTo(8);
+            assertThat(TranReportLayouts.HEADER_1_AMOUNT_WORD_COLUMN_START).isEqualTo(107);
+            assertThat(record.substring(112))
+                    .as("the item's own two trailing spaces plus this writer's 19 pad spaces")
+                    .isEqualTo(" ".repeat(21));
+        }
+    }
+
+    // =================================================================================================
+    // The two edit masks. PIC -ZZZ,ZZZ,ZZZ.ZZ and PIC +ZZZ,ZZZ,ZZZ.ZZ, app/cpy/CVTRA07Y.cpy.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The edit masks - byte-exact, truncating DOWN, and proof against every locale")
+    class EditMasks {
+
+        @ParameterizedTest(name = "{1} -> \"{2}\" ({0})")
+        @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#detailAmountCases")
+        @DisplayName("PIC -ZZZ,ZZZ,ZZZ.ZZ renders 15 bytes and they land on columns 98-112")
+        void theDetailMaskIsByteExact(String rule, BigDecimal value, String expected) {
+            assertThat(expected).as("the expectation is itself 15 characters").hasSize(15);
+
+            TranReportLayouts layouts = populatedLayouts();
+            layouts.moveTranReportAmt(value);
+            String record = emitted(layouts.renderTransactionDetailReport());
+
+            assertThat(record).hasSize(LRECL);
+            assertThat(record.substring(97, 112)).as(rule).hasSize(15).isEqualTo(expected);
+            assertThat(TranReportLayouts.editDetailAmount(value)).as(rule).isEqualTo(expected);
+        }
+
+        @ParameterizedTest(name = "{1} -> \"{2}\" ({0})")
+        @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#totalAmountCases")
+        @DisplayName("PIC +ZZZ,ZZZ,ZZZ.ZZ renders 15 bytes on all three total lines alike")
+        void theTotalMaskIsByteExact(String rule, BigDecimal value, String expected) {
+            assertThat(expected).as("the expectation is itself 15 characters").hasSize(15);
+
+            TranReportLayouts layouts = new TranReportLayouts(ASCII);
+            layouts.moveReptPageTotal(value);
+            layouts.moveReptAccountTotal(value);
+            layouts.moveReptGrandTotal(value);
+
+            assertThat(emitted(layouts.renderReportPageTotals()).substring(97, 112))
+                    .as("REPT-PAGE-TOTAL: %s", rule).isEqualTo(expected);
+            assertThat(emitted(layouts.renderReportAccountTotals()).substring(97, 112))
+                    .as("REPT-ACCOUNT-TOTAL: %s", rule).isEqualTo(expected);
+            assertThat(emitted(layouts.renderReportGrandTotals()).substring(97, 112))
+                    .as("REPT-GRAND-TOTAL: %s", rule).isEqualTo(expected);
+            assertThat(TranReportLayouts.editTotalAmount(value)).as(rule).isEqualTo(expected);
+        }
+
+        @Test
+        @DisplayName("the sign is a fixed insertion in position 1: '-' only for negatives, '+' always")
+        void theSignIsFixedInPositionOne() {
+            assertThat(TranReportLayouts.DETAIL_AMOUNT_MASK).isEqualTo("-ZZZ,ZZZ,ZZZ.ZZ").hasSize(15);
+            assertThat(TranReportLayouts.TOTAL_AMOUNT_MASK).isEqualTo("+ZZZ,ZZZ,ZZZ.ZZ").hasSize(15);
+
+            // A '-' insertion prints the minus for a negative value and a SPACE otherwise; a '+'
+            // insertion prints a sign either way. Both occupy character position 1 of the item, which
+            // is why both masks are 15 bytes and not 14.
+            assertThat(TranReportLayouts.editDetailAmount(new BigDecimal("1.00")).charAt(0))
+                    .isEqualTo(' ');
+            assertThat(TranReportLayouts.editDetailAmount(new BigDecimal("-1.00")).charAt(0))
+                    .isEqualTo('-');
+            assertThat(TranReportLayouts.editTotalAmount(new BigDecimal("1.00")).charAt(0))
+                    .isEqualTo('+');
+            assertThat(TranReportLayouts.editTotalAmount(new BigDecimal("-1.00")).charAt(0))
+                    .isEqualTo('-');
+        }
+
+        @Test
+        @DisplayName("Z suppression writes spaces, and a comma inside the suppressed run goes too")
+        void suppressionWritesSpacesIncludingTheCommas() {
+            String hundred = emitted(pageTotalOf(new BigDecimal("100.00"))).substring(97, 112);
+
+            // 1 + 86 characters of label and leader precede this, so these are 1-based columns 98-112.
+            assertThat(hundred).isEqualTo("+        100.00");
+            assertThat(hundred.charAt(4)).as("the first comma, left of the first digit").isEqualTo(' ');
+            assertThat(hundred.charAt(8)).as("the second comma, also suppressed").isEqualTo(' ');
+            assertThat(hundred.substring(1, 9)).as("eight suppressed positions").isEqualTo(" ".repeat(8));
+
+            String million = emitted(pageTotalOf(new BigDecimal("1000000.00"))).substring(97, 112);
+
+            assertThat(million).isEqualTo("+  1,000,000.00");
+            assertThat(million.charAt(4)).as("a comma at or right of the first digit prints")
+                    .isEqualTo(',');
+            assertThat(million.charAt(8)).isEqualTo(',');
+            assertThat(million.charAt(12)).as("the decimal point always prints").isEqualTo('.');
+        }
+
+        @Test
+        @DisplayName("the all-Z zero rule: a zero amount blanks all 15 bytes, not '+0.00' and not 0")
+        void aZeroAmountBlanksTheWholeItem() {
+            // Every one of the eleven digit positions in both masks is Z, and COBOL blanks the entire
+            // item when the sending value is zero. This is reachable in the real report rather than
+            // synthetic: 1110-WRITE-PAGE-TOTALS does MOVE 0 TO WS-PAGE-TOTAL immediately after writing
+            // its line (app/cbl/CBTRN03C.cbl:L297), so a page carrying no qualifying transaction
+            // prints a blank page total. It is also the single most commonly mis-implemented COBOL
+            // editing rule.
+            for (BigDecimal zero : List.of(BigDecimal.ZERO, new BigDecimal("0.00"),
+                    new BigDecimal("-0.00"), new BigDecimal("0.004"), new BigDecimal("-0.009"))) {
+                assertThat(TranReportLayouts.editTotalAmount(zero))
+                        .as("+ZZZ,ZZZ,ZZZ.ZZ applied to %s", zero)
+                        .isEqualTo(" ".repeat(15));
+                assertThat(TranReportLayouts.editDetailAmount(zero))
+                        .as("-ZZZ,ZZZ,ZZZ.ZZ applied to %s", zero)
+                        .isEqualTo(" ".repeat(15));
+            }
+
+            String record = emitted(pageTotalOf(new BigDecimal("0.00")));
+
+            assertThat(record.substring(97, 112)).isEqualTo(" ".repeat(15));
+            assertThat(record.substring(11, 97))
+                    .as("the dot leader still prints - only the amount blanks")
+                    .isEqualTo(".".repeat(86));
+            assertThat(record).hasSize(LRECL);
+        }
+
+        @Test
+        @DisplayName("no default locale can change the bytes - the mask is placed character by character")
+        void theMaskIsLocaleIndependent() {
+            BigDecimal value = new BigDecimal("1234567.89");
+            Locale original = Locale.getDefault();
+            try {
+                // In de-DE and fr-FR the grouping separator is not ',' and the decimal separator is
+                // not '.', so String.format("%,.2f"), DecimalFormat and NumberFormat would all render
+                // this value differently on a machine configured that way - and none of them
+                // implements Z suppression or the all-Z zero rule in the first place. The mask is
+                // therefore placed character by character, and this asserts that it is: the emitted
+                // bytes are identical under every default locale (practices B7 and B8).
+                for (Locale locale : List.of(Locale.ROOT, Locale.US, Locale.GERMANY, Locale.FRANCE,
+                        Locale.forLanguageTag("ar-EG"), Locale.forLanguageTag("hi-IN-u-nu-deva"))) {
+                    Locale.setDefault(locale);
+
+                    String edited = TranReportLayouts.editTotalAmount(value);
+                    String record = emitted(pageTotalOf(value));
+
+                    assertThat(edited).as("under default locale %s", locale)
+                            .isEqualTo("+  1,234,567.89");
+                    assertThat(record.substring(97, 112)).as("under default locale %s", locale)
+                            .isEqualTo("+  1,234,567.89");
+                    assertThat(edited.charAt(4)).as("grouping separator under %s", locale)
+                            .isEqualTo(',');
+                    assertThat(edited.charAt(12)).as("decimal separator under %s", locale)
+                            .isEqualTo('.');
+                    assertThat(edited.chars().allMatch(character -> character < 0x80))
+                            .as("no locale's native digits reach the record under %s", locale)
+                            .isTrue();
+                }
+            } finally {
+                Locale.setDefault(original);
+            }
+        }
+
+        @Test
+        @DisplayName("neither collaborator holds a java.text formatter, so no locale seam exists")
+        void noLocaleSensitiveFormatterIsHeld() {
+            List<String> formatters = new ArrayList<>();
+            for (Class<?> type : List.of(TranReportWriter.class, ReportFile.class,
+                    TranReportLayouts.class)) {
+                for (Field field : type.getDeclaredFields()) {
+                    if (field.getType().getName().startsWith("java.text")
+                            || field.getType().getName().equals("java.util.Locale")) {
+                        formatters.add(type.getSimpleName() + "." + field.getName() + " : "
+                                + field.getType().getName());
+                    }
+                }
+            }
+
+            assertThat(formatters)
+                    .as("a DecimalFormat, NumberFormat or Locale field would be a seam through which "
+                            + "a machine's configuration could reach the report's bytes")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the two '-'-valued FILLERs land on 1-based columns 32 and 53 (G21)")
+        void theDetailSeparatorsAreHyphens() {
+            byte[] record = emittedBytes(populatedLayouts().renderTransactionDetailReport());
+
+            assertThat(record).hasSize(LRECL);
+            // FILLER PIC X(01) VALUE '-' follows TRAN-REPORT-TYPE-CD PIC X(02), which follows
+            // 16 + 1 + 11 + 1 = 29 bytes: so the separator is 0-based offset 31, 1-based column 32.
+            assertThat(record[31])
+                    .as("FILLER PIC X(01) VALUE '-' after TRAN-REPORT-TYPE-CD, 1-based column 32")
+                    .isEqualTo((byte) '-');
+            // And FILLER PIC X(01) VALUE '-' follows TRAN-REPORT-CAT-CD PIC 9(04) at 48-51, so it is
+            // 0-based offset 52, 1-based column 53.
+            assertThat(record[52])
+                    .as("FILLER PIC X(01) VALUE '-' after TRAN-REPORT-CAT-CD, 1-based column 53")
+                    .isEqualTo((byte) '-');
+            assertThat(TranReportLayouts.DETAIL_SEPARATOR_VALUE).isEqualTo("-");
+
+            // The other four single-byte FILLERs on this line declare VALUE SPACES, and emitting a
+            // hyphen there would be the same defect in the other direction. A FILLER emits exactly
+            // the VALUE it declares - which is what gate G21 says and why the total width holds.
+            for (int spaceFiller : new int[] {16, 28, 47, 82}) {
+                assertThat(record[spaceFiller])
+                        .as("FILLER PIC X(01) VALUE SPACES at 0-based offset %d", spaceFiller)
+                        .isEqualTo((byte) ' ');
+            }
+        }
+
+        @Test
+        @DisplayName("INITIALIZE leaves both separators alone, because FILLER is not a receiving item")
+        void initializeLeavesTheSeparatorsInPlace() {
+            TranReportLayouts layouts = new TranReportLayouts(ASCII);
+            layouts.initializeTransactionDetailReport();
+
+            byte[] record = emittedBytes(layouts.renderTransactionDetailReport());
+
+            // INITIALIZE TRANSACTION-DETAIL-REPORT (app/cbl/CBTRN03C.cbl:L362) runs immediately before
+            // the eight detail moves on every detail line. With no FILLER phrase written, a FILLER is
+            // not a receiving operand, so both '-' separators survive it - and a Java equivalent that
+            // blanked the whole record area first would silently lose them on every line.
+            assertThat(record[31]).isEqualTo((byte) '-');
+            assertThat(record[52]).isEqualTo((byte) '-');
+            assertThat(record).hasSize(LRECL);
+        }
+    }
+
+    // =================================================================================================
+    // Right-truncation of the two X(50) descriptions. CBTRN03C:366 and CBTRN03C:368.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The two X(50) descriptions truncate on the RIGHT (CBTRN03C:L366, L368)")
+    class DescriptionTruncation {
+
+        /**
+         * Fifty distinguishable characters, so which end was kept is unambiguous.
+         *
+         * <p>{@code TRAN-TYPE-DESC} of {@code app/cpy/CVTRA03Y.cpy} and {@code TRAN-CAT-TYPE-DESC} of
+         * {@code app/cpy/CVTRA04Y.cpy} are both {@code PIC X(50)}, so a real sender is exactly this
+         * wide and both receivers are narrower.
+         */
+        private static final String FIFTY = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx";
+
+        @Test
+        @DisplayName("TRAN-TYPE-DESC X(50) -> X(15): the leading fifteen survive, the other 35 go")
+        void theTypeDescriptionKeepsItsLeadingFifteen() {
+            assertThat(FIFTY).as("the sender is a full PIC X(50)").hasSize(50);
+
+            TranReportLayouts layouts = populatedLayouts();
+            layouts.moveTranReportTypeDesc(FIFTY);
+            String record = emitted(layouts.renderTransactionDetailReport());
+
+            assertThat(record.substring(32, 47))
+                    .as("TRAN-REPORT-TYPE-DESC PIC X(15), 1-based columns 33-47")
+                    .hasSize(15)
+                    .isEqualTo(FIFTY.substring(0, 15))
+                    .isEqualTo("ABCDEFGHIJKLMNO");
+            assertThat(record)
+                    .as("the discarded 35 characters reach the dataset nowhere")
+                    .doesNotContain("PQRST");
+            assertThat(TranReportLayouts.TRAN_REPORT_TYPE_DESC_LENGTH).isEqualTo(15);
+            assertThat(TranReportLayouts.TRAN_REPORT_TYPE_DESC_OFFSET).isEqualTo(32);
+        }
+
+        @Test
+        @DisplayName("TRAN-CAT-TYPE-DESC X(50) -> X(29): the leading twenty-nine survive")
+        void theCategoryDescriptionKeepsItsLeadingTwentyNine() {
+            TranReportLayouts layouts = populatedLayouts();
+            layouts.moveTranReportCatDesc(FIFTY);
+            String record = emitted(layouts.renderTransactionDetailReport());
+
+            assertThat(record.substring(53, 82))
+                    .as("TRAN-REPORT-CAT-DESC PIC X(29), 1-based columns 54-82")
+                    .hasSize(29)
+                    .isEqualTo(FIFTY.substring(0, 29))
+                    .isEqualTo("ABCDEFGHIJKLMNOPQRSTUVWXYZabc");
+            assertThat(record).doesNotContain("defghi");
+            assertThat(TranReportLayouts.TRAN_REPORT_CAT_DESC_LENGTH).isEqualTo(29);
+            assertThat(TranReportLayouts.TRAN_REPORT_CAT_DESC_OFFSET).isEqualTo(53);
+        }
+
+        @Test
+        @DisplayName("truncation is on the right, which is the opposite of the PIC 9 rule")
+        void truncationIsOnTheRightForAlphanumerics() {
+            TranReportLayouts layouts = populatedLayouts();
+            layouts.moveTranReportTypeDesc(FIFTY);
+            layouts.moveTranReportCatDesc(FIFTY);
+            String record = emitted(layouts.renderTransactionDetailReport());
+
+            // A COBOL alphanumeric MOVE aligns the sender left in the receiver and discards whatever
+            // does not fit off the RIGHT. A numeric MOVE aligns on the decimal point and discards off
+            // the LEFT. Getting the direction backwards yields a record of exactly the right width
+            // carrying exactly the wrong characters.
+            assertThat(record.substring(32, 47)).isNotEqualTo(FIFTY.substring(35));
+            assertThat(record.substring(32, 47)).doesNotEndWith("uvwx");
+            assertThat(record.substring(53, 82)).isNotEqualTo(FIFTY.substring(21));
+            assertThat(record.substring(53, 82)).doesNotEndWith("uvwx");
+        }
+
+        @Test
+        @DisplayName("a shorter description is space-padded to its declared width, never left ragged")
+        void aShorterDescriptionIsSpacePadded() {
+            TranReportLayouts layouts = populatedLayouts();
+            layouts.moveTranReportTypeDesc("Purchase");
+            layouts.moveTranReportCatDesc("Regular Sales Draft");
+            String record = emitted(layouts.renderTransactionDetailReport());
+
+            assertThat(record.substring(32, 47)).isEqualTo("Purchase" + " ".repeat(7));
+            assertThat(record.substring(53, 82))
+                    .isEqualTo("Regular Sales Draft" + " ".repeat(10));
+            // The neighbours must be untouched by that padding, or the offsets have drifted.
+            assertThat(record.charAt(31)).isEqualTo('-');
+            assertThat(record.charAt(47)).isEqualTo(' ');
+            assertThat(record.charAt(52)).isEqualTo('-');
+            assertThat(record.charAt(82)).isEqualTo(' ');
+            assertThat(record).hasSize(LRECL);
+        }
+    }
+
+    // =================================================================================================
+    // What belongs to the caller. WS-LINE-COUNTER and WS-PAGE-SIZE are CBTRN03C WORKING-STORAGE.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("What belongs to the report job, not to this writer")
+    class NotThisWritersJob {
+
+        @Test
+        @DisplayName("TranReportLayouts renders at natural width - 133 lives in this class alone")
+        void theLayoutsAreNotPrePaddedToTheRecordWidth() {
+            TranReportLayouts layouts = populatedLayouts();
+
+            assertThat(layouts.renderReportNameHeader()).hasSize(115);
+            assertThat(layouts.renderTransactionHeader1()).hasSize(114);
+            assertThat(layouts.renderTransactionDetailReport()).hasSize(114);
+            assertThat(layouts.renderReportPageTotals()).hasSize(112);
+            assertThat(layouts.renderReportAccountTotals()).hasSize(112);
+            assertThat(layouts.renderReportGrandTotals()).hasSize(112);
+            // The one layout that is already 133 is elementary rather than a group:
+            // 01 TRANSACTION-HEADER-2 PIC X(133) VALUE ALL '-'. It is 133 because the copybook says
+            // so, not because anything padded it.
+            assertThat(layouts.renderTransactionHeader2()).hasSize(133);
+            assertThat(TranReportLayouts.TRANSACTION_HEADER_2_LENGTH).isEqualTo(LRECL);
+
+            assertThat(List.of(TranReportLayouts.REPORT_NAME_HEADER_LENGTH,
+                            TranReportLayouts.TRANSACTION_HEADER_1_LENGTH,
+                            TranReportLayouts.TRANSACTION_DETAIL_REPORT_LENGTH,
+                            TranReportLayouts.REPORT_PAGE_TOTALS_LENGTH,
+                            TranReportLayouts.REPORT_ACCOUNT_TOTALS_LENGTH,
+                            TranReportLayouts.REPORT_GRAND_TOTALS_LENGTH))
+                    .as("no group layout is pre-padded to the record width; normalising is this "
+                            + "writer's job and happens in exactly one place")
+                    .doesNotContain(LRECL);
+        }
+
+        @Test
+        @DisplayName("writing moves no line counter - a second handle from the same bean starts at 0")
+        void writingMovesNoLineCounter() {
+            TranReportWriter subject = writer();
+
+            Collector first = new Collector();
+            try (ReportFile file = subject.openOutput(first)) {
+                file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE);
+                file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE);
+                assertThat(file.recordsWritten()).isEqualTo(2);
+            }
+
+            Collector second = new Collector();
+            try (ReportFile file = subject.openOutput(second)) {
+                // WS-LINE-COUNTER PIC 9(09) COMP-3 and WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20 are
+                // CBTRN03C's own WORKING-STORAGE (app/cbl/CBTRN03C.cbl:L129-L132), and the calling
+                // paragraphs increment the counter at their own points - four times in
+                // 1120-WRITE-HEADERS, twice in each of the two page/account total paragraphs and NOT
+                // AT ALL in 1110-WRITE-GRAND-TOTALS. A counter kept here would have to guess which
+                // caller it was serving. Pagination, page breaks and header re-emission therefore
+                // belong to TransactionReportJob and are asserted in TransactionReportJobTest.
+                assertThat(file.recordsWritten())
+                        .as("the bean carried no count forward from the previous run")
+                        .isZero();
+                assertThat(file.reportRecord()).isEqualTo(" ".repeat(LRECL));
+            }
+
+            assertThat(subject.recordLength()).isEqualTo(LRECL);
+            assertThat(subject.datasetCharset()).isEqualTo(ASCII);
+            assertThat(subject.datasetBinding().recordLength()).isEqualTo(LRECL);
+        }
+
+        @Test
+        @DisplayName("the only number either type owns is recordsWritten - no counter, no page size")
+        void theOnlyTallyIsRecordsWritten() {
+            // WS-LINE-COUNTER PIC 9(09) COMP-3 and WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20 are
+            // CBTRN03C's own WORKING-STORAGE (app/cbl/CBTRN03C.cbl:L129-L132). Neither has a
+            // counterpart here, and the structural way to say so is to enumerate the state that could
+            // hold one: the bean owns no number at all, and a handle owns exactly one - the handover
+            // tally, which paginates nothing and is reset by being a new handle rather than by a MOVE.
+            assertThat(numericFieldNames(TranReportWriter.class))
+                    .as("the writer bean holds no number of its own, so it cannot be counting lines")
+                    .isEmpty();
+            assertThat(numericFieldNames(ReportFile.class))
+                    .as("a handle's only number is its handover tally")
+                    .containsExactly("recordsWritten");
         }
     }
 

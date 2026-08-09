@@ -3,6 +3,7 @@ package com.vsergeychik.carddemo.transaction;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -14,6 +15,9 @@ import static org.mockito.Mockito.when;
 import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
+import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -83,6 +87,42 @@ import org.springframework.stereotype.Repository;
  *       repository would skip the first two.</li>
  * </ol>
  *
+ * <h2>Three overlapping COBOL names, in one Java package - and which is which</h2>
+ * <p>{@code app/cpy} reuses the same handful of identifiers at different widths, and three of those
+ * reuses land inside this one package. The point of {@link CobolNameCollisions} below is that a future
+ * reader can tell them apart <em>from the tests alone</em>, without opening a copybook:
+ * <ol>
+ *   <li><strong>{@code TRAN-CAT-KEY} - 6 bytes here, 17 in {@code CVTRA01Y}.</strong> The group name is
+ *       <em>identical</em>. This one is {@code TRAN-TYPE-CD X(02)} plus {@code TRAN-CAT-CD 9(04)} on a
+ *       60-byte {@code TRAN-CAT-RECORD} ({@code TRANCATG}). The namesake is
+ *       {@code TRANCAT-ACCT-ID 9(11)} plus {@code TRANCAT-TYPE-CD X(02)} plus {@code TRANCAT-CD 9(04)}
+ *       on a 50-byte {@code TRAN-CAT-BAL-RECORD} ({@code TCATBALF}), modelled by
+ *       {@code TranCatBalRecord}, reached through {@code TranCatBalRepository} and covered by
+ *       {@code TranCatBalRepositoryTest}. <strong>Different width, different members, different record,
+ *       different dataset, same name.</strong></li>
+ *   <li><strong>{@code TRAN-TYPE-CD} and {@code TRAN-CAT-CD} are also {@code CVTRA05Y}'s item
+ *       names.</strong> The 350-byte {@code TRAN-RECORD} declares both, at the same pictures. Because
+ *       {@code CBTRN03C} copies {@code CVTRA05Y} ({@code :93}) and {@code CVTRA04Y} ({@code :108}) into
+ *       one program, the bare names are genuinely ambiguous there and COBOL <em>forces</em> explicit
+ *       qualification at five sites - {@code :189}, {@code :191}, {@code :193}, {@code :365} and
+ *       {@code :367}, all reading {@code OF TRAN-RECORD}.</li>
+ *   <li><strong>{@code CVTRA03Y} names its analogous key {@code TRAN-TYPE}, without the {@code -CD}
+ *       suffix.</strong> The 60-byte {@code TRAN-TYPE-RECORD} ({@code TRANTYPE}, the sibling lookup
+ *       {@code CBTRN03C} performs immediately before this one at {@code :190}) keys on
+ *       {@code TRAN-TYPE PIC X(02)}. Same two bytes, same meaning, one suffix apart.</li>
+ * </ol>
+ * <p>Not one of these is resolved by renaming a field (practice B4). Java's type system separates them
+ * because the records are distinct types; the COBOL names are carried through verbatim, and this suite
+ * asserts that they are, so a later "tidy-up" that disambiguated by renaming would fail here.
+ *
+ * <h2>There is deliberately no {@code BigDecimal} anywhere in this suite</h2>
+ * <p>{@code CVTRA04Y} declares no signed decimal at all - its four spans are {@code X(02)},
+ * {@code 9(04)}, {@code X(50)} and {@code FILLER X(04)} - so rule R4 and gate G22 have no subject here
+ * and the production classes correctly do not depend on {@code common.CobolDecimal}. That omission is
+ * <em>asserted</em> rather than assumed ({@link Contracts#theSourceLevelGatesHold()}), because
+ * introducing a {@code BigDecimal} for the category code would be the natural-looking mistake: it is a
+ * {@code PIC 9} field, and a scale-free {@code PIC 9} maps to {@code int}.
+ *
  * <h2>Why the backend stub evaluates the predicate instead of returning canned rows</h2>
  * <p>The keyed predicate lives in the statement, not in Java, so a stub that simply handed back a list
  * would not test the thing that matters - whether the {@code LIKE} pattern the repository composed
@@ -112,6 +152,45 @@ class TranCategoryRepositoryTest {
 
     /** How many records that fixture holds. */
     private static final int FIXTURE_RECORDS = 18;
+
+    /**
+     * The width of {@code CVTRA07Y}'s {@code TRAN-REPORT-CAT-DESC PIC X(29)} - the report field this
+     * record's 50-byte description is moved into at {@code app/cbl/CBTRN03C.cbl:368}.
+     *
+     * <p>Declared here rather than imported, because the report layout is not this repository's
+     * business: the width is the <em>receiver's</em>, and this suite only proves that the sender arrives
+     * wide enough for the move to be reproducible. The formatting of the report line itself belongs to
+     * {@code TranReportWriterTest} and to the {@code TranReportLayouts} test, and is deliberately not
+     * asserted here.
+     */
+    private static final int TRAN_REPORT_CAT_DESC_LENGTH = 29;
+
+    /**
+     * The literal {@code app/cbl/CBTRN03C.cbl:507} displays ahead of the key, including its trailing
+     * space: {@code DISPLAY 'INVALID TRAN CATG KEY : ' FD-TRAN-CAT-KEY}.
+     *
+     * <p>COBOL's {@code DISPLAY} concatenates its operands with no separator of its own, so the emitted
+     * {@code SYSOUT} line is this literal immediately followed by the six raw key bytes.
+     */
+    private static final String INVALID_KEY_DISPLAY_LITERAL = "INVALID TRAN CATG KEY : ";
+
+    /**
+     * A description deliberately longer than {@value #TRAN_REPORT_CAT_DESC_LENGTH} characters, so the
+     * {@code X(50)}-into-{@code X(29)} truncation at {@code app/cbl/CBTRN03C.cbl:368} is observable.
+     *
+     * <p><strong>No shipped row can serve this purpose.</strong> Measuring every description in
+     * {@code app/data/ASCII/trancatg.txt} gives a maximum trimmed length of exactly
+     * {@value #TRAN_REPORT_CAT_DESC_LENGTH} - {@code "Online purchase authorization"} (type {@code 04},
+     * category {@code 0002}) and {@code "Sales draft credit adjustment"} (type {@code 07}, category
+     * {@code 0001}). The shipped data therefore <em>reaches</em> the report field's width and never
+     * crosses it, so a suite that used only shipped rows would assert that truncation never happens and
+     * would pass just as happily if the description were being trimmed. This constructed value crosses
+     * the boundary; {@link ReportProjection} asserts both sides of it.
+     */
+    private static final String OVERLONG_DESCRIPTION = "Convenience Check Debit Adjustment Reversal";
+
+    /** A shipped description that is exactly the report field's width: the boundary case, untruncated. */
+    private static final String BOUNDARY_DESCRIPTION = "Online purchase authorization";
 
     // =============================================================================================
     // Fixtures and stubbing.
@@ -526,6 +605,199 @@ class TranCategoryRepositoryTest {
                     .withMessageContaining("CVTRA01Y")
                     .withMessageContaining("TCATBALF");
         }
+
+        @Test
+        @DisplayName("the six-byte key image is exactly what CBTRN03C:507's DISPLAY renders")
+        void theKeyImageIsWhatTheDisplayRenders() {
+            TranCategoryRepository repository = repository(mock(JdbcTemplate.class));
+
+            // 1500-C-LOOKUP-TRANCATG's INVALID KEY arm emits, at app/cbl/CBTRN03C.cbl:507,
+            //     DISPLAY 'INVALID TRAN CATG KEY : '  FD-TRAN-CAT-KEY
+            // and FD-TRAN-CAT-KEY (:79-81) is the SIX raw bytes FD-TRAN-TYPE-CD X(02) followed by
+            // FD-TRAN-CAT-CD 9(04) - not a formatted number, not a trimmed value, and not the 17-byte
+            // namesake. DISPLAY concatenates its operands with no separator, so the SYSOUT line the
+            // parity harness fingerprints is the literal followed immediately by those six bytes.
+            String keyImage = repository.keyImage("01", 1);
+
+            assertThat(keyImage)
+                    .as("PIC X(02) then PIC 9(04): the leading zeros of both halves survive")
+                    .isEqualTo("010001")
+                    .hasSize(TranCategoryRepository.KEY_LENGTH);
+            assertThat(INVALID_KEY_DISPLAY_LITERAL + keyImage)
+                    .as("the whole SYSOUT line CBTRN03C:507 would emit for this key")
+                    .isEqualTo("INVALID TRAN CATG KEY : 010001");
+        }
+
+        @Test
+        @DisplayName("there is ONE authoritative key image: the repository's equals the record's own")
+        void thereIsOneAuthoritativeKeyImage() {
+            // The repository composes the key from two fields; the record reads it straight out of the
+            // stored bytes. If those two ever disagreed, a lookup could succeed while the DISPLAY on the
+            // failing path printed something else - so they are proven to be the same six characters.
+            TranCategoryRepository repository = seeded(List.of(image("04", 2, BOUNDARY_DESCRIPTION)));
+
+            TranCategoryRecord record = repository.readByKey("04", 2).record().orElseThrow();
+
+            assertThat(record.tranCatKeyImage())
+                    .isEqualTo(repository.keyImage("04", 2))
+                    .isEqualTo("040002");
+            assertThat(record.tranCatKeyBytes())
+                    .hasSize(TranCategoryRepository.KEY_LENGTH)
+                    .isEqualTo("040002".getBytes(ASCII));
+        }
+    }
+
+    // =============================================================================================
+    // The three overlapping COBOL names, and the COBOL-to-Java type mapping that depends on them.
+    // =============================================================================================
+
+    /**
+     * The three name collisions this package has to live with, each documented and asserted.
+     *
+     * <p>Practice B4 forbids resolving any of them by renaming a COBOL field, so what these tests
+     * protect is that the names really were carried through verbatim. That is a stronger guarantee than
+     * a comment: a later change that disambiguated {@code TRAN-CAT-KEY} by calling this one
+     * {@code TRAN-CAT-TYPE-KEY}, or that dropped the {@code -CD} suffix to match {@code CVTRA03Y}, would
+     * fail here rather than sail through review looking like an improvement.
+     */
+    @Nested
+    @DisplayName("The three COBOL name collisions, documented and asserted (practice B4)")
+    class CobolNameCollisions {
+
+        @Test
+        @DisplayName("collision 1: the group is still called TRAN-CAT-KEY, and it is 6 bytes not 17")
+        void collisionOneTheGroupNameIsCarriedThroughVerbatim() {
+            // app/cpy/CVTRA04Y.cpy       05 TRAN-CAT-KEY = X(02) + 9(04)                    ->  6 bytes
+            // app/cpy/CVTRA01Y.cpy       05 TRAN-CAT-KEY = 9(11) + X(02) + 9(04)            -> 17 bytes
+            // The 17-byte one belongs to TRAN-CAT-BAL-RECORD on TCATBALF: it is modelled by
+            // TranCatBalRecord, reached through TranCatBalRepository, and covered by
+            // TranCatBalRepositoryTest. Neither group is renamed - the clash is part of the contract.
+            assertThat(TranCategoryRecord.TRAN_CAT_KEY_NAME)
+                    .as("the COBOL group name, verbatim - not disambiguated")
+                    .isEqualTo("TRAN-CAT-KEY");
+            assertThat(TranCategoryRecord.TRAN_CAT_KEY_LENGTH)
+                    .as("CVTRA04Y: TRAN-TYPE-CD X(02) + TRAN-CAT-CD 9(04), by addition")
+                    .isEqualTo(TranCategoryRecord.TRAN_TYPE_CD_LENGTH
+                            + TranCategoryRecord.TRAN_CAT_CD_LENGTH)
+                    .isEqualTo(6);
+            assertThat(TranCatBalRecord.TRAN_CAT_KEY_NAME)
+                    .as("CVTRA01Y uses the very same name for a different group")
+                    .isEqualTo(TranCategoryRecord.TRAN_CAT_KEY_NAME);
+            assertThat(TranCatBalRecord.TRAN_CAT_KEY_LENGTH)
+                    .as("and it is 17 bytes, so the two are told apart by WIDTH and never by name")
+                    .isEqualTo(17)
+                    .isNotEqualTo(TranCategoryRecord.TRAN_CAT_KEY_LENGTH);
+        }
+
+        @Test
+        @DisplayName("collision 2: TRAN-TYPE-CD and TRAN-CAT-CD are also CVTRA05Y's item names")
+        void collisionTwoTheItemNamesAreSharedWithTheTransactionRecord() {
+            // app/cpy/CVTRA05Y.cpy - the 350-byte TRAN-RECORD - declares
+            //     05  TRAN-TYPE-CD  PIC X(02).
+            //     05  TRAN-CAT-CD   PIC 9(04).
+            // exactly the names and pictures CVTRA04Y uses for the two halves of its key. CBTRN03C
+            // copies BOTH copybooks (CVTRA05Y at :93, CVTRA04Y at :108), so inside that one program the
+            // bare names are ambiguous and COBOL FORCES qualification at five sites, every one of them
+            // reading "OF TRAN-RECORD":
+            //     :189  MOVE TRAN-TYPE-CD OF TRAN-RECORD TO FD-TRAN-TYPE            (the TRANTYPE key)
+            //     :191  MOVE TRAN-TYPE-CD OF TRAN-RECORD TO FD-TRAN-TYPE-CD OF FD-TRAN-CAT-KEY
+            //     :193  MOVE TRAN-CAT-CD  OF TRAN-RECORD TO FD-TRAN-CAT-CD  OF FD-TRAN-CAT-KEY
+            //     :365  MOVE TRAN-TYPE-CD OF TRAN-RECORD TO TRAN-REPORT-TYPE-CD
+            //     :367  MOVE TRAN-CAT-CD  OF TRAN-RECORD TO TRAN-REPORT-CAT-CD
+            // Note that the RECEIVERS at :191 and :193 are qualified too - the ambiguity runs both ways.
+            // In Java the two records are distinct types, so no qualification is needed and none is
+            // invented; what must hold is that the names were not changed to dodge the clash.
+            assertThat(TranCategoryRecord.TRAN_TYPE_CD.name()).isEqualTo("TRAN-TYPE-CD");
+            assertThat(TranCategoryRecord.TRAN_CAT_CD.name()).isEqualTo("TRAN-CAT-CD");
+
+            // And the pictures agree with CVTRA05Y's, which is why the two halves can be passed straight
+            // through from a transaction record without any reshaping at the call site.
+            assertThat(TranCategoryRecord.TRAN_TYPE_CD.length()).isEqualTo(2);
+            assertThat(TranCategoryRecord.TRAN_CAT_CD.length()).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("collision 3: CVTRA03Y names its analogous key TRAN-TYPE, without the -CD suffix")
+        void collisionThreeTheSiblingLookupDropsTheCdSuffix() {
+            // app/cpy/CVTRA03Y.cpy - the 60-byte TRAN-TYPE-RECORD behind the TRANTYPE dataset - keys on
+            //     05  TRAN-TYPE  PIC X(02).
+            // Same two bytes, same meaning, ONE SUFFIX APART from this record's TRAN-TYPE-CD. The two
+            // lookups are performed back to back by CBTRN03C - 1500-B-LOOKUP-TRANTYPE at :190, then
+            // 1500-C-LOOKUP-TRANCATG at :195 - which is precisely where a suffix would be dropped by
+            // accident. This record keeps the suffix.
+            assertThat(TranCategoryRecord.TRAN_TYPE_CD.name())
+                    .as("CVTRA04Y's item keeps its -CD suffix")
+                    .isEqualTo("TRAN-TYPE-CD")
+                    .isNotEqualTo("TRAN-TYPE");
+            assertThat(TranCategoryRecord.TRAN_TYPE_CD.name())
+                    .as("and CVTRA03Y's TRAN-TYPE is a strict prefix of it, which is the whole trap")
+                    .startsWith("TRAN-TYPE");
+        }
+
+        @Test
+        @DisplayName("TRAN-TYPE-CD is a String because PIC X(02) makes the leading zero significant")
+        void theTypeCodeIsAStringAndNeverAnInt() throws ReflectiveOperationException {
+            // PIC X(02) is alphanumeric. Every shipped value looks numeric ("01".."07"), which is exactly
+            // why an int is the tempting mistake: it would turn "01" into 1, render back as "1 " or "1",
+            // and compose a key that matches nothing. The picture, the Java type and the observable
+            // behaviour are all asserted, because any one of them alone could drift.
+            assertThat(TranCategoryRecord.TRAN_TYPE_CD.kind()).isEqualTo(PictureKind.ALPHANUMERIC);
+            assertThat(TranCategoryRecord.class.getMethod("tranTypeCd").getReturnType())
+                    .as("PIC X(02) decodes to String")
+                    .isEqualTo(String.class);
+            assertThat(TranCategoryRepository.class.getMethod("keyImage", String.class, int.class))
+                    .as("the lookup's first parameter is the 2-character code, not a number")
+                    .isNotNull();
+
+            TranCategoryRecord record = TranCategoryRecord.of("01", 1, "Regular Sales Draft", ASCII);
+            assertThat(record.tranTypeCd()).isEqualTo("01");
+            assertThat(record.tranCatKeyImage()).startsWith("01");
+        }
+
+        @Test
+        @DisplayName("TRAN-CAT-CD is an int because PIC 9(04) is scale-free and unsigned")
+        void theCategoryCodeIsAnIntFromPic9() throws ReflectiveOperationException {
+            // A scale-free PIC 9 maps to int (rule R4 reserves BigDecimal for PIC 9...V... and COMP-3,
+            // and CVTRA04Y declares neither). Stored zoned DISPLAY, one digit per byte, zero-filled on
+            // the LEFT - which is how the fixture's "0001" denotes 1.
+            assertThat(TranCategoryRecord.TRAN_CAT_CD.kind()).isEqualTo(PictureKind.UNSIGNED_NUMERIC);
+            assertThat(TranCategoryRecord.class.getMethod("tranCatCd").getReturnType())
+                    .as("PIC 9(04) with no V decodes to int, never to BigDecimal and never to double")
+                    .isEqualTo(int.class);
+            assertThat(TranCategoryRepository.class.getMethod("readByKey", String.class, int.class)
+                    .getParameterTypes())
+                    .as("readByKey takes the two halves in the order of the moves at :191-194")
+                    .containsExactly(String.class, int.class);
+
+            TranCategoryRecord record = TranCategoryRecord.of("01", 1, "Regular Sales Draft", ASCII);
+            assertThat(record.tranCatCd()).isEqualTo(1);
+            assertThat(record.fieldImage(TranCategoryRecord.TRAN_CAT_CD))
+                    .as("the int 1 is stored as four zoned digits")
+                    .isEqualTo("0001");
+        }
+
+        @Test
+        @DisplayName("no accidental all-numeric overload exists through which \"01\" could become 1")
+        void thereIsNoNumericKeyOverload() {
+            List<Method> numericEntryPoints = new ArrayList<>();
+            for (Method method : TranCategoryRepository.class.getMethods()) {
+                if (method.getDeclaringClass() != TranCategoryRepository.class) {
+                    continue;
+                }
+                if (!"readByKey".equals(method.getName()) && !"keyImage".equals(method.getName())) {
+                    continue;
+                }
+                Class<?>[] parameters = method.getParameterTypes();
+                if (parameters.length > 0 && !String.class.equals(parameters[0])) {
+                    numericEntryPoints.add(method);
+                }
+            }
+
+            assertThat(numericEntryPoints)
+                    .as("an int-typed TRAN-TYPE-CD would collapse \"01\" to 1 and silently miss every "
+                            + "lookup, so no such overload is offered")
+                    .isEmpty();
+        }
     }
 
     // =============================================================================================
@@ -871,6 +1143,28 @@ class TranCategoryRepositoryTest {
         }
 
         @Test
+        @DisplayName("re-opening after a close succeeds: no handle is held between operations")
+        void reOpeningAfterACloseSucceeds() {
+            TranCategoryRepository repository = seeded(List.of(image("01", 1, "Regular Sales Draft")));
+
+            // CBTRN03C opens once (:165) and closes once (:212), so a re-open is not something the
+            // legacy program does - but this repository is a singleton shared across report runs, and
+            // nothing about one run may leave it unusable for the next. There is no persistent cursor,
+            // no cached column name and no open flag: each operation borrows and returns a connection,
+            // so open/close/open is simply three independent probes. Were any state retained, the
+            // second open would be the first place it showed up.
+            assertThat(repository.open()).isEqualTo(FileStatus.OK);
+            assertThat(repository.close()).isEqualTo(FileStatus.OK);
+            assertThat(repository.open())
+                    .as("a closed dataset re-opens cleanly, exactly as the first open did")
+                    .isEqualTo(FileStatus.OK);
+
+            // And a read still works after the whole cycle, which is what "usable" actually means.
+            assertThat(repository.readByKey("01", 1).isFound()).isTrue();
+            assertThat(repository.close()).isEqualTo(FileStatus.OK);
+        }
+
+        @Test
         @DisplayName("the probe is a describe: it names the dataset and transfers no row")
         void theProbeIsADescribe() {
             JdbcTemplate template = mock(JdbcTemplate.class);
@@ -1024,6 +1318,14 @@ class TranCategoryRepositoryTest {
         void aMissingKeyYieldsNotFoundWithoutThrowing() {
             TranCategoryRepository repository = seeded(List.of(image("01", 1, "Regular Sales Draft")));
 
+            // NOTHING ESCAPES. Asserted explicitly rather than left to be implied by the test simply not
+            // erroring: "reported, never thrown" is the contract this whole class turns on, so it is
+            // stated as an assertion in its own right. An exception here would skip CBTRN03C's DISPLAY of
+            // the key at :507 and the rendered status from 9910-DISPLAY-IO-STATUS, and would replace the
+            // program's own abend path with this repository's.
+            assertThatNoException()
+                    .isThrownBy(() -> repository.readByKey("99", 9999));
+
             ReadResult result = repository.readByKey("99", 9999);
 
             assertThat(result.isNotFound()).isTrue();
@@ -1035,6 +1337,42 @@ class TranCategoryRepositoryTest {
             // of those three, which is the whole boundary this assertion protects.
             assertThat(result.abends()).isTrue();
             assertThat(result.statusImage()).isEqualTo("0023");
+        }
+
+        @Test
+        @DisplayName("the three arms are mutually exclusive: 'other' is neither '00' nor '23'")
+        void theInducedFailureStatusIsDistinctFromBothNamedStatuses() {
+            // The agent contract for this dataset is three arms and exactly three. Proving the catch-all
+            // arm exists is not enough - it has to be DISTINGUISHABLE, because the caller branches on the
+            // status and CBTRN03C's guard chain treats '00' as success and '23' as INVALID KEY. A
+            // permanent error that rendered as either of those would be routed down the wrong arm.
+            TranCategoryRepository ok = seeded(List.of(image("01", 1, "Regular Sales Draft")));
+            JdbcTemplate refusing = mock(JdbcTemplate.class);
+            backend(refusing).storing(List.of(image("01", 1, "Regular Sales Draft")))
+                    .failingOnRead();
+            TranCategoryRepository broken = repository(refusing);
+
+            ReadResult found = ok.readByKey("01", 1);
+            ReadResult missing = ok.readByKey("99", 9999);
+            ReadResult other = broken.readByKey("01", 1);
+
+            assertThat(found.status()).isEqualTo(FileStatus.OK);
+            assertThat(missing.status()).isEqualTo(FileStatus.NOT_FOUND);
+            assertThat(other.status())
+                    .as("the catch-all status is neither of the two the READ names explicitly")
+                    .isEqualTo(TranCategoryRepository.PERMANENT_ERROR_STATUS)
+                    .isNotEqualTo(FileStatus.OK)
+                    .isNotEqualTo(FileStatus.NOT_FOUND);
+            assertThat(List.of(found.status(), missing.status(), other.status()))
+                    .as("three arms, three distinct statuses")
+                    .doesNotHaveDuplicates();
+            assertThat(List.of(found.outcome(), missing.outcome(), other.outcome()))
+                    .containsExactly(Outcome.OK, Outcome.NOT_FOUND, Outcome.OTHER)
+                    .doesNotHaveDuplicates();
+            // And the rendered IO-STATUS images differ too, which is what actually reaches SYSOUT.
+            assertThat(other.statusImage())
+                    .isNotEqualTo(found.statusImage())
+                    .isNotEqualTo(missing.statusImage());
         }
 
         @Test
@@ -1247,6 +1585,170 @@ class TranCategoryRepositoryTest {
     // The outcome type's invariants.
     // =============================================================================================
 
+    // =============================================================================================
+    // The 50-into-29 move, and the FILLER. Both are pure layout facts, and both are load-bearing.
+    // =============================================================================================
+
+    /**
+     * Why the description must arrive at all 50 bytes, proven on both sides of the 29-character
+     * boundary.
+     *
+     * <p>{@code app/cbl/CBTRN03C.cbl:368} performs
+     * {@code MOVE TRAN-CAT-TYPE-DESC TO TRAN-REPORT-CAT-DESC}: a {@code PIC X(50)} sender into
+     * {@code app/cpy/CVTRA07Y.cpy}'s {@code PIC X(29)} receiver. COBOL fills an alphanumeric receiver
+     * from its leftmost position and discards the overflow, so the report line carries the
+     * <strong>first {@value #TRAN_REPORT_CAT_DESC_LENGTH} characters</strong> and nothing else.
+     *
+     * <p>That truncation belongs at the point of use, never in the repository. These tests prove the
+     * repository hands over a sender wide enough for the move to be reproduced faithfully - they do
+     * <em>not</em> assert the shape of the report line itself, which is
+     * {@code TranReportWriterTest}'s and the {@code TranReportLayouts} test's subject.
+     */
+    @Nested
+    @DisplayName("The X(50)-into-X(29) report projection, and the trailing FILLER")
+    class ReportProjection {
+
+        /** The codec the point of use would apply the move with, over the named dataset code page. */
+        private final FixedWidthCodec codec = new FixedWidthCodec(ASCII);
+
+        @Test
+        @DisplayName("a description longer than 29 characters keeps all 50, and projects to its first 29")
+        void anOverlongDescriptionIsTruncatedOnlyAtThePointOfUse() {
+            TranCategoryRepository repository =
+                    seeded(List.of(image("09", 7, OVERLONG_DESCRIPTION)));
+
+            TranCategoryRecord record = repository.readByKey("09", 7).record().orElseThrow();
+            String description = record.tranCatTypeDesc();
+
+            // (a) the repository returns the sender UNTRIMMED, at its full declared width.
+            assertThat(OVERLONG_DESCRIPTION.length())
+                    .as("the constructed description really does cross the boundary")
+                    .isGreaterThan(TRAN_REPORT_CAT_DESC_LENGTH);
+            assertThat(description)
+                    .hasSize(TranCategoryRecord.TRAN_CAT_TYPE_DESC_LENGTH)
+                    .startsWith(OVERLONG_DESCRIPTION)
+                    .endsWith(" ");
+
+            // (b) the report field carries exactly the leading 29 characters - truncated on the RIGHT,
+            //     which is the COBOL rule for a PIC X receiver. "Convenience Check Debit Adjus" here:
+            //     the surviving characters are the leading ones, never the trailing ones.
+            String projected = codec.movePicX(description, TRAN_REPORT_CAT_DESC_LENGTH);
+
+            assertThat(projected)
+                    .hasSize(TRAN_REPORT_CAT_DESC_LENGTH)
+                    .isEqualTo(description.substring(0, TRAN_REPORT_CAT_DESC_LENGTH))
+                    .isEqualTo("Convenience Check Debit Adjus");
+            assertThat(projected)
+                    .as("right truncation, not left: the tail is discarded")
+                    .doesNotEndWith("Reversal");
+        }
+
+        @Test
+        @DisplayName("a pre-trimmed description would still project correctly, which is why the width "
+                + "itself must be asserted")
+        void trimmingWouldBeInvisibleToTheProjectionAlone() {
+            // This is the assertion that justifies all the others. For any description at or below the
+            // report width, projecting a TRIMMED value and projecting the full 50 bytes give different
+            // results - the untrimmed one is space-padded out to 29, the trimmed one is not - so the
+            // padding is observable. For a description LONGER than the report width the two agree, which
+            // is exactly why "the projection looks right" can never stand in for "the sender is 50 bytes
+            // wide". Both facts are pinned here so neither can be weakened later.
+            String shortDescription = "Refund credit";
+
+            assertThat(codec.movePicX(shortDescription, TRAN_REPORT_CAT_DESC_LENGTH))
+                    .as("a trimmed sender pads to the receiver's width")
+                    .isEqualTo(shortDescription + " ".repeat(
+                            TRAN_REPORT_CAT_DESC_LENGTH - shortDescription.length()));
+            assertThat(codec.movePicX(
+                    codec.movePicX(shortDescription, TranCategoryRecord.TRAN_CAT_TYPE_DESC_LENGTH),
+                    TRAN_REPORT_CAT_DESC_LENGTH))
+                    .as("and so does the untrimmed 50-byte sender - identically, hence the width check")
+                    .isEqualTo(shortDescription + " ".repeat(
+                            TRAN_REPORT_CAT_DESC_LENGTH - shortDescription.length()));
+        }
+
+        @ParameterizedTest(name = "[{0}] is {1} characters and survives the move intact")
+        @CsvSource({
+            "Online purchase authorization, 29",
+            "Sales draft credit adjustment, 29",
+        })
+        @DisplayName("the two shipped 29-character descriptions sit exactly ON the boundary, untruncated")
+        void theShippedBoundaryDescriptionsAreNotTruncated(String description, int length) {
+            // Measuring all 18 rows of app/data/ASCII/trancatg.txt gives a maximum trimmed length of
+            // exactly 29, reached by these two rows and exceeded by none. They are therefore the real
+            // boundary case: the widest data the system actually carries fits the report field to the
+            // character, with not one byte to spare. A report field of 28 would silently clip both.
+            assertThat(description).hasSize(length).hasSize(TRAN_REPORT_CAT_DESC_LENGTH);
+
+            TranCategoryRecord record = TranCategoryRecord.of("04", 2, description, ASCII);
+
+            assertThat(codec.movePicX(record.tranCatTypeDesc(), TRAN_REPORT_CAT_DESC_LENGTH))
+                    .as("no character is lost at the boundary")
+                    .isEqualTo(description);
+        }
+
+        @Test
+        @DisplayName("gate G21: a BUILT record's FILLER X(04) at offset 56 is present and space-filled")
+        void aBuiltRecordSpaceFillsItsFiller() {
+            TranCategoryRecord built =
+                    TranCategoryRecord.of("01", 1, "Regular Sales Draft", ASCII);
+
+            // AAP 0.3.7: a FILLER span is emitted as SPACES. It is never an implied gap - omit it and the
+            // record is 56 bytes and every downstream offset breaks - and it is never elided on write.
+            FieldSpan filler = TranCategoryRecord.FILLER;
+
+            assertThat(filler.offset())
+                    .as("2 + 4 + 50 = 56, so the FILLER begins at byte 56")
+                    .isEqualTo(TranCategoryRecord.TRAN_TYPE_CD_LENGTH
+                            + TranCategoryRecord.TRAN_CAT_CD_LENGTH
+                            + TranCategoryRecord.TRAN_CAT_TYPE_DESC_LENGTH)
+                    .isEqualTo(56);
+            assertThat(filler.endOffsetExclusive())
+                    .as("and ends exactly at the record's declared width")
+                    .isEqualTo(TranCategoryRecord.RECORD_LENGTH);
+            assertThat(filler.kind()).isEqualTo(PictureKind.FILLER);
+
+            assertThat(built.filler())
+                    .as("gate G21: four spaces, emitted rather than implied")
+                    .isEqualTo("    ")
+                    .hasSize(TranCategoryRecord.FILLER_LENGTH);
+            assertThat(built.fillerBytes())
+                    .as("0x20 four times, asserted as bytes so no charset assumption hides in the check")
+                    .containsExactly((byte) 0x20, (byte) 0x20, (byte) 0x20, (byte) 0x20);
+            assertThat(built.toImage())
+                    .hasSize(TranCategoryRecord.RECORD_LENGTH)
+                    .endsWith("    ");
+            assertThat(built.toImage().substring(56, 60))
+                    .as("read back at its absolute offsets, not by trusting the suffix")
+                    .isEqualTo("    ");
+        }
+
+        @Test
+        @DisplayName("a DECODED row keeps whatever its FILLER held - the shipped rows hold four zeros")
+        void aDecodedRecordPreservesTheStoredFiller() {
+            // The distinction G21 turns on: a record this module BUILDS space-fills its FILLER, while a
+            // record DECODED from the dataset carries the stored bytes through verbatim so the row can be
+            // re-emitted byte for byte. Every row of app/data/ASCII/trancatg.txt holds ASCII zeros there,
+            // so the two cases are genuinely different and both are pinned.
+            String storedRow = "010001" + "Regular Sales Draft"
+                    + " ".repeat(TranCategoryRecord.TRAN_CAT_TYPE_DESC_LENGTH
+                            - "Regular Sales Draft".length())
+                    + "0000";
+            assertThat(storedRow).hasSize(TranCategoryRecord.RECORD_LENGTH);
+
+            TranCategoryRecord decoded =
+                    TranCategoryRecord.decode(storedRow.getBytes(ASCII), ASCII);
+
+            assertThat(decoded.filler()).isEqualTo("0000");
+            assertThat(TranCategoryRecord.of("01", 1, "Regular Sales Draft", ASCII).filler())
+                    .as("a built record space-fills where a decoded one preserves")
+                    .isNotEqualTo(decoded.filler());
+            assertThat(decoded.toImage())
+                    .as("and the stored row round-trips byte for byte, FILLER included")
+                    .isEqualTo(storedRow);
+        }
+    }
+
     @Nested
     @DisplayName("ReadResult admits exactly the three arms this READ can produce")
     class ReadResultInvariants {
@@ -1425,6 +1927,34 @@ class TranCategoryRepositoryTest {
         }
 
         @Test
+        @DisplayName("practice B7: this suite itself carries no static mutable state, so it is "
+                + "order-independent")
+        void theSuiteItselfIsOrderIndependent() {
+            // The suite is held to the same rule it enforces. Static mutable state shared between test
+            // classes is the classic way a suite starts passing only in one execution order - and this
+            // file deliberately keys its stand-in backends off the mock instance in an INSTANCE field
+            // (`backends`), so every test gets its own dataset and no test can observe another's rows.
+            List<Class<?>> everyClassInThisFile = new ArrayList<>();
+            everyClassInThisFile.add(TranCategoryRepositoryTest.class);
+            Collections.addAll(everyClassInThisFile, TranCategoryRepositoryTest.class.getDeclaredClasses());
+
+            for (Class<?> type : everyClassInThisFile) {
+                for (Field field : type.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers()) && !field.isSynthetic()) {
+                        assertThat(Modifier.isFinal(field.getModifiers()))
+                                .as("%s.%s is static in the test suite and must be final",
+                                        type.getSimpleName(), field.getName())
+                                .isTrue();
+                    }
+                }
+            }
+
+            assertThat(everyClassInThisFile)
+                    .as("the nested groups really were enumerated, so this check cannot pass vacuously")
+                    .hasSizeGreaterThan(1);
+        }
+
+        @Test
         @DisplayName("every instance field is final, so an instance is immutable and shareable")
         void everyInstanceFieldIsFinal() {
             for (Field field : TranCategoryRepository.class.getDeclaredFields()) {
@@ -1493,17 +2023,70 @@ class TranCategoryRepositoryTest {
                     .doesNotContain("FIXME");
         }
 
+        @Test
+        @DisplayName("neither production class depends on common.CobolDecimal - CVTRA04Y has no decimal")
+        void noFixedPointSeamIsPulledInWhereThereIsNoDecimal() {
+            // Rule R4 routes every PIC 9...V... and COMP-3 field through common.CobolDecimal at
+            // RoundingMode.DOWN. CVTRA04Y declares NO such field: its four spans are TRAN-TYPE-CD X(02),
+            // TRAN-CAT-CD 9(04), TRAN-CAT-TYPE-DESC X(50) and FILLER X(04). A scale-free PIC 9 is an int.
+            //
+            // So the omission is deliberate, and asserting it is the point: importing the fixed-point
+            // seam here would be a strong signal that TRAN-CAT-CD had been modelled as a BigDecimal at
+            // some scale, which would render "0001" through a decimal formatter instead of as four zoned
+            // digits and compose a key that matches nothing. The failure would be silent - the field is
+            // numeric-looking, so a BigDecimal round-trips plausibly - which is exactly why it is pinned
+            // rather than left to review. Contrast TranCatBalRepository, whose CVTRA01Y record carries
+            // TRAN-CAT-BAL PIC S9(09)V99 and therefore SHOULD depend on CobolDecimal.
+            for (String relativePath : List.of(
+                    "transaction/TranCategoryRepository.java",
+                    "transaction/model/TranCategoryRecord.java")) {
+                String source = mainSource(relativePath);
+
+                assertThat(source)
+                        .as("%s must not reach for the fixed-point seam: CVTRA04Y has no signed decimal",
+                                relativePath)
+                        .doesNotContain("CobolDecimal");
+                assertThat(source)
+                        .as("%s: TRAN-CAT-CD is PIC 9(04) with no V, so it is an int and never a "
+                                + "BigDecimal", relativePath)
+                        .doesNotContain("BigDecimal");
+                assertThat(Pattern.compile("\\b(double|float)\\b").matcher(source).find())
+                        .as("%s: gate G22 - no binary approximate numeric primitive", relativePath)
+                        .isFalse();
+                assertThat(source)
+                        .as("%s: gate G24 - no half-rounding mode, because ROUNDED appears zero times "
+                                + "in all 28 programs", relativePath)
+                        .doesNotContain("HALF_UP")
+                        .doesNotContain("HALF_EVEN");
+            }
+        }
+
         /**
-         * This repository's own source text, located by walking upwards to the module descriptor.
+         * This repository's own source text.
          *
          * @return the file's contents
          */
         private static String repositorySource() {
+            return mainSource("transaction/TranCategoryRepository.java");
+        }
+
+        /**
+         * A main source file of this module, located by walking upwards from the working directory.
+         *
+         * <p>The walk exists because the working directory a test runs in is not fixed - the module
+         * directory under Maven, the repository root under some IDE launchers - so resolving the path
+         * relatively would make a correct source pass or fail on the runner's layout rather than on the
+         * code. The files are only ever <em>read</em>; nothing here writes to the main tree.
+         *
+         * @param relativePath the path below {@code com/vsergeychik/carddemo/}
+         * @return the file's contents
+         * @throws IllegalStateException if the file cannot be located from anywhere on the walk
+         */
+        private static String mainSource(String relativePath) {
             Path candidate = Path.of("").toAbsolutePath();
             while (candidate != null) {
                 Path resolved = candidate.resolve(
-                        "app/java/src/main/java/com/vsergeychik/carddemo/transaction/"
-                                + "TranCategoryRepository.java");
+                        "app/java/src/main/java/com/vsergeychik/carddemo/" + relativePath);
                 if (Files.isRegularFile(resolved)) {
                     try {
                         return Files.readString(resolved, StandardCharsets.UTF_8);
@@ -1513,7 +2096,7 @@ class TranCategoryRepositoryTest {
                 }
                 candidate = candidate.getParent();
             }
-            throw new IllegalStateException("Could not locate TranCategoryRepository.java at or above "
+            throw new IllegalStateException("Could not locate " + relativePath + " at or above "
                     + Path.of("").toAbsolutePath());
         }
     }

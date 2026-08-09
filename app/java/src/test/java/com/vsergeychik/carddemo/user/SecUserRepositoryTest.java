@@ -22,15 +22,23 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.RecordComponent;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -39,8 +47,12 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -59,6 +71,68 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * {@code app/cbl/COUSR01C.cbl:L260-L261} - they are proved to stay two, because collapsing them here
  * would take the choice away from the caller that the source leaves open.
  *
+ * <p>This is the foundational test of the {@code user} test package. The five controller tests and the
+ * sign-on service test all stub the outcomes pinned here, so the outcome <em>vocabulary</em> - not just
+ * the happy path - is the deliverable.
+ *
+ * <h2>The oracle: where every expected value in this file comes from</h2>
+ * <table border="1">
+ *   <caption>The read-only reference files this class is written against</caption>
+ *   <tr><th>File and lines</th><th>What it fixes</th></tr>
+ *   <tr><td>{@code app/csd/CARDDEMO.CSD:L88-L99}</td>
+ *       <td>{@code DEFINE FILE(USRSEC)}: the file name that is also the configuration key, and
+ *           {@code ADD BROWSE DELETE READ UPDATE} all {@code YES} - which is precisely the closed set of
+ *           nine access paths, and the reason this is the one dataset in the module with a delete</td></tr>
+ *   <tr><td>{@code app/cpy/CSUSR01Y.cpy:L17-L23}</td>
+ *       <td>{@code 01 SEC-USER-DATA} and its six {@code 05} items: the 80-byte layout, every field
+ *           offset, and {@code SEC-USR-FILLER PIC X(23)} as a <em>named</em> field</td></tr>
+ *   <tr><td>{@code app/jcl/DUSRSECJ.jcl:L34-L44}</td>
+ *       <td>{@code //SYSUT1 DD *} and the ten in-stream seed records. There is <strong>no</strong>
+ *           {@code usrsec} fixture in {@code app/data/ASCII} - the security file's data lives only
+ *           here - so {@link #jclSeedUsers()} transcribes these lines and nothing else</td></tr>
+ *   <tr><td>{@code app/jcl/DUSRSECJ.jcl:L48}</td>
+ *       <td>{@code DCB=(LRECL=80,RECFM=FB,DSORG=PS,BLKSIZE=0)}: the sequential form's 80-byte record</td></tr>
+ *   <tr><td>{@code app/jcl/DUSRSECJ.jcl:L64-L66}</td>
+ *       <td>{@code DEFINE CLUSTER ... KEYS(8,0) RECORDSIZE(80,80)}: the key width, the key offset and the
+ *           record width, independently of the copybook</td></tr>
+ *   <tr><td>{@code app/cbl/COSGN00C.cbl}, {@code COUSR00C}, {@code COUSR01C}, {@code COUSR02C},
+ *           {@code COUSR03C}</td>
+ *       <td>Which command each path translates, and the {@code WHEN} arms each caller branches on</td></tr>
+ * </table>
+ * Not one of those files is opened for writing, copied into this module, or normalised. They are the
+ * only oracle this migration has, and a test that edited one would be grading its own homework.
+ *
+ * <h2>Provenance of the expected values - statically derived, and said so</h2>
+ * <strong>Every expected value in this class was derived by reading the COBOL, the copybook and the JCL
+ * cited above. None of it was captured from a live execution of the legacy programs.</strong> Executing
+ * them is not possible in this environment: there is no z/OS or CICS runtime, the available COBOL
+ * compiler has its indexed-file handler disabled, and the {@code DFHAID}, {@code DFHBMSCA} and
+ * {@code DFHATTR} copybooks the online programs copy are not in this repository. That is a documented
+ * deviation in the migration's own risk register, not a silent one, and it is recorded here so that
+ * nobody reading these assertions mistakes them for a captured baseline. The mitigation is mechanical
+ * derivation: the layout assertions below are byte offsets read straight out of
+ * {@code CSUSR01Y.cpy:L17-L23}, and the seed data is transcribed character-for-character from
+ * {@code DUSRSECJ.jcl:L35-L44} rather than paraphrased.
+ *
+ * <h2>Two record formats are declared for one file, and the disagreement is reproduced, not resolved</h2>
+ * {@code app/csd/CARDDEMO.CSD:L93} declares the CICS file {@code RECORDFORMAT(V)} - variable - while
+ * {@code app/jcl/DUSRSECJ.jcl:L48} declares the sequential form {@code RECFM=FB,LRECL=80} - fixed
+ * blocked at 80. Both are in the source; they cannot both be the whole truth. The migration's rule is
+ * that record length is <strong>copybook-fixed at 80 regardless</strong> of which format a given
+ * definition claims, because {@code CSUSR01Y.cpy} is the contract and every {@code EXEC CICS} call in
+ * all five programs passes {@code LENGTH(LENGTH OF SEC-USER-DATA)}, which is that fixed 80. So this
+ * class asserts 80 everywhere and models no variable-length record - and it records <em>why</em> rather
+ * than quietly picking the convenient clause. See
+ * {@link SeedRecordLayout#theRecordFormatDisagreementIsSettledByTheCopybook()}.
+ *
+ * <h2>The password is oracle data, not a credential</h2>
+ * The literal {@code PASSWORD} throughout this file is the actual byte content of
+ * {@code app/jcl/DUSRSECJ.jcl:L35-L44}: all ten seeded users share it, and it happens to fill
+ * {@code SEC-USR-PWD PIC X(08)} exactly. It is sample data in a public demonstration application, it
+ * guards nothing, and the migration deliberately keeps {@code SEC-USR-PWD} plaintext because hashing it
+ * would change observable behaviour. Substituting a different value here would make these assertions
+ * disagree with the oracle, which is the one thing they exist to avoid.
+ *
  * <h2>How the backend is stood up</h2>
  * Two harnesses, chosen per test rather than mixed:
  * <ul>
@@ -70,7 +144,15 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       record-image column holds nothing, a relation that describes no usable column, an
  *       {@code UPDATE} that affects a different number of rows than the count that preceded it.</li>
  * </ul>
- * Each relation gets its own database name, so tests neither share state nor depend on order.
+ * A real relation is preferred wherever the outcome is observable in data, because a mock that returns
+ * the answer the test expects proves only that the test and the mock agree. The mock is reserved for
+ * conditions a relation genuinely cannot be asked to produce. Neither harness loads a Spring context:
+ * the repository is constructor-injected, so building one directly is both possible and faster, and it
+ * keeps the {@code Charset} an explicit argument at every call site rather than an injected assumption.
+ *
+ * <p>Each relation gets its own database name and each test builds its own repository, so no state is
+ * shared between tests and nothing depends on execution order. The only static members here are
+ * immutable constants and a counter that hands out distinct database names.
  */
 @DisplayName("SecUserRepository - the USRSEC security-user file")
 class SecUserRepositoryTest {
@@ -218,7 +300,13 @@ class SecUserRepositoryTest {
         }
     }
 
-    /** Four seed records transcribed from {@code app/jcl/DUSRSECJ.jcl:L35-L44}, padded to 80. */
+    /**
+     * Four seed records transcribed from {@code app/jcl/DUSRSECJ.jcl:L35-L44}, padded to 80.
+     *
+     * <p>A deliberate subset. The behavioural tests assert exact walks and exact counts, and four records
+     * make those assertions readable; {@link #jclSeedUsers()} carries all ten for the layout and ordering
+     * tests, which is where the full file matters.
+     */
     private static List<String> seedRows() {
         List<String> rows = new ArrayList<>();
         rows.add(row("ADMIN001", "MARGARET", "GOLD", "PASSWORD", "A"));
@@ -226,6 +314,117 @@ class SecUserRepositoryTest {
         rows.add(row("USER0001", "LAWRENCE", "THOMAS", "PASSWORD", "U"));
         rows.add(row("USER0002", "AJITH", "KUMAR", "PASSWORD", "U"));
         return rows;
+    }
+
+    /**
+     * One seeded security user, exactly as {@code app/jcl/DUSRSECJ.jcl} holds it.
+     *
+     * <p>The five components are the five populated fields of {@code CSUSR01Y}; the sixth field,
+     * {@code SEC-USR-FILLER}, is absent from the in-stream data and is the whole point of
+     * {@link SeedRecordLayout#theFiftySevenCharacterJclLineRightPadsToTheEightyByteRecord()}.
+     *
+     * @param id    {@code SEC-USR-ID PIC X(08)} - the primary key
+     * @param fname {@code SEC-USR-FNAME PIC X(20)}
+     * @param lname {@code SEC-USR-LNAME PIC X(20)}
+     * @param pwd   {@code SEC-USR-PWD PIC X(08)} - plaintext, as the legacy design holds it
+     * @param type  {@code SEC-USR-TYPE PIC X(01)} - {@code 'A'} admin or {@code 'U'} regular
+     */
+    private record SeedUser(String id, String fname, String lname, String pwd, String type) {
+    }
+
+    /**
+     * All ten seeded users, transcribed character-for-character from
+     * {@code app/jcl/DUSRSECJ.jcl:L35-L44}.
+     *
+     * <p><strong>There is no {@code usrsec} fixture file to read instead.</strong>
+     * {@code app/data/ASCII} holds nine fixtures and none of them is the security file, so these ten
+     * in-stream records are the only seed data the security file has anywhere in the repository. They are
+     * transcribed rather than parsed out of the JCL at run time because the JCL is a job stream, not a
+     * data file: it is read-only oracle material, and a test that parsed it would be asserting against
+     * its own parser as much as against the data.
+     *
+     * <p>Two properties of this set are what make the ordering assertions meaningful, and both are
+     * facts about the source rather than choices made here:
+     * <ul>
+     *   <li>five users are type {@code 'A'} and five are type {@code 'U'} - which is what gives
+     *       {@code app/cbl/COSGN00C.cbl:L230-L240} both of its routing branches something to route;</li>
+     *   <li>{@code ADMIN001}..{@code ADMIN005} sort strictly before {@code USER0001}..{@code USER0005},
+     *       so an ascending browse and a descending browse produce visibly different sequences rather
+     *       than two orderings that happen to look alike.</li>
+     * </ul>
+     *
+     * <p>Returned from a method building a fresh immutable list rather than held in a static field, so
+     * there is no shared mutable state of any kind between tests.
+     *
+     * @return the ten seeded users, in the order the JCL lists them
+     */
+    private static List<SeedUser> jclSeedUsers() {
+        return List.of(
+                // app/jcl/DUSRSECJ.jcl:L35-L39 - the five administrators, SEC-USR-TYPE 'A'.
+                new SeedUser("ADMIN001", "MARGARET", "GOLD", "PASSWORD", "A"),
+                new SeedUser("ADMIN002", "RUSSELL", "RUSSELL", "PASSWORD", "A"),
+                new SeedUser("ADMIN003", "RAYMOND", "WHITMORE", "PASSWORD", "A"),
+                new SeedUser("ADMIN004", "EMMANUEL", "CASGRAIN", "PASSWORD", "A"),
+                new SeedUser("ADMIN005", "GRANVILLE", "LACHAPELLE", "PASSWORD", "A"),
+                // app/jcl/DUSRSECJ.jcl:L40-L44 - the five regular users, SEC-USR-TYPE 'U'.
+                new SeedUser("USER0001", "LAWRENCE", "THOMAS", "PASSWORD", "U"),
+                new SeedUser("USER0002", "AJITH", "KUMAR", "PASSWORD", "U"),
+                new SeedUser("USER0003", "LAURITZ", "ALME", "PASSWORD", "U"),
+                new SeedUser("USER0004", "AVERARDO", "MAZZI", "PASSWORD", "U"),
+                new SeedUser("USER0005", "LEE", "TING", "PASSWORD", "U"));
+    }
+
+    /**
+     * The ten seeded users as 80-byte stored images, in the order the JCL lists them.
+     *
+     * @return ten record images, each exactly {@value #EIGHTY} characters
+     */
+    private static List<String> allSeedRows() {
+        List<String> rows = new ArrayList<>();
+        for (SeedUser user : jclSeedUsers()) {
+            rows.add(row(user.id(), user.fname(), user.lname(), user.pwd(), user.type()));
+        }
+        return rows;
+    }
+
+    /**
+     * One seeded user rendered as the 57-character in-stream line the JCL actually contains.
+     *
+     * <p>{@code 57 = 80 - 23}: the in-stream records stop after {@code SEC-USR-TYPE} and omit
+     * {@code SEC-USR-FILLER PIC X(23)} entirely, which {@code IEBGENER} pads to the {@code LRECL=80} of
+     * {@code app/jcl/DUSRSECJ.jcl:L48} on the way to the sequential dataset. Built here by concatenating
+     * the fields at their declared widths, so the result is the line rather than an approximation of it.
+     *
+     * @param user the seeded user
+     * @return the 57-character line, exactly as {@code DUSRSECJ.jcl:L35-L44} holds it
+     */
+    private static String jclLine(SeedUser user) {
+        return pad(user.id(), SecUserRecord.SEC_USR_ID_LENGTH)
+                + pad(user.fname(), SecUserRecord.SEC_USR_FNAME_LENGTH)
+                + pad(user.lname(), SecUserRecord.SEC_USR_LNAME_LENGTH)
+                + pad(user.pwd(), SecUserRecord.SEC_USR_PWD_LENGTH)
+                + pad(user.type(), SecUserRecord.SEC_USR_TYPE_LENGTH);
+    }
+
+    /**
+     * Right-space-pads a value to a declared {@code PIC X} width, the way a COBOL alphanumeric move does.
+     *
+     * @param value the value
+     * @param width the declared width
+     * @return the value padded on the right with spaces to exactly {@code width} characters
+     */
+    private static String pad(String value, int width) {
+        return value + " ".repeat(width - value.length());
+    }
+
+    /**
+     * A run of spaces.
+     *
+     * @param count how many
+     * @return that many spaces
+     */
+    private static String spaces(int count) {
+        return " ".repeat(count);
     }
 
     /**
@@ -395,6 +594,315 @@ class SecUserRepositoryTest {
         }
     }
 
+    /**
+     * The 80-byte layout of {@code app/cpy/CSUSR01Y.cpy:L17-L23}, asserted at absolute byte offsets.
+     *
+     * <h3>Why the offsets are written as bare numbers</h3>
+     * Every offset below appears twice: once as the constant the production code uses, and once as the
+     * literal a reviewer can read straight off the copybook. Asserting the constant against itself would
+     * pass however wrong the constant was; asserting it against the number that is visibly
+     * {@code 8 + 20 + 20} is what makes this a check rather than a tautology. The migration's practice is
+     * hand-written, reviewable codecs precisely so that this diff against the copybook is possible, and
+     * that only pays off if the test states the numbers.
+     *
+     * <pre>
+     * 01 SEC-USER-DATA.                        offset  length
+     *   05 SEC-USR-ID     PIC X(08).                0       8
+     *   05 SEC-USR-FNAME  PIC X(20).                8      20
+     *   05 SEC-USR-LNAME  PIC X(20).               28      20
+     *   05 SEC-USR-PWD    PIC X(08).               48       8
+     *   05 SEC-USR-TYPE   PIC X(01).               56       1
+     *   05 SEC-USR-FILLER PIC X(23).               57      23
+     *                                            ----------
+     *                                                     80
+     * </pre>
+     */
+    @Nested
+    @DisplayName("Seed record layout - CSUSR01Y.cpy:L17-L23 against DUSRSECJ.jcl:L35-L44")
+    class SeedRecordLayout {
+
+        @Test
+        @DisplayName("the copybook's six fields sit at 0, 8, 28, 48, 56 and 57 and total exactly 80")
+        void theSixFieldsSitAtTheCopybooksOffsetsAndTotalEighty() {
+            // Offsets and widths, each stated as the number the copybook shows rather than as the
+            // constant restated. A transposed pair here is a wrong SEC-USR-TYPE, which is an
+            // authorisation outcome and not a cosmetic defect.
+            assertThat(SecUserRecord.SEC_USR_ID_OFFSET).isZero();
+            assertThat(SecUserRecord.SEC_USR_ID_LENGTH).isEqualTo(8);
+            assertThat(SecUserRecord.SEC_USR_FNAME_OFFSET).isEqualTo(8);
+            assertThat(SecUserRecord.SEC_USR_FNAME_LENGTH).isEqualTo(20);
+            assertThat(SecUserRecord.SEC_USR_LNAME_OFFSET).isEqualTo(28);
+            assertThat(SecUserRecord.SEC_USR_LNAME_LENGTH).isEqualTo(20);
+            assertThat(SecUserRecord.SEC_USR_PWD_OFFSET).isEqualTo(48);
+            assertThat(SecUserRecord.SEC_USR_PWD_LENGTH).isEqualTo(8);
+            assertThat(SecUserRecord.SEC_USR_TYPE_OFFSET).isEqualTo(56);
+            assertThat(SecUserRecord.SEC_USR_TYPE_LENGTH).isEqualTo(1);
+            assertThat(SecUserRecord.SEC_USR_FILLER_OFFSET).isEqualTo(57);
+            assertThat(SecUserRecord.SEC_USR_FILLER_LENGTH).isEqualTo(23);
+
+            // The spans are contiguous with no gap and no overlap: each begins where the last ended.
+            assertThat(SecUserRecord.SEC_USR_FNAME_OFFSET)
+                    .as("SEC-USR-FNAME begins where SEC-USR-ID ends")
+                    .isEqualTo(SecUserRecord.SEC_USR_ID_OFFSET + SecUserRecord.SEC_USR_ID_LENGTH);
+            assertThat(SecUserRecord.SEC_USR_LNAME_OFFSET)
+                    .isEqualTo(SecUserRecord.SEC_USR_FNAME_OFFSET
+                            + SecUserRecord.SEC_USR_FNAME_LENGTH);
+            assertThat(SecUserRecord.SEC_USR_PWD_OFFSET)
+                    .isEqualTo(SecUserRecord.SEC_USR_LNAME_OFFSET
+                            + SecUserRecord.SEC_USR_LNAME_LENGTH);
+            assertThat(SecUserRecord.SEC_USR_TYPE_OFFSET)
+                    .isEqualTo(SecUserRecord.SEC_USR_PWD_OFFSET + SecUserRecord.SEC_USR_PWD_LENGTH);
+            assertThat(SecUserRecord.SEC_USR_FILLER_OFFSET)
+                    .isEqualTo(SecUserRecord.SEC_USR_TYPE_OFFSET + SecUserRecord.SEC_USR_TYPE_LENGTH);
+
+            // 8 + 20 + 20 + 8 + 1 + 23 = 80, and the filler is what closes the gap. Drop it and this
+            // sum is 57, which is exactly the defect this assertion exists to catch.
+            assertThat(8 + 20 + 20 + 8 + 1 + 23)
+                    .as("the six PICTURE widths of CSUSR01Y.cpy:L18-L23 sum to the record length")
+                    .isEqualTo(EIGHTY);
+            assertThat(SecUserRecord.SEC_USR_FILLER_OFFSET + SecUserRecord.SEC_USR_FILLER_LENGTH)
+                    .as("the record ends where SEC-USR-FILLER ends")
+                    .isEqualTo(EIGHTY);
+        }
+
+        @Test
+        @DisplayName("the record length and key come from the copybook, corroborated by KEYS(8,0)")
+        void theRecordLengthAndKeyAreTheCopybooksAndTheClustersAlike() {
+            // app/cpy/CSUSR01Y.cpy:L17-L23 gives 80; app/jcl/DUSRSECJ.jcl:L66 RECORDSIZE(80,80) and
+            // :L48 LRECL=80 agree; :L65 KEYS(8,0) gives an 8-byte key at offset 0. Three independent
+            // declarations of the same geometry, which is why all three are asserted as bare numbers.
+            assertThat(SecUserRecord.RECORD_LENGTH).isEqualTo(80);
+            assertThat(SecUserRecord.KEY_OFFSET).isEqualTo(0);
+            assertThat(SecUserRecord.KEY_LENGTH).isEqualTo(8);
+
+            // KEYS(8,0) names the key by position; CSUSR01Y names it by field. They must be the same
+            // span, or a keyed read would address something other than SEC-USR-ID.
+            assertThat(SecUserRecord.KEY_OFFSET).isEqualTo(SecUserRecord.SEC_USR_ID_OFFSET);
+            assertThat(SecUserRecord.KEY_LENGTH).isEqualTo(SecUserRecord.SEC_USR_ID_LENGTH);
+
+            // The repository publishes the same geometry rather than a second opinion of its own.
+            assertThat(SecUserRepository.RECORD_LENGTH).isEqualTo(80);
+            assertThat(SecUserRepository.KEY_OFFSET).isEqualTo(0);
+            assertThat(SecUserRepository.KEY_LENGTH).isEqualTo(8);
+            assertThat(repository(seeded(allSeedRows())).recordLength()).isEqualTo(80);
+            assertThat(repository(seeded(allSeedRows())).keyLength()).isEqualTo(8);
+        }
+
+        @Test
+        @DisplayName("SEC-USR-FILLER is a named field, and is still emitted as 23 spaces")
+        void theFillerIsNamedAndStillEmittedAsSpaces() {
+            // CSUSR01Y:L23 spells it 05 SEC-USR-FILLER, not 05 FILLER - it has a name, so it is
+            // addressable by name like any other field. Being named changes nothing about how it is
+            // written: it still goes out as spaces, and it still has to go out.
+            assertThat(SecUserRecord.FIELD_SEC_USR_FILLER).isEqualTo("SEC-USR-FILLER");
+            assertThat(SecUserRecord.GROUP_NAME).isEqualTo("SEC-USER-DATA");
+            assertThat(SecUserRecord.blank().secUsrFiller()).isEqualTo(spaces(23));
+
+            SecUserRecord seeded = record("ADMIN001", "MARGARET", "GOLD", "PASSWORD", "A");
+            assertThat(seeded.image(SecUserRecord.FIELD_SEC_USR_FILLER)).isEqualTo(spaces(23));
+            assertThat(seeded.fieldImages())
+                    .as("all six fields of CSUSR01Y are addressable by their COBOL names")
+                    .containsOnlyKeys(SecUserRecord.FIELD_SEC_USR_ID,
+                            SecUserRecord.FIELD_SEC_USR_FNAME,
+                            SecUserRecord.FIELD_SEC_USR_LNAME,
+                            SecUserRecord.FIELD_SEC_USR_PWD,
+                            SecUserRecord.FIELD_SEC_USR_TYPE,
+                            SecUserRecord.FIELD_SEC_USR_FILLER);
+        }
+
+        @Test
+        @DisplayName("all ten DUSRSECJ.jcl seed records round-trip, field by field, at their offsets")
+        void allTenSeedRecordsRoundTripAtTheirDeclaredOffsets() {
+            List<SeedUser> users = jclSeedUsers();
+            assertThat(users)
+                    .as("app/jcl/DUSRSECJ.jcl:L35-L44 is ten in-stream records")
+                    .hasSize(10);
+
+            for (SeedUser user : users) {
+                SecUserRecord built = record(user.id(), user.fname(), user.lname(), user.pwd(),
+                        user.type());
+
+                // Encode with the charset stated explicitly - never a platform default.
+                byte[] encoded = SecUserRecord.encode(built, ASCII);
+                assertThat(encoded)
+                        .as("%s serialises to the copybook's record length", user.id())
+                        .hasSize(EIGHTY);
+
+                // Each field is sliced out of the image at the offset the copybook gives, using the
+                // bare numbers so this reads as a diff against CSUSR01Y.cpy:L18-L23.
+                String image = new String(encoded, ASCII);
+                assertThat(image.substring(0, 8))
+                        .as("%s SEC-USR-ID at 0..8", user.id())
+                        .isEqualTo(pad(user.id(), 8));
+                assertThat(image.substring(8, 28))
+                        .as("%s SEC-USR-FNAME at 8..28", user.id())
+                        .isEqualTo(pad(user.fname(), 20));
+                assertThat(image.substring(28, 48))
+                        .as("%s SEC-USR-LNAME at 28..48", user.id())
+                        .isEqualTo(pad(user.lname(), 20));
+                assertThat(image.substring(48, 56))
+                        .as("%s SEC-USR-PWD at 48..56", user.id())
+                        .isEqualTo(pad(user.pwd(), 8));
+                assertThat(image.substring(56, 57))
+                        .as("%s SEC-USR-TYPE at 56..57", user.id())
+                        .isEqualTo(user.type());
+                assertThat(image.substring(57, 80))
+                        .as("%s SEC-USR-FILLER at 57..80 is 23 spaces", user.id())
+                        .isEqualTo(spaces(23));
+
+                // Decode back and compare field for field, not as one string: a whole-string compare
+                // would pass on a codec that shifted two adjacent fields by the same amount.
+                SecUserRecord decoded = SecUserRecord.decode(encoded, ASCII);
+                assertThat(decoded.secUsrId()).isEqualTo(pad(user.id(), 8));
+                assertThat(decoded.secUsrFname()).isEqualTo(pad(user.fname(), 20));
+                assertThat(decoded.secUsrLname()).isEqualTo(pad(user.lname(), 20));
+                assertThat(decoded.secUsrPwd()).isEqualTo(pad(user.pwd(), 8));
+                assertThat(decoded.secUsrType()).isEqualTo(user.type());
+                assertThat(decoded.secUsrFiller()).isEqualTo(spaces(23));
+                assertThat(decoded).isEqualTo(built);
+
+                // The key is SEC-USR-ID and nothing else, at KEYS(8,0).
+                assertThat(decoded.key()).isEqualTo(pad(user.id(), 8)).hasSize(8);
+
+                // Re-encoding is idempotent, so a read-then-rewrite cannot drift.
+                assertThat(SecUserRecord.encode(decoded, ASCII)).isEqualTo(encoded);
+            }
+        }
+
+        @Test
+        @DisplayName("the 57-character JCL line right-pads to the 80-byte record, filler and all")
+        void theFiftySevenCharacterJclLineRightPadsToTheEightyByteRecord() {
+            // Every in-stream line in app/jcl/DUSRSECJ.jcl:L35-L44 is 57 characters, because the data
+            // stops after SEC-USR-TYPE and omits SEC-USR-FILLER PIC X(23). 57 + 23 = 80. IEBGENER pads
+            // to the LRECL=80 of :L48; anything reading these lines has to do the same, and a test that
+            // fed a 57-byte image straight in would be asserting against a record that never existed.
+            for (SeedUser user : jclSeedUsers()) {
+                String line = jclLine(user);
+                assertThat(line)
+                        .as("%s is a 57-character in-stream line", user.id())
+                        .hasSize(57);
+                assertThat(57 + 23)
+                        .as("the omitted SEC-USR-FILLER X(23) is exactly what closes 57 to 80")
+                        .isEqualTo(EIGHTY);
+
+                String padded = pad(line, EIGHTY);
+                assertThat(padded).hasSize(EIGHTY);
+
+                SecUserRecord decoded = SecUserRecord.decode(padded.getBytes(ASCII), ASCII);
+                assertThat(decoded.secUsrId()).isEqualTo(pad(user.id(), 8));
+                assertThat(decoded.secUsrFname()).isEqualTo(pad(user.fname(), 20));
+                assertThat(decoded.secUsrLname()).isEqualTo(pad(user.lname(), 20));
+                assertThat(decoded.secUsrPwd()).isEqualTo(pad(user.pwd(), 8));
+                assertThat(decoded.secUsrType()).isEqualTo(user.type());
+                assertThat(decoded.secUsrFiller())
+                        .as("the padding lands in SEC-USR-FILLER and nowhere else")
+                        .isEqualTo(spaces(23));
+
+                // The padded line is byte-identical to the record the repository would store, which is
+                // what makes the transcription usable as seed data rather than merely similar to it.
+                assertThat(padded).isEqualTo(row(user.id(), user.fname(), user.lname(), user.pwd(),
+                        user.type()));
+            }
+        }
+
+        @Test
+        @DisplayName("a padded 57-byte line reads back through the repository as the record it encodes")
+        void aPaddedJclLineIsReadableThroughTheRepository() {
+            // End to end: transcribe the line, pad it, store it, and read it by key. USER0005 is the
+            // useful case because LEE and TING are the shortest values in the file, so almost all of
+            // both name fields is padding and a mis-sized span would be obvious.
+            SeedUser lee = jclSeedUsers().get(9);
+            assertThat(lee.id()).isEqualTo("USER0005");
+
+            String stored = pad(jclLine(lee), EIGHTY);
+            ReadResult result = repository(seeded(List.of(stored))).read("USER0005");
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(result.status()).isEqualTo(FileStatus.OK);
+            assertThat(result.outcome()).isEqualTo(Outcome.OK);
+            SecUserRecord read = result.requireRecord();
+            assertThat(read.secUsrId()).isEqualTo("USER0005");
+            assertThat(read.secUsrFname()).isEqualTo(pad("LEE", 20));
+            assertThat(read.secUsrLname()).isEqualTo(pad("TING", 20));
+            assertThat(read.secUsrPwd()).isEqualTo("PASSWORD");
+            assertThat(read.secUsrType()).isEqualTo("U");
+            assertThat(read.secUsrFiller()).isEqualTo(spaces(23));
+            assertThat(SecUserRecord.encode(read, ASCII)).hasSize(EIGHTY);
+        }
+
+        @Test
+        @DisplayName("a short value pads on the right; an over-long one truncates on the right")
+        void aShortValuePadsRightAndAnOverLongValueTruncatesRight() {
+            // COBOL moves an alphanumeric sending field into a PIC X receiver left-justified: short
+            // pads with spaces on the right, long loses characters from the right. Java's plain
+            // assignment does neither, so the direction is chosen explicitly - and asserted, because
+            // getting it backwards for a numeric field would be a silent value change.
+            SecUserRecord shortest = record("USER0005", "LEE", "TING", "PASSWORD", "U");
+            assertThat(shortest.secUsrLname())
+                    .as("TING occupies SEC-USR-LNAME right-space-padded to 20")
+                    .isEqualTo("TING" + spaces(16))
+                    .hasSize(20)
+                    .startsWith("TING");
+            assertThat(shortest.secUsrFname()).isEqualTo("LEE" + spaces(17)).hasSize(20);
+
+            // LACHAPELLE is the longest last name in the file at 10 characters and still fits in 20,
+            // so the padding rule is exercised by real data and not only by a contrived value.
+            SecUserRecord longest = record("ADMIN005", "GRANVILLE", "LACHAPELLE", "PASSWORD", "A");
+            assertThat(longest.secUsrLname()).isEqualTo("LACHAPELLE" + spaces(10)).hasSize(20);
+            assertThat(longest.secUsrFname()).isEqualTo("GRANVILLE" + spaces(11)).hasSize(20);
+
+            // PASSWORD is 8 characters and SEC-USR-PWD is PIC X(08), so it fills the field exactly:
+            // no padding, no truncation, and no trailing space to be trimmed by accident.
+            assertThat(longest.secUsrPwd()).isEqualTo("PASSWORD").hasSize(8).doesNotContain(" ");
+
+            // Over-long values lose their tail, never their head.
+            SecUserRecord truncated = record("ADMIN0019", "A".repeat(21), "B".repeat(25), "PASSWORD1",
+                    "AU");
+            assertThat(truncated.secUsrId())
+                    .as("a 9-character id truncates on the right to PIC X(08)")
+                    .isEqualTo("ADMIN001").hasSize(8);
+            assertThat(truncated.secUsrFname()).isEqualTo("A".repeat(20)).hasSize(20);
+            assertThat(truncated.secUsrLname()).isEqualTo("B".repeat(20)).hasSize(20);
+            assertThat(truncated.secUsrPwd()).isEqualTo("PASSWORD").hasSize(8);
+            assertThat(truncated.secUsrType())
+                    .as("PIC X(01) keeps the first character, not the last")
+                    .isEqualTo("A").hasSize(1);
+            assertThat(SecUserRecord.encode(truncated, ASCII)).hasSize(EIGHTY);
+        }
+
+        @Test
+        @DisplayName("RECORDFORMAT(V) in the CSD and RECFM=FB in the JCL: the copybook settles it at 80")
+        void theRecordFormatDisagreementIsSettledByTheCopybook() {
+            // app/csd/CARDDEMO.CSD:L93 declares RECORDFORMAT(V) - variable - for FILE(USRSEC), while
+            // app/jcl/DUSRSECJ.jcl:L48 declares RECFM=FB,LRECL=80 for the sequential form of the same
+            // data. The two disagree in the source, and this migration does not reconcile them
+            // silently: it records the disagreement and applies one rule, that record length is
+            // copybook-fixed at 80 regardless. Every EXEC CICS call in all five programs passes
+            // LENGTH(LENGTH OF SEC-USER-DATA), which is that fixed 80, so nothing observable depends
+            // on the V. Modelling a variable-length record would be a design change, not a migration.
+            //
+            // The consequence is asserted rather than merely described: a shorter image and a longer
+            // one are both refused, so no variable length is silently tolerated on either side of 80.
+            assertThat(repository(seeded(allSeedRows())).recordLength())
+                    .as("copybook-fixed at 80 despite RECORDFORMAT(V) at CARDDEMO.CSD:L93")
+                    .isEqualTo(EIGHTY);
+
+            String full = row("ADMIN001", "MARGARET", "GOLD", "PASSWORD", "A");
+            ReadResult tooShort = repository(seeded(List.of(full.substring(0, 79)), 79))
+                    .read("ADMIN001");
+            ReadResult tooLong = repository(seeded(List.of(full + " "), 81)).read("ADMIN001");
+
+            assertThat(tooShort.isOther())
+                    .as("a 79-byte image is a length error, not a shorter valid record")
+                    .isTrue();
+            assertThat(tooShort.cicsResp()).hasValue(FileStatus.LENGERR);
+            assertThat(tooLong.isOther())
+                    .as("an 81-byte image is a length error, not a longer valid record")
+                    .isTrue();
+            assertThat(tooLong.cicsResp()).hasValue(FileStatus.LENGERR);
+        }
+    }
+
     @Nested
     @DisplayName("READ - app/cbl/COSGN00C.cbl:L211-L257, the raw-RESP 0 / 13 / OTHER split")
     class Read {
@@ -431,6 +939,61 @@ class SecUserRepositoryTest {
             assertThat(notFound.status()).isEqualTo(FileStatus.NOT_FOUND);
             assertThat(notFound.cicsResp()).hasValue(FileStatus.NOTFND);
             assertThatIllegalStateException().isThrownBy(notFound::requireRecord);
+        }
+
+        @Test
+        @DisplayName("the raw numeric RESP and the DFHRESP name are one outcome, not two dialects")
+        void theNumericRespLiteralsAndTheDfhrespNamesUnify() {
+            // The five programs spell the same conditions two different ways, and this is the only place
+            // in the estate where that happens:
+            //
+            //   COSGN00C:L221-L252   EVALUATE WS-RESP-CD ... WHEN 0 ... WHEN 13 ... WHEN OTHER
+            //   COUSR02C:L334-L352   EVALUATE WS-RESP-CD ... WHEN DFHRESP(NORMAL) / DFHRESP(NOTFND)
+            //   COUSR03C:L280-L299   the same, in DFHRESP form
+            //
+            // DFHRESP(NORMAL) *is* 0 and DFHRESP(NOTFND) *is* 13 - the names are the numbers - so the
+            // two spellings must arrive as one outcome. Unifying them is exactly what FileStatus is for,
+            // and it is asserted rather than assumed because the alternative failure is quiet: a
+            // repository that mapped the numeric form and the named form to different statuses would
+            // still pass every single-path test while making the sign-on screen and the delete screen
+            // disagree about what "not found" means.
+            assertThat(FileStatus.NORMAL)
+                    .as("the WHEN 0 of COSGN00C:L222 is DFHRESP(NORMAL)")
+                    .isZero();
+            assertThat(FileStatus.NOTFND)
+                    .as("the WHEN 13 of COSGN00C:L247 is DFHRESP(NOTFND)")
+                    .isEqualTo(13);
+            assertThat(FileStatus.outcomeOfCicsResp(0)).isEqualTo(Outcome.OK);
+            assertThat(FileStatus.outcomeOfCicsResp(13)).isEqualTo(Outcome.NOT_FOUND);
+            assertThat(FileStatus.outcomeOfStatus(FileStatus.OK)).isEqualTo(Outcome.OK);
+            assertThat(FileStatus.outcomeOfStatus(FileStatus.NOT_FOUND)).isEqualTo(Outcome.NOT_FOUND);
+
+            // Now the same two keys down both access paths: read() is the numeric-RESP caller's path
+            // and readForUpdate() is the DFHRESP callers' path. Same status, same classification, same
+            // response value, for the present key and for the absent one alike.
+            JdbcTemplate template = seeded(seedRows());
+            SecUserRepository repository = repository(template);
+
+            ReadResult plainFound = repository.read("ADMIN001");
+            ReadResult plainAbsent = repository.read("NOSUCH01");
+            transactionOver(template).executeWithoutResult(unitOfWork -> {
+                ReadResult lockingFound = repository.readForUpdate("ADMIN001");
+                ReadResult lockingAbsent = repository.readForUpdate("NOSUCH01");
+
+                assertThat(lockingFound.status()).isEqualTo(plainFound.status());
+                assertThat(lockingFound.outcome()).isEqualTo(plainFound.outcome());
+                assertThat(lockingFound.cicsResp()).isEqualTo(plainFound.cicsResp());
+                assertThat(lockingAbsent.status()).isEqualTo(plainAbsent.status());
+                assertThat(lockingAbsent.outcome()).isEqualTo(plainAbsent.outcome());
+                assertThat(lockingAbsent.cicsResp()).isEqualTo(plainAbsent.cicsResp());
+
+                // Identical outcomes, and still two different commands: only the locking read holds
+                // anything, which is the one distinction that must survive the unification.
+                assertThat(lockingFound.hold()).isPresent();
+                assertThat(plainFound.hold())
+                        .as("COSGN00C:L211-L219 has no UPDATE option, so it holds nothing")
+                        .isEmpty();
+            });
         }
 
         @Test
@@ -814,6 +1377,183 @@ class SecUserRepositoryTest {
         void endBrowseReturnsNothing() throws NoSuchMethodException {
             assertThat(BrowseCursor.class.getMethod("endBrowse").getReturnType())
                     .isEqualTo(void.class);
+        }
+    }
+
+    /**
+     * Browse ordering over the whole seeded file - the ten records of
+     * {@code app/jcl/DUSRSECJ.jcl:L35-L44}.
+     *
+     * <p>The user-list screen pages through this file seven ways: forward from the top, forward from a
+     * key, backward from the top of the current page, and so on. Every one of those depends on the
+     * browse returning records in key order and reporting the end of the file rather than wrapping, so
+     * the order is asserted over the full file rather than over a two-record sample where an ascending
+     * walk and a descending one are hard to tell apart.
+     */
+    @Nested
+    @DisplayName("Browse ordering over all ten seeded users - COUSR00C's paging contract")
+    class SeedOrdering {
+
+        @Test
+        @DisplayName("READNEXT from LOW-VALUES walks ADMIN001 through USER0005, then reports ENDFILE")
+        void aForwardBrowseWalksTheWholeFileInAscendingKeyOrder() {
+            List<String> seen = new ArrayList<>();
+            ReadResult end;
+            try (BrowseCursor cursor = repository(seeded(allSeedRows()))
+                    .startBrowse(SecUserRepository.LOW_VALUES_KEY)) {
+                ReadResult next = cursor.readNext();
+                while (next.isFound()) {
+                    seen.add(next.requireRecord().secUsrId());
+                    next = cursor.readNext();
+                }
+                end = next;
+                assertThat(cursor.returned()).isEqualTo(10);
+                assertThat(cursor.positionKey()).hasValue("USER0005");
+            }
+
+            assertThat(seen)
+                    .as("ascending key order, exactly as DUSRSECJ.jcl:L35-L44 lists them")
+                    .containsExactly("ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004", "ADMIN005",
+                            "USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
+
+            // Past the last record: DFHRESP(ENDFILE) at COUSR00C:L634, which is what sets the
+            // 88 USER-SEC-EOF condition at :L44 and paints "You have reached the bottom of the page".
+            // Emphatically not NOTFND, which paints something else.
+            assertThat(end.isEndOfFile()).isTrue();
+            assertThat(end.isNotFound()).isFalse();
+            assertThat(end.isFound()).isFalse();
+            assertThat(end.status()).isEqualTo(FileStatus.END_OF_FILE);
+            assertThat(end.outcome()).isEqualTo(Outcome.END_OF_FILE);
+            assertThat(end.cicsResp()).hasValue(FileStatus.ENDFILE);
+            assertThat(end.record()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("READPREV from the last key walks USER0005 back to ADMIN001, then reports ENDFILE")
+        void aBackwardBrowseWalksTheWholeFileInDescendingKeyOrder() {
+            List<String> seen = new ArrayList<>();
+            ReadResult beforeFirst;
+            // Anchored at the last key rather than at HIGH-VALUES: positioning is at-or-after the
+            // anchor, so HIGH-VALUES finds nothing to position on at all - which STARTBR reports as
+            // NOTFND, and which is asserted separately. USER0005 is the honest way to start at the end.
+            try (BrowseCursor cursor = repository(seeded(allSeedRows())).startBrowse("USER0005")) {
+                ReadResult previous = cursor.readPrevious();
+                while (previous.isFound()) {
+                    seen.add(previous.requireRecord().secUsrId());
+                    previous = cursor.readPrevious();
+                }
+                beforeFirst = previous;
+                assertThat(cursor.returned()).isEqualTo(10);
+            }
+
+            assertThat(seen)
+                    .as("descending key order - the exact reverse of the forward walk")
+                    .containsExactly("USER0005", "USER0004", "USER0003", "USER0002", "USER0001",
+                            "ADMIN005", "ADMIN004", "ADMIN003", "ADMIN002", "ADMIN001");
+
+            // Stepping before the first record is the ENDFILE arm at COUSR00C:L668, the backward
+            // counterpart of :L634. "You are at the top of the page..." rather than a not-found.
+            assertThat(beforeFirst.isEndOfFile()).isTrue();
+            assertThat(beforeFirst.isNotFound()).isFalse();
+            assertThat(beforeFirst.status()).isEqualTo(FileStatus.END_OF_FILE);
+            assertThat(beforeFirst.cicsResp()).hasValue(FileStatus.ENDFILE);
+        }
+
+        @Test
+        @DisplayName("a browse can be re-opened after ENDBR, because COUSR00C opens one per paragraph")
+        void aBrowseCanBeReopenedAfterEndBrowse() {
+            // COUSR00C performs STARTBR-USER-SEC-FILE afresh in its forward paragraph (:L284) and again
+            // in its backward paragraph (:L338), each time after the previous browse was ended at :L325
+            // or :L374. So ending a browse must leave the file browsable, not consumed: a repository
+            // that could only be browsed once would break the second page of the user list.
+            SecUserRepository repository = repository(seeded(allSeedRows()));
+
+            BrowseCursor first = repository.startBrowse(SecUserRepository.LOW_VALUES_KEY);
+            assertThat(first.readNext().requireRecord().secUsrId()).isEqualTo("ADMIN001");
+            assertThat(first.readNext().requireRecord().secUsrId()).isEqualTo("ADMIN002");
+            first.endBrowse();
+            assertThat(first.isEnded()).isTrue();
+
+            // A second browse of the same repository starts from the beginning again, uninfluenced by
+            // where the first one had reached. That is only true because the position lives on the
+            // cursor and not on the repository.
+            try (BrowseCursor second = repository.startBrowse(SecUserRepository.LOW_VALUES_KEY)) {
+                assertThat(second.isOpen()).isTrue();
+                assertThat(second.isEnded()).isFalse();
+                assertThat(second.readNext().requireRecord().secUsrId())
+                        .as("the re-opened browse begins at the first record, not where the first ended")
+                        .isEqualTo("ADMIN001");
+                assertThat(second.returned()).isEqualTo(1);
+            }
+
+            // A third browse, this time anchored mid-file, proves the anchor is honoured after a
+            // previous browse rather than being overridden by leftover state.
+            try (BrowseCursor third = repository.startBrowse("USER0003")) {
+                assertThat(third.readNext().requireRecord().secUsrId()).isEqualTo("USER0003");
+                assertThat(third.readNext().requireRecord().secUsrId()).isEqualTo("USER0004");
+            }
+
+            // And the first cursor is still ended - re-opening did not revive it.
+            assertThat(first.isEnded()).isTrue();
+            assertThat(first.readNext().cicsResp()).hasValue(FileStatus.INVREQ);
+        }
+
+        @Test
+        @DisplayName("five type A users sort before five type U, which is what gives COSGN00C two routes")
+        void theFiveAdministratorsSortBeforeTheFiveRegularUsers() {
+            // app/cbl/COSGN00C.cbl:L230-L240 routes on SEC-USR-TYPE: XCTL COADM01C at :L232 for an
+            // administrator and COMEN01C at :L237 for everyone else. Both branches need seed data, and
+            // this file supplies exactly five of each. The read is by key, so the type arrives with the
+            // record rather than being inferred from the key's spelling.
+            SecUserRepository repository = repository(seeded(allSeedRows()));
+            List<String> admins = new ArrayList<>();
+            List<String> users = new ArrayList<>();
+
+            for (SeedUser seed : jclSeedUsers()) {
+                ReadResult result = repository.read(seed.id());
+                assertThat(result.isFound())
+                        .as("%s is present in the seeded file", seed.id())
+                        .isTrue();
+                SecUserRecord read = result.requireRecord();
+                assertThat(read.secUsrType())
+                        .as("%s carries the type DUSRSECJ.jcl declares", seed.id())
+                        .isEqualTo(seed.type());
+                if ("A".equals(read.secUsrType())) {
+                    admins.add(read.secUsrId());
+                } else {
+                    users.add(read.secUsrId());
+                }
+            }
+
+            assertThat(admins).containsExactly("ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004",
+                    "ADMIN005");
+            assertThat(users).containsExactly("USER0001", "USER0002", "USER0003", "USER0004",
+                    "USER0005");
+            assertThat(admins).hasSize(5);
+            assertThat(users).hasSize(5);
+            assertThat(admins.getLast())
+                    .as("every ADMIN key sorts before every USER key, so the browse order is not "
+                            + "accidentally the same in both directions")
+                    .isLessThan(users.getFirst());
+        }
+
+        @Test
+        @DisplayName("every seeded password is the plaintext PIC X(08) the sign-on read hands over")
+        void everySeededPasswordArrivesAsThePlaintextEightCharacterField() {
+            // COSGN00C:L223 compares SEC-USR-PWD to WS-USER-PWD directly, with no hashing and no
+            // normalisation, and the migration preserves that. The repository's job is to hand the
+            // eight bytes over unchanged; the comparison itself belongs to the sign-on service. This
+            // asserts the hand-over, which is the part that is this class's responsibility.
+            SecUserRepository repository = repository(seeded(allSeedRows()));
+
+            for (SeedUser seed : jclSeedUsers()) {
+                SecUserRecord read = repository.read(seed.id()).requireRecord();
+                assertThat(read.secUsrPwd())
+                        .as("%s SEC-USR-PWD arrives exactly as stored, untrimmed and unhashed",
+                                seed.id())
+                        .isEqualTo(seed.pwd())
+                        .hasSize(SecUserRecord.SEC_USR_PWD_LENGTH);
+            }
         }
     }
 
@@ -1423,6 +2163,434 @@ class SecUserRepositoryTest {
     }
 
     /**
+     * The constraints the migration is held to, asserted rather than trusted to review.
+     *
+     * <p>Each of these is a promise made about the whole module that this dataset could break on its own:
+     * no schema is created or described, no dataset name is compiled into Java, no binary floating point
+     * touches a record field, no state is shared, and the access surface stays the closed set of nine.
+     * They are cheap to assert and expensive to notice by eye, which is exactly the trade a test should
+     * take. Every scan is paired with a proof that it would actually catch a planted violation, because a
+     * guard that cannot fail is worse than no guard - it reads like assurance and provides none.
+     */
+    @Nested
+    @DisplayName("Migration constraints - no schema, no dataset literal, no float, no shared state")
+    class MigrationConstraints {
+
+        /** The configuration that owns every dataset name in the estate. */
+        private static final String APPLICATION_YAML = "app/java/src/main/resources/application.yml";
+
+        /** The repository under test, as a source file, for the scans that read code rather than run it. */
+        private static final String REPOSITORY_SOURCE =
+                "app/java/src/main/java/com/vsergeychik/carddemo/user/SecUserRepository.java";
+
+        /** This test, as a source file: the guards apply to the test as much as to the code. */
+        private static final String THIS_TEST_SOURCE =
+                "app/java/src/test/java/com/vsergeychik/carddemo/user/SecUserRepositoryTest.java";
+
+        /**
+         * The high-order qualifiers of every dataset name in the estate; none may appear in Java.
+         *
+         * <p><strong>Assembled from fragments rather than written as one literal, deliberately.</strong>
+         * The scan below is applied to this very file as well as to the repository, because a test that
+         * hard-coded a production dataset name would be just as much a violation as production code doing
+         * it - and would be the more likely of the two. A guard spelled as a single literal would match
+         * its own definition and could therefore never pass, which is the sort of thing that gets a guard
+         * weakened or deleted. Composing it keeps this file genuinely free of the name, so the guard
+         * covers itself honestly instead of being excused from itself.
+         */
+        private static final String MAINFRAME_DATASET_PREFIX = "AWS" + '.' + "M2" + '.' + "CARDDEMO" + '.';
+
+        /**
+         * Any data-definition statement. A repository reaching an existing dataset never emits one.
+         *
+         * <p>{@code CREATE}, {@code ALTER}, {@code DROP}, {@code TRUNCATE} and {@code RENAME} against a
+         * table, index, view, sequence or schema - the whole vocabulary a migration would need.
+         */
+        private static final Pattern DDL_STATEMENT = Pattern.compile(
+                "(?i)\\b(create|alter|drop|truncate|rename)\\s+(table|index|view|sequence|schema)\\b");
+
+        @Test
+        @DisplayName("no persistence annotation appears on the repository, its nested types or the record")
+        void noPersistenceAnnotationAppearsOnTheAccessSurface() {
+            // An @Entity or @Table would declare a relational model for a KSDS that has none, and an @Id
+            // or @Column would declare a column layout for a record whose layout is a copybook. The
+            // migration reaches the existing dataset over JDBC with no schema change at all, so the whole
+            // mapping vocabulary has to be absent - not merely unused.
+            List<String> offenders = new ArrayList<>();
+            for (Class<?> type : securityAccessTypes()) {
+                for (Annotation annotation : allAnnotationsOf(type)) {
+                    String packageName = annotation.annotationType().getPackageName();
+                    if (packageName.startsWith("jakarta.persistence")
+                            || packageName.startsWith("javax.persistence")) {
+                        offenders.add(type.getSimpleName() + " carries @"
+                                + annotation.annotationType().getSimpleName());
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("an object-relational mapping would impose an entity and table model that the "
+                            + "USRSEC KSDS does not have")
+                    .isEmpty();
+
+            // The repository is a plain @Repository and implements no Spring Data interface, so no CRUD
+            // surface is generated behind its back either.
+            assertThat(SecUserRepository.class.getInterfaces())
+                    .as("no Spring Data repository interface, which would generate methods no COBOL "
+                            + "program calls")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the annotation scan would really notice a mapping annotation")
+        void theAnnotationScanIsNotVacuous() {
+            // The scan above passes. This proves it passes because there is nothing to find, rather than
+            // because it looks in the wrong place: a type that genuinely carries an annotation is scanned
+            // by the same helper and the annotation is found.
+            List<Annotation> onAnAnnotatedType = allAnnotationsOf(SecUserRepository.class);
+
+            assertThat(onAnAnnotatedType)
+                    .as("SecUserRepository does carry @Repository, so the scan reaches type annotations")
+                    .anyMatch(annotation -> annotation.annotationType() == Repository.class);
+            assertThat(allAnnotationsOf(AnnotatedProbe.class))
+                    .as("the scan reaches field, constructor, method and parameter annotations too")
+                    .hasSizeGreaterThanOrEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("no version column, no optimistic-lock field, and no generated identifier")
+        void noVersionOrGeneratedIdentifierFieldExists() {
+            // COUSR02C's update path is a READ ... UPDATE that holds the record until the unit of work
+            // ends - CARDDEMO.CSD:L93 UPDATEMODEL(LOCKING) - so concurrency is handled by the lock the
+            // COBOL takes. A version column would be a schema change and a different concurrency model,
+            // and a generated identifier would take the key away from SEC-USR-ID.
+            List<String> offenders = new ArrayList<>();
+            for (Class<?> type : securityAccessTypes()) {
+                for (Field field : type.getDeclaredFields()) {
+                    String name = field.getName().toLowerCase(Locale.ROOT);
+                    if (name.contains("version") || name.contains("optimistic")
+                            || name.contains("generatedid") || name.contains("sequence")) {
+                        offenders.add(type.getSimpleName() + "." + field.getName());
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("the record is the copybook's six fields and nothing else; the lock is the "
+                            + "READ ... UPDATE the COBOL already takes")
+                    .isEmpty();
+
+            // The record's components are exactly the copybook's six, in the copybook's order.
+            assertThat(SecUserRecord.class.getRecordComponents())
+                    .extracting(RecordComponent::getName)
+                    .containsExactly("secUsrId", "secUsrFname", "secUsrLname", "secUsrPwd",
+                            "secUsrType", "secUsrFiller");
+        }
+
+        @Test
+        @DisplayName("the repository source emits no data-definition statement of any kind")
+        void theRepositorySourceEmitsNoDataDefinitionStatement() {
+            // The dataset already exists. A CREATE TABLE, an ALTER, a DROP or an index definition would
+            // all be schema changes, which this migration forbids outright.
+            String code = codeOnly(readSource(repositoryFile(REPOSITORY_SOURCE)));
+
+            assertThat(DDL_STATEMENT.matcher(code).find())
+                    .as("no DDL in SecUserRepository: the USRSEC KSDS is reached, never defined")
+                    .isFalse();
+
+            // And the scan is not vacuous - it does match a statement that is really there.
+            assertThat(DDL_STATEMENT.matcher("CREATE TABLE \"X\" (RECORD_IMAGE VARCHAR(80))").find())
+                    .as("the DDL pattern matches a real data-definition statement")
+                    .isTrue();
+            assertThat(DDL_STATEMENT.matcher("DROP INDEX IX_ONE").find()).isTrue();
+            assertThat(DDL_STATEMENT.matcher("SELECT RECORD_IMAGE FROM \"X\"").find())
+                    .as("and does not match ordinary data manipulation")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("no mainframe dataset name is compiled into the repository or into this test")
+        void noMainframeDatasetNameIsCompiledIntoEitherSource() {
+            // The dataset is reached through the carddemo.datasets.USRSEC binding, whose dsname is
+            // environment-overridable, so no name belongs in Java. Comments are stripped first because
+            // both files legitimately discuss the estate's dataset names in their documentation - which
+            // is where such a discussion belongs, and stripping is what keeps this guard switched on.
+            String repositoryCode = codeOnly(readSource(repositoryFile(REPOSITORY_SOURCE)));
+            String testCode = codeOnly(readSource(repositoryFile(THIS_TEST_SOURCE)));
+
+            assertThat(repositoryCode)
+                    .as("SecUserRepository resolves its dataset name from configuration")
+                    .doesNotContain(MAINFRAME_DATASET_PREFIX);
+            assertThat(testCode)
+                    .as("this test names a test-owned relation, never the production dataset")
+                    .doesNotContain(MAINFRAME_DATASET_PREFIX);
+
+            // The name the repository actually uses is whatever the binding supplied - here the test's
+            // own - which is the positive half of the same statement.
+            assertThat(repository(seeded(allSeedRows())).datasetName())
+                    .isEqualTo(TEST_DSNAME)
+                    .doesNotContain(MAINFRAME_DATASET_PREFIX);
+
+            // The production name lives in configuration, keyed by the CICS file name, and that key is
+            // the one the repository resolves.
+            assertThat(SecUserRepository.CICS_FILE_NAME).isEqualTo("USRSEC");
+            String yaml = readSource(repositoryFile(APPLICATION_YAML));
+            assertThat(yaml)
+                    .as("carddemo.datasets.USRSEC is where the dataset name is declared")
+                    .contains("USRSEC:")
+                    .contains(MAINFRAME_DATASET_PREFIX + "USRSEC.VSAM.KSDS");
+        }
+
+        @Test
+        @DisplayName("the dataset-name scan strips comments but never string literals")
+        void theDatasetNameScanIsNotVacuous() {
+            // Stripping is what makes the guard above tolerable to documentation, so it has to be shown
+            // that it strips comments and nothing else. A name inside a string literal survives, which is
+            // precisely the case the guard exists to catch.
+            String inProse = "/** Reaches the security KSDS. */\n"
+                    + "// see application.yml\n"
+                    + "String key = \"USRSEC\";\n";
+            String inLiteral = "String dsname = \"" + MAINFRAME_DATASET_PREFIX + "USRSEC.VSAM.KSDS\";\n";
+
+            assertThat(codeOnly(inProse))
+                    .as("documentation is stripped")
+                    .doesNotContain("Reaches the security KSDS")
+                    .doesNotContain("see application.yml");
+            assertThat(codeOnly(inProse))
+                    .as("code outside the comments survives")
+                    .contains("\"USRSEC\"");
+            assertThat(codeOnly(inLiteral))
+                    .as("a dataset name compiled into a literal survives the stripping and is caught")
+                    .contains(MAINFRAME_DATASET_PREFIX);
+            assertThat(codeOnly("String slashes = \"http://not-a-comment\";"))
+                    .as("a // inside a literal is not mistaken for a comment")
+                    .contains("http://not-a-comment");
+        }
+
+        @Test
+        @DisplayName("no double or float appears anywhere on the security access surface")
+        void noBinaryFloatingPointAppearsOnTheAccessSurface() {
+            // CSUSR01Y declares six PIC X fields and not one numeric, so this dataset has no arithmetic
+            // at all - which makes the constraint trivial to satisfy and worth pinning precisely because
+            // it is trivial. A double introduced here later would be introduced silently.
+            List<String> offenders = new ArrayList<>();
+            for (Class<?> type : securityAccessTypes()) {
+                for (Field field : type.getDeclaredFields()) {
+                    if (isBinaryFloatingPoint(field.getType())) {
+                        offenders.add(type.getSimpleName() + "." + field.getName() + " is "
+                                + field.getType().getSimpleName());
+                    }
+                }
+                for (Method method : type.getDeclaredMethods()) {
+                    if (isBinaryFloatingPoint(method.getReturnType())) {
+                        offenders.add(type.getSimpleName() + "." + method.getName() + " returns "
+                                + method.getReturnType().getSimpleName());
+                    }
+                    for (Class<?> parameter : method.getParameterTypes()) {
+                        if (isBinaryFloatingPoint(parameter)) {
+                            offenders.add(type.getSimpleName() + "." + method.getName()
+                                    + " takes " + parameter.getSimpleName());
+                        }
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("binary floating point cannot represent a decimal fraction exactly, so it never "
+                            + "carries a value derived from a COBOL PICTURE")
+                    .isEmpty();
+
+            // Not vacuous: the predicate does recognise the types it is looking for.
+            assertThat(isBinaryFloatingPoint(double.class)).isTrue();
+            assertThat(isBinaryFloatingPoint(Float.class)).isTrue();
+            assertThat(isBinaryFloatingPoint(String.class)).isFalse();
+        }
+
+        @Test
+        @DisplayName("collaborators are constructor-injected and no field is static and mutable")
+        void collaboratorsAreConstructorInjectedAndNoStaticMutableFieldExists() {
+            // One public constructor taking every collaborator, no setter and no injected field: an
+            // instance cannot exist half-wired, and a test can build one without a container - which is
+            // why this whole class needs no Spring context.
+            assertThat(SecUserRepository.class.getDeclaredConstructors())
+                    .as("exactly one way to build a repository")
+                    .hasSize(1);
+            assertThat(SecUserRepository.class.getDeclaredConstructors()[0].getParameterTypes())
+                    .containsExactly(JdbcTemplate.class, DatasetBindings.class, Charset.class,
+                            RecordImageForm.class);
+
+            List<String> injectedFields = new ArrayList<>();
+            List<String> staticMutableFields = new ArrayList<>();
+            List<String> nonFinalInstanceFields = new ArrayList<>();
+            for (Field field : SecUserRepository.class.getDeclaredFields()) {
+                for (Annotation annotation : field.getAnnotations()) {
+                    String name = annotation.annotationType().getName();
+                    if (name.endsWith(".Autowired") || name.endsWith(".Inject")
+                            || name.endsWith(".Resource") || name.endsWith(".Value")) {
+                        injectedFields.add(field.getName());
+                    }
+                }
+                boolean isStatic = Modifier.isStatic(field.getModifiers());
+                boolean isFinal = Modifier.isFinal(field.getModifiers());
+                if (isStatic && !isFinal) {
+                    staticMutableFields.add(field.getName());
+                }
+                if (!isStatic && !isFinal) {
+                    nonFinalInstanceFields.add(field.getName());
+                }
+            }
+
+            assertThat(injectedFields)
+                    .as("no field injection: every collaborator arrives through the constructor")
+                    .isEmpty();
+            assertThat(staticMutableFields)
+                    .as("a mutable static field would be shared by every caller of this singleton")
+                    .isEmpty();
+            assertThat(nonFinalInstanceFields)
+                    .as("browse position and the held record belong to the caller's handle, not to the "
+                            + "repository, so no instance field varies")
+                    .isEmpty();
+
+            // This test class holds no shared mutable test state either. Every static member of it is
+            // final, and every one whose *type* is mutable is accounted for by name rather than waved
+            // through: the sole entry is the counter that hands out distinct in-memory database names.
+            // That counter is the opposite of shared state - it is what guarantees each test gets its
+            // own relation - and it carries no record, no key and no outcome, so nothing a test asserts
+            // on can travel through it. Anything else appearing here would need the same justification,
+            // which is why it is enumerated instead of exempted by a blanket rule.
+            List<String> staticsOfMutableType = new ArrayList<>();
+            for (Field field : SecUserRepositoryTest.class.getDeclaredFields()) {
+                if (!Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                assertThat(Modifier.isFinal(field.getModifiers()))
+                        .as("SecUserRepositoryTest.%s is static, so it must be final", field.getName())
+                        .isTrue();
+                Class<?> type = field.getType();
+                boolean immutable = type.isPrimitive() || type == String.class || type == Charset.class
+                        || type.isEnum();
+                if (!immutable) {
+                    staticsOfMutableType.add(field.getName());
+                }
+            }
+
+            assertThat(staticsOfMutableType)
+                    .as("the only static of a mutable type is the database-name counter, which isolates "
+                            + "tests rather than sharing anything between them")
+                    .containsExactly("DATABASE_SEQUENCE");
+        }
+
+        @Test
+        @DisplayName("the access surface is the closed set of nine paths, with nothing invented")
+        void theAccessSurfaceIsTheClosedSetOfNinePaths() {
+            // CARDDEMO.CSD:L93-L94 grants ADD, BROWSE, DELETE, READ and UPDATE, and the five programs
+            // use exactly nine commands between them. A tenth public data-access method would be surface
+            // no COBOL program exercises and therefore surface nothing can verify against the oracle.
+            Set<String> dataAccess = new TreeSet<>();
+            for (Method method : SecUserRepository.class.getDeclaredMethods()) {
+                if (Modifier.isPublic(method.getModifiers())) {
+                    dataAccess.add(method.getName());
+                }
+            }
+            Set<String> cursorPaths = new TreeSet<>();
+            for (Method method : BrowseCursor.class.getDeclaredMethods()) {
+                if (Modifier.isPublic(method.getModifiers())) {
+                    cursorPaths.add(method.getName());
+                }
+            }
+
+            // The six on the repository: four operations plus the browse opener and the held delete.
+            assertThat(dataAccess)
+                    .contains("read", "readForUpdate", "startBrowse", "add", "rewrite", "deleteHeld");
+            // The three on the cursor, which is where a browse's position lives.
+            assertThat(cursorPaths).contains("readNext", "readPrevious", "endBrowse");
+
+            // Nothing that would imply a schema, a generated query surface, or an operation the COBOL
+            // never performs. deleteById is called out specifically: it is not merely absent, it would
+            // be a *different* operation from COUSR03C:L307-L311, which passes no RIDFLD at all.
+            assertThat(dataAccess).doesNotContain("findAll", "findById", "count", "existsById", "save",
+                    "saveAll", "delete", "deleteById", "deleteAll", "createTable", "migrate",
+                    "flush", "getOne", "findBy");
+            for (String forbidden : List.of("delete", "deleteById", "deleteByKey", "remove")) {
+                assertThat(dataAccess)
+                        .as("%s does not exist; the source deletes the record a read-for-update holds",
+                                forbidden)
+                        .doesNotContain(forbidden);
+            }
+
+            // deleteHeld takes the handle and nothing resembling a key, in both of its forms.
+            assertThat(HeldRecord.class.getDeclaredMethods())
+                    .as("the no-argument delete on the handle is the most literal form of the command")
+                    .anyMatch(method -> "deleteHeld".equals(method.getName())
+                            && method.getParameterCount() == 0);
+
+            // Only the public overload is the access surface. The repository also has a private
+            // deleteHeld(Statements, HeldRecord) that carries the composed statements, which is
+            // implementation and not something a caller can reach - so it is deliberately not held to
+            // the signature rule the public path is held to.
+            List<Method> publicDeletes = new ArrayList<>();
+            for (Method method : SecUserRepository.class.getDeclaredMethods()) {
+                if ("deleteHeld".equals(method.getName()) && Modifier.isPublic(method.getModifiers())) {
+                    publicDeletes.add(method);
+                }
+            }
+            assertThat(publicDeletes)
+                    .as("exactly one public delete, so there is no by-key variant beside it")
+                    .hasSize(1);
+            assertThat(publicDeletes.getFirst().getParameterTypes())
+                    .as("deleteHeld takes a hold, never a key")
+                    .containsExactly(HeldRecord.class);
+        }
+
+        /**
+         * Whether a type is binary floating point, boxed or not.
+         *
+         * @param type the type
+         * @return {@code true} for {@code double}, {@code float} and their wrappers
+         */
+        private static boolean isBinaryFloatingPoint(Class<?> type) {
+            return type == double.class || type == float.class
+                    || type == Double.class || type == Float.class;
+        }
+    }
+
+    /**
+     * A type carrying an annotation at every position the persistence scan inspects.
+     *
+     * <p>Exists only so {@link MigrationConstraints#theAnnotationScanIsNotVacuous()} can prove the scan
+     * reaches fields, constructors, methods and parameters, and not merely the type. It carries
+     * {@link Deprecated}, which is harmless, rather than a persistence annotation - the point is the
+     * reach of the scan, not the kind of annotation found.
+     */
+    @Deprecated
+    private static final class AnnotatedProbe {
+
+        /** An annotated field, so the field sweep has something to find. */
+        @Deprecated
+        private final String annotatedField;
+
+        /**
+         * An annotated constructor with an annotated parameter.
+         *
+         * @param annotatedParameter a parameter carrying an annotation
+         */
+        @Deprecated
+        AnnotatedProbe(@Deprecated String annotatedParameter) {
+            this.annotatedField = annotatedParameter;
+        }
+
+        /**
+         * An annotated method.
+         *
+         * @return the field
+         */
+        @Deprecated
+        String annotatedMethod() {
+            return annotatedField;
+        }
+    }
+
+    /**
      * A hold produced by a throwaway repository, for the invariant that refuses a hold without a record.
      *
      * <p>Obtained the only way one can be - from a successful locking read - because the handle has no
@@ -1464,5 +2632,142 @@ class SecUserRepositoryTest {
         Mockito.when(connection.prepareStatement(Mockito.anyString()))
                 .thenThrow(new SQLException("the relation is not available", "08006"));
         return new JdbcTemplate(dataSource);
+    }
+
+    // =============================================================================================
+    // Helpers for the migration-constraint scans below.
+    // =============================================================================================
+
+    /**
+     * Resolves a checkout-relative path by walking up from the working directory until it exists.
+     *
+     * <p>Surefire runs with the module directory as the working directory, but the paths worth naming in
+     * an assertion are repository-relative - that is how the migration's own documentation cites them. So
+     * the lookup walks up rather than assuming a depth, which keeps it working whether the build is run
+     * from the module or from the repository root.
+     *
+     * @param relativePath the repository-relative path
+     * @return the resolved path
+     * @throws IllegalStateException if the file is not found at or above the working directory
+     */
+    private static Path repositoryFile(String relativePath) {
+        Path candidate = Path.of("").toAbsolutePath();
+        while (candidate != null) {
+            Path resolved = candidate.resolve(relativePath);
+            if (Files.exists(resolved)) {
+                return resolved;
+            }
+            candidate = candidate.getParent();
+        }
+        throw new IllegalStateException("Could not find " + relativePath + " at or above "
+                + Path.of("").toAbsolutePath());
+    }
+
+    /**
+     * Reads a checkout file as text.
+     *
+     * @param file the file
+     * @return its text
+     */
+    private static String readSource(Path file) {
+        try {
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Could not read " + file, unreadable);
+        }
+    }
+
+    /**
+     * A source file's text with every comment removed, so a scan sees code and not prose.
+     *
+     * <p>The stripping is what makes these guards tolerable to documentation. This very file
+     * <em>discusses</em> dataset names and record formats in its Javadoc, which is exactly where such
+     * discussion belongs, and a raw text scan would report that as a violation and would therefore have
+     * to be switched off - which is how a gate stops being a gate. Stripping comments first keeps the
+     * guard pointed at the thing that matters, a name or a statement compiled into the module, and leaves
+     * the documentation free.
+     *
+     * <p>Written as a single left-to-right pass rather than a regular expression because an expression
+     * cannot tell a {@code //} inside a string literal from the start of a comment, and the obvious
+     * block-comment alternation overflows the stack on files this size. String and character literals are
+     * copied through untouched, which is the whole point: a name in a literal is a violation and must
+     * survive the stripping.
+     *
+     * @param source the source text
+     * @return the same text with comments replaced by single spaces and every literal left as written
+     */
+    private static String codeOnly(String source) {
+        StringBuilder code = new StringBuilder(source.length());
+        int index = 0;
+        while (index < source.length()) {
+            char current = source.charAt(index);
+            char next = index + 1 < source.length() ? source.charAt(index + 1) : '\0';
+            if (current == '/' && next == '/') {
+                while (index < source.length() && source.charAt(index) != '\n') {
+                    index++;
+                }
+                code.append(' ');
+            } else if (current == '/' && next == '*') {
+                index += 2;
+                while (index + 1 < source.length()
+                        && !(source.charAt(index) == '*' && source.charAt(index + 1) == '/')) {
+                    index++;
+                }
+                index = Math.min(index + 2, source.length());
+                code.append(' ');
+            } else if (current == '"' || current == '\'') {
+                int end = index + 1;
+                while (end < source.length() && source.charAt(end) != current) {
+                    end += source.charAt(end) == '\\' ? 2 : 1;
+                }
+                end = Math.min(end + 1, source.length());
+                code.append(source, index, end);
+                index = end;
+            } else {
+                code.append(current);
+                index++;
+            }
+        }
+        return code.toString();
+    }
+
+    /**
+     * Every annotation declared anywhere on a type: on the type, its fields, its constructors, its
+     * methods, and their parameters.
+     *
+     * <p>A persistence mapping can be declared at any of those positions, so a scan that looked only at
+     * the type would miss an {@code @Column} on a field or an {@code @Id} on an accessor.
+     *
+     * @param type the type to scan
+     * @return every annotation found
+     */
+    private static List<Annotation> allAnnotationsOf(Class<?> type) {
+        List<Annotation> found = new ArrayList<>(List.of(type.getAnnotations()));
+        for (Field field : type.getDeclaredFields()) {
+            found.addAll(List.of(field.getAnnotations()));
+        }
+        List<Executable> executables = new ArrayList<>();
+        executables.addAll(List.of(type.getDeclaredConstructors()));
+        executables.addAll(List.of(type.getDeclaredMethods()));
+        for (Executable executable : executables) {
+            found.addAll(List.of(executable.getAnnotations()));
+            for (Annotation[] parameter : executable.getParameterAnnotations()) {
+                found.addAll(List.of(parameter));
+            }
+        }
+        return found;
+    }
+
+    /**
+     * The whole access surface of the security file: the repository, its nested types, and the record.
+     *
+     * @return every type a persistence mapping could be smuggled onto
+     */
+    private static List<Class<?>> securityAccessTypes() {
+        List<Class<?>> types = new ArrayList<>();
+        types.add(SecUserRepository.class);
+        types.addAll(List.of(SecUserRepository.class.getDeclaredClasses()));
+        types.add(SecUserRecord.class);
+        return types;
     }
 }

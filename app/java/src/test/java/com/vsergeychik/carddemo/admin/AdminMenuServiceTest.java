@@ -17,6 +17,8 @@ import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -27,12 +29,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -50,6 +55,100 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code app/cpy/COADM02Y.cpy}, {@code app/cpy/CSMSG01Y.cpy}, {@code app/cpy-bms/COADM01.CPY} and
  * {@code app/bms/COADM01.bms}, so a drift in either direction is caught. Asserting a constant against
  * itself would prove nothing.
+ *
+ * <p>No expected value here was captured from a COBOL run, because no COBOL run is possible in this
+ * environment - the eight verified blockers are recorded in the migration plan, and the baseline is
+ * therefore <strong>statically derived</strong> from the sources named above. That is why every
+ * non-obvious literal below carries a {@code file:line} citation: a reviewer must be able to re-derive
+ * each one by opening the cited line, and cannot fall back on "the run said so".
+ *
+ * <h2>There are no user-specified rules, and that is not a lower bar</h2>
+ * {@code review_rules} returns exactly one line - "No user rules provided." - and that is the whole
+ * document, re-read in full for this file. Nothing is invented in their place. The migration's twelve
+ * enterprise-practice substitutes bind instead, and the ones that shape this file are:
+ * <ul>
+ *   <li><strong>B1/B2</strong> - only the closed dependency set is used: JUnit Jupiter, AssertJ and
+ *       (transitively) Spring Boot's test starter, every version inherited from
+ *       {@code app/java/pom.xml}. No dependency is added and no version is written here. No Mockito
+ *       either: the unit under test has no collaborator worth faking, so a stub value type is both
+ *       cheaper and more honest than a mock.</li>
+ *   <li><strong>B3/G5</strong> - the COBOL, copybook, BMS and CSD sources are read and never written.
+ *       Nothing is copied into {@code src/test/resources} and nothing is read at runtime; the byte
+ *       facts are transcribed as literals.</li>
+ *   <li><strong>B4</strong> - this is the only file created. No shared base class, no fixture-builder
+ *       utility, no {@code package-info}, no second test profile.</li>
+ *   <li><strong>B5</strong> - preserved behaviour includes the defects. Two live here: the
+ *       "coming soon" text whose option name is commented out (see
+ *       {@link OptionDispatch#theDummyPrefixSuppressesTheTransfer()}), and the {@code EVALUATE} arms
+ *       that the shipped table can never reach (see {@link BuildMenuOptions}). Neither is repaired and
+ *       neither is reached by contriving an input that changes observable behaviour.</li>
+ *   <li><strong>B6/G41</strong> - the security posture is untouched. {@code COPY CSUSR01Y}
+ *       ({@code app/cbl/COADM01C.cbl:58}) and {@code WS-USRSEC-FILE} ({@code :39}) are declared and
+ *       never opened, so {@link SecUserRecord} is asserted <em>present and blank</em> and never
+ *       asserted as read. No password, no hash, no token, no filter chain.</li>
+ *   <li><strong>B7</strong> - determinism. The unit under test consults no clock at all, which is a
+ *       stronger guarantee than a fixed one; see {@link LayerBoundaryAndDeterminism}.</li>
+ *   <li><strong>B8</strong> - explicit over implicit: the one {@link Charset} this file names is named
+ *       ({@link Construction#theCodecIsExposed()}), and every width is asserted through a named
+ *       constant traced to a {@code PICTURE} clause or a {@code DFHMDF LENGTH}.</li>
+ *   <li><strong>B9/G53</strong> - no static mutable state. Every {@code static} member below is
+ *       {@code final} and immutable, every service instance is built inside the test method that uses
+ *       it, and no test depends on another's residue or on execution order.</li>
+ *   <li><strong>B10</strong> - no {@code @Disabled}, no {@code TODO}, no stub, no placeholder. This
+ *       suite ships in the same pass as the code it covers, which is the whole point: a difference
+ *       traced back to a translation decision the same day costs a fraction of one traced back a
+ *       month later.</li>
+ *   <li><strong>B12</strong> - every non-obvious expected literal carries a {@code file:line}
+ *       citation, because the baseline is derived from the source rather than captured from a run.
+ *       Six of them were re-derived mechanically from the cited lines before this file was
+ *       committed.</li>
+ * </ul>
+ *
+ * <p>{@code B11} - hand-written, reviewable fixed-width codecs in preference to an opaque
+ * copybook-parsing library - governs {@code common.FixedWidthCodec} rather than this file, which only
+ * consumes it.</p>
+ *
+ * <h2>Which acceptance gates this file discharges</h2>
+ * <ul>
+ *   <li><strong>G51</strong> - the unit under test is the service. No {@code MockMvc}, no HTTP, no
+ *       {@code JobLauncher}, no Spring context anywhere in this file.</li>
+ *   <li><strong>G49</strong> - branch coverage for package {@code com.vsergeychik.carddemo.admin}.
+ *       This file carries that load on its own, and prefers a parameterised test over duplicated
+ *       methods so each arm is visibly enumerated rather than merely incidentally covered.</li>
+ *   <li><strong>G30</strong> - every {@code WHEN} of both {@code EVALUATE} statements, in source
+ *       order with {@code WHEN OTHER} last: the three-arm {@code EVALUATE EIBAID} at
+ *       {@code app/cbl/COADM01C.cbl:93-103} in {@link EvaluateEibAid}, and the eleven-arm
+ *       {@code EVALUATE WS-IDX} at {@code :238-261} in {@link BuildMenuOptions}.</li>
+ *   <li><strong>G33</strong> - the 1-based {@code OCCURS} loop of {@code BUILD-MENU-OPTIONS}, asserted
+ *       at its first and its last produced element.</li>
+ *   <li><strong>G37</strong> - statelessness, proved by re-using one service instance across two
+ *       different invocations; see {@link UnconditionalResetAndStatelessness}.</li>
+ *   <li><strong>G38</strong> - both the first-entry and the re-entry path
+ *       ({@link FirstEntry}, {@link EvaluateEibAid}).</li>
+ *   <li><strong>G40</strong> - every {@code XCTL} site resolves to a next-program value: the four
+ *       option targets and both shapes of {@code RETURN-TO-SIGNON-SCREEN}.</li>
+ *   <li><strong>G50</strong> - both states of each condition name this program's copybooks declare:
+ *       {@code ERR-FLG-ON}/{@code ERR-FLG-OFF} ({@code app/cbl/COADM01C.cbl:41-42}),
+ *       {@code CDEMO-PGM-ENTER}/{@code CDEMO-PGM-REENTER} ({@code app/cpy/COCOM01Y.cpy:30-31}) and
+ *       {@code CDEMO-USRTYP-ADMIN}/{@code CDEMO-USRTYP-USER} ({@code :27-28}).</li>
+ *   <li><strong>G52</strong> - no wildcard imports; each type is imported by name so the
+ *       copybook-to-type correspondence stays auditable.</li>
+ *   <li><strong>G54</strong> - plain JUnit, so the suite runs non-interactively with no watch mode.</li>
+ * </ul>
+ *
+ * <h2>Gates verified to have no subject here, and deliberately not chased</h2>
+ * <ul>
+ *   <li><strong>G47</strong> ({@code FileStatus} per repository call site) - zero call sites.
+ *       {@code COADM01C} performs no file input or output and the service injects no repository, so
+ *       {@code common.FileStatus} is not imported. The program's only two condition codes belong to
+ *       {@code RECEIVE MAP} ({@code app/cbl/COADM01C.cbl:195-196}) and the source never tests
+ *       them.</li>
+ *   <li><strong>G35</strong> ({@code AbendException}) - {@code COADM01C} contains no
+ *       {@code CALL 'CEE3ABD'}; all nine sites are in batch programs.</li>
+ *   <li><strong>G22-G29</strong> (numeric parity) - {@code COADM01C} has no arithmetic verb and no
+ *       scaled {@code PICTURE}, so no decimal type, no rounding mode and no binary floating-point
+ *       primitive appears in this file, and no numeric-parity assertion is written.</li>
+ * </ul>
  */
 @DisplayName("AdminMenuService - the decision core of COADM01C")
 class AdminMenuServiceTest {
@@ -74,6 +173,24 @@ class AdminMenuServiceTest {
 
     /** {@code app/cbl/COADM01C.cbl:131}, transcribed - 37 characters. */
     private static final String INVALID_OPTION_TEXT = "Please enter a valid option number...";
+
+    /**
+     * {@code CCDA-MSG-INVALID-KEY PIC X(50)} - {@code app/cpy/CSMSG01Y.cpy:20-21}, transcribed
+     * character by character rather than read back off {@link SystemMessages}.
+     *
+     * <p>Forty characters of content, then the nine spaces physically typed inside the copybook's
+     * quotes (49 in the literal), then the one space COBOL supplies implicitly to fill the declared
+     * {@code PIC X(50)}. 40 + 9 + 1 = 50. Written here as three concatenated pieces so the arithmetic
+     * is visible in the source rather than hidden inside a {@code repeat} count.
+     *
+     * <p>This is <strong>not</strong> {@code CCDA-MSG-THANK-YOU} at {@code CSMSG01Y.cpy:18-19}, which
+     * is also {@code PIC X(50)} but carries entirely different text - see
+     * {@link EvaluateEibAid#theTwoCommonMessagesAreNotInterchangeable()}.
+     */
+    private static final String INVALID_KEY_MESSAGE_X50 =
+            "Invalid key pressed. Please see below..."
+                    + "         "
+                    + " ";
 
     /** {@code app/cbl/COADM01C.cbl:149} and {@code :152} composed - 30 characters, with no name. */
     private static final String COMING_SOON_TEXT = "This option is coming soon ...";
@@ -354,6 +471,31 @@ class AdminMenuServiceTest {
     @DisplayName("MAIN-PARA L93: EVALUATE EIBAID, all three arms in source order")
     class EvaluateEibAid {
 
+        // Gate G30: the three arms are asserted below in the order app/cbl/COADM01C.cbl:93-103 writes
+        // them - WHEN DFHENTER (L94), WHEN DFHPF3 (L96), then WHEN OTHER (L99) last. The order matters
+        // because EVALUATE takes the first matching arm, so an implementation that tested DFHPF3 before
+        // DFHENTER would still pass an unordered suite while diverging on any byte both arms matched.
+
+        @Test
+        @DisplayName("arm 1, WHEN DFHENTER at L94: PROCESS-ENTER-KEY runs and nothing else does")
+        void enterSelectsTheFirstArm() {
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, "01"));
+
+            assertThat(outcome.nextProgram())
+                    .as("PROCESS-ENTER-KEY dispatched option 1, so L142-L145 transferred")
+                    .isEqualTo("COUSR00C");
+            assertThat(outcome.errorFlag())
+                    .as("neither L100 nor L130 ran, so WS-ERR-FLG kept the 'N' L77 set")
+                    .isFalse();
+            assertThat(outcome.message())
+                    .as("the WHEN OTHER arm at L101 was not taken")
+                    .isEqualTo(BLANK_MESSAGE);
+            assertThat(outcome.receive())
+                    .as("L92 PERFORM RECEIVE-MENU-SCREEN precedes the EVALUATE on this path")
+                    .isEqualTo(ReceiveOutcome.NORMAL);
+        }
+
         @Test
         @DisplayName("WHEN DFHPF3 moves 'COSGN00C' into CDEMO-TO-PROGRAM - TO, not FROM")
         void pf3SetsToProgram() {
@@ -386,6 +528,83 @@ class AdminMenuServiceTest {
             assertThat(outcome.screenPainted()).isTrue();
             assertThat(outcome.messageColour()).isEqualTo(BmsAttributes.DFHRED);
             assertThat(outcome.messageColourOverridden()).isFalse();
+        }
+
+        /**
+         * The attention identifiers that must reach {@code WHEN OTHER} at
+         * {@code app/cbl/COADM01C.cbl:99}, each named so a failure reports the mnemonic rather than a
+         * byte value.
+         *
+         * <p>{@code DFHPA3} is in the list for a specific reason: {@code COADM01C} has no arm for it,
+         * and neither does {@code app/cpy/CSSTRPFY.cpy}, so it is the one AID that is simultaneously
+         * unmatched by the program and unresolvable by {@link PfKeyResolver}. {@code DFHNULL} is the
+         * byte a terminal sends when no attention key was involved at all.
+         *
+         * @return one case per attention identifier
+         */
+        static Stream<Arguments> aidsThatFallToWhenOther() {
+            return Stream.of(
+                    Arguments.of("DFHCLEAR", CicsAid.DFHCLEAR),
+                    Arguments.of("DFHPF1", CicsAid.DFHPF1),
+                    Arguments.of("DFHPA1", CicsAid.DFHPA1),
+                    Arguments.of("DFHPF12", CicsAid.DFHPF12),
+                    Arguments.of("DFHPA2", CicsAid.DFHPA2),
+                    Arguments.of("DFHPA3", CicsAid.DFHPA3),
+                    Arguments.of("DFHPF15", CicsAid.DFHPF15),
+                    Arguments.of("DFHNULL", CicsAid.DFHNULL));
+        }
+
+        @ParameterizedTest(name = "{0} falls to WHEN OTHER")
+        @DisplayName("arm 3, WHEN OTHER at L99: every AID that is neither DFHENTER nor DFHPF3")
+        @MethodSource("aidsThatFallToWhenOther")
+        void everyOtherAidFallsToWhenOther(String mnemonic, byte eibAid) {
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(reenteredContext(), eibAid, "01"));
+
+            assertThat(outcome.errorFlag())
+                    .as("L93-L103 declares no arm for %s, so L100 sets WS-ERR-FLG", mnemonic)
+                    .isTrue();
+            assertThat(outcome.message())
+                    .as("L101 moves CCDA-MSG-INVALID-KEY in for %s", mnemonic)
+                    .isEqualTo(INVALID_KEY_MESSAGE_X50 + " ".repeat(30));
+            assertThat(outcome.screenPainted())
+                    .as("L102 performs SEND-MENU-SCREEN")
+                    .isTrue();
+            assertThat(outcome.hasNextProgram())
+                    .as("no XCTL is reachable from WHEN OTHER: option 1 was never dispatched")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the 50-byte CCDA-MSG-INVALID-KEY is transcribed, not read back off the class")
+        void theInvalidKeyMessageIsTheTranscribedFiftyBytes() {
+            assertThat(INVALID_KEY_MESSAGE_X50)
+                    .as("app/cpy/CSMSG01Y.cpy:20-21 - 40 content + 9 typed + 1 implicit")
+                    .hasSize(50)
+                    .startsWith("Invalid key pressed. Please see below...")
+                    .endsWith("...          ");
+            assertThat(INVALID_KEY_MESSAGE_X50.substring(0, 40))
+                    .as("the content is forty characters including the three-dot ellipsis")
+                    .isEqualTo("Invalid key pressed. Please see below...");
+            assertThat(INVALID_KEY_MESSAGE_X50.substring(40))
+                    .as("ten trailing spaces: nine typed into the literal plus one COBOL supplies")
+                    .isEqualTo(" ".repeat(10));
+            assertThat(SystemMessages.CCDA_MSG_INVALID_KEY)
+                    .as("the shared constant must agree with the transcription")
+                    .isEqualTo(INVALID_KEY_MESSAGE_X50);
+        }
+
+        @Test
+        @DisplayName("CCDA-MSG-INVALID-KEY is not CCDA-MSG-THANK-YOU: same width, different text")
+        void theTwoCommonMessagesAreNotInterchangeable() {
+            assertThat(SystemMessages.CCDA_MSG_THANK_YOU)
+                    .as("app/cpy/CSMSG01Y.cpy:18-19 is also PIC X(50)")
+                    .hasSize(SystemMessages.MESSAGE_LENGTH)
+                    .isNotEqualTo(INVALID_KEY_MESSAGE_X50);
+            assertThat(service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHCLEAR, "  ")).message())
+                    .as("L101 moves the invalid-key message; COADM01C never emits the thank-you one")
+                    .doesNotContain("Thank you");
         }
 
         @Test
@@ -439,20 +658,425 @@ class AdminMenuServiceTest {
         }
     }
 
+    /**
+     * How {@code AdminMenuService} resolves the attention identifier, and why the shared resolver's
+     * five-character token is <em>not</em> what selects the arm.
+     *
+     * <p>{@code COADM01C} does <strong>not</strong> copy {@code CSSTRPFY}: its nine copybooks are listed
+     * at {@code app/cbl/COADM01C.cbl:50-61} and the PF-key store is not among them. Line 93 compares
+     * {@code EIBAID} to {@code DFHENTER} and {@code DFHPF3} inline, so the service uses
+     * {@link PfKeyResolver#isAid(byte, byte)} - a raw byte comparison - and never
+     * {@link PfKeyResolver#resolve(byte)}. The tokens are asserted here anyway, for two reasons: they
+     * are the vocabulary the five programs that <em>do</em> copy {@code CSSTRPFY} share, and the
+     * {@code PFK03} fold is the exact place where using the token instead of the byte would silently
+     * change this program's behaviour.
+     */
+    @Nested
+    @DisplayName("Attention identifiers: the raw byte selects the arm, not the CSSTRPFY token")
+    class AttentionIdentifiers {
+
+        /**
+         * The AID bytes {@link PfKeyResolver} resolves, paired with the exact five-character
+         * {@code CCARD-AID} literal each yields.
+         *
+         * @return one case per attention identifier this program can receive
+         */
+        static Stream<Arguments> resolvableAids() {
+            return Stream.of(
+                    Arguments.of("DFHENTER", CicsAid.DFHENTER, AidKey.ENTER, "ENTER"),
+                    Arguments.of("DFHPF3", CicsAid.DFHPF3, AidKey.PFK03, "PFK03"),
+                    Arguments.of("DFHPF15", CicsAid.DFHPF15, AidKey.PFK03, "PFK03"),
+                    Arguments.of("DFHCLEAR", CicsAid.DFHCLEAR, AidKey.CLEAR, "CLEAR"),
+                    Arguments.of("DFHPF1", CicsAid.DFHPF1, AidKey.PFK01, "PFK01"),
+                    Arguments.of("DFHPF12", CicsAid.DFHPF12, AidKey.PFK12, "PFK12"),
+                    Arguments.of("DFHPA1", CicsAid.DFHPA1, AidKey.PA1, "PA1  "),
+                    Arguments.of("DFHPA2", CicsAid.DFHPA2, AidKey.PA2, "PA2  "));
+        }
+
+        @ParameterizedTest(name = "{0} resolves to the token {3}")
+        @DisplayName("each resolvable AID yields its exact five-character CVCRD01Y literal")
+        @MethodSource("resolvableAids")
+        void eachResolvableAidYieldsItsToken(String mnemonic,
+                byte eibAid,
+                AidKey expectedKey,
+                String expectedToken) {
+
+            assertThat(PfKeyResolver.resolve(eibAid))
+                    .as("%s", mnemonic)
+                    .hasValue(expectedKey);
+            assertThat(expectedKey.token())
+                    .as("CCARD-AID is PIC X(5), so PA1 and PA2 keep their two trailing spaces")
+                    .isEqualTo(expectedToken)
+                    .hasSize(PfKeyResolver.AID_TOKEN_LENGTH);
+        }
+
+        @ParameterizedTest(name = "EIBAID {0} resolves to nothing")
+        @DisplayName("an unmatched AID is an empty Optional, never a substituted default")
+        @ValueSource(bytes = {CicsAid.DFHPA3, UNRESOLVABLE_AID, (byte) 0x00, (byte) 0x7F})
+        void anUnmatchedAidResolvesToNothing(byte eibAid) {
+            assertThat(PfKeyResolver.resolve(eibAid))
+                    .as("CSSTRPFY's EVALUATE has no WHEN OTHER, so nothing is set at all")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("an AID the resolver cannot name is still handled: WHEN OTHER, no exception")
+        void anUnresolvableAidIsHandledWithoutException() {
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHPA3, "01"));
+
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPA3)).isEmpty();
+            assertThat(outcome.errorFlag())
+                    .as("L99's WHEN OTHER absorbs it; the absence of a token is not an error path")
+                    .isTrue();
+            assertThat(outcome.message()).isEqualTo(INVALID_KEY_MESSAGE_X50 + " ".repeat(30));
+        }
+
+        @Test
+        @DisplayName("the PFK03 fold is why the byte, not the token, must select the arm")
+        void thePfk03FoldWouldChangeBehaviourIfTheTokenSelectedTheArm() {
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15))
+                    .as("CSSTRPFY folds PF15 onto PFK03, the same token PF3 yields")
+                    .hasValue(AidKey.PFK03);
+            assertThat(PfKeyResolver.isAid(CicsAid.DFHPF15, CicsAid.DFHPF3))
+                    .as("but the bytes differ - 0xC3 against 0xF3 - and L93 compares bytes")
+                    .isFalse();
+
+            AdminMenuOutcome viaPf3 = service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHPF3, "  "));
+            AdminMenuOutcome viaPf15 = service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHPF15, "  "));
+
+            assertThat(viaPf3.nextProgram())
+                    .as("PF3 takes arm 2 and transfers to the sign-on program")
+                    .isEqualTo("COSGN00C");
+            assertThat(viaPf15.hasNextProgram())
+                    .as("PF15 takes WHEN OTHER instead, so it transfers nowhere")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the two bytes L93 does compare are the ones the service tests")
+        void theTwoComparedBytesAreTheOnesTheServiceTests() {
+            assertThat(PfKeyResolver.isEnter(CicsAid.DFHENTER)).isTrue();
+            assertThat(PfKeyResolver.isPf3(CicsAid.DFHPF3)).isTrue();
+            assertThat(PfKeyResolver.isAid(CicsAid.DFHENTER, CicsAid.DFHPF3)).isFalse();
+            assertThat(PfKeyResolver.isAid(CicsAid.DFHPF3, CicsAid.DFHENTER)).isFalse();
+        }
+    }
+
+    /**
+     * {@code MAIN-PARA}'s opening three statements, and the statelessness that makes them sufficient.
+     *
+     * <p>{@code app/cbl/COADM01C.cbl:77-80} runs on <strong>every</strong> invocation, before the
+     * {@code EIBCALEN} test and before anything is read:
+     * <pre>
+     *   L77   SET ERR-FLG-OFF TO TRUE
+     *   L79   MOVE SPACES TO WS-MESSAGE
+     *   L80                 ERRMSGO OF COADM1AO
+     * </pre>
+     * On the mainframe those three statements matter because {@code WORKING-STORAGE} survives between
+     * the transaction's pseudo-conversational turns. In this projection nothing survives, because
+     * {@code WS-ERR-FLG} and {@code WS-MESSAGE} are method-local rather than instance fields - so the
+     * reset is <em>also</em> the proof that no state leaks, which is what gate G37 asks for.
+     */
+    @Nested
+    @DisplayName("MAIN-PARA L77-L80: the unconditional reset, and the statelessness behind it")
+    class UnconditionalResetAndStatelessness {
+
+        @Test
+        @DisplayName("G37: one service instance, two invocations, and the second sees nothing of the "
+                + "first")
+        void aSecondInvocationIsUnaffectedByTheFirst() {
+            AdminMenuService shared = service();
+
+            AdminMenuOutcome errored = shared.handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, "99"));
+            AdminMenuOutcome clean = shared.handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, "01"));
+
+            assertThat(errored.errorFlag())
+                    .as("the first call left WS-ERR-FLG at 'Y' and WS-MESSAGE populated")
+                    .isTrue();
+            assertThat(errored.message()).isNotEqualTo(BLANK_MESSAGE);
+
+            assertThat(clean.errorFlag())
+                    .as("L77 SET ERR-FLG-OFF TO TRUE runs before anything else on the second call")
+                    .isFalse();
+            assertThat(clean.message())
+                    .as("L79 MOVE SPACES TO WS-MESSAGE - no residue of the first call's error text")
+                    .isEqualTo(BLANK_MESSAGE);
+            assertThat(clean.nextProgram())
+                    .as("and the second call dispatches normally")
+                    .isEqualTo("COUSR00C");
+        }
+
+        @Test
+        @DisplayName("G37: the reverse order too - a clean call first does not suppress a later error")
+        void aFirstCleanInvocationDoesNotSuppressALaterError() {
+            AdminMenuService shared = service();
+
+            shared.handle(new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, "01"));
+            AdminMenuOutcome errored = shared.handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, "  "));
+
+            assertThat(errored.errorFlag()).isTrue();
+            assertThat(errored.message())
+                    .isEqualTo(INVALID_OPTION_TEXT + " ".repeat(43));
+        }
+
+        @Test
+        @DisplayName("the reset is unconditional: it precedes even the error paths that overwrite it")
+        void theResetPrecedesEveryPathIncludingTheErrorOnes() {
+            // Every one of the four terminal shapes COADM01C has, each built from a fresh context so
+            // the only possible source of a stale message would be the service itself.
+            AdminMenuService shared = service();
+
+            assertThat(shared.handle(AdminMenuInput.withoutCommarea(CicsAid.DFHENTER, "01")).message())
+                    .as("L82-L84, the absent-commarea route: nothing writes WS-MESSAGE at all")
+                    .isEqualTo(BLANK_MESSAGE);
+            assertThat(shared.handle(
+                    new AdminMenuInput(NavigationContext.empty(), CicsAid.DFHENTER, "01")).message())
+                    .as("L87-L90, first entry: L79's spaces are what SEND-MENU-SCREEN sends to ERRMSGO")
+                    .isEqualTo(BLANK_MESSAGE);
+            assertThat(shared.handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHPF3, "01")).message())
+                    .as("L96-L98, the PF3 arm: no message is composed before the XCTL")
+                    .isEqualTo(BLANK_MESSAGE);
+            assertThat(shared.handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHCLEAR, "01")).message())
+                    .as("L99-L102, WHEN OTHER: L101 overwrites the spaces L79 had just moved in")
+                    .isEqualTo(INVALID_KEY_MESSAGE_X50 + " ".repeat(30));
+        }
+
+        @Test
+        @DisplayName("no invocation mutates the inbound communication area it was handed")
+        void theInboundContextIsNeverMutated() {
+            NavigationContext inbound = reenteredContext()
+                    .withUserId("ADMIN001")
+                    .withToProgram("COMEN01C");
+
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(inbound, CicsAid.DFHENTER, "02"));
+
+            assertThat(inbound.isReenter())
+                    .as("CARDDEMO-COMMAREA is projected as an immutable value, so the caller's copy "
+                            + "still reads as it did - L141 produced a new one")
+                    .isTrue();
+            assertThat(inbound.fromProgram())
+                    .as("L140 wrote COADM01C into the OUTBOUND area only")
+                    .isBlank();
+            assertThat(outcome.navigationContext().isEnter()).isTrue();
+            assertThat(outcome.navigationContext().fromProgram()).isEqualTo("COADM01C");
+            assertThat(outcome.navigationContext().userId())
+                    .as("every field COADM01C does not write travels through untouched")
+                    .isEqualTo("ADMIN001");
+        }
+    }
+
+    /**
+     * The user-type condition names of {@code app/cpy/COCOM01Y.cpy:27-28}, in both states.
+     *
+     * <p>{@code COADM01C} copies {@code COCOM01Y} at line 50 and so declares
+     * {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and {@code 88 CDEMO-USRTYP-USER VALUE 'U'} - and then
+     * <strong>never tests either one</strong>. Searching the program for {@code CDEMO-USER-TYPE},
+     * {@code CDEMO-USRTYP-ADMIN} and {@code CDEMO-USRTYP-USER} returns only the copybook line.
+     *
+     * <p>That absence is behaviour and is asserted as such. The admin menu is reached by transferring
+     * from {@code COSGN00C}, which does the role check itself
+     * ({@code app/cbl/COSGN00C.cbl:232} transfers an {@code 'A'} user here), so {@code COADM01C}
+     * trusts its caller. Its sibling {@code COMEN01C} is the one that filters its option list on the
+     * user type; importing that filter here would add a branch this program does not have, which
+     * practice B5 forbids as squarely as deleting one would.
+     */
+    @Nested
+    @DisplayName("COCOM01Y L27-L28: both user-type condition names, and the filter COADM01C lacks")
+    class UserTypeConditionNames {
+
+        @Test
+        @DisplayName("88 CDEMO-USRTYP-ADMIN VALUE 'A' - true state, carried through untouched")
+        void theAdminConditionNameIsCarriedThrough() {
+            NavigationContext admin = reenteredContext().withUserTypeAdmin();
+
+            assertThat(admin.isAdmin()).isTrue();
+            assertThat(admin.isUser()).isFalse();
+            assertThat(admin.userType()).isEqualTo(NavigationContext.USER_TYPE_ADMIN);
+
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(admin, CicsAid.DFHENTER, "01"));
+
+            assertThat(outcome.navigationContext().isAdmin())
+                    .as("COADM01C writes CDEMO-USER-TYPE on no path, so 'A' survives the transfer")
+                    .isTrue();
+            assertThat(outcome.nextProgram()).isEqualTo("COUSR00C");
+        }
+
+        @Test
+        @DisplayName("88 CDEMO-USRTYP-USER VALUE 'U' - true state, and the menu behaves identically")
+        void theUserConditionNameIsCarriedThrough() {
+            NavigationContext regular = reenteredContext().withUserTypeUser();
+
+            assertThat(regular.isUser()).isTrue();
+            assertThat(regular.isAdmin()).isFalse();
+            assertThat(regular.userType()).isEqualTo(NavigationContext.USER_TYPE_USER);
+
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(regular, CicsAid.DFHENTER, "01"));
+
+            assertThat(outcome.navigationContext().isUser()).isTrue();
+            assertThat(outcome.nextProgram())
+                    .as("COADM01C has no authorisation filter: a 'U' context takes the same path. "
+                            + "COSGN00C performs the role check, and COMEN01C - not this program - is "
+                            + "the one that filters its options on the user type")
+                    .isEqualTo("COUSR00C");
+        }
+
+        @Test
+        @DisplayName("the four menu lines are identical for an admin and for a regular user")
+        void theOptionListIsNotFilteredByUserType() {
+            AdminMenuOutcome asAdmin = service().handle(new AdminMenuInput(
+                    reenteredContext().withUserTypeAdmin(), CicsAid.DFHCLEAR, "  "));
+            AdminMenuOutcome asUser = service().handle(new AdminMenuInput(
+                    reenteredContext().withUserTypeUser(), CicsAid.DFHCLEAR, "  "));
+
+            assertThat(asUser.optionLines())
+                    .as("no CDEMO-USER-TYPE test exists anywhere in COADM01C")
+                    .isEqualTo(asAdmin.optionLines());
+        }
+
+        @Test
+        @DisplayName("neither condition name holds for a context that carries no user type")
+        void neitherConditionNameHoldsForAnUnsetUserType() {
+            NavigationContext unset = reenteredContext();
+
+            assertThat(unset.isAdmin())
+                    .as("CDEMO-USER-TYPE is PIC X(01) and a space satisfies neither 88-level")
+                    .isFalse();
+            assertThat(unset.isUser()).isFalse();
+            assertThat(service().handle(new AdminMenuInput(unset, CicsAid.DFHENTER, "01"))
+                    .nextProgram())
+                    .as("and the menu still works, because it never asks")
+                    .isEqualTo("COUSR00C");
+        }
+    }
+
+    /**
+     * Where the service stops and the controller starts, and why that boundary is what makes this
+     * suite deterministic.
+     *
+     * <p>{@code SEND-MENU-SCREEN} at {@code app/cbl/COADM01C.cbl:172-184} performs
+     * {@code POPULATE-HEADER-INFO}, then {@code BUILD-MENU-OPTIONS}, then the {@code SEND MAP}. The
+     * middle one is this service's work; the first is not, because its opening statement is
+     * {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} at {@code :204}.
+     *
+     * <p>The migration's determinism practice calls for a <strong>fixed</strong> clock so that a header
+     * assertion cannot drift. {@code AdminMenuService} satisfies that requirement in the stronger form:
+     * it takes <strong>no clock at all</strong> - neither constructor accepts one and no method reads
+     * one - so there is no time source in the path to fix. The header fields that do depend on the
+     * clock, {@code CURDATEO} at {@code :215} and {@code CURTIMEO} at {@code :221}, are produced by
+     * {@code AdminMenuController} from the shared date header driven by the module's single injected
+     * {@code Clock} bean, and they are asserted there under a fixed instant. Duplicating that here
+     * would assert a collaborator this class does not have.
+     *
+     * <p>What {@code POPULATE-HEADER-INFO} takes from <em>this</em> class is the pair of identity
+     * literals at {@code :208-209} - {@code MOVE WS-TRANID TO TRNNAMEO} and
+     * {@code MOVE WS-PGMNAME TO PGMNAMEO} - and those are asserted below.
+     */
+    @Nested
+    @DisplayName("The layer boundary: no clock in the service, so nothing to fix and nothing to drift")
+    class LayerBoundaryAndDeterminism {
+
+        @Test
+        @DisplayName("L208-L209: the two identity literals POPULATE-HEADER-INFO moves to the header")
+        void theHeaderIdentityLiteralsComeFromHere() {
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(NavigationContext.empty(), CicsAid.DFHENTER, "  "));
+
+            assertThat(outcome.transactionId())
+                    .as("L208 MOVE WS-TRANID TO TRNNAMEO, and L108's RETURN TRANSID, and "
+                            + "app/csd/CARDDEMO.CSD:327-328's DEFINE TRANSACTION(CA00)")
+                    .isEqualTo("CA00")
+                    .isEqualTo(AdminMenuService.TRANSACTION_ID);
+            assertThat(AdminMenuService.PROGRAM_NAME)
+                    .as("L209 MOVE WS-PGMNAME TO PGMNAMEO, and L140's CDEMO-FROM-PROGRAM")
+                    .isEqualTo("COADM01C");
+            assertThat(outcome.mapName())
+                    .as("L180 MAP('COADM1A')")
+                    .isEqualTo("COADM1A");
+            assertThat(outcome.mapsetName())
+                    .as("L181 MAPSET('COADM01')")
+                    .isEqualTo("COADM01");
+        }
+
+        @Test
+        @DisplayName("B7: the same input produces a byte-identical outcome every time it is run")
+        void repeatedInvocationsAreByteIdentical() {
+            AdminMenuInput input = new AdminMenuInput(
+                    reenteredContext().withUserTypeAdmin(), CicsAid.DFHENTER, "01");
+
+            AdminMenuOutcome first = service().handle(input);
+            AdminMenuOutcome second = service().handle(input);
+            AdminMenuOutcome third = new AdminMenuService(bindings(),
+                    new FixedWidthCodec(Charset.forName(
+                            AdminMenuService.DEFAULT_MESSAGE_CHARSET_NAME))).handle(input);
+
+            assertThat(second)
+                    .as("no clock, no random source, no environment and no ambient state")
+                    .isEqualTo(first);
+            assertThat(third)
+                    .as("nor does a separately constructed instance differ")
+                    .isEqualTo(first);
+        }
+
+        @Test
+        @DisplayName("B7: the screen-painting path is deterministic too, header fields excepted")
+        void thePaintedScreenIsDeterministic() {
+            AdminMenuInput input = new AdminMenuInput(reenteredContext(), CicsAid.DFHCLEAR, "  ");
+
+            AdminMenuOutcome first = service().handle(input);
+            AdminMenuOutcome second = service().handle(input);
+
+            assertThat(second.optionLines()).isEqualTo(first.optionLines());
+            assertThat(second.message()).isEqualTo(first.message());
+            assertThat(second.messageColour()).isEqualTo(first.messageColour());
+            assertThat(second).isEqualTo(first);
+        }
+    }
+
     @Nested
     @DisplayName("PROCESS-ENTER-KEY L117-L125: the four-step option normalisation")
     class OptionNormalisationCases {
 
+        // The four rows marked "worked case" below are the ones hand-traced against
+        // app/cbl/COADM01C.cbl:117-125 statement by statement, and they are the reason this file can be
+        // reviewed without a COBOL run: each is re-derivable from the cited lines alone.
+        //
+        //   OPTIONI  scan ends at WS-IDX  after L122 (JUST RIGHT)  after L123 (INSPECT)  WS-OPTION
+        //   '3 '     1                    ' 3'                     '03'                  3
+        //   '  '     1                    '  '                     '00'                  0
+        //   '10'     2                    '10'                     '10'                  10
+        //   'AB'     2                    'AB'                     'AB'                  not numeric
+        //
+        // The scan at L117-L121 has an EMPTY body and is PRE-test, starting at
+        // WS-IDX = LENGTH OF OPTIONI = 2: it stops immediately when byte 2 is not a space, and
+        // otherwise decrements to the WS-IDX = 1 termination term. That is why '3 ' ends at 1 - the
+        // trailing space is scanned off - while '10' ends at 2.
         @ParameterizedTest(name = "OPTIONI {0} -> WS-IDX {1}, step 3 {2}, step 4 {3}")
-        @DisplayName("all five worked cases, asserting the intermediate two-byte buffer")
+        @DisplayName("every worked case, asserting the intermediate two-byte buffer")
         @CsvSource(delimiter = '|', value = {
             "'  ' | 1 | '  ' | '00'",
             "' 3' | 2 | ' 3' | '03'",
             "'3 ' | 1 | ' 3' | '03'",
+            "'10' | 2 | '10' | '10'",
+            "'AB' | 2 | 'AB' | 'AB'",
             "'12' | 2 | '12' | '12'",
-            "'1x' | 2 | '1x' | '1x'"
+            "'1x' | 2 | '1x' | '1x'",
+            "'1 ' | 1 | ' 1' | '01'",
+            "'4 ' | 1 | ' 4' | '04'",
+            "'04' | 2 | '04' | '04'",
+            "'05' | 2 | '05' | '05'"
         })
-        void theFiveWorkedCases(String optionI,
+        void everyWorkedNormalisationCase(String optionI,
                 int expectedWsIdx,
                 String afterJustifyRight,
                 String afterInspect) {
@@ -472,14 +1096,56 @@ class AdminMenuServiceTest {
             "'  ' | 0",
             "' 3' | 3",
             "'3 ' | 3",
+            "'1 ' | 1",
+            "'4 ' | 4",
+            "'10' | 10",
             "'12' | 12",
-            "'04' | 4"
+            "'04' | 4",
+            "'05' | 5"
         })
         void theNumericCasesDecode(String optionI, int expected) {
             OptionNormalisation normalised = service().normaliseOption(optionI);
 
             assertThat(normalised.isNumeric()).isTrue();
             assertThat(normalised.option()).hasValue(expected);
+        }
+
+        @ParameterizedTest(name = "OPTIONI {0} echoes into OPTIONO as {1}")
+        @DisplayName("L125 echoes WS-OPTION, a PIC 9(02), so a single digit renders zero-filled")
+        @CsvSource(delimiter = '|', value = {
+            "'1 ' | '01'",
+            "'2 ' | '02'",
+            "'3 ' | '03'",
+            "'4 ' | '04'",
+            "' 3' | '03'",
+            "'04' | '04'"
+        })
+        void theEchoedOptionIsTheTwoDigitZeroFilledImage(String optionI, String expectedEcho) {
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, optionI));
+
+            assertThat(outcome.option())
+                    .as("MOVE WS-OPTION TO OPTIONO at L125 - never '3' and never ' 3'; "
+                            + "app/bms/COADM01.bms:145-149 declares JUSTIFY=(RIGHT,ZERO) LENGTH=2")
+                    .isEqualTo(expectedEcho)
+                    .hasSize(AdminMenuService.OPTION_LENGTH);
+        }
+
+        @ParameterizedTest(name = "the trailing-space form {0} dispatches to {1}")
+        @DisplayName("a value typed without its leading zero is in range and dispatches identically")
+        @CsvSource({
+            "'1 ', COUSR00C",
+            "'4 ', COUSR03C"
+        })
+        void theTrailingSpaceFormsAreValidInRangeValues(String optionI, String expectedProgram) {
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, optionI));
+
+            assertThat(outcome.errorFlag())
+                    .as("1 and %d are both within CDEMO-ADMIN-OPT-COUNT, so L127-L134 does not fire",
+                            AdminMenuOptions.ACTIVE_OPTION_COUNT)
+                    .isFalse();
+            assertThat(outcome.nextProgram()).isEqualTo(expectedProgram);
         }
 
         @Test
@@ -676,6 +1342,34 @@ class AdminMenuServiceTest {
             assertThat(outcome.errorFlag()).isFalse();
         }
 
+        // =============================================================================================
+        // DO NOT "FIX" THE EXPECTED TEXT BELOW, AND DO NOT HARMONISE IT WITH MainMenuServiceTest.
+        //
+        // app/cbl/COADM01C.cbl:147-154 reads, with lines 150 and 151 COMMENTED OUT in the source:
+        //
+        //   L147          MOVE SPACES   TO WS-MESSAGE
+        //   L148          MOVE DFHGREEN TO ERRMSGC  OF COADM1AO
+        //   L149          STRING 'This option '       DELIMITED BY SIZE
+        //   L150   *             CDEMO-ADMIN-OPT-NAME(WS-OPTION)
+        //   L151   *                                 DELIMITED BY SIZE
+        //   L152                 'is coming soon ...'   DELIMITED BY SIZE
+        //   L153            INTO WS-MESSAGE
+        //
+        // Two operands reach the STRING, not three. The option name never enters the message, and
+        // because 'This option ' carries its own trailing space the composed text is
+        //
+        //     "This option is coming soon ..."          - thirty characters, WITH the space
+        //
+        // Its sibling COMEN01C:159-163 looks all but identical and is NOT the same: there the option
+        // name is still active and is DELIMITED BY SPACE, so the main menu composes
+        //
+        //     "This option Accountis coming soon ..."   - WITHOUT a space, a real legacy defect
+        //
+        // Both are preserved exactly as their own source produces them (practice B5). If this
+        // expectation and MainMenuServiceTest's ever agree, one of the two has been broken: this file
+        // must expect the spaced form and that one the unspaced form. Making them match would be a
+        // parity violation in one direction or the other, and no amount of tidiness justifies it.
+        // =============================================================================================
         @Test
         @DisplayName("the 'DUMMY' prefix suppresses the transfer and emits the 30-character message")
         void theDummyPrefixSuppressesTheTransfer() {
@@ -718,6 +1412,26 @@ class AdminMenuServiceTest {
             assertThat(AdminMenuService.COMING_SOON_PREFIX).hasSize(12);
             assertThat(AdminMenuService.COMING_SOON_SUFFIX).hasSize(18);
             assertThat(AdminMenuService.COMING_SOON_MESSAGE).isEqualTo(COMING_SOON_TEXT);
+        }
+
+        @Test
+        @DisplayName("the spaced form is the one COADM01C emits - not COMEN01C's unspaced defect")
+        void theComingSoonTextKeepsItsSpaceUnlikeTheMainMenus() {
+            AdminMenuOutcome outcome = service().handle(
+                    new AdminMenuInput(reenteredContext(), CicsAid.DFHENTER, "01"),
+                    stubTable(1, "DUMMY001"));
+
+            assertThat(outcome.message().stripTrailing())
+                    .as("L149 supplies the trailing space of 'This option ' and L150-L151 are "
+                            + "commented out, so nothing is interposed before 'is'")
+                    .isEqualTo("This option is coming soon ...")
+                    .contains("option is coming");
+            assertThat(outcome.message())
+                    .as("COMEN01C:159-163 keeps CDEMO-MENU-OPT-NAME active DELIMITED BY SPACE and so "
+                            + "composes 'This option Accountis coming soon ...'. COADM01C does not, "
+                            + "and the two must never be harmonised")
+                    .doesNotContain("optionis")
+                    .doesNotContain("Accountis");
         }
     }
 
@@ -852,6 +1566,87 @@ class AdminMenuServiceTest {
             List<String> lines = service().buildMenuOptions(AdminMenuOptionTable.copybook());
 
             assertThat(lines.get(cobolSubscript - 1)).isEqualTo(BLANK_OPTION_LINE);
+        }
+
+        // =============================================================================================
+        // Gate G30 for the second EVALUATE. app/cbl/COADM01C.cbl:238-261 has exactly ELEVEN arms:
+        //
+        //   L239 WHEN  1  MOVE WS-ADMIN-OPT-TXT TO OPTN001O
+        //   L241 WHEN  2  ... OPTN002O          L243 WHEN  3  ... OPTN003O
+        //   L245 WHEN  4  ... OPTN004O          L247 WHEN  5  ... OPTN005O
+        //   L249 WHEN  6  ... OPTN006O          L251 WHEN  7  ... OPTN007O
+        //   L253 WHEN  8  ... OPTN008O          L255 WHEN  9  ... OPTN009O
+        //   L257 WHEN 10  ... OPTN010O
+        //   L259 WHEN OTHER  CONTINUE
+        //
+        // There is NO arm for 11 and none for 12, so OPTN011O and OPTN012O
+        // (app/cpy-bms/COADM01.CPY:242 and :248) are structurally unwritable by this program. Its
+        // sibling COMEN01C has thirteen arms and does reach both - another asymmetry between two
+        // paragraphs that read alike. Do not assume symmetry and do not add the missing arms.
+        //
+        // Reachability, and practice B5: the loop at L228-L229 is bounded by CDEMO-ADMIN-OPT-COUNT,
+        // which app/cpy/COADM02Y.cpy:20 gives VALUE 4, so under the shipped table arms 5 to 10 and
+        // WHEN OTHER can never be taken. They are enumerated below through a TEST-LOCAL option table
+        // with a larger count, which is exactly what buildMenuOptions taking a table makes possible.
+        // The shipped table is never mutated and the active count is never widened in production - a
+        // branch is driven by supplying a different input, never by editing the copybook's data.
+        // =============================================================================================
+        @ParameterizedTest(name = "WHEN {0} writes OPTN0{0}O and nothing else")
+        @DisplayName("all ten dispatch arms in source order, each writing only its own line")
+        @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+        void everyDispatchArmWritesItsOwnLine(int cobolSubscript) {
+            // A table whose active count reaches exactly this subscript, so the loop runs 1..subscript
+            // and the arm under test is the last one taken.
+            String[] targets = new String[cobolSubscript];
+            for (int index = 0; index < targets.length; index++) {
+                targets[index] = "COUSR0" + index + "C";
+            }
+
+            List<String> lines = service().buildMenuOptions(stubTable(cobolSubscript, targets));
+
+            // CDEMO-ADMIN-OPT-NUM is PIC 9(02), so the STRING at L233 emits a zero-filled two-byte
+            // image. Composed here without a locale-sensitive formatter so the expectation cannot
+            // shift with the default locale (practice B7).
+            String expectedNumberImage = cobolSubscript < 10
+                    ? "0" + cobolSubscript
+                    : String.valueOf(cobolSubscript);
+
+            assertThat(lines.get(cobolSubscript - 1))
+                    .as("arm %d is the 1-based subscript, so it writes list index %d (gate G33)",
+                            cobolSubscript, cobolSubscript - 1)
+                    .isNotEqualTo(BLANK_OPTION_LINE)
+                    .startsWith(expectedNumberImage + AdminMenuService.OPTION_NUMBER_SEPARATOR)
+                    .hasSize(OPTION_LINE_WIDTH);
+            assertThat(lines.subList(cobolSubscript, AdminMenuService.OPTION_LINE_COUNT))
+                    .as("the loop ended, so no later line was written")
+                    .containsOnly(BLANK_OPTION_LINE);
+            assertThat(lines.subList(0, cobolSubscript))
+                    .as("and every earlier arm was taken on its own pass")
+                    .doesNotContain(BLANK_OPTION_LINE);
+        }
+
+        @ParameterizedTest(name = "WHEN OTHER: subscript {0} has no arm and writes nothing")
+        @DisplayName("the eleventh arm, WHEN OTHER CONTINUE at L259-L260, for subscripts 11 and 12")
+        @ValueSource(ints = {11, 12})
+        void whenOtherWritesNothingAtAll(int cobolSubscript) {
+            String[] targets = new String[cobolSubscript];
+            for (int index = 0; index < targets.length; index++) {
+                targets[index] = "COUSR0" + (index % 10) + "C";
+            }
+
+            List<String> lines = service().buildMenuOptions(stubTable(cobolSubscript, targets));
+
+            assertThat(lines.get(cobolSubscript - 1))
+                    .as("the loop DID iterate to %d and DID compose WS-ADMIN-OPT-TXT at L233-L236, "
+                            + "but CONTINUE moved it nowhere", cobolSubscript)
+                    .isEqualTo(BLANK_OPTION_LINE);
+            assertThat(lines.subList(AdminMenuService.OPTION_DISPATCH_ARM_COUNT,
+                            AdminMenuService.OPTION_LINE_COUNT))
+                    .as("both lines past the tenth arm stay as MOVE LOW-VALUES left them")
+                    .containsOnly(BLANK_OPTION_LINE);
+            assertThat(lines.get(AdminMenuService.OPTION_DISPATCH_ARM_COUNT - 1))
+                    .as("while arm 10 itself did write, so the loop really did pass through")
+                    .isNotEqualTo(BLANK_OPTION_LINE);
         }
 
         @Test

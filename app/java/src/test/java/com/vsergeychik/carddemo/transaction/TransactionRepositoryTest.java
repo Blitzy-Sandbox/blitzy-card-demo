@@ -12,10 +12,13 @@ import static org.mockito.Mockito.mock;
 
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CicsResponse;
+import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DatasetObservation;
 import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -28,10 +31,26 @@ import com.vsergeychik.carddemo.transaction.TransactionRepository.ReadResult;
 import com.vsergeychik.carddemo.transaction.TransactionRepository.WriteResult;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.lang.annotation.Annotation;
+import java.lang.reflect.AnnotatedElement;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.UUID;
 
 import javax.sql.DataSource;
 
@@ -43,7 +62,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
-import java.sql.SQLException;
 
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -87,8 +105,24 @@ import org.springframework.jdbc.support.JdbcTransactionManager;
  *   <li>a duplicate keyed add reporting {@code '22'} with nothing written, rather than throwing;</li>
  *   <li>sequential input in key order over an indexed binding and in written order over a sequential
  *       one;</li>
+ *   <li>the fourteen {@code CVTRA05Y} spans restated by addition, the three offsets other components
+ *       address by number, and {@code TRAN-AMT} at scale 2 truncated rather than rounded (gates G22 and
+ *       G24, rules R2, R4 and R5);</li>
+ *   <li>the one image that a decode-and-re-encode silently changes - a whole-value negative zero -
+ *       carried intact because the repository moves the raw span rather than the value;</li>
+ *   <li>that no dataset name is compiled into this repository (gate G46) and that no schema artefact of
+ *       any kind is involved in reaching the dataset (gate G44);</li>
  *   <li>that this class never throws an abend, and that no rewrite or delete exists to call.</li>
  * </ul>
+ *
+ * <h2>What this class deliberately does not reach for</h2>
+ *
+ * <p>Nothing here imports {@code com.vsergeychik.carddemo.parity} and nothing here reads a
+ * {@code src/test/resources/parity} case file. The parity harness is a separate deliverable with its own
+ * gate; every byte this class needs is either an inline literal below or a value the repository itself
+ * reports. Nothing here reads the wall clock, no test depends on another's ordering, and there is no
+ * mutable static state at all: every static member is a {@code final} immutable constant or a pure
+ * fixture method, and each test method gets its own database.
  */
 @DisplayName("TransactionRepository - the TRANSACT / TRANFILE / SYSTRAN dataset access")
 class TransactionRepositoryTest {
@@ -117,9 +151,6 @@ class TransactionRepositoryTest {
     /** The column position the record image occupies, as the repository addresses it. */
     private static final String IMAGE_COLUMN = "RECORD_IMAGE";
 
-    /** Distinguishes each test's in-memory database, so no test can see another's rows. */
-    private static final AtomicInteger DATABASE_SEQUENCE = new AtomicInteger();
-
     /** The live data source for the test in progress. */
     private DataSource dataSource;
 
@@ -131,9 +162,15 @@ class TransactionRepositoryTest {
 
     @BeforeEach
     void createRelations() {
+        // A fresh in-memory database per test method, named uniquely so that no test - including two
+        // invocations of the same @ParameterizedTest - can see another's rows, and so that no test
+        // depends on the order the others ran in. The name is generated rather than counted because a
+        // static counter would be mutable static state, which practice B9 and gate G53 forbid; nothing
+        // asserts on the name, so generating it costs no determinism. DB_CLOSE_DELAY=-1 keeps the
+        // database alive between the connections SimpleDriverDataSource opens, which an unnamed
+        // jdbc:h2:mem: URL would not: there, every connection would get a private empty database.
         dataSource = new SimpleDriverDataSource(new org.h2.Driver(),
-                "jdbc:h2:mem:tranrepo" + DATABASE_SEQUENCE.incrementAndGet() + ";DB_CLOSE_DELAY=-1",
-                "sa", "");
+                "jdbc:h2:mem:tranrepo-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", "");
         template = new JdbcTemplate(dataSource);
         for (String dataset : new String[] { MASTER_DS, DALY_DS, SYSTRAN_DS }) {
             template.execute("CREATE TABLE \"" + dataset + "\" (\"" + IMAGE_COLUMN + "\" CHAR("
@@ -734,6 +771,34 @@ class TransactionRepositoryTest {
         }
 
         @Test
+        @DisplayName("ENDBR releases the cursor, so the next STARTBR is positioned afresh")
+        void aFreshBrowseAfterEndBrowseStartsClean() {
+            // app/cbl/COTRN00C.cbl walks a page with STARTBR (~593) / READNEXT (~626) and then issues
+            // ENDBR (~694) before the transaction returns; the next invocation issues its own STARTBR.
+            // If ENDBR left position behind, the second page would resume mid-file and COTRN02C's
+            // backward walk (~644/675/704), which exists purely to find the highest existing key, would
+            // read the wrong key and mint a duplicate transaction id.
+            Browse first = repository.startBrowse(BrowseDirection.FORWARD);
+            assertThat(first.readNext().requireRecord().tranId()).isEqualTo("0000000000000001");
+            assertThat(first.readNext().requireRecord().tranId()).isEqualTo("0000000000000002");
+            assertThat(first.positionKey()).contains("0000000000000002");
+            first.endBrowse();
+            assertThat(first.isEnded()).isTrue();
+
+            try (Browse second = repository.startBrowse(BrowseDirection.FORWARD)) {
+                // Clean: no anchor, no inherited position, and the first record again - not the third.
+                assertThat(second.isEnded()).isFalse();
+                assertThat(second.anchorKey()).isEmpty();
+                assertThat(second.positionKey()).isEmpty();
+                assertThat(second.readNext().requireRecord().tranId()).isEqualTo("0000000000000001");
+            }
+            // A backward browse opened after the same ENDBR is equally unaffected by it.
+            try (Browse third = repository.startBrowse(BrowseDirection.BACKWARD)) {
+                assertThat(third.readPrev().requireRecord().tranId()).isEqualTo("0000000000000003");
+            }
+        }
+
+        @Test
         @DisplayName("a direction is required, because the legacy code never browses direction-less")
         void aDirectionIsRequired() {
             assertThatNullPointerException()
@@ -924,8 +989,13 @@ class TransactionRepositoryTest {
     class SequentialOutput {
 
         @Test
-        @DisplayName("records are written in call order, at full width, and counted")
+        @DisplayName("records are written in call order, each at exactly 350 bytes, and counted")
         void recordsAreWrittenInOrder() {
+            // app/jcl/INTCALC.jcl:37-41 defines this DD as DISP=(NEW,CATLG,DELETE) with
+            // DCB=(RECFM=F,LRECL=350,BLKSIZE=0) over DSN=...SYSTRAN(+1). RECFM=F with LRECL=350 is an
+            // UNBLOCKED FIXED file: every record occupies exactly 350 bytes, so a row of any other
+            // width is not a short record - it is a corrupt dataset. This repository is where that
+            // width is enforced, and app/cbl/CBACT04C.cbl:309/500/597 is the only run that opens it.
             try (OutputFile output = repository.openOutput()) {
                 assertThat(output.openStatus()).isEqualTo(FileStatus.OK);
                 assertThat(output.openOutcome()).isEqualTo(Outcome.OK);
@@ -934,18 +1004,29 @@ class TransactionRepositoryTest {
                 assertThat(output.insertStatement()).contains(SYSTRAN_DS).contains("VALUES (?)");
                 assertThat(output.recordsWritten()).isZero();
 
-                assertThat(output.writeSequential(record("2022071800001")).isWritten()).isTrue();
+                // Written in DESCENDING key order deliberately: a sequential file has no key, so an
+                // ORDER BY anywhere on this path would reorder them and the assertion below would fail.
                 assertThat(output.writeSequential(record("2022071800002")).isWritten()).isTrue();
+                assertThat(output.writeSequential(record("2022071800001")).isWritten()).isTrue();
                 assertThat(output.recordsWritten()).isEqualTo(2);
                 assertThat(output.closeOutput()).isEqualTo(FileStatus.OK);
                 assertThat(output.closeApplResult()).isEqualTo(FileStatus.APPL_AOK);
                 assertThat(output.isOpen()).isFalse();
             }
 
-            assertThat(template.queryForList(
-                    "SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + SYSTRAN_DS + "\"", String.class))
-                    .hasSize(2)
-                    .allSatisfy(image -> assertThat(image).hasSize(RECORD_LENGTH));
+            List<String> stored = template.queryForList(
+                    "SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + SYSTRAN_DS + "\"", String.class);
+
+            // Gate G19: exactly 350 bytes per row, not "at least" and not "about".
+            assertThat(stored).hasSize(2).allSatisfy(image -> {
+                assertThat(image).hasSize(RECORD_LENGTH);
+                assertThat(image.getBytes(ASCII)).hasSize(RECORD_LENGTH);
+            });
+            // Call order, read back off the key span at offset 0 rather than off a decoded field.
+            assertThat(stored)
+                    .extracting(image -> image.substring(TranRecord.TRAN_ID_OFFSET,
+                            TranRecord.TRAN_ID_OFFSET + TranRecord.TRAN_ID_LENGTH))
+                    .containsExactly("2022071800002   ", "2022071800001   ");
         }
 
         @Test
@@ -1254,6 +1335,87 @@ class TransactionRepositoryTest {
                     TransactionRepository.PERMANENT_ERROR_STATUS, CicsResponse.none(), null));
         }
 
+        @ParameterizedTest(name = "the {0} arm is distinguishable from all four others (G47, G50)")
+        @ValueSource(strings = { "OK", "END_OF_FILE", "DUPLICATE", "NOT_FOUND", "OTHER" })
+        @DisplayName("each enumerated status is caller-visible as itself and as nothing else")
+        void everyArmIsDistinguishableFromEveryOther(String arm) {
+            // Gate G47. A COBOL caller branches on the two-character FILE STATUS - app/cbl/CBTRN03C.cbl
+            // :251-258 is a three-arm EVALUATE over '00', '10' and WHEN OTHER, and app/cbl/COTRN01C.cbl
+            // :280-291 is a three-arm EVALUATE over NORMAL, NOTFND and WHEN OTHER. Reproducing those
+            // branch structures requires that the five outcomes be mutually exclusive and separately
+            // observable, which is what this asserts. Gate G50 rides along: each of the five
+            // 88-level-derived predicates is driven TRUE by exactly one arm and FALSE by the other four,
+            // so across the five parameters every predicate is exercised both ways.
+            String dd = TransactionRepository.INPUT_DD_NAME;
+            TranRecord present = record("0000000000000001");
+
+            ReadResult result;
+            String expectedStatus;
+            Outcome expectedOutcome;
+            int expectedApplResult;
+            boolean expectedRecord;
+            switch (arm) {
+                case "OK" -> {
+                    result = ReadResult.found(dd, present);
+                    expectedStatus = FileStatus.OK;
+                    expectedOutcome = Outcome.OK;
+                    expectedApplResult = FileStatus.APPL_AOK;
+                    expectedRecord = true;
+                }
+                case "END_OF_FILE" -> {
+                    result = ReadResult.endOfFile(dd);
+                    expectedStatus = FileStatus.END_OF_FILE;
+                    expectedOutcome = Outcome.END_OF_FILE;
+                    expectedApplResult = FileStatus.APPL_EOF;
+                    expectedRecord = false;
+                }
+                case "DUPLICATE" -> {
+                    result = ReadResult.duplicate(dd, present);
+                    expectedStatus = FileStatus.DUPLICATE;
+                    expectedOutcome = Outcome.DUPLICATE;
+                    expectedApplResult = TransactionRepository.APPL_RESULT_FATAL;
+                    expectedRecord = true;
+                }
+                case "NOT_FOUND" -> {
+                    result = ReadResult.notFound(dd);
+                    expectedStatus = FileStatus.NOT_FOUND;
+                    expectedOutcome = Outcome.NOT_FOUND;
+                    expectedApplResult = TransactionRepository.APPL_RESULT_FATAL;
+                    expectedRecord = false;
+                }
+                case "OTHER" -> {
+                    result = ReadResult.other(dd, TransactionRepository.PERMANENT_ERROR_STATUS);
+                    expectedStatus = TransactionRepository.PERMANENT_ERROR_STATUS;
+                    expectedOutcome = Outcome.OTHER;
+                    expectedApplResult = TransactionRepository.APPL_RESULT_FATAL;
+                    expectedRecord = false;
+                }
+                default -> throw new IllegalArgumentException("unenumerated arm " + arm);
+            }
+
+            assertThat(result.status()).isEqualTo(expectedStatus);
+            assertThat(result.outcome()).isEqualTo(expectedOutcome);
+            assertThat(result.applResult()).isEqualTo(expectedApplResult);
+            assertThat(result.isRecordReturned()).isEqualTo(expectedRecord);
+            assertThat(result.ddName()).isEqualTo(dd);
+            assertThat(result.statusImage()).hasSize(FileStatus.STATUS_IMAGE_LENGTH);
+            assertThat(result.describeResponse()).isNotBlank();
+
+            // Exactly one of the five predicates answers true, whichever arm this is.
+            List<Boolean> predicates = List.of(result.isFound(), result.isEndOfFile(),
+                    result.isNotFound(), result.isDuplicate(), result.isOther());
+            assertThat(predicates).filteredOn(answer -> answer).hasSize(1);
+            assertThat(predicates).filteredOn(answer -> !answer).hasSize(4);
+
+            // And this arm's status is shared with no other arm, so a caller's EVALUATE cannot collapse
+            // two conditions into one branch.
+            List<String> everyStatus = List.of(FileStatus.OK, FileStatus.END_OF_FILE,
+                    FileStatus.DUPLICATE, FileStatus.NOT_FOUND,
+                    TransactionRepository.PERMANENT_ERROR_STATUS);
+            assertThat(everyStatus).doesNotHaveDuplicates();
+            assertThat(everyStatus).filteredOn(expectedStatus::equals).hasSize(1);
+        }
+
         @Test
         @DisplayName("a write outcome's status and classification must agree, and every arm is reachable")
         void writeResultInvariantsAndArms() {
@@ -1324,31 +1486,564 @@ class TransactionRepositoryTest {
         @Test
         @DisplayName("there is no rewrite and no delete, because no program in the estate performs one")
         void noRewriteAndNoDelete() {
-            // app/csd/CARDDEMO.CSD:81-82 grants UPDATE(YES) DELETE(YES), but a granted capability is not
-            // an access path: a verified scan of all 28 programs in app/cbl finds no REWRITE and no
-            // DELETE against TRANSACT or TRANFILE. Asserting the absence keeps a future edit from
-            // quietly adding a mutation of the audit trail the legacy system cannot perform.
-            assertThat(TransactionRepository.class.getMethods())
-                    .extracting(java.lang.reflect.Method::getName)
-                    .doesNotContain("rewrite", "delete", "deleteByTranId", "rewriteByTranId");
+            // app/csd/CARDDEMO.CSD:81-82 grants ADD(YES) BROWSE(YES) DELETE(YES) READ(YES) UPDATE(YES),
+            // but a granted capability is not an access path. An exhaustive scan of all 28 programs in
+            // app/cbl finds no REWRITE and no DELETE against TRANSACT or TRANFILE: every REWRITE in the
+            // estate targets ACCTFILE, TRAN-CAT-BAL, CUSTFILE, CARDFILE or USRSEC, and the only DELETE is
+            // app/cbl/COUSR03C.cbl:307 against USRSEC. The transaction file is an append-only audit
+            // trail, and this absence is a deliberate parity boundary rather than an oversight: adding
+            // either operation would give the Java system a capability the COBOL system does not have,
+            // which is a behaviour change however convenient it looks.
+            //
+            // Asserted as a PREDICATE over the whole public surface, not as a list of exact spellings,
+            // so that rewriteRecord, deleteAll, purge-by-any-other-name and every nested type's method
+            // are caught as well.
+            assertThat(publicSurfaceOf(TransactionRepository.class))
+                    .as("no mutation or removal of a posted transaction is reachable")
+                    .isNotEmpty()
+                    .noneMatch(name -> name.contains("rewrite") || name.contains("delete")
+                            || name.contains("purge") || name.contains("remove")
+                            || name.contains("erase") || name.contains("truncate"));
+
+            // "update" is deliberately NOT in that list, because exactly two names legitimately carry
+            // it and both are READS:
+            //   * readForUpdateByTranId  - app/cbl/COTRN01C.cbl:269-278's EXEC CICS READ with the UPDATE
+            //     option, which takes the record lock that UPDATEMODEL(LOCKING) grants;
+            //   * selectByKeyForUpdate   - the composed SELECT ... FOR UPDATE that carries that lock
+            //     request to the backend.
+            // They are enumerated exactly rather than excluded by keyword, so a genuine
+            // updateTransaction could never hide behind the word.
+            assertThat(publicSurfaceOf(TransactionRepository.class))
+                    .filteredOn(name -> name.contains("update"))
+                    .as("every UPDATE on this surface is the read-with-lock option, never a mutation")
+                    .containsOnly("readforupdatebytranid", "selectbykeyforupdate");
         }
 
         @Test
         @DisplayName("TRANSACT has no alternate index, so there is no second finder (G45)")
         void noAlternateIndexFinder() {
-            assertThat(TransactionRepository.class.getMethods())
-                    .extracting(java.lang.reflect.Method::getName)
-                    .noneMatch(name -> name.contains("ViaAltIndex") || name.contains("AlternateIndex"));
+            // Unlike CARDDAT/CARDAIX and CCXREF/CXACAIX, app/csd/CARDDEMO.CSD defines no AIX PATH over
+            // AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, so there is no second access path to expose.
+            assertThat(publicSurfaceOf(TransactionRepository.class))
+                    .noneMatch(name -> name.contains("altindex") || name.contains("alternateindex")
+                            || name.contains("aix"));
         }
 
         @Test
         @DisplayName("no operation throws an abend: the caller decides, exactly as the COBOL does")
         void noOperationThrowsAnAbend() {
-            for (java.lang.reflect.Method method : TransactionRepository.class.getDeclaredMethods()) {
+            // app/cbl/CBTRN02C.cbl:562-575 runs its own '00' -> APPL-RESULT 0 / else -> 12 ladder and
+            // only then displays and abends; app/cbl/CBTRN03C.cbl:248-258 does the same with a three-arm
+            // EVALUATE. The branch therefore belongs to the caller, so no operation here may pre-empt it
+            // by throwing.
+            for (Method method : TransactionRepository.class.getDeclaredMethods()) {
                 assertThat(method.getExceptionTypes())
                         .as("%s declares no checked or abend exception", method.getName())
                         .noneMatch(AbendException.class::isAssignableFrom);
             }
+        }
+    }
+
+    // =================================================================================================
+    // The record and configuration contracts: the copybook geometry, the fixed-point policy, and the two
+    // things that must be absent from the way this class reaches its dataset.
+    // =================================================================================================
+
+    /**
+     * Every public method name reachable on a type and on every type nested inside it, lower-cased so a
+     * predicate over it is spelling-insensitive.
+     *
+     * <p>{@link Class#getMethods()} alone would miss {@code InputFile}, {@code OutputFile} and
+     * {@code Browse}, which is precisely where an added mutation would be easiest to overlook.
+     *
+     * @param type the type to survey
+     * @return the lower-cased names, never {@code null} and never empty for a type with any method
+     */
+    private static List<String> publicSurfaceOf(Class<?> type) {
+        List<String> names = new ArrayList<>();
+        for (Method method : type.getMethods()) {
+            if (method.getDeclaringClass() != Object.class) {
+                names.add(method.getName().toLowerCase(Locale.ROOT));
+            }
+        }
+        for (Class<?> nested : type.getDeclaredClasses()) {
+            for (Method method : nested.getMethods()) {
+                if (method.getDeclaringClass() != Object.class) {
+                    names.add(method.getName().toLowerCase(Locale.ROOT));
+                }
+            }
+        }
+        return names;
+    }
+
+    /**
+     * The compiled bytes of a class, read from the classpath rather than from a source tree.
+     *
+     * <p>A source-file scan would depend on the working directory the test JVM happens to start in;
+     * reading the {@code .class} resource does not, and it sees exactly the string literals that ended up
+     * in the constant pool - which is what "no dataset name is compiled in" actually means.
+     *
+     * @param type the class whose bytes are wanted
+     * @return the class file's bytes
+     */
+    private static byte[] compiledBytesOf(Class<?> type) {
+        String resource = type.getName().substring(type.getName().lastIndexOf('.') + 1) + ".class";
+        try (InputStream in = type.getResourceAsStream(resource)) {
+            assertThat(in).as("the compiled form of %s is on the classpath", type.getName()).isNotNull();
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            in.transferTo(bytes);
+            return bytes.toByteArray();
+        } catch (IOException failure) {
+            throw new UncheckedIOException("Could not read the compiled form of " + type.getName(),
+                    failure);
+        }
+    }
+
+    /** The simple names of every annotation on an element, for the schema-artefact scan. */
+    private static List<String> annotationNamesOf(AnnotatedElement element) {
+        List<String> names = new ArrayList<>();
+        for (Annotation annotation : element.getAnnotations()) {
+            names.add(annotation.annotationType().getSimpleName());
+        }
+        return names;
+    }
+
+    @Nested
+    @DisplayName("The width guards that only an induced failure reaches")
+    class InducedWidthFailures {
+
+        /**
+         * A record that reports a usable key but encodes to the wrong number of bytes.
+         *
+         * <p>{@link TranRecord} cannot be made to do this - its {@code RecordLayout} refuses to
+         * initialise at any width but 350 - so the only way to reach the guards below is to stand in for
+         * it. That is not a contrivance: the guards exist precisely because a record of the wrong width
+         * must never reach the dataset, and a guard that is never executed is a guard nobody has proved.
+         *
+         * @param width the width to encode to
+         * @return a stand-in record encoding to exactly {@code width} bytes
+         */
+        private TranRecord recordEncodingTo(int width) {
+            TranRecord malformed = mock(TranRecord.class);
+            doReturn("0000000000000001").when(malformed).tranId();
+            doReturn(new byte[width]).when(malformed).encode(ArgumentMatchers.any(Charset.class));
+            return malformed;
+        }
+
+        @ParameterizedTest(name = "a keyed add of a {0}-byte record is refused rather than stored")
+        @ValueSource(ints = { 349, 351 })
+        @DisplayName("the keyed WRITE refuses any width but 350, short or long (G19)")
+        void aKeyedAddOfTheWrongWidthIsRefused(int width) {
+            WriteResult refused = repository.write(recordEncodingTo(width));
+
+            assertThat(refused.isWritten()).isFalse();
+            assertThat(refused.isDuplicate()).isFalse();
+            assertThat(refused.isOther()).isTrue();
+            assertThat(refused.status()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+            assertThat(refused.applResult()).isEqualTo(TransactionRepository.APPL_RESULT_FATAL);
+            assertThat(refused.cicsResp()).hasValue(FileStatus.LENGERR);
+            assertThat(refused.observation()).contains(DatasetObservation.recordWidth(width));
+            assertThat(refused.ddName()).isEqualTo(TransactionRepository.CICS_FILE_NAME);
+            // Refused means refused: nothing reached the dataset.
+            assertThat(template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + MASTER_DS + "\"", Integer.class)).isZero();
+        }
+
+        @ParameterizedTest(name = "a sequential write of a {0}-byte record is refused rather than emitted")
+        @ValueSource(ints = { 349, 351 })
+        @DisplayName("the sequential write refuses any width but 350, because RECFM=F has no slack (G19)")
+        void aSequentialWriteOfTheWrongWidthIsRefused(int width) {
+            // app/jcl/INTCALC.jcl:39 declares RECFM=F LRECL=350. In an unblocked fixed file a record of
+            // the wrong width does not truncate one record - it shifts every record after it.
+            try (OutputFile output = repository.openOutput()) {
+                WriteResult refused = output.writeSequential(recordEncodingTo(width));
+
+                assertThat(refused.isWritten()).isFalse();
+                assertThat(refused.isOther()).isTrue();
+                assertThat(refused.status()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
+                assertThat(refused.cicsResp()).hasValue(FileStatus.LENGERR);
+                assertThat(refused.observation()).contains(DatasetObservation.recordWidth(width));
+                assertThat(refused.ddName())
+                        .isEqualTo(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME);
+                assertThat(output.recordsWritten()).isZero();
+                // The run is still usable, so one refused record does not abandon the generation.
+                assertThat(output.writeSequential(record("2022071800001")).isWritten()).isTrue();
+                assertThat(output.recordsWritten()).isEqualTo(1);
+            }
+            assertThat(template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"", Integer.class)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a row present but unreadable is told apart from a row that is simply readable")
+        void aFetchedRowWithNoRecordImageIsDistinguished() throws SQLException {
+            // extractRows is package-private precisely so this can be driven without a backend. Both
+            // sides of "the record-image column held nothing" are exercised here, because collapsing an
+            // unreadable row onto an absent row would report an I/O defect as an end of file - and
+            // app/cbl/CBTRN03C.cbl:251-258 branches differently on '10' than on WHEN OTHER.
+            ResultSet readable = mock(ResultSet.class);
+            doReturn(true, false).when(readable).next();
+            doReturn("X".repeat(RECORD_LENGTH)).when(readable)
+                    .getString(TransactionRepository.RECORD_IMAGE_COLUMN_INDEX);
+
+            var present = repository.extractRows(readable, 1);
+            assertThat(present.rowCount()).isEqualTo(1);
+            assertThat(present.firstImageMissing()).isFalse();
+            assertThat(present.firstImage()).hasSize(RECORD_LENGTH);
+
+            ResultSet unreadable = mock(ResultSet.class);
+            doReturn(true, false).when(unreadable).next();
+            doReturn(null).when(unreadable)
+                    .getString(TransactionRepository.RECORD_IMAGE_COLUMN_INDEX);
+
+            var absent = repository.extractRows(unreadable, 1);
+            assertThat(absent.rowCount()).isEqualTo(1);
+            assertThat(absent.firstImageMissing()).isTrue();
+            assertThat(absent.firstImage()).isNull();
+
+            // And a result set that yields nothing at all is neither of those two conditions.
+            ResultSet empty = mock(ResultSet.class);
+            doReturn(false).when(empty).next();
+            var none = repository.extractRows(empty, 1);
+            assertThat(none.rowCount()).isZero();
+            assertThat(none.firstImageMissing()).isFalse();
+            assertThat(none.firstImage()).isNull();
+        }
+
+        @Test
+        @DisplayName("an open either reports OK and is usable, or reports a failure and is not")
+        void anOpenIsEitherUsableOrReportsWhyItIsNot() {
+            // The one branch outcome in this class that no test reaches is the impossible half of
+            // InputFile's private construction guard, "OPEN reported '00' but there are no statements to
+            // read with". Every one of the four construction sites pairs a null statement set with
+            // PERMANENT_ERROR_STATUS or with a refusal status, and pairs a composed statement set with
+            // FileStatus.OK - so that combination cannot be produced by any caller, and reaching it
+            // would take reflection into a private constructor to assert behaviour nobody can observe.
+            // What IS observable is the invariant the guard protects, and that is asserted here from
+            // both sides: OK implies usable, and not-OK implies not usable.
+            try (InputFile opened = repository.openInput()) {
+                assertThat(opened.openStatus()).isEqualTo(FileStatus.OK);
+                assertThat(opened.isOpen()).isTrue();
+                assertThat(opened.readNext().isEndOfFile()).isTrue();
+            }
+            InputFile failed = repositoryOverMissingRelations().openInput();
+            assertThat(failed.openStatus()).isNotEqualTo(FileStatus.OK);
+            assertThat(failed.isOpen()).isFalse();
+            assertThat(failed.readNext().isOther()).isTrue();
+        }
+    }
+
+    @Nested
+    @DisplayName("The record geometry, the fixed-point policy, and what must be absent")
+    class RecordContract {
+
+        @Test
+        @DisplayName("the fourteen CVTRA05Y spans add up to 350, FILLER included (G19, G21)")
+        void everySpanAddsUpToThreeHundredAndFifty() {
+            // Restated by ADDITION from app/cpy/CVTRA05Y.cpy, item by item, so this assertion is
+            // independent of the constants it is checking. If the two ever disagree, the copybook wins.
+            int cursor = 0;
+            cursor += 16;   // TRAN-ID            PIC X(16)   -> next span starts at 16
+            assertThat(TranRecord.TRAN_TYPE_CD_OFFSET).isEqualTo(cursor);
+            cursor += 2;    // TRAN-TYPE-CD       PIC X(02)   -> 18
+            assertThat(TranRecord.TRAN_CAT_CD_OFFSET).isEqualTo(cursor);
+            cursor += 4;    // TRAN-CAT-CD        PIC 9(04)   -> 22
+            assertThat(TranRecord.TRAN_SOURCE_OFFSET).isEqualTo(cursor);
+            cursor += 10;   // TRAN-SOURCE        PIC X(10)   -> 32
+            assertThat(TranRecord.TRAN_DESC_OFFSET).isEqualTo(cursor);
+            cursor += 100;  // TRAN-DESC          PIC X(100)  -> 132
+            assertThat(TranRecord.TRAN_AMT_OFFSET).isEqualTo(cursor);
+            cursor += 11;   // TRAN-AMT           PIC S9(09)V99 = 9 + 2 zoned bytes, no sign byte -> 143
+            assertThat(TranRecord.TRAN_MERCHANT_ID_OFFSET).isEqualTo(cursor);
+            cursor += 9;    // TRAN-MERCHANT-ID   PIC 9(09)   -> 152
+            assertThat(TranRecord.TRAN_MERCHANT_NAME_OFFSET).isEqualTo(cursor);
+            cursor += 50;   // TRAN-MERCHANT-NAME PIC X(50)   -> 202
+            assertThat(TranRecord.TRAN_MERCHANT_CITY_OFFSET).isEqualTo(cursor);
+            cursor += 50;   // TRAN-MERCHANT-CITY PIC X(50)   -> 252
+            assertThat(TranRecord.TRAN_MERCHANT_ZIP_OFFSET).isEqualTo(cursor);
+            cursor += 10;   // TRAN-MERCHANT-ZIP  PIC X(10)   -> 262
+            assertThat(TranRecord.TRAN_CARD_NUM_OFFSET).isEqualTo(cursor);
+            cursor += 16;   // TRAN-CARD-NUM      PIC X(16)   -> 278
+            assertThat(TranRecord.TRAN_ORIG_TS_OFFSET).isEqualTo(cursor);
+            cursor += 26;   // TRAN-ORIG-TS       PIC X(26)   -> 304
+            assertThat(TranRecord.TRAN_PROC_TS_OFFSET).isEqualTo(cursor);
+            cursor += 26;   // TRAN-PROC-TS       PIC X(26)   -> 330
+            assertThat(TranRecord.FILLER_OFFSET).isEqualTo(cursor);
+            cursor += 20;   // FILLER             PIC X(20)   -> 350
+
+            assertThat(cursor).isEqualTo(RECORD_LENGTH);
+            assertThat(TranRecord.RECORD_LENGTH).isEqualTo(RECORD_LENGTH);
+            assertThat(TranRecord.sumOfDeclaredSpanLengths()).isEqualTo(RECORD_LENGTH);
+            assertThat(repository.recordLength()).isEqualTo(RECORD_LENGTH);
+            // Gate G21: the trailing FILLER is a declared span. Drop it and the sum is 330, every
+            // downstream offset is wrong, and the width assertion above fails immediately - which is
+            // exactly why the width assertion is the cheapest FILLER check there is.
+            assertThat(TranRecord.FILLER_LENGTH).isEqualTo(20);
+            assertThat(TranRecord.FILLER_OFFSET + TranRecord.FILLER_LENGTH).isEqualTo(RECORD_LENGTH);
+            assertThat(TranRecord.FILLER.kind()).isEqualTo(PictureKind.FILLER);
+            assertThat(TranRecord.LAYOUT.storageSpans()).hasSize(14);
+            assertThat(TranRecord.LAYOUT.redefinitions()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a stored row carries TRAN-CARD-NUM at 262 and TRAN-PROC-DT at 304, as SORT expects")
+        void theSortStepsOffsetsAreWhereItExpectsThem() {
+            // app/cbl/CORPT00C.cbl:100 and :102 write these two positions into the SYMNAMES of the SORT
+            // step that app/jcl/TRANREPT.jcl runs ahead of CBTRN03C:
+            //     TRAN-CARD-NUM,263,16,ZD
+            //     TRAN-PROC-DT,305,10,CH
+            // Those are 1-based byte positions, so they are 0-based 262 and 304 here. They corroborate
+            // the copybook from outside it, which is why they are worth asserting separately: an
+            // off-by-one in either would sort the report by the wrong bytes and the diff would show up
+            // as a mysteriously reordered report rather than as a bad offset.
+            TranRecord written = record("0000000001774260");
+            written.moveTranProcTs("2022-07-18 12.34.56.000000");
+            assertThat(repository.write(written).isWritten()).isTrue();
+
+            String stored = template.queryForObject(
+                    "SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + MASTER_DS + "\"", String.class);
+            assertThat(stored).hasSize(RECORD_LENGTH);
+
+            assertThat(TranRecord.TRAN_CARD_NUM_OFFSET).isEqualTo(263 - 1);
+            assertThat(stored.substring(262, 262 + 16)).isEqualTo("4444333322221111");
+
+            assertThat(TranRecord.TRAN_PROC_DT_OFFSET).isEqualTo(305 - 1);
+            assertThat(TranRecord.TRAN_PROC_DT_LENGTH).isEqualTo(10);
+            // TRAN-PROC-DT is the leading ten characters of TRAN-PROC-TS PIC X(26); both begin at the
+            // same byte, which is why one 1-based position serves both.
+            assertThat(TranRecord.TRAN_PROC_TS_OFFSET).isEqualTo(TranRecord.TRAN_PROC_DT_OFFSET);
+            assertThat(stored.substring(304, 304 + 10)).isEqualTo("2022-07-18");
+
+            // And the key the whole dataset is addressed by is still the leading sixteen bytes.
+            assertThat(TranRecord.TRAN_ID_OFFSET).isZero();
+            assertThat(repository.keyLength()).isEqualTo(TranRecord.TRAN_ID_KEY_LENGTH);
+            assertThat(stored.substring(0, KEY_LENGTH)).isEqualTo("0000000001774260");
+            // Gate G21 again, on the wire rather than on a constant.
+            assertThat(stored.substring(330)).isEqualTo(" ".repeat(20));
+        }
+
+        @Test
+        @DisplayName("TRAN-AMT is eleven zoned DISPLAY bytes at offset 132, sign overpunched, no COMP-3")
+        void theAmountOccupiesElevenZonedBytesAtOffset132() {
+            // PIC S9(09)V99 occupies p + s = 9 + 2 = 11 bytes. The V is an assumed decimal point and
+            // takes none, and the S takes none either because the sign is overpunched into the trailing
+            // byte. There is ZERO COMP-3 in app/cpy - verified across all 28 copybooks - so no nibble
+            // unpacking exists to test: a packed S9(09)V99 would be 6 bytes, not 11, and asserting 11
+            // here is what pins the field to the zoned form the fixtures actually carry.
+            assertThat(TranRecord.TRAN_AMT_OFFSET).isEqualTo(132);
+            assertThat(TranRecord.TRAN_AMT_LENGTH).isEqualTo(11);
+            assertThat(TranRecord.TRAN_AMT_INTEGER_DIGITS + TranRecord.TRAN_AMT_SCALE)
+                    .isEqualTo(TranRecord.TRAN_AMT_LENGTH);
+            assertThat(TranRecord.TRAN_AMT_SCALE).isEqualTo(CobolDecimal.MONETARY_SCALE).isEqualTo(2);
+
+            FieldSpan amount = TranRecord.TRAN_AMT;
+            assertThat(amount.name()).isEqualTo("TRAN-AMT");
+            assertThat(amount.kind()).isEqualTo(PictureKind.SIGNED_SCALED);
+            assertThat(amount.offset()).isEqualTo(132);
+            assertThat(amount.length()).isEqualTo(11);
+            assertThat(amount.endOffsetExclusive()).isEqualTo(143);
+            assertThat(amount.redefinition()).isFalse();
+
+            // On the wire: the eleven bytes at 132 are the stored image, overpunch and all.
+            TranRecord written = record("0000000000000001");
+            written.writeTranAmtImage("0000009190}");
+            assertThat(repository.write(written).isWritten()).isTrue();
+
+            String stored = template.queryForObject(
+                    "SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + MASTER_DS + "\"", String.class);
+            assertThat(stored.substring(132, 143)).isEqualTo("0000009190}").hasSize(11);
+            assertThat(stored.charAt(142)).isEqualTo('}');
+        }
+
+        @Test
+        @DisplayName("an amount is stored at scale 2 and TRUNCATED, never rounded (R2, R4, G22, G24)")
+        void anAmountIsStoredAtScaleTwoAndTruncatedNeverRounded() {
+            // ROUNDED appears ZERO times across all 28 programs, so COBOL truncates excess fraction
+            // digits on store and RoundingMode.DOWN is the only faithful policy. Never HALF_UP, never
+            // HALF_EVEN, never CEILING, never FLOOR - and never a double or a float, which cannot
+            // represent a decimal fraction exactly and would drift by a cent.
+            assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
+
+            TranRecord written = record("0000000000000001");
+            // Three excess fraction digits on a positive value, and the digit dropped is a 9: HALF_UP
+            // and HALF_EVEN would both carry it and store 504.78, which is a cent of parity failure.
+            written.moveTranAmt(new BigDecimal("504.779"));
+            assertThat(repository.write(written).isWritten()).isTrue();
+
+            BigDecimal readBack = repository.readByTranId("0000000000000001").requireRecord().tranAmt();
+            assertThat(readBack).isEqualByComparingTo(new BigDecimal("504.77"));
+            assertThat(readBack.scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
+            assertThat(readBack).isEqualTo(new BigDecimal("504.779").setScale(2, RoundingMode.DOWN));
+            assertThat(readBack).isNotEqualByComparingTo(
+                    new BigDecimal("504.779").setScale(2, RoundingMode.HALF_UP));
+            // 504.77 fills the eleven digit positions as 000000504|77, and the trailing 7 carries the
+            // positive sign as 'G' ('{' is +0 and 'A'-'I' are +1 to +9), so the stored image is
+            // 0000005047G - eleven bytes, with no separate sign byte and no decimal point.
+            assertThat(repository.readByTranId("0000000000000001").requireRecord().tranAmtImage())
+                    .isEqualTo("0000005047G");
+
+            // And on the negative side, where DOWN means toward zero and FLOOR would go the other way.
+            TranRecord negative = record("0000000000000002");
+            negative.moveTranAmt(new BigDecimal("-919.006"));
+            assertThat(repository.write(negative).isWritten()).isTrue();
+
+            TranRecord storedNegative =
+                    repository.readByTranId("0000000000000002").requireRecord();
+            assertThat(storedNegative.tranAmt()).isEqualByComparingTo(new BigDecimal("-919.00"));
+            assertThat(storedNegative.tranAmt().scale()).isEqualTo(2);
+            assertThat(storedNegative.tranAmt()).isNotEqualByComparingTo(
+                    new BigDecimal("-919.006").setScale(2, RoundingMode.FLOOR));
+            // -919.00 is magnitude 0000009190 with a negative final digit 0, which overpunches as '}'.
+            assertThat(storedNegative.tranAmtImage()).isEqualTo("0000009190}");
+            assertThat(storedNegative.hasZeroTranAmt()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a whole-value negative zero survives, because the raw span is what moves (R5)")
+        void aNegativeZeroSurvivesOnlyOnTheRawSpan() {
+            // app/data/ASCII/dailytran.txt carries six amount images ending in '}' out of three hundred
+            // records - '}' is "negative, final digit zero". Five of those, and the sixth, are ordinary
+            // negative amounts such as 0000009190} = -919.00, and those DO survive a numeric round trip.
+            // The image that does not is the whole-value negative zero 0000000000}: BigDecimal has no
+            // signed zero, so it decodes to plain 0.00 and a numeric re-encode stores 0000000000{.
+            //
+            // This repository must therefore carry record bytes, not record values. Asserted on the raw
+            // 350-byte span rather than on any decoded field, which is the only assertion that can tell
+            // the difference.
+            TranRecord written = record("0000000000000001");
+            written.writeTranAmtImage("0000000000}");
+            byte[] beforeWrite = written.rawImage();
+
+            assertThat(repository.write(written).isWritten()).isTrue();
+            TranRecord readBack = repository.readByTranId("0000000000000001").requireRecord();
+
+            assertThat(readBack.rawImage()).isEqualTo(beforeWrite);
+            assertThat(readBack.rawImage()).hasSize(RECORD_LENGTH);
+            assertThat(readBack.tranAmtImage()).isEqualTo("0000000000}");
+            assertThat(readBack.rawSpan(TranRecord.TRAN_AMT)).isEqualTo("0000000000}");
+            assertThat(readBack.rawSpanBytes(TranRecord.TRAN_AMT)).hasSize(11);
+            // The value it decodes to is an unsigned zero, and that is not a defect - it is why the
+            // byte assertion above is the one that matters.
+            assertThat(readBack.tranAmt()).isEqualByComparingTo(CobolDecimal.monetaryZero());
+            assertThat(readBack.hasZeroTranAmt()).isTrue();
+
+            // Demonstrating the hazard rather than merely describing it: a numeric re-encode of the very
+            // record just read loses the sign byte, so a copy path must never take that route.
+            TranRecord reEncoded = readBack.copy();
+            reEncoded.moveTranAmt(readBack.tranAmt());
+            assertThat(reEncoded.tranAmtImage()).isEqualTo("0000000000{");
+            assertThat(reEncoded.rawImage()).isNotEqualTo(beforeWrite);
+
+            // Whereas the fixture's real shape round-trips through the value path unchanged.
+            TranRecord ordinary = record("0000000000000002");
+            ordinary.writeTranAmtImage("0000009190}");
+            assertThat(repository.write(ordinary).isWritten()).isTrue();
+            TranRecord ordinaryBack = repository.readByTranId("0000000000000002").requireRecord();
+            assertThat(ordinaryBack.tranAmt()).isEqualByComparingTo(new BigDecimal("-919.00"));
+            TranRecord ordinaryReEncoded = ordinaryBack.copy();
+            ordinaryReEncoded.moveTranAmt(ordinaryBack.tranAmt());
+            assertThat(ordinaryReEncoded.tranAmtImage()).isEqualTo("0000009190}");
+            assertThat(ordinaryReEncoded.rawImage()).isEqualTo(ordinaryBack.rawImage());
+        }
+
+        @Test
+        @DisplayName("no dataset name is compiled into this repository - it comes from the binding (G46)")
+        void noDatasetNameIsCompiledIn() {
+            // Gate G46. app/csd/CARDDEMO.CSD:77 names DSNAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS) and
+            // app/jcl/INTCALC.jcl and POSTTRAN.jcl name the DDs, but not one of those literals may reach
+            // Java: the name resolves from the carddemo.datasets.TRANSACT / TRANFILE / SYSTRAN keys of
+            // application.yml. Scanned over the COMPILED bytes rather than over a source path, so the
+            // assertion sees the constant pool itself and does not depend on the working directory.
+            List<Class<?>> compiled = new ArrayList<>();
+            compiled.add(TransactionRepository.class);
+            compiled.addAll(List.of(TransactionRepository.class.getDeclaredClasses()));
+
+            for (Class<?> type : compiled) {
+                String constants = new String(compiledBytesOf(type), StandardCharsets.ISO_8859_1);
+                assertThat(constants)
+                        .as("%s compiles in no production dataset name", type.getName())
+                        .doesNotContain("AWS.M2.CARDDEMO")
+                        .doesNotContain("AWS.M2")
+                        .doesNotContain("VSAM.KSDS");
+            }
+
+            // The positive half of the same gate: change the binding and the identity changes with it,
+            // which is only possible if nothing is hard-coded.
+            String otherName = "CARDDEMO.OTHER.TRANSACT.VSAM.KSDS";
+            TransactionRepository rebound = new TransactionRepository(template,
+                    bindingsWith(TransactionRepository.CICS_FILE_NAME, ksds(otherName)), ASCII,
+                    RecordImageForm.CHARACTER);
+            assertThat(rebound.datasetName()).isEqualTo(otherName);
+            assertThat(rebound.describeStatement()).contains(otherName);
+            // And the three keys the bindings are looked up under are DD and file names, not datasets.
+            assertThat(TransactionRepository.CICS_FILE_NAME).isEqualTo("TRANSACT");
+            assertThat(TransactionRepository.INPUT_DD_NAME).isEqualTo("TRANFILE");
+            assertThat(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME).isEqualTo("SYSTRAN");
+        }
+
+        @Test
+        @DisplayName("no schema artefact of any kind is involved in reaching the dataset (G44)")
+        void noSchemaArtefactIsInvolved() {
+            // Gate G44: JDBC to the existing backend, with no DDL, no ORM mapping, no version column and
+            // no migration. The dataset is reached by composed statements against a relation that
+            // already exists; nothing here declares, creates or evolves one.
+            List<String> forbidden = List.of("Entity", "Table", "Id", "Column", "GeneratedValue",
+                    "Version", "IdClass", "EmbeddedId", "SequenceGenerator", "JoinColumn");
+
+            for (Class<?> type : List.of(TransactionRepository.class, TranRecord.class,
+                    TransactionRepository.ReadResult.class, TransactionRepository.WriteResult.class,
+                    TransactionRepository.InputFile.class, TransactionRepository.OutputFile.class,
+                    TransactionRepository.Browse.class)) {
+                assertThat(annotationNamesOf(type))
+                        .as("%s carries no persistence mapping annotation", type.getSimpleName())
+                        .doesNotContainAnyElementsOf(forbidden);
+                for (Field field : type.getDeclaredFields()) {
+                    assertThat(annotationNamesOf(field))
+                            .as("%s.%s carries no persistence mapping annotation", type.getSimpleName(),
+                                    field.getName())
+                            .doesNotContainAnyElementsOf(forbidden);
+                }
+                for (Method method : type.getDeclaredMethods()) {
+                    assertThat(annotationNamesOf(method))
+                            .as("%s.%s carries no persistence mapping annotation",
+                                    type.getSimpleName(), method.getName())
+                            .doesNotContainAnyElementsOf(forbidden);
+                }
+                for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                    assertThat(annotationNamesOf(constructor))
+                            .as("a constructor of %s carries no persistence mapping annotation",
+                                    type.getSimpleName())
+                            .doesNotContainAnyElementsOf(forbidden);
+                }
+            }
+
+            // No composed statement is a data-definition statement, and none names a version column.
+            List<String> statements = new ArrayList<>();
+            statements.add(repository.describeStatement());
+            statements.add(repository.describeInputStatement());
+            try (OutputFile output = repository.openOutput()) {
+                statements.add(output.insertStatement());
+            }
+            for (String statement : statements) {
+                String upper = statement.toUpperCase(Locale.ROOT);
+                assertThat(upper)
+                        .as("[%s] reads or writes rows and defines nothing", statement)
+                        .doesNotContain("CREATE ")
+                        .doesNotContain("ALTER ")
+                        .doesNotContain("DROP ")
+                        .doesNotContain("TRUNCATE")
+                        .doesNotContain("GRANT ")
+                        .doesNotContain("VERSION")
+                        .doesNotContain("OPTLOCK");
+            }
+            // The record itself models exactly the copybook's fourteen spans - no surrogate key column,
+            // no discriminator, no optimistic-locking counter has been added to it.
+            assertThat(TranRecord.LAYOUT.storageSpans())
+                    .extracting(FieldSpan::name)
+                    .containsExactly("TRAN-ID", "TRAN-TYPE-CD", "TRAN-CAT-CD", "TRAN-SOURCE",
+                            "TRAN-DESC", "TRAN-AMT", "TRAN-MERCHANT-ID", "TRAN-MERCHANT-NAME",
+                            "TRAN-MERCHANT-CITY", "TRAN-MERCHANT-ZIP", "TRAN-CARD-NUM", "TRAN-ORIG-TS",
+                            "TRAN-PROC-TS", "FILLER");
         }
     }
 }

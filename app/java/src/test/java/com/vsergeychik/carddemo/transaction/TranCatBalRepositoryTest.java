@@ -31,7 +31,9 @@ import javax.sql.DataSource;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -45,6 +47,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,6 +71,22 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * 50 records of exactly 50 bytes, already in ascending key order. Failure arms that a real relation cannot
  * produce are driven through mocked JDBC chains, because a state the COBOL has no code for must be
  * unreachable rather than merely unobserved.
+ *
+ * <p>Four subjects are singled out because a mistake in any of them is <em>invisible</em> to a width check
+ * and would surface only as a byte difference in another package's output:
+ * <ol>
+ *   <li><strong>The 17-byte key.</strong> {@code app/cpy/CVTRA02Y.cpy} is also a 50-byte record, so the
+ *       record width cannot tell the two apart; only the key width and the offset of the signed span can.
+ *       See {@link KeyGeometry}.</li>
+ *   <li><strong>The name {@code TRAN-CAT-KEY}.</strong> {@code app/cpy/CVTRA04Y.cpy} declares a group of
+ *       exactly that name that is 6 bytes rather than 17. Neither COBOL group is renamed to disambiguate
+ *       them - a field name is part of the contract. See {@link KeyGeometry}.</li>
+ *   <li><strong>{@code INITIALIZE} skips {@code FILLER}.</strong> {@code CBTRN02C}'s create-on-miss path
+ *       initialises the record area and writes it, so the 22 reserved bytes the failed read left behind go
+ *       to the dataset unchanged. See {@link CreateOnMissInitialize}.</li>
+ *   <li><strong>There is no schema.</strong> No DDL, no mapping annotation, no alternate index and no
+ *       hard-coded dataset name. See {@link SchemaAbsence}.</li>
+ * </ol>
  */
 @DisplayName("TranCatBalRepository - the TCATBALF transaction category balance dataset")
 class TranCatBalRepositoryTest {
@@ -94,6 +114,74 @@ class TranCatBalRepositoryTest {
 
     /** The declared width of the trailing {@code FILLER}. */
     private static final int FILLER_WIDTH = 22;
+
+    // ---- the four elementary widths of app/cpy/CVTRA01Y.cpy, so 17 and 50 are reached by addition ----
+
+    /** {@code TRANCAT-ACCT-ID PIC 9(11)}. */
+    private static final int ACCT_ID_WIDTH = 11;
+
+    /** {@code TRANCAT-TYPE-CD PIC X(02)}. */
+    private static final int TYPE_CD_WIDTH = 2;
+
+    /** {@code TRANCAT-CD PIC 9(04)}. */
+    private static final int CAT_CD_WIDTH = 4;
+
+    /**
+     * {@code TRAN-CAT-BAL PIC S9(09)V99}: 9 integer digits plus 2 fractional ones.
+     *
+     * <p>Eleven bytes and not twelve, and not six either: there is no {@code COMP-3} anywhere in
+     * {@code app/cpy}, so the span is zoned {@code DISPLAY} with the sign overpunched into the trailing
+     * byte, and {@code S9(p)V99} therefore occupies exactly {@code p + 2} bytes.
+     */
+    private static final int BALANCE_WIDTH = 9 + 2;
+
+    // ---- the CVTRA02Y near-miss, restated here rather than imported ----
+
+    /**
+     * The offset of {@code DIS-INT-RATE} within {@code app/cpy/CVTRA02Y.cpy}'s 50-byte
+     * {@code DIS-GROUP-RECORD}: {@code X(10) + X(02) + 9(04)} = 16.
+     *
+     * <p>Restated as a literal rather than imported from {@code account.model.DisclosureGroupRecord},
+     * because that type belongs to another package and this class must not depend on it to state the
+     * contrast. The point of the contrast is in {@link KeyGeometry#signedSpanStartsAtSeventeenNotSixteen()}.
+     */
+    private static final int DISCLOSURE_GROUP_RATE_OFFSET = 16;
+
+    /** {@code DIS-INT-RATE PIC S9(04)V99} is {@code 4 + 2} = 6 bytes, not 11. */
+    private static final int DISCLOSURE_GROUP_RATE_WIDTH = 4 + 2;
+
+    // ---- the vocabulary of a schema, which this module must not have anywhere (gates G44 and G45) ----
+
+    /**
+     * Annotation simple names that would mean an object-relational mapping had been imposed on a dataset.
+     *
+     * <p>Immutable, so this list is shared state without being mutable state (B9 / gate G53).
+     */
+    private static final List<String> MAPPING_ANNOTATION_NAMES = List.of(
+            "Entity", "Table", "SecondaryTable", "Id", "IdClass", "EmbeddedId", "Embeddable", "Embedded",
+            "Column", "JoinColumn", "PrimaryKeyJoinColumn", "GeneratedValue", "SequenceGenerator",
+            "TableGenerator", "Version", "OneToOne", "OneToMany", "ManyToOne", "ManyToMany", "Basic",
+            "Convert", "Document", "PersistenceCapable");
+
+    /**
+     * Statement fragments that define or alter structure rather than reading and writing rows.
+     *
+     * <p>{@code UPDATE} and {@code INSERT} are deliberately absent: they are the rewrite and the write the
+     * COBOL performs. What must never appear is anything that would bring a schema into being.
+     */
+    private static final List<String> DDL_FRAGMENTS = List.of(
+            "CREATE ", "ALTER ", "DROP ", "TRUNCATE ", "RENAME ", "GRANT ", "REVOKE ", "COMMENT ON",
+            "PRIMARY KEY", "FOREIGN KEY", "CONSTRAINT", "SEQUENCE", "INDEX", "MERGE ");
+
+    /**
+     * Method-name fragments this module uses when a dataset genuinely has an alternate index.
+     *
+     * <p>Taken from the two repositories that do have one - {@code CARDAIX} over {@code CARDDAT} and
+     * {@code CXACAIX} over {@code CCXREF} - so the absence asserted here is measured against the
+     * convention actually in use rather than an invented one.
+     */
+    private static final List<String> ALTERNATE_INDEX_NAME_FRAGMENTS = List.of(
+            "alternateindex", "altindex", "aix", "alternatekey", "altkey", "secondaryindex");
 
     /** An account identifier the fixture does not contain, for the invalid-key arms. */
     private static final long ABSENT_ACCT_ID = 99_999_999_999L;
@@ -483,18 +571,110 @@ class TranCatBalRepositoryTest {
         void keyIsSeventeenAndNotSixteen() {
             assertThat(TranCatBalRepository.KEY_LENGTH).isEqualTo(SEVENTEEN);
             // app/cpy/CVTRA02Y.cpy's DIS-GROUP-RECORD is ALSO 50 bytes, so no width check distinguishes
-            // the two layouts. This is the assertion that does.
+            // the two layouts. This is the assertion that does. That record is modelled in the account
+            // package - account.model.DisclosureGroupRecord - and deliberately not here; only its two
+            // measurements are restated, so this class states the contrast without depending on it.
             assertThat(TranCatBalRepository.DISCLOSURE_GROUP_KEY_LENGTH).isEqualTo(16);
             assertThat(TranCatBalRepository.KEY_LENGTH)
                     .isNotEqualTo(TranCatBalRepository.DISCLOSURE_GROUP_KEY_LENGTH);
         }
 
         @Test
+        @DisplayName("every width and offset is reached by ADDITION from the copybook, never from memory")
+        void geometryIsReachedByAddition() {
+            // app/cpy/CVTRA01Y.cpy, elementary item by elementary item:
+            //   05 TRAN-CAT-KEY.
+            //      10 TRANCAT-ACCT-ID PIC 9(11).      11
+            //      10 TRANCAT-TYPE-CD PIC X(02).       2
+            //      10 TRANCAT-CD      PIC 9(04).       4   -> 11 + 2 + 4 = 17
+            //   05 TRAN-CAT-BAL       PIC S9(09)V99.  11   -> at 17, ending at 28
+            //   05 FILLER             PIC X(22).      22   -> at 28, ending at 50
+            int keyByAddition = ACCT_ID_WIDTH + TYPE_CD_WIDTH + CAT_CD_WIDTH;
+            assertThat(keyByAddition).isEqualTo(SEVENTEEN);
+            assertThat(TranCatBalRecord.TRAN_CAT_KEY_LENGTH).isEqualTo(keyByAddition);
+
+            // Each component sits immediately after the one before it, with no gap and no overlap.
+            assertThat(TranCatBalRecord.TRANCAT_ACCT_ID_OFFSET).isZero();
+            assertThat(TranCatBalRecord.TRANCAT_TYPE_CD_OFFSET)
+                    .isEqualTo(TranCatBalRecord.TRANCAT_ACCT_ID_OFFSET + ACCT_ID_WIDTH);
+            assertThat(TranCatBalRecord.TRANCAT_CD_OFFSET)
+                    .isEqualTo(TranCatBalRecord.TRANCAT_TYPE_CD_OFFSET + TYPE_CD_WIDTH);
+            assertThat(TranCatBalRecord.TRAN_CAT_BAL_OFFSET)
+                    .isEqualTo(TranCatBalRecord.TRANCAT_CD_OFFSET + CAT_CD_WIDTH);
+            assertThat(TranCatBalRecord.FILLER_OFFSET)
+                    .isEqualTo(TranCatBalRecord.TRAN_CAT_BAL_OFFSET + BALANCE_WIDTH);
+
+            // And the record ends exactly where FILLER does - gate G19, and the check that fails the
+            // instant a FILLER span is dropped (gate G21's structural half).
+            assertThat(TranCatBalRecord.FILLER_OFFSET + FILLER_WIDTH).isEqualTo(FIFTY);
+            assertThat(TranCatBalRecord.RECORD_LENGTH).isEqualTo(FIFTY);
+            assertThat(TranCatBalRepository.RECORD_LENGTH).isEqualTo(FIFTY);
+            assertThat(TranCatBalRecord.newInstance(ASCII).encode()).hasSize(FIFTY);
+        }
+
+        @Test
+        @DisplayName("the signed span starts at 17 and is 11 bytes - CVTRA02Y's starts at 16 and is 6")
+        void signedSpanStartsAtSeventeenNotSixteen() {
+            // The offset-level form of the near-miss, and the one that actually bites: both records are
+            // 50 bytes, so a type confusion survives every width check and then silently decodes the
+            // balance from the wrong six bytes. TRAN-CAT-BAL S9(09)V99 is 11 bytes at 17; CVTRA02Y's
+            // DIS-INT-RATE S9(04)V99 is 6 bytes at 16 (account.model.DisclosureGroupRecord, not here).
+            assertThat(TranCatBalRecord.TRAN_CAT_BAL_OFFSET).isEqualTo(SEVENTEEN);
+            assertThat(TranCatBalRecord.TRAN_CAT_BAL_LENGTH).isEqualTo(BALANCE_WIDTH);
+            assertThat(TranCatBalRecord.TRAN_CAT_BAL_INTEGER_DIGITS).isEqualTo(9);
+
+            assertThat(TranCatBalRecord.TRAN_CAT_BAL_OFFSET)
+                    .isNotEqualTo(DISCLOSURE_GROUP_RATE_OFFSET);
+            assertThat(TranCatBalRecord.TRAN_CAT_BAL_LENGTH)
+                    .isNotEqualTo(DISCLOSURE_GROUP_RATE_WIDTH);
+            // The signed span begins exactly where the key ends in both layouts, which is why the two
+            // offsets differ by exactly the one byte their key widths differ by.
+            assertThat(TranCatBalRecord.TRAN_CAT_BAL_OFFSET - DISCLOSURE_GROUP_RATE_OFFSET)
+                    .isEqualTo(TranCatBalRepository.KEY_LENGTH
+                            - TranCatBalRepository.DISCLOSURE_GROUP_KEY_LENGTH)
+                    .isEqualTo(1);
+        }
+
+        @Test
         @DisplayName("the key is not 6 bytes - CVTRA04Y declares an identically-named TRAN-CAT-KEY")
         void keyIsNotTheSixByteTranCategoryKey() {
-            assertThat(TranCatBalRepository.TRAN_CATEGORY_KEY_LENGTH).isEqualTo(6);
+            // app/cpy/CVTRA04Y.cpy's TRAN-CAT-RECORD declares a group with literally this same name -
+            // 05 TRAN-CAT-KEY - built from TRAN-TYPE-CD X(02) + TRAN-CAT-CD 9(04) = 6 bytes. Neither
+            // COBOL group is renamed to disambiguate them: a field name is part of the contract, and
+            // silently correcting the source is exactly what B4 forbids. The 6-byte one is exercised in
+            // TranCategoryRepositoryTest; this assertion only pins down which of the two is ours.
+            assertThat(TranCatBalRepository.TRAN_CATEGORY_KEY_LENGTH)
+                    .isEqualTo(TYPE_CD_WIDTH + CAT_CD_WIDTH)
+                    .isEqualTo(6);
             assertThat(TranCatBalRepository.KEY_LENGTH)
+                    .isEqualTo(SEVENTEEN)
                     .isNotEqualTo(TranCatBalRepository.TRAN_CATEGORY_KEY_LENGTH);
+            // All three layouts are mutually distinguishable, so no pair can be crossed unnoticed.
+            assertThat(List.of(TranCatBalRepository.KEY_LENGTH,
+                    TranCatBalRepository.DISCLOSURE_GROUP_KEY_LENGTH,
+                    TranCatBalRepository.TRAN_CATEGORY_KEY_LENGTH)).doesNotHaveDuplicates();
+        }
+
+        @Test
+        @DisplayName("TRANCAT-TYPE-CD is character data, not a number - PIC X(02) keeps its leading zero")
+        void typeCodeIsCharacterDataAndNotANumber() throws NoSuchMethodException {
+            // The picture is X, so the accessor's declared type must be String. An int accessor would
+            // decode the fixture's "01" as 1, re-encode it as "1 " under the PIC X move rule, and shift
+            // nothing - it would simply write a different key that no read would ever match again.
+            Method accessor = TranCatBalRecord.class.getMethod("trancatTypeCd");
+            assertThat(accessor.getReturnType()).isEqualTo(String.class);
+            assertThat(TranCatBalRecord.class.getMethod("trancatTypeCd", String.class)
+                    .getReturnType()).isEqualTo(TranCatBalRecord.class);
+
+            // TranCatKey carries it as a String for the same reason.
+            assertThat(new TranCatKey(1L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD).trancatTypeCd())
+                    .isEqualTo(FIXTURE_TYPE_CD);
+            // The leading zero is significant: "01" and "1" are different keys, and neither is the
+            // number 1. TRANCAT-CD, whose picture is 9(04), is the int the other two are not.
+            assertThat(new TranCatKey(1L, "01", 1).image(ASCII))
+                    .isNotEqualTo(new TranCatKey(1L, "1", 1).image(ASCII));
+            assertThat(TranCatBalRecord.class.getMethod("trancatCd").getReturnType())
+                    .isEqualTo(int.class);
         }
 
         @Test
@@ -878,6 +1058,21 @@ class TranCatBalRepositoryTest {
     // CBTRN02C's keyed read - 2700-UPDATE-TCATBAL, and the '00' OR '23' guard at L481.
     // =============================================================================================
 
+    /**
+     * The keyed read, and the reason {@code '23'} is not an error here.
+     *
+     * <p>{@code 2700-UPDATE-TCATBAL} reads by the composite key and then accepts
+     * {@code IF TCATBALF-STATUS = '00' OR '23'} [{@code app/cbl/CBTRN02C.cbl:481}]. Anything else moves the
+     * status to {@code IO-STATUS}, displays it and abends. So "not found" is a success-shaped outcome that
+     * the caller acts on - it is what sets {@code WS-CREATE-TRANCAT-REC} to {@code 'Y'} at {@code :478} and
+     * sends the program down the create path - and it must be reachable without an exception and without
+     * being folded into the generic failure arm.
+     *
+     * <p>Every status arm this dataset can produce is driven here, which is what acceptance gate G47 asks
+     * for: {@code '00'}, {@code '23'}, and the "other" arm that leads to the abend. {@code '10'} belongs to
+     * the browse and is driven in {@link SequentialBrowse}; {@code '22'} belongs to the write and is driven
+     * in {@link Write}.
+     */
     @Nested
     @DisplayName("the keyed read - app/cbl/CBTRN02C.cbl:L467-L501, where '23' is a normal outcome")
     class KeyedRead {
@@ -1017,6 +1212,223 @@ class TranCatBalRepositoryTest {
             assertThat(result.isNotFound()).isTrue();
         }
     }
+
+    // =============================================================================================
+    // INITIALIZE TRAN-CAT-BAL-RECORD - app/cbl/CBTRN02C.cbl:504, and the FILLER it does not touch.
+    // =============================================================================================
+
+    /**
+     * The {@code INITIALIZE} that opens {@code 2700-A-CREATE-TCATBAL-REC}, and the one detail of it that a
+     * reasonable reader would get wrong.
+     *
+     * <p>{@code INITIALIZE} without a {@code REPLACING} phrase sets every elementary item to the figurative
+     * constant for its category - {@code ZERO} for a numeric item, {@code SPACE} for an alphanumeric one -
+     * and <strong>skips {@code FILLER}</strong>, because {@code FILLER} is unnamed and no statement can
+     * refer to it. In {@code 2700-A} the {@code INITIALIZE} at {@code :504} runs immediately after the
+     * failed {@code READ} at {@code :474}, so the record area still holds the bytes of whatever was read
+     * into it last, and the {@code WRITE} at {@code :510} sends those 22 reserved bytes to the dataset.
+     *
+     * <p>That is preserved rather than tidied (B5). Blanking the reserved span would be a 22-byte
+     * difference in every created record, which is exactly the class of silent divergence the field-level
+     * differ exists to catch - and it would be a change to the program, not a fix to it.
+     */
+    @Nested
+    @DisplayName("INITIALIZE on the create-on-miss path - app/cbl/CBTRN02C.cbl:L503-L510")
+    class CreateOnMissInitialize {
+
+        @Test
+        @DisplayName("INITIALIZE resets the four named items: 11 zeros, 2 SPACES, 4 zeros, +0.00")
+        void initializeResetsEveryNamedItem() {
+            TranCatBalRecord record = TranCatBalRecord.decode(fixtureRows().get(0), ASCII);
+            // Preconditions, so the reset below is proved to have done something.
+            assertThat(record.trancatAcctId()).isEqualTo(1L);
+            assertThat(record.trancatTypeCd()).isEqualTo(FIXTURE_TYPE_CD);
+            assertThat(record.trancatCd()).isEqualTo(FIXTURE_CAT_CD);
+
+            record.initialize();
+
+            // A numeric item goes to ZERO, an alphanumeric one to SPACE - so TRANCAT-TYPE-CD, whose
+            // picture is X(02), becomes two spaces and not "00".
+            Map<String, String> images = record.fieldImages();
+            assertThat(images)
+                    .containsEntry(TranCatBalRecord.TRANCAT_ACCT_ID_NAME, "0".repeat(ACCT_ID_WIDTH))
+                    .containsEntry(TranCatBalRecord.TRANCAT_TYPE_CD_NAME, " ".repeat(TYPE_CD_WIDTH))
+                    .containsEntry(TranCatBalRecord.TRANCAT_CD_NAME, "0".repeat(CAT_CD_WIDTH))
+                    // S9(09)V99 zero carries the positive-zero overpunch '{' in its trailing byte, which
+                    // is the image every row of the shipped fixture holds.
+                    .containsEntry(TranCatBalRecord.TRAN_CAT_BAL_NAME,
+                            "0".repeat(BALANCE_WIDTH - 1) + "{");
+
+            assertThat(record.trancatAcctId()).isZero();
+            assertThat(record.trancatTypeCd()).isEqualTo("  ");
+            assertThat(record.trancatCd()).isZero();
+            assertThat(record.tranCatBalImage()).isEqualTo("0".repeat(BALANCE_WIDTH - 1) + "{");
+            assertThat(record.tranCatBal()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(record.tranCatBal().scale()).isEqualTo(TranCatBalRepository.TRAN_CAT_BAL_SCALE);
+            assertThat(record.tranCatBalIsZero()).isTrue();
+
+            // Exactly four items are addressable by name, and FILLER is not among them. That is the
+            // reason INITIALIZE cannot reach it, rather than an oversight in this model.
+            assertThat(images).hasSize(4).containsOnlyKeys(
+                    TranCatBalRecord.TRANCAT_ACCT_ID_NAME,
+                    TranCatBalRecord.TRANCAT_TYPE_CD_NAME,
+                    TranCatBalRecord.TRANCAT_CD_NAME,
+                    TranCatBalRecord.TRAN_CAT_BAL_NAME);
+        }
+
+        @Test
+        @DisplayName("INITIALIZE leaves FILLER untouched - the fixture's 22 zeros survive it")
+        void initializeLeavesTheFixturesFillerUntouched() {
+            TranCatBalRecord record = TranCatBalRecord.decode(fixtureRows().get(0), ASCII);
+            // Measured from app/data/ASCII/tcatbal.txt: the reserved span holds 22 ASCII zeros, not
+            // spaces. That difference is what makes this observable at all.
+            String reserved = record.fillerImage();
+            assertThat(reserved).hasSize(FILLER_WIDTH).isEqualTo("0".repeat(FILLER_WIDTH));
+
+            record.initialize();
+
+            assertThat(record.fillerImage()).isEqualTo(reserved);
+            assertThat(record.fillerBytes()).isEqualTo(reserved.getBytes(ASCII));
+            assertThat(record.fillerImage()).isNotEqualTo(" ".repeat(FILLER_WIDTH));
+            assertThat(record.rawImage()).hasSize(FIFTY);
+        }
+
+        @Test
+        @DisplayName("INITIALIZE leaves FILLER untouched the other way too - spaces stay spaces")
+        void initializeLeavesAnAllocatedRecordsSpaceFillerUntouched() {
+            // The other state of the same predicate, which is what gate G50 asks for: the previous test
+            // shows non-space reserved bytes surviving, this one shows space ones surviving.
+            // A record allocated rather than read space-fills its
+            // reserved span, because the copybook gives FILLER no VALUE clause; INITIALIZE leaves that
+            // alone as well. Together the two tests show the span is carried, not regenerated.
+            TranCatBalRecord fresh = TranCatBalRecord.newInstance(ASCII);
+            assertThat(fresh.fillerImage()).isEqualTo(" ".repeat(FILLER_WIDTH));
+
+            fresh.trancatAcctId(7L).trancatTypeCd("XY").trancatCd(9)
+                    .tranCatBal(new BigDecimal("3.00"));
+            fresh.initialize();
+
+            assertThat(fresh.fillerImage()).isEqualTo(" ".repeat(FILLER_WIDTH));
+            assertThat(fresh.trancatAcctId()).isZero();
+            assertThat(fresh.trancatTypeCd()).isEqualTo("  ");
+            assertThat(fresh.trancatCd()).isZero();
+            assertThat(fresh.tranCatBalIsZero()).isTrue();
+        }
+
+        @Test
+        @DisplayName("INITIALIZE rewrites exactly the first 28 bytes and no others")
+        void initializeRewritesExactlyTheFirstTwentyEightBytes() {
+            TranCatBalRecord record = TranCatBalRecord.decode(fixtureRows().get(0), ASCII);
+            String before = record.rawImage();
+
+            record.initialize();
+            String after = record.rawImage();
+
+            assertThat(after).hasSize(FIFTY).isNotEqualTo(before);
+            // The named items occupy 11 + 2 + 4 + 11 = 28 bytes, and those are the ones that change.
+            assertThat(TranCatBalRecord.FILLER_OFFSET)
+                    .isEqualTo(ACCT_ID_WIDTH + TYPE_CD_WIDTH + CAT_CD_WIDTH + BALANCE_WIDTH);
+            assertThat(after.substring(0, TranCatBalRecord.FILLER_OFFSET))
+                    .isEqualTo("0".repeat(ACCT_ID_WIDTH) + " ".repeat(TYPE_CD_WIDTH)
+                            + "0".repeat(CAT_CD_WIDTH) + "0".repeat(BALANCE_WIDTH - 1) + "{");
+            // Everything from offset 28 on is byte-identical to what it was.
+            assertThat(after.substring(TranCatBalRecord.FILLER_OFFSET))
+                    .hasSize(FILLER_WIDTH)
+                    .isEqualTo(before.substring(TranCatBalRecord.FILLER_OFFSET));
+        }
+
+        @Test
+        @DisplayName("INITIALIZE returns the same record, so the MOVEs that follow it can chain")
+        void initializeIsChainableOnTheSameInstance() {
+            // COBOL's INITIALIZE operates on storage in place; the Java form returns this so that :505
+            // through :508 read as the single statement sequence they are.
+            TranCatBalRecord record = TranCatBalRecord.newInstance(ASCII);
+            assertThat(record.initialize()).isSameAs(record);
+            assertThat(record.initialize().trancatAcctId(4L).trancatCd(3)).isSameAs(record);
+        }
+
+        @Test
+        @DisplayName("the whole 2700-A sequence: a '23' read, INITIALIZE, the MOVEs, the ADD, a '00' WRITE")
+        void createOnMissCarriesTheReservedBytesToTheDataset() {
+            JdbcTemplate template = seeded(fixtureRows());
+            TranCatBalRepository repository = repository(template);
+
+            // A first transaction hits an existing key, so 2700-UPDATE-TCATBAL's READ at :474 succeeds
+            // and leaves that record - reserved span included - in the record area.
+            TranCatBalRecord area = repository.readByKey(1L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD)
+                    .record().orElseThrow();
+            String carriedOver = area.fillerImage();
+            assertThat(carriedOver).isEqualTo("0".repeat(FILLER_WIDTH));
+
+            // A second transaction arrives for a key the dataset does not hold. The READ takes its
+            // INVALID KEY branch, WS-CREATE-TRANCAT-REC becomes 'Y' at :478, and the guard at :481
+            // treats '23' as normal - so the program continues rather than abending.
+            ReadResult miss = repository.readByKey(ABSENT_ACCT_ID, FIXTURE_TYPE_CD, FIXTURE_CAT_CD);
+            assertThat(miss.isNotFound()).isTrue();
+            assertThat(miss.isOkOrNotFound()).isTrue();
+            assertThat(miss.isOther()).isFalse();
+            assertThat(miss.applResultWhereNotFoundIsNormal()).isEqualTo(FileStatus.APPL_AOK);
+            // A failed READ does not clear the record area, which is why the reserved bytes are still
+            // the previous record's when the create path starts.
+            assertThat(miss.record()).isEmpty();
+            assertThat(area.fillerImage()).isEqualTo(carriedOver);
+
+            // 2700-A-CREATE-TCATBAL-REC, statement for statement.
+            area.initialize()                              // :504 INITIALIZE TRAN-CAT-BAL-RECORD
+                    .trancatAcctId(ABSENT_ACCT_ID)         // :505 MOVE XREF-ACCT-ID
+                    .trancatTypeCd(FIXTURE_TYPE_CD)        // :506 MOVE DALYTRAN-TYPE-CD
+                    .trancatCd(FIXTURE_CAT_CD)             // :507 MOVE DALYTRAN-CAT-CD
+                    .addToTranCatBal(new BigDecimal("25.75"));   // :508 ADD DALYTRAN-AMT
+            WriteResult written = repository.write(area);   // :510 WRITE, then '00' or abend
+            assertThat(written.isWritten()).isTrue();
+            assertThat(written.status()).isEqualTo(FileStatus.OK);
+            assertThat(written.applResult()).isEqualTo(FileStatus.APPL_AOK);
+
+            // The reserved bytes reached the dataset unchanged: INITIALIZE never touched them and the
+            // WRITE sent all 50. Blanking them here would differ from the COBOL in 22 bytes per created
+            // record - invisible to a width check, and visible to the field-level differ.
+            TranCatBalRecord stored = repository
+                    .readByKey(ABSENT_ACCT_ID, FIXTURE_TYPE_CD, FIXTURE_CAT_CD)
+                    .record().orElseThrow();
+            assertThat(stored.rawImage()).hasSize(FIFTY);
+            assertThat(stored.fillerImage())
+                    .isEqualTo(carriedOver)
+                    .isNotEqualTo(" ".repeat(FILLER_WIDTH));
+            assertThat(stored.trancatAcctId()).isEqualTo(ABSENT_ACCT_ID);
+            assertThat(stored.trancatTypeCd()).isEqualTo(FIXTURE_TYPE_CD);
+            assertThat(stored.trancatCd()).isEqualTo(FIXTURE_CAT_CD);
+            assertThat(stored.tranCatBal()).isEqualByComparingTo(new BigDecimal("25.75"));
+            // And nothing else moved: 50 fixture rows plus the one created.
+            assertThat(template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class))
+                    .isEqualTo(FIXTURE_RECORDS + 1);
+        }
+
+        @Test
+        @DisplayName("after INITIALIZE the ADD yields the amount itself, truncated toward zero")
+        void createdBalanceIsTheTruncatedAmountBecauseTheAugendIsZero() {
+            // ADD DALYTRAN-AMT TO TRAN-CAT-BAL at :508 follows the INITIALIZE at :504, so the augend is
+            // +0.00 and the result is the amount. The store truncates at scale 2 with RoundingMode.DOWN,
+            // because ROUNDED appears zero times in the 28 programs (R2 / gate G24).
+            TranCatBalRecord credit = TranCatBalRecord.decode(fixtureRows().get(0), ASCII)
+                    .initialize()
+                    .addToTranCatBal(new BigDecimal("12.349"));
+            assertThat(credit.tranCatBal())
+                    .isEqualByComparingTo(new BigDecimal("12.349").setScale(2, RoundingMode.DOWN))
+                    .isEqualByComparingTo(new BigDecimal("12.34"));
+            assertThat(credit.tranCatBal().scale()).isEqualTo(2);
+
+            // Truncation is toward zero on both sides of it: -12.349 becomes -12.34, never -12.35.
+            TranCatBalRecord debit = TranCatBalRecord.newInstance(ASCII)
+                    .initialize()
+                    .addToTranCatBal(new BigDecimal("-12.349"));
+            assertThat(debit.tranCatBal())
+                    .isEqualByComparingTo(new BigDecimal("-12.349").setScale(2, RoundingMode.DOWN))
+                    .isEqualByComparingTo(new BigDecimal("-12.34"));
+            assertThat(TranCatBalRepository.TRAN_CAT_BAL_ROUNDING).isEqualTo(RoundingMode.DOWN);
+        }
+    }
+
 
     // =============================================================================================
     // 2700-A-CREATE-TCATBAL-REC - app/cbl/CBTRN02C.cbl:L503-L524, the WRITE.
@@ -1758,5 +2170,264 @@ class TranCatBalRepositoryTest {
             assertThat(first).isEqualTo(second);
             assertThat(first).isNotSameAs(second);
         }
+    }
+
+    // =============================================================================================
+    // No schema at all - gates G44, G45 and G46. The dataset is reached, never defined.
+    // =============================================================================================
+
+    /**
+     * The three absences that make this a dataset access path rather than a database design.
+     *
+     * <p>They are asserted rather than assumed because each would be introduced by a plausible,
+     * well-intentioned edit: an {@code @Entity} to "tidy up" the record, a {@code CREATE TABLE} to make the
+     * test self-seeding, an alternate-index finder because two sibling repositories have one, or the
+     * production dataset name inlined "so the mapping is obvious". Every one of those would break a stated
+     * constraint of the migration, and none of them would fail any other test in this class.
+     */
+    @Nested
+    @DisplayName("no schema - no DDL, no mapping, no alternate index, no hard-coded dataset name")
+    class SchemaAbsence {
+
+        @Test
+        @DisplayName("no object-relational mapping is declared anywhere - gate G44")
+        void noObjectRelationalMappingIsDeclared() {
+            // The repository, every type nested inside it, and the record it carries.
+            assertNoMappingAnnotations(TranCatBalRepository.class);
+            for (Class<?> nested : TranCatBalRepository.class.getDeclaredClasses()) {
+                assertNoMappingAnnotations(nested);
+            }
+            assertNoMappingAnnotations(TranCatBalRecord.class);
+            assertNoMappingAnnotations(TranCatKey.class);
+
+            // The repository is a Spring @Repository and nothing more: a stereotype, not a mapping.
+            assertThat(TranCatBalRepository.class.getAnnotations())
+                    .extracting(annotation -> annotation.annotationType().getSimpleName())
+                    .containsExactly("Repository");
+        }
+
+        @Test
+        @DisplayName("there is no version column - the concurrency check is the COBOL's own re-read")
+        void thereIsNoVersionColumn() {
+            // COACTUPC and COCRDUPC do their own optimistic-concurrency check by re-reading and
+            // comparing; a version column would be a schema change, which is forbidden outright.
+            // TCATBALF has no such check at all - CBTRN02C reads, adds and rewrites - so there is
+            // nothing here for a version column even to attach to.
+            assertThat(memberNames(TranCatBalRepository.class))
+                    .noneMatch(name -> name.contains("version"));
+            assertThat(memberNames(TranCatBalRecord.class))
+                    .noneMatch(name -> name.contains("version"));
+            // The four addressable items are the copybook's four, with no synthetic fifth.
+            assertThat(TranCatBalRecord.newInstance(ASCII).fieldImages()).hasSize(4);
+        }
+
+        @Test
+        @DisplayName("no statement defines or alters structure - only reads, an insert and a rewrite")
+        void noStatementDefinesStructure() {
+            Statements sql = repository(seeded(fixtureRows())).resolveStatements();
+            String all = (sql.selectFirst() + " " + sql.selectNext() + " " + sql.selectByKey() + " "
+                    + sql.selectByKeyForUpdate() + " " + sql.rewrite() + " " + sql.insert())
+                    .toUpperCase(Locale.ROOT);
+            for (String fragment : DDL_FRAGMENTS) {
+                assertThat(all).as("a composed statement contains '%s'", fragment)
+                        .doesNotContain(fragment);
+            }
+            // What is there instead: the five verbs the COBOL performs on this dataset.
+            assertThat(sql.selectFirst()).startsWith("SELECT ");
+            assertThat(sql.selectNext()).startsWith("SELECT ");
+            assertThat(sql.selectByKey()).startsWith("SELECT ");
+            assertThat(sql.selectByKeyForUpdate()).startsWith("SELECT ");
+            assertThat(sql.rewrite()).startsWith("UPDATE ");
+            assertThat(sql.insert()).startsWith("INSERT INTO ");
+        }
+
+        @Test
+        @DisplayName("one dataset, one relation, and no alternate index - gate G45's spirit")
+        void oneDatasetOneRelationAndNoAlternateIndex() {
+            TranCatBalRepository repository = repository(seeded(fixtureRows()));
+            Statements sql = repository.resolveStatements();
+
+            // Every statement names exactly one relation, and it is the same one in all six. TCATBALF is
+            // bound identically by app/jcl/POSTTRAN.jcl:41-42 and app/jcl/INTCALC.jcl:27-28 - one DD, one
+            // DSNAME - and app/csd/CARDDEMO.CSD declares no path over it, unlike CARDAIX over CARDDAT and
+            // CXACAIX over CCXREF. So there is no second relation and no second repository to have.
+            List<String> relations = new ArrayList<>();
+            for (String statement : List.of(sql.selectFirst(), sql.selectNext(), sql.selectByKey(),
+                    sql.selectByKeyForUpdate(), sql.rewrite(), sql.insert())) {
+                // A statement quotes two kinds of identifier: the relation and the record-image column.
+                // Setting the column aside, exactly one relation is left - and it is the configured one.
+                List<String> named = quotedRelations(statement);
+                assertThat(named).as("statement [%s]", statement).containsExactly(TEST_DSNAME);
+                relations.addAll(named);
+                // And nothing else is quoted: no second relation and no invented identifier.
+                assertThat(quotedIdentifiers(statement)).as("statement [%s]", statement)
+                        .containsOnly(TEST_DSNAME, RECORD_IMAGE_COLUMN);
+            }
+            assertThat(relations).hasSize(6).containsOnly(TEST_DSNAME);
+            assertThat(repository.datasetName()).isEqualTo(TEST_DSNAME);
+
+            // And no method is an alternate-index finder, by the naming convention the two repositories
+            // that legitimately have one actually use.
+            for (String name : memberNames(TranCatBalRepository.class)) {
+                assertThat(ALTERNATE_INDEX_NAME_FRAGMENTS)
+                        .as("member '%s' looks like an alternate-index accessor", name)
+                        .noneMatch(name::contains);
+            }
+            for (String name : memberNames(TranCatBalFile.class)) {
+                assertThat(ALTERNATE_INDEX_NAME_FRAGMENTS)
+                        .as("member '%s' looks like an alternate-index accessor", name)
+                        .noneMatch(name::contains);
+            }
+        }
+
+        @Test
+        @DisplayName("no mainframe dataset name is compiled in - gate G46")
+        void noMainframeDatasetNameIsCompiledIn() {
+            // The DD name is a copybook-level fact and is compiled in; the DSNAME behind it is a
+            // deployment input, resolved from carddemo.datasets.TCATBALF. So the constant that names the
+            // DD is present and the one that would name the dataset must not be.
+            assertThat(TranCatBalRepository.DD_NAME).isEqualTo("TCATBALF");
+            for (String constant : staticStringConstants(TranCatBalRepository.class)) {
+                assertThat(constant).doesNotContain("AWS.M2.CARDDEMO").doesNotContain(".VSAM.");
+            }
+            for (String constant : staticStringConstants(TranCatBalRecord.class)) {
+                assertThat(constant).doesNotContain("AWS.M2.CARDDEMO").doesNotContain(".VSAM.");
+            }
+
+            // Nor is one reachable through the binding: point the DD at a different name and that is the
+            // name the repository reports, which is only possible because nothing was inlined.
+            TranCatBalRepository elsewhere = new TranCatBalRepository(new JdbcTemplate(),
+                    bindings("SOME.OTHER.DATASET", FIFTY, SEVENTEEN), ASCII,
+                    RecordImageForm.CHARACTER);
+            assertThat(elsewhere.datasetName())
+                    .isEqualTo("SOME.OTHER.DATASET")
+                    .doesNotContain("AWS.M2.CARDDEMO");
+
+            // The statements over the configured relation name that relation and no other, so the dataset
+            // a statement addresses is always the configured one.
+            Statements sql = repository(seeded(fixtureRows())).resolveStatements();
+            assertThat(quotedRelations(sql.selectByKey())).containsExactly(TEST_DSNAME);
+            assertThat(sql.selectByKey()).doesNotContain("AWS.M2.CARDDEMO");
+        }
+    }
+
+    // =============================================================================================
+    // Reflection helpers for the absence assertions. Kept at the bottom: they prove properties of the
+    // production types rather than exercising behaviour, and nothing else in the class needs them.
+    // =============================================================================================
+
+    /**
+     * Asserts that neither a type nor any of its declared members carries a persistence-mapping
+     * annotation.
+     *
+     * @param type the type to inspect
+     */
+    private static void assertNoMappingAnnotations(Class<?> type) {
+        assertAnnotationsAreNotMappings(type.getSimpleName(), type.getAnnotations());
+        for (Field field : type.getDeclaredFields()) {
+            assertAnnotationsAreNotMappings(type.getSimpleName() + "." + field.getName(),
+                    field.getAnnotations());
+        }
+        for (Method method : type.getDeclaredMethods()) {
+            assertAnnotationsAreNotMappings(type.getSimpleName() + "." + method.getName() + "()",
+                    method.getAnnotations());
+        }
+    }
+
+    /**
+     * Asserts that none of the given annotations is one of the mapping annotations.
+     *
+     * @param subject     what is being inspected, for the failure message
+     * @param annotations the annotations found on it
+     */
+    private static void assertAnnotationsAreNotMappings(String subject, Annotation[] annotations) {
+        for (Annotation annotation : annotations) {
+            String name = annotation.annotationType().getSimpleName();
+            assertThat(MAPPING_ANNOTATION_NAMES)
+                    .as("%s carries the mapping annotation @%s", subject, name)
+                    .doesNotContain(name);
+        }
+    }
+
+    /**
+     * The lower-cased names of every field and method a type declares, including inherited public ones.
+     *
+     * @param type the type to inspect
+     * @return the names, lower-cased so a substring test is case-insensitive
+     */
+    private static List<String> memberNames(Class<?> type) {
+        List<String> names = new ArrayList<>();
+        for (Field field : type.getDeclaredFields()) {
+            names.add(field.getName().toLowerCase(Locale.ROOT));
+        }
+        for (Method method : type.getMethods()) {
+            names.add(method.getName().toLowerCase(Locale.ROOT));
+        }
+        return names;
+    }
+
+    /**
+     * The values of every {@code static} {@link String} field a type declares, whatever its visibility.
+     *
+     * <p>Private constants are read too, deliberately: a hard-coded dataset name would most naturally be
+     * written as a private constant, so an assertion that only looked at the public ones would miss it.
+     *
+     * @param type the type to inspect
+     * @return the constant values, never {@code null} entries
+     */
+    private static List<String> staticStringConstants(Class<?> type) {
+        List<String> values = new ArrayList<>();
+        for (Field field : type.getDeclaredFields()) {
+            if (!Modifier.isStatic(field.getModifiers()) || field.getType() != String.class) {
+                continue;
+            }
+            field.setAccessible(true);
+            try {
+                Object value = field.get(null);
+                if (value != null) {
+                    values.add((String) value);
+                }
+            } catch (IllegalAccessException unreachable) {
+                throw new IllegalStateException(
+                        "The constant " + type.getSimpleName() + "." + field.getName()
+                                + " could not be read to prove no dataset name is compiled in",
+                        unreachable);
+            }
+        }
+        return values;
+    }
+
+    /**
+     * The identifiers a statement quotes, in the order they appear.
+     *
+     * <p>Splitting on the quote character rather than matching a pattern, so the helper has no behaviour of
+     * its own to get wrong: the odd-numbered segments of the split are exactly the quoted spans.
+     *
+     * @param sql the statement to scan
+     * @return the quoted identifiers, which for this repository must always be the one dataset
+     */
+    private static List<String> quotedIdentifiers(String sql) {
+        List<String> identifiers = new ArrayList<>();
+        String[] segments = sql.split("\"", -1);
+        for (int index = 1; index < segments.length; index += 2) {
+            identifiers.add(segments[index]);
+        }
+        return identifiers;
+    }
+
+    /**
+     * The relations a statement names: its quoted identifiers with the record-image column set aside.
+     *
+     * <p>Both kinds of identifier are quoted, because a dataset name contains full stops and a column name
+     * is whatever the backend calls it, and neither should be at the mercy of a dialect's folding rules.
+     * Only the relation is interesting for counting how many datasets a statement touches.
+     *
+     * @param sql the statement to scan
+     * @return the quoted identifiers that are not the record-image column
+     */
+    private static List<String> quotedRelations(String sql) {
+        List<String> relations = new ArrayList<>(quotedIdentifiers(sql));
+        relations.removeIf(RECORD_IMAGE_COLUMN::equals);
+        return relations;
     }
 }

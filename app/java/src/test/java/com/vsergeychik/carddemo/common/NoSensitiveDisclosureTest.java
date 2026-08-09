@@ -547,13 +547,40 @@ class NoSensitiveDisclosureTest {
          * cautions against, so they are recorded here in executable form instead of being silently
          * tolerated. They are carried in the resolution report as out-of-scope observations.
          *
+         * <p><strong>{@code AccountUpdateRequest$CustSnapshot}</strong> is here for a different and
+         * stronger reason, and it is worth stating in full because the entry will otherwise read as an
+         * oversight. It is the {@code ACUP-xxx-CUST-DATA} half of {@code COACTUPC}'s 873-byte
+         * {@code WS-THIS-PROGCOMMAREA} ({@code app/cbl/COACTUPC.cbl:652-849}), and the sweep flags it on
+         * {@code govtIssuedId} and {@code eftAccountId}. Three things decide it:
+         *
+         * <ul>
+         *   <li>The specification for that file states the requirement directly - the payload carries the
+         *       SSN parts, the date of birth and the government-issued identifier, the COBOL handles all
+         *       of them in clear text, and adding {@code @JsonIgnore}, masking, redaction, a
+         *       serialisation filter or a hiding {@code toString} is named as an unrequested behaviour
+         *       change. Its own verification step greps for exactly those additions and fails on them.</li>
+         *   <li>{@link SensitiveDiagnostics} is not among that file's declared dependencies, so the
+         *       module's single masking policy is not available to it, and hand-rolling a second masking
+         *       scheme beside the shared one would be worse than either alternative.</li>
+         *   <li>Its sibling {@code AccountViewRequest} took the same decision and documents it in its own
+         *       source. The sweep does not reach that type only because it is a class rather than a record
+         *       and so has no components to match on - not because it withholds anything.</li>
+         * </ul>
+         *
+         * <p>So this is recorded, in executable form, as a deliberate and bounded exception rather than a
+         * gap: the type is reachable only from a work area that a controller and its service exchange, it
+         * is never a log target itself, and if the masking policy is ever extended to the account-update
+         * screen it should be extended to both of that screen's DTOs together, in a change scoped to say
+         * so.
+         *
          * <p>Asserted as a subset rather than an equality: closing one of these later must not fail this
          * test, while a NEW disclosure anywhere must.
          */
         private static final Set<String> KNOWN_OUT_OF_SCOPE = Set.of(
                 "com.vsergeychik.carddemo.card.dto.CardListRequest$CardKey",
                 "com.vsergeychik.carddemo.card.dto.CardListRequest$ScreenRow",
-                "com.vsergeychik.carddemo.user.dto.UserUpdateResponse");
+                "com.vsergeychik.carddemo.user.dto.UserUpdateResponse",
+                "com.vsergeychik.carddemo.account.dto.AccountUpdateRequest$CustSnapshot");
 
         /**
          * Types whose canonical constructor rejects a generic sentinel, so they cannot be swept.
@@ -857,6 +884,13 @@ class NoSensitiveDisclosureTest {
                     arguments[i] = false;
                 } else if (t == char.class) {
                     arguments[i] = 'A';
+                } else if (t == byte.class) {
+                    // A raw EBCDIC byte, which is how every carrier of a CICS EIBAID holds it - see
+                    // CicsAid and SignOnService.SignOnInput. Without this branch the argument stayed null,
+                    // newInstance rejected a null for a primitive, and the type fell through to NOT_SWEPT
+                    // unvouched-for even though it carries a password component. Widening the gap in the
+                    // prober is the fix; excusing the type would have been an exemption.
+                    arguments[i] = (byte) 1;
                 } else if (t == java.math.BigDecimal.class) {
                     arguments[i] = java.math.BigDecimal.ZERO;
                 } else if (t == java.util.Optional.class) {
