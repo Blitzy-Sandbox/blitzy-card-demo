@@ -25,6 +25,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Field;
@@ -39,6 +40,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -2163,6 +2165,192 @@ class StatementTextWriterTest {
         @DisplayName("exposes exactly one constructor, so wiring cannot be ambiguous")
         void exposesExactlyOneConstructor() {
             assertThat(StatementTextWriter.class.getDeclaredConstructors()).hasSize(1);
+        }
+    }
+
+    // =================================================================================================
+    // The abnormal disposition - the THIRD positional of DISP=(NEW,CATLG,DELETE).
+    //
+    // app/jcl/CREASTMT.JCL:L87-L91 declares three dispositions for STMTFILE and the writer used to
+    // reproduce two. NEW is the open's clear; CATLG is what the close leaves behind; DELETE is what an
+    // abended run must leave - which is nothing. For customer statements that is the point: a run that
+    // abends part way has written complete, well-formed statements for the accounts it reached and
+    // nothing for the rest, and nothing downstream can tell that set apart from a complete one.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The abnormal disposition deletes the statements an abended run wrote")
+    class TheAbnormalDisposition {
+
+        /**
+         * A real in-memory relation, so the count-then-delete is measured rather than mocked.
+         *
+         * <p>{@code DB_CLOSE_DELAY=-1} because {@link SimpleDriverDataSource} opens a connection per
+         * call: without it H2 would discard the database the moment the connection that created the
+         * relation was returned.
+         *
+         * @return a template over a private H2 database already holding the STMTFILE relation
+         */
+        private JdbcTemplate liveTemplate() {
+            JdbcTemplate template = new JdbcTemplate(new SimpleDriverDataSource(new org.h2.Driver(),
+                    "jdbc:h2:mem:stmtfile-disp-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+            template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (RECORD_IMAGE CHAR("
+                    + EIGHTY + "))");
+            return template;
+        }
+
+        /** @return how many records the relation holds */
+        private int held(JdbcTemplate template) {
+            Integer count = template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class);
+            return count == null ? 0 : count;
+        }
+
+        /** @return a writer over the given live template */
+        private StatementTextWriter writerOver(JdbcTemplate template) {
+            return new StatementTextWriter(template, ASCII, bindings(EIGHTY),
+                    RecordImageForm.CHARACTER);
+        }
+
+        @Test
+        @DisplayName("every statement line this run wrote is deleted, and the close deleted nothing")
+        void theGenerationIsDeleted() {
+            JdbcTemplate template = liveTemplate();
+            StatementFile file = writerOver(template).openOutput();
+
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.writeLine(StatementLine.ST_LINE5)).isEqualTo(FileStatus.Outcome.OK);
+            // CATLG: the close leaves the statements where they are. That is the whole distinction.
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isEqualTo(2);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a second discard neither issues anything nor contradicts the first")
+        void theDiscardIsIdempotent() {
+            JdbcTemplate template = liveTemplate();
+            StatementFile file = writerOver(template).openOutput();
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a run that wrote no statement deletes nothing and reports OK")
+        void anEmptyRunDeletesNothing() {
+            JdbcTemplate template = liveTemplate();
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(EIGHTY));
+            StatementFile file = writerOver(template).openOutput(new CollectingSink());
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isOne();
+        }
+
+        @Test
+        @DisplayName("a relation holding statements this run did not write is left untouched")
+        void aCountMismatchIsRefused() {
+            // Deliberately loud: deleting statements that had already been issued to customers would be
+            // far worse than an operator seeing an outcome.
+            JdbcTemplate template = liveTemplate();
+            StatementFile file = writerOver(template).openOutput();
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(EIGHTY));
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(template)).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("a count the backend will not state is refused exactly as a wrong count is")
+        void anUnstatedCountIsRefused() {
+            // The other half of the guard above. A backend answering the count with SQL NULL has not said
+            // the generation holds what this run wrote - it has said nothing - and nothing is not
+            // permission to delete customer statements. A real COUNT(*) cannot be null, so the one call
+            // is bent and everything else, including the open's own clear, runs for real.
+            JdbcTemplate live = liveTemplate();
+            JdbcTemplate template = Mockito.spy(live);
+            StatementFile file = writerOver(template).openOutput();
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+
+            Mockito.doReturn(null).when(template)
+                    .queryForObject(Mockito.anyString(), Mockito.eq(Integer.class));
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(live))
+                    .as("refused means untouched: the statement line this run wrote is still there")
+                    .isOne();
+        }
+
+        @Test
+        @DisplayName("a delete that removes a different number than it counted is reported, not called OK")
+        void aDeleteRemovingADifferentCountIsReported() {
+            // The count agreed and the delete was issued, then removed a different number of rows than the
+            // count promised. Reporting OK would tell an operator that DISP=(NEW,CATLG,DELETE) had been
+            // honoured for a set of statements that may still be partly present.
+            JdbcTemplate template = Mockito.spy(liveTemplate());
+            StatementFile file = writerOver(template).openOutput();
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+
+            Mockito.doReturn(99).when(template).update(Mockito.anyString());
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
+        @DisplayName("a backend that refuses the disposition is reported, never raised")
+        void aRefusedDispositionIsReported() throws SQLException {
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            PreparedStatement statement = Mockito.mock(PreparedStatement.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+            Mockito.when(plain.executeQuery(Mockito.anyString()))
+                    .thenThrow(new SQLException("dataset dropped"));
+
+            StatementTextWriter subject = new StatementTextWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(EIGHTY), RecordImageForm.CHARACTER);
+            StatementFile file = subject.openOutput();
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThatCode(() -> assertThat(file.discardGeneration())
+                    .isEqualTo(FileStatus.Outcome.OTHER)).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a collector sink reports OK without implementing anything, and the method is a "
+                + "default so a lambda still compiles")
+        void aCollectorSinkDefaultsToOk() {
+            RecordSink minimal = recordImage -> FileStatus.Outcome.OK;
+            StatementFile file = writer().openOutput(minimal);
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+        }
+
+        @Test
+        @DisplayName("a sink answering null from discard is read as OTHER rather than raising")
+        void aNullDiscardOutcomeIsReported() {
+            StatementFile file = writer().openOutput(new RecordSink() {
+                @Override
+                public FileStatus.Outcome write(byte[] recordImage) {
+                    return FileStatus.Outcome.OK;
+                }
+
+                @Override
+                public FileStatus.Outcome discard(int recordsWritten) {
+                    return null;
+                }
+            });
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
         }
     }
 }

@@ -1092,6 +1092,40 @@ class SecUserRepositoryTest {
         void aNullAnswerFromTheTemplateIsDegradedToNotFound() {
             assertThat(repository(templateAnsweringNull()).read("ADMIN001").isNotFound()).isTrue();
         }
+
+        @Test
+        @DisplayName("a key matching more than one row is refused, not resolved by taking the first")
+        void aFanOutOnThePrimaryKeyIsRefused() {
+            // SEC-USR-ID is the unique primary key of a KSDS, so two matches are an integrity defect in
+            // the backing relation. COSGN00C authenticates against whatever record this read returns
+            // (app/cbl/COSGN00C.cbl:L211-L257), so returning the first of two - chosen by whatever order
+            // the backend produced - would authenticate a sign-on against an arbitrary one of them. The
+            // write paths already refused a fan-out before issuing anything; the read now agrees.
+            List<String> duplicated = new ArrayList<>(seedRows());
+            duplicated.add(row("ADMIN001", "IMPOSTOR", "IMPOSTOR", "OTHERPWD", "A"));
+
+            ReadResult refused = repository(seeded(duplicated)).read("ADMIN001");
+
+            assertThat(refused.isOther()).isTrue();
+            assertThat(refused.status()).isEqualTo(SecUserRepository.PERMANENT_ERROR_STATUS);
+            assertThat(refused.cicsResp()).hasValue(FileStatus.INVREQ);
+            assertThat(refused.record())
+                    .as("no record is handed over, so no password can be compared against an arbitrary one")
+                    .isEmpty();
+            assertThat(refused.isNotFound())
+                    .as("not-found would be a lie: the records exist, and there are too many")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("exactly one match still succeeds, so the extra probe row is not over-eager")
+        void aUniqueMatchStillSucceeds() {
+            ReadResult found = repository(seeded(seedRows())).read("ADMIN001");
+
+            assertThat(found.isFound()).isTrue();
+            assertThat(found.status()).isEqualTo(FileStatus.OK);
+            assertThat(found.record().orElseThrow().secUsrId()).isEqualTo("ADMIN001");
+        }
     }
 
     @Nested
@@ -2022,20 +2056,56 @@ class SecUserRepositoryTest {
         }
 
         @Test
-        @DisplayName("a hold selecting more than one row is refused before anything is removed")
-        void aFanOutIsRefusedBeforeAnythingIsRemoved() {
+        @DisplayName("a key that already fans out is refused by the READ, so no hold is ever taken")
+        void aFanOutIsRefusedByTheLockingReadItself() {
             List<String> duplicated = new ArrayList<>(seedRows());
             duplicated.add(row("ADMIN001", "MARGARET", "GOLD", "PASSWORD", "A"));
             JdbcTemplate template = seeded(duplicated);
             SecUserRepository repository = repository(template);
             transactionOver(template).executeWithoutResult(status -> {
+                // The locking read now probes for a second matching row and refuses when it finds one,
+                // so the fan-out is caught at the earliest point rather than by the delete's own probe.
+                // A caller cannot reach a hold at all, which is what makes the outcome unmistakable:
+                // there is no record to have been chosen arbitrarily.
+                ReadResult refused = repository.readForUpdate("ADMIN001");
+
+                assertThat(refused.isOther()).isTrue();
+                assertThat(refused.status()).isEqualTo(SecUserRepository.PERMANENT_ERROR_STATUS);
+                assertThat(refused.cicsResp()).hasValue(FileStatus.INVREQ);
+                assertThat(refused.record()).isEmpty();
+                assertThat(refused.hold()).isEmpty();
+                assertThat(refused.isNotFound())
+                        .as("not-found would be a lie: the records exist, and there are too many")
+                        .isFalse();
+            });
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"",
+                    Integer.class)).isEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("a fan-out appearing AFTER the hold is refused by the delete, before anything is "
+                + "removed")
+        void aFanOutAppearingAfterTheHoldIsRefusedByTheDelete() {
+            JdbcTemplate template = seeded(seedRows());
+            SecUserRepository repository = repository(template);
+            transactionOver(template).executeWithoutResult(status -> {
+                // The key is unique when the hold is taken, so the read succeeds. The duplicate is then
+                // inserted inside the same unit of work, which is the race the delete's own probe exists
+                // for: the read cannot have seen it, and reading the affected-row count after the DELETE
+                // would discover it only once both rows were gone.
                 HeldRecord hold = repository.readForUpdate("ADMIN001").requireHold();
+                template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)",
+                        row("ADMIN001", "MARGARET", "GOLD", "PASSWORD", "A"));
+
                 WriteResult refused = repository.deleteHeld(hold);
+
                 assertThat(refused.isOther()).isTrue();
                 assertThat(refused.cicsResp()).hasValue(FileStatus.INVREQ);
             });
             assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"",
-                    Integer.class)).isEqualTo(5);
+                    Integer.class))
+                    .as("both rows survive: the delete was refused before it was issued")
+                    .isEqualTo(5);
         }
 
         @Test

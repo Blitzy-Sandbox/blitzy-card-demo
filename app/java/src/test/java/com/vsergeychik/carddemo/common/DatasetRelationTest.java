@@ -276,17 +276,44 @@ class DatasetRelationTest {
         }
 
         @Test
-        @DisplayName("a physical-sequential read is unordered; a keyed browse is explicitly ordered")
-        void orderingIsStatedWhereThereIsAKeyAndOmittedWhereThereIsNot() {
+        @DisplayName("three orderings, and each names what it orders by: none, the ordinal, the key")
+        void orderingIsStatedForWhatEachReadDependsOn() {
             DatasetRelation relation = described();
 
-            // A PS file has no key: its records are in the order they were written, so an ORDER BY would
-            // reorder the file rather than make the read deterministic.
+            // No order contract at all. Reserved for the one read whose outcome does not depend on the
+            // order rows arrive in - the security-user browse, which selects the least or greatest
+            // admissible key in Java by unsigned byte comparison.
             assertThat(relation.selectAll()).isEqualTo("SELECT * FROM " + RELATION);
-            // A keyed dataset is the opposite case, and the explicit ordering is what a browse depends
-            // on - never the backend's scan order.
+            // A PS file has no key: its records are in the order they were written, so the read is
+            // ordered by the deployment's physical-record ordinal - a record's POSITION, and nothing in
+            // its content. Rendered unquoted, because a pseudo-column cannot be delimited.
+            assertThat(relation.selectAllInPhysicalSequence(PhysicalSequence.of("_ROWID_")))
+                    .isEqualTo("SELECT * FROM " + RELATION + " ORDER BY _ROWID_ ASC");
+            // A keyed dataset is the opposite case, and the explicit ordering over the record image is
+            // what a browse depends on - never the backend's scan order.
             assertThat(relation.selectAllAscending(COLUMN))
                     .isEqualTo("SELECT * FROM " + RELATION + " ORDER BY " + IMAGE + " ASC");
+        }
+
+        @Test
+        @DisplayName("a physical-sequential read without an ordinal is refused, naming the key that "
+                + "supplies one")
+        void aPhysicalSequentialReadWithoutAnOrdinalIsRefused() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> described().selectAllInPhysicalSequence(null))
+                    .withMessageContaining(PhysicalSequence.EXPRESSION_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("the physical ordinal never orders by the record image, which is a different order")
+        void thePhysicalOrderingIsNotAnImageOrdering() {
+            String statement = described()
+                    .selectAllInPhysicalSequence(PhysicalSequence.of("RECORD_ORDINAL"));
+
+            assertThat(statement)
+                    .doesNotContain(IMAGE)
+                    .endsWith(" ORDER BY RECORD_ORDINAL ASC");
+            assertThat(statement.split(" ORDER BY ", -1)).hasSize(2);
         }
 
         @Test

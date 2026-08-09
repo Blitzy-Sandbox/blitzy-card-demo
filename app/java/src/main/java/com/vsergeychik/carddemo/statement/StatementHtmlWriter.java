@@ -1143,6 +1143,53 @@ public final class StatementHtmlWriter {
         default String close() {
             return FileStatus.OK;
         }
+
+        /**
+         * Applies the <strong>abnormal</strong> disposition {@code app/jcl/CREASTMT.JCL:L92-L96} declares
+         * for {@value StatementHtmlWriter#HTMLFILE_DD_NAME}: the third positional of
+         * {@code DISP=(NEW,CATLG,DELETE)}.
+         *
+         * <p>A {@code DISP} parameter carries three dispositions, and only two of them were reproduced
+         * before this method existed. {@code NEW} is the status - the step allocates the generation - and
+         * {@link #open()} reproduces it by clearing. {@code CATLG} is the <em>normal</em> disposition, and
+         * {@link #close()} reproduces it by leaving the statements where they are. {@code DELETE} is the
+         * <em>abnormal</em> disposition, and it is a different outcome from either: a run that abends
+         * leaves <strong>no HTML statement dataset at all</strong>. MVS does not unwrite the lines; it
+         * deletes the dataset that held them.
+         *
+         * <p>The HTML statements are the customer-facing rendering of the same run the plain-text
+         * statements come from, and a run that abends part-way leaves them worse off than the text: the
+         * markup is unterminated as well as the account set incomplete, because {@code CBSTM03A} writes the
+         * closing {@code </html>} line only on the normal path
+         * ({@code app/cbl/CBSTM03A.CBL:L916-L923} abends before it). So the mainframe leaves nothing, and
+         * this reproduces that.
+         *
+         * <p>Not a transaction rollback and not delegable to one: a rollback offers every write kept or the
+         * uncommitted writes dropped, and the mainframe's third outcome is neither. Each write here is
+         * durable as it completes; this discard then removes them, in the same order of events the
+         * mainframe uses, with nothing buffered to make it possible.
+         *
+         * <p>Defaults to {@link FileStatus#OK} for the same reason {@link #open()} and {@link #close()} do:
+         * a sink with nothing to allocate - an in-memory list, for instance - holds no catalogued
+         * generation. Its records are per-run state that ceases to exist when the run does, which is
+         * precisely the outcome {@code DELETE} produces, so reporting {@link FileStatus#OK} without issuing
+         * anything is the honest answer rather than a stub. Every sink addressing a catalogued destination
+         * overrides this.
+         *
+         * <p>Called at most once per handle, by
+         * {@link StatementHtmlWriter#discardGeneration(HtmlStatementFile)}, and only on a path that is
+         * already abending. An implementation must therefore <strong>not throw</strong>: a failed
+         * disposition must not replace the abend that caused it.
+         *
+         * @param recordsWritten how many records this run emitted, so an implementation addressing a
+         *                       shared destination can establish that what it is about to delete is the
+         *                       generation <em>this</em> run allocated rather than another run's records
+         * @return a two-character COBOL {@code FILE STATUS}: {@link FileStatus#OK} when the generation was
+         *         discarded or there was none, any other value to report that it could not be
+         */
+        default String discard(long recordsWritten) {
+            return FileStatus.OK;
+        }
     }
 
     /**
@@ -1224,6 +1271,17 @@ public final class StatementHtmlWriter {
 
         /** How many records this handle has emitted. Diagnostic and test evidence only. */
         private long recordsWritten;
+
+        /**
+         * Whether the abnormal disposition has already been applied, so
+         * {@link StatementHtmlWriter#discardGeneration(HtmlStatementFile)} is idempotent.
+         *
+         * <p>It has to be: an abnormal path can reach a cleanup more than once - a {@code finally} inside a
+         * {@code finally}, or a caller that discards and then releases its handles - and a second delete
+         * would find a count of zero against a non-zero {@link #recordsWritten} and report a refusal for
+         * work that had already succeeded.
+         */
+        private boolean discarded;
 
         /**
          * @param sink       the destination
@@ -1476,6 +1534,12 @@ public final class StatementHtmlWriter {
          */
         private final String clearStatement;
 
+        /**
+         * Counts what the destination holds, so {@link #discard(long)} can establish that the generation it
+         * is about to delete is the one this run allocated. Read-only, and issued nowhere else.
+         */
+        private final String countStatement;
+
         private JdbcHtmlRecordSink(final JdbcTemplate jdbcTemplate, final DatasetRelation relation,
                                    final RecordImageForm recordImageForm, final Charset charset) {
             this.jdbcTemplate = jdbcTemplate;
@@ -1488,6 +1552,7 @@ public final class StatementHtmlWriter {
                     : StatementHtmlWriter.insertStatement(this.dsname, this.identifierQuote);
             this.describeStatement = relation.describeStatement();
             this.clearStatement = relation.deleteAll();
+            this.countStatement = relation.countAllStatement();
         }
 
         /**
@@ -1545,6 +1610,63 @@ public final class StatementHtmlWriter {
                 return FileStatus.OK;
             } catch (DataAccessException failure) {
                 this.lastFailure = BackendDiagnostic.of(failure);
+                return PERMANENT_ERROR_STATUS;
+            }
+        }
+
+        /**
+         * Deletes the generation this run wrote: the {@code DELETE} positional of
+         * {@code app/jcl/CREASTMT.JCL:L92-L96}.
+         *
+         * <p><strong>Refused unless the destination holds exactly this run's records.</strong>
+         * {@code NEW} means the step allocates the generation, so a faithful deployment gives a run a
+         * relation of its own and the two counts agree. A deployment that instead maps successive
+         * generations onto one relation would have this delete a previous cycle's statements, so the count
+         * is read first and a disagreement is reported rather than acted on. That is deliberately loud: it
+         * is a deployment-time binding question, and deleting statements already published to customers
+         * would be far worse than an operator seeing a status.
+         *
+         * <p>Never throws, and the reason for any failure is retained on {@link #lastFailure()} exactly as
+         * a rejected write's is, so the diagnosis is not lost on a path that is already abending.
+         *
+         * @param recordsWritten how many records this run emitted
+         * @return {@link FileStatus#OK} when the generation was discarded, otherwise
+         *         {@value StatementHtmlWriter#PERMANENT_ERROR_STATUS}
+         */
+        @Override
+        public String discard(final long recordsWritten) {
+            try {
+                final Long held = this.jdbcTemplate.queryForObject(this.countStatement, Long.class);
+                if (held == null || held != recordsWritten) {
+                    LOG.error("Refusing to apply the " + HTMLFILE_DD_NAME + " abnormal disposition of "
+                            + "app/jcl/CREASTMT.JCL:L92: this run wrote " + recordsWritten
+                            + " record(s) but the destination holds " + held
+                            + ". DISP=(NEW,CATLG,DELETE) deletes the generation this step allocated, so "
+                            + "a destination holding records this step did not write is not that "
+                            + "generation. Leaving it untouched and reporting FILE STATUS "
+                            + PERMANENT_ERROR_STATUS + "; bind " + HTMLFILE_DD_NAME
+                            + " to a relation of its own so each run allocates its own generation");
+                    this.lastFailure = null;
+                    return PERMANENT_ERROR_STATUS;
+                }
+                final int removed = this.jdbcTemplate.update(this.clearStatement);
+                this.lastFailure = null;
+                if (removed == recordsWritten) {
+                    return FileStatus.OK;
+                }
+                LOG.error("The " + HTMLFILE_DD_NAME + " abnormal disposition removed " + removed
+                        + " record(s) where this run wrote " + recordsWritten
+                        + "; reporting FILE STATUS " + PERMANENT_ERROR_STATUS
+                        + " rather than reporting the generation as discarded");
+                return PERMANENT_ERROR_STATUS;
+            } catch (DataAccessException failure) {
+                this.lastFailure = BackendDiagnostic.of(failure);
+                LOG.error("Could not apply the " + HTMLFILE_DD_NAME + " abnormal disposition after "
+                        + recordsWritten + " record(s) - " + this.lastFailure.describe()
+                        + "; reporting FILE STATUS " + PERMANENT_ERROR_STATUS
+                        + ". Unterminated HTML for the accounts this run got through may remain "
+                        + "catalogued, which DISP=(NEW,CATLG,DELETE) says it should not; it must be "
+                        + "deleted by hand before anything is issued from it");
                 return PERMANENT_ERROR_STATUS;
             }
         }
@@ -1869,6 +1991,63 @@ public final class StatementHtmlWriter {
         file.open = false;
         final String status = Objects.requireNonNull(file.sink.close(),
                 "A record sink must report a two-character FILE STATUS from close(), never null");
+        return FileStatus.outcomeOfStatus(status);
+    }
+
+    /**
+     * Applies the abnormal disposition of {@code app/jcl/CREASTMT.JCL:L92-L96} -
+     * {@code DISP=(NEW,CATLG,DELETE)} - by discarding the HTML statements this run wrote.
+     *
+     * <p><strong>Call this only when the statement step is ending abnormally</strong>, and after
+     * {@link #close(HtmlStatementFile)}. The two are separate on purpose, because {@code DISP} says they
+     * are: {@code CATLG} is the normal disposition and a close alone reproduces it, leaving the statements
+     * catalogued for whoever publishes them. {@code DELETE} is the abnormal one, and a run that abends must
+     * leave nothing - which for these statements is the point, because a partial set is unterminated markup
+     * over an incomplete account set. Closing then discarding is the order the mainframe uses.
+     *
+     * <p>Unlike every other operation on this writer, this one accepts a <strong>closed</strong> handle,
+     * and it must: the abnormal path closes before it disposes, exactly as the mainframe does. It does not
+     * reopen the handle and it emits nothing.
+     *
+     * <p>The record count is taken from the handle rather than from the caller, so a caller cannot get it
+     * wrong: it is the same counter every emit increments, and it is what lets the sink establish that the
+     * generation it is deleting is the one this run allocated.
+     *
+     * <p>Idempotent, and it never throws - not for a {@code null} handle, not for a closed one, and not for
+     * a sink that breaks its contract by answering {@code null}. Every other operation here refuses those,
+     * because a caller can still act on the refusal; here the caller is already abending, and replacing the
+     * abend that a statement failure caused with a diagnostic about the cleanup would lose the reason the
+     * run failed.
+     *
+     * @param file the handle whose generation is to be discarded; a {@code null} is reported rather than
+     *             raised
+     * @return {@link FileStatus.Outcome#OK} when the generation was discarded, when this run wrote nothing,
+     *         or when the disposition had already been applied; otherwise
+     *         {@link FileStatus.Outcome#OTHER}; never {@code null}
+     */
+    public FileStatus.Outcome discardGeneration(final HtmlStatementFile file) {
+        if (file == null) {
+            LOG.error("No " + HTMLFILE_DD_NAME + " handle was supplied for its abnormal disposition, so "
+                    + "app/jcl/CREASTMT.JCL:L92's DELETE cannot be applied; reporting FILE STATUS outcome "
+                    + FileStatus.Outcome.OTHER.name()
+                    + " rather than raising, because this path is already abending");
+            return FileStatus.Outcome.OTHER;
+        }
+        if (file.discarded || file.recordsWritten == 0L) {
+            // Nothing was written, so there is no generation to delete. On the mainframe the step still
+            // allocates and still deletes an empty dataset; there is no observable difference.
+            file.discarded = true;
+            return FileStatus.Outcome.OK;
+        }
+        file.discarded = true;
+        final String status = file.sink.discard(file.recordsWritten);
+        if (status == null) {
+            LOG.error("The record sink supplied for " + HTMLFILE_DD_NAME + " returned a null status from "
+                    + "discard(long) after " + file.recordsWritten + " record(s); reading it as FILE "
+                    + "STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                    + " rather than raising, because this path is already abending");
+            return FileStatus.Outcome.OTHER;
+        }
         return FileStatus.outcomeOfStatus(status);
     }
 

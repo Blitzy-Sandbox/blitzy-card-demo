@@ -15,6 +15,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 
 import org.apache.commons.logging.Log;
@@ -206,6 +207,18 @@ public class AccountBalanceReaderJob {
      * step and no others, so this job has one step and no others.
      */
     public static final String STEP_NAME = "STEP05";
+
+    /**
+     * The whole step sequence of {@code app/jcl/READCARD.jcl}: one step, {@value #STEP_NAME}, running
+     * {@value #PROGRAM_ID}, ungated.
+     *
+     * <p>The sequence rather than the name alone, because "one step, and that one" is what the JCL
+     * declares and it is strictly stronger than "that step is present". A contract that declared
+     * {@value #STEP_NAME} plus a second step would satisfy the weaker statement while running an
+     * {@code EXEC} this job never had.
+     */
+    public static final List<StepContract> REQUIRED_STEPS =
+            List.of(new StepContract(STEP_NAME, PROGRAM_ID, false));
 
     /**
      * The DD name of the one input this program reads: {@value}.
@@ -544,24 +557,29 @@ public class AccountBalanceReaderJob {
      *
      * <p>Two checks, and both catch a real class of drift at startup rather than mid-run:
      * <ul>
-     *   <li>the contract must declare the step {@value #STEP_NAME}, which
-     *       {@link JobContract#step(String)} enforces by throwing when it does not;</li>
+     *   <li>the contract must declare <strong>exactly</strong> {@link #REQUIRED_STEPS} - the one
+     *       {@value #STEP_NAME} step running {@value #PROGRAM_ID}, ungated, and nothing else.
+     *       {@link JobContract#step(String)} would confirm only that such a step exists somewhere in the
+     *       sequence, which says nothing about a second step alongside it, a different program on it or
+     *       a {@code COND} gate over it, so the sequence is compared as a whole;</li>
      *   <li>it must declare <strong>no</strong> job parameter, because
      *       {@code app/jcl/READCARD.jcl:22} is a bare {@code EXEC PGM=} with no {@code PARM}. A
      *       parameter declared against this job would be an input {@code CBACT02C} never receives, and
      *       the program has no {@code LINKAGE SECTION} to receive one into.</li>
      * </ul>
      *
-     * <p>The program pairing is not re-checked here: the catalogue already binds
-     * {@value #JOB_KEY} to {@value #PROGRAM_ID} and validates that pairing once at context refresh, so
-     * a second test of it would duplicate a guarantee rather than add one.
+     * <p>The {@code carddemo.jobs} catalogue makes both statements too, at context refresh. This is not
+     * a duplicated guarantee: nothing sequences that validator ahead of this bean, so a job constructed
+     * first would otherwise resolve its datasets and build its step from a contract that was about to
+     * be rejected.
      *
      * @return the contract; never {@code null}
-     * @throws IllegalStateException if the contract is absent, declares no {@value #STEP_NAME} step,
-     *                               or declares a job parameter
+     * @throws IllegalStateException if the contract is absent, declares any step sequence other than
+     *                               {@link #REQUIRED_STEPS}, or declares a job parameter
      */
     private JobContract requireContract() {
         JobContract contract = batchConfig.contract(JOB_KEY);
+        batchConfig.requireSteps(JOB_KEY, REQUIRED_STEPS, "app/jcl/READCARD.jcl:22");
         List<JobParameterContract> parameters = contract.parameters();
         if (!parameters.isEmpty()) {
             throw new IllegalStateException("carddemo.jobs." + JOB_KEY + " declares "
@@ -739,10 +757,29 @@ public class AccountBalanceReaderJob {
         /**
          * {@code 01 CARD-RECORD} from {@code COPY CVACT02Y.} - {@code app/cbl/CBACT02C.cbl:45}.
          *
-         * <p>The target of {@code READ CARDFILE-FILE INTO CARD-RECORD} ({@code :93}) and the operand
-         * of the {@code DISPLAY} at {@code :78}.
+         * <p>The target of {@code READ CARDFILE-FILE INTO CARD-RECORD} ({@code :93}). Its decoded
+         * fields are what a parity case asserts field by field; the {@code DISPLAY} at {@code :78}
+         * writes {@link #cardRecordImage} instead, for the reason recorded there.
          */
         private CardRecord cardRecord;
+
+        /**
+         * The {@value CardRepository#RECORD_LENGTH} bytes {@code READ ... INTO CARD-RECORD} moved into
+         * the record area, as characters - the operand of the {@code DISPLAY} at {@code :78}.
+         *
+         * <p><strong>Why this exists alongside {@link #cardRecord}.</strong> {@code DISPLAY CARD-RECORD}
+         * names the {@code 01} group item, so it writes the whole area, and the area's last
+         * {@value CardRecord#FILLER_LENGTH} bytes are {@code FILLER X(59)}
+         * ({@code app/cpy/CVACT02Y.cpy}) - a span that holds no field, that this program never writes,
+         * and that {@code READ ... INTO} fills with whatever the row held. Rendering the line from the
+         * decoded fields would agree on all six declared fields and emit fifty-nine spaces for the
+         * {@code FILLER} whatever was stored, which is a different line from the one the program writes
+         * whenever a row carries anything else there. So the row's own image is kept and displayed.
+         *
+         * <p>Per-run state on the working-storage object, exactly as the record area is, and never a
+         * field on the job bean (practice <strong>B9</strong>, gate <strong>G53</strong>).
+         */
+        private String cardRecordImage;
 
         /**
          * The failure behind the most recent non-{@link FileStatus#OK} status, where the translation
@@ -819,9 +856,11 @@ public class AccountBalanceReaderJob {
                 // :77  IF END-OF-FILE = 'N' - genuinely two-armed: the read above is what sets the
                 // field, and the last read of the file takes the other arm.
                 if (!endOfFile()) {
-                    // :78  DISPLAY CARD-RECORD. The whole 150-byte record image, one line, and the
-                    // only per-record output this program produces.
-                    sysout.write(cardRecord.encodeToImage(datasetCharset));
+                    // :78  DISPLAY CARD-RECORD. The whole 150-byte record area, one line, and the only
+                    // per-record output this program produces. The row's own image rather than a
+                    // re-encoding of the decoded fields: the two differ in FILLER X(59), which the read
+                    // fills from the row and which a re-encode would blank.
+                    sysout.write(cardRecordImage);
                 }
             }                                                                // :81
 
@@ -1022,8 +1061,12 @@ public class AccountBalanceReaderJob {
             CardReadResult result = cardfile.readNext();                      // :93
 
             // READ ... INTO moves the record whenever one is delivered, before any status is tested.
+            // Both views of the same bytes move together, because both come from the same row: the
+            // decoded fields for everything that branches on a value, and the stored image for the
+            // DISPLAY, which writes the area including its FILLER.
             if (result.isRecordReturned()) {
                 cardRecord = result.requireRecord();
+                cardRecordImage = result.requireStoredImage();
             }
 
             // The repository reports a CICS response, which maps to the two-character batch status the

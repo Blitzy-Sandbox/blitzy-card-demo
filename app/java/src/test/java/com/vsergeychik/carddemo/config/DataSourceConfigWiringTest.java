@@ -80,29 +80,26 @@ class DataSourceConfigWiringTest {
         }
 
         @Test
-        @DisplayName("The JdbcTemplate is built over the supplied DataSource, bounded but not tuned")
+        @DisplayName("The JdbcTemplate is built over the supplied DataSource and is entirely untuned")
         void theJdbcTemplateIsBuiltOverTheSuppliedDataSource() {
             DataSourceProperties properties = new DataSourceProperties();
             properties.setUrl(H2_URL);
             DataSourceConfig config = new DataSourceConfig();
             DataSource dataSource = config.dataSource(properties);
 
-            JdbcTemplate template = config.jdbcTemplate(dataSource, "45");
+            JdbcTemplate template = config.jdbcTemplate(dataSource);
 
-            // The row-shaping settings are untouched, deliberately: a template that silently capped
-            // rows or fetched in pages would change what a program reads, and a truncated browse is a
-            // short file. Compared against a bare instance rather than against literals, so the
-            // assertion states "untouched" rather than restating whatever Spring's own defaults are.
+            // Nothing is configured on it, deliberately: AAP 0.8.6 introduces no connection tuning and
+            // AAP 0.4.2 specifies a plain JdbcTemplate. A template that capped rows or cancelled
+            // statements would change what a program observes - a truncated browse is a short file, and
+            // a cancelled statement is a failure the COBOL has no arm for. Compared against a bare
+            // instance rather than against literals, so each assertion states "untouched" rather than
+            // restating whatever Spring's own defaults happen to be.
             JdbcTemplate untouched = new JdbcTemplate();
             assertThat(template.getDataSource()).isSameAs(dataSource);
             assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
             assertThat(template.getMaxRows()).isEqualTo(untouched.getMaxRows());
-
-            // The one thing that IS configured. A bare template reports -1, which means "leave the
-            // driver's own default alone" and is unbounded for a driver that has none, so the
-            // assertion is two-sided: the configured bound is carried, and it is not the bare value.
-            assertThat(template.getQueryTimeout()).isEqualTo(45);
-            assertThat(template.getQueryTimeout()).isNotEqualTo(untouched.getQueryTimeout());
+            assertThat(template.getQueryTimeout()).isEqualTo(untouched.getQueryTimeout());
         }
     }
 

@@ -25,9 +25,13 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenResponse;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
+import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.config.WebConfig;
 import com.vsergeychik.carddemo.transaction.TransactionViewController.ProgramState;
 import com.vsergeychik.carddemo.transaction.dto.TransactionViewRequest;
@@ -35,8 +39,10 @@ import com.vsergeychik.carddemo.transaction.dto.TransactionViewResponse;
 import com.vsergeychik.carddemo.transaction.dto.TransactionViewResponse.ScreenField;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
+import com.zaxxer.hikari.HikariDataSource;
 
 import java.io.IOException;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -45,6 +51,10 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
+import javax.sql.DataSource;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -54,11 +64,19 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * {@link TransactionViewController} - the {@code COTRN02C} / {@code CT02} screen, which despite its
@@ -156,7 +174,7 @@ class TransactionViewControllerTest {
     /** Makes the cross-reference read by account id succeed, returning {@link #CARD_NUMBER}. */
     private void xrefByAccountFound() {
         when(cardXrefRepository.readByAccountIdViaAltIndex(anyString()))
-                .thenReturn(CardXrefRepository.ReadResult.found(
+                .thenReturn(xrefFound(
                         CardXrefRepository.ALTERNATE_INDEX_DD_NAME,
                         new CardXrefRecord(CARD_NUMBER, 123_456_789, 11L)));
     }
@@ -164,7 +182,7 @@ class TransactionViewControllerTest {
     /** Makes the cross-reference read by card number succeed, returning account 11. */
     private void xrefByCardFound() {
         when(cardXrefRepository.readByCardNumber(anyString()))
-                .thenReturn(CardXrefRepository.ReadResult.found(CardXrefRepository.BASE_DD_NAME,
+                .thenReturn(xrefFound(CardXrefRepository.BASE_DD_NAME,
                         new CardXrefRecord(CARD_NUMBER, 123_456_789, 11L)));
     }
 
@@ -1578,8 +1596,33 @@ class TransactionViewControllerTest {
             assertThat(state.errFlagOn()).isTrue();
             assertThat(state.message()).startsWith("Unable to Add Transaction...");
             assertThat(state.displayLines()).hasSize(1);
+            // The write reported NO CICS response, so the response operand is not a number: rendering it
+            // as nine zeros would say DFHRESP(NORMAL), on the arm reached only because the write failed.
+            // The reason operand IS reported - zero means "no further reason" - so it stays numeric.
             assertThat(state.displayLines().get(0))
-                    .matches("RESP:\\d{9}REAS:\\d{9}");
+                    .matches("RESP:\\*{9}REAS:\\d{9}")
+                    .doesNotContain("RESP:000000000");
+            assertThat(state.respCd())
+                    .isEqualTo(FileStatus.RESP_NOT_REPORTED)
+                    .isNotEqualTo(FileStatus.NORMAL);
+        }
+
+        @Test
+        @DisplayName("a write that DOES report a response renders that response as its number")
+        void aReportedWriteResponseStaysNumeric() {
+            // The other side of the sentinel: a reported DFHRESP must still render numerically, so the
+            // asterisk image cannot be over-applied.
+            xrefByAccountFound();
+            browseWithLastId();
+            when(transactionRepository.write(any())).thenReturn(
+                    TransactionRepository.WriteResult.duplicate(
+                            TransactionRepository.CICS_FILE_NAME));
+
+            ProgramState state = controller.mainPara(completeRequest());
+
+            assertThat(FileStatus.respReported(state.respCd())).isTrue();
+            assertThat(state.displayLines())
+                    .allSatisfy(line -> assertThat(line).matches("RESP:\\d{9}REAS:\\d{9}"));
         }
 
         @Test
@@ -2622,5 +2665,301 @@ class TransactionViewControllerTest {
             assertThat(state.actidinI()).isEqualTo("\u0000".repeat(11));
             assertThat(TransactionViewController.isSpacesOrLowValues(state.actidinI())).isTrue();
         }
+    }
+
+    // =================================================================================================
+    // The transaction boundary. COTRN02C's add path is two commands against one file - the L644-650
+    // high-water-mark browse and the L713-721 write - and under CICS the task's syncpoint at RETURN is
+    // what makes the second one durable. Every other test in this class stubs the repository, which is
+    // right for parity and is exactly why none of them can see whether the record survives the
+    // connection going back to the pool.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The transaction boundary - the TRANSACT insert must survive the connection's return")
+    class TheTransactionBoundary {
+
+        /** The master the binding names, quoted as a delimited identifier by the repository. */
+        private static final String MASTER_DS = "CARDDEMO.TEST.TXBOUND.TRANSACT";
+
+        /** The generated-transaction output the repository also resolves, unused by this screen. */
+        private static final String SYSTRAN_DS = "CARDDEMO.TEST.TXBOUND.SYSTRAN";
+
+        /** The record image column, as the repository addresses it. */
+        private static final String IMAGE_COLUMN = "RECORD_IMAGE";
+
+        /**
+         * The physical-record ordinal for an in-memory relation: H2's own row-identifier
+         * pseudo-column, exactly as {@code application-test.yml} states it.
+         */
+        private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
+
+        /** The identifier an empty master yields: READPREV reports ENDFILE, zero, plus one. */
+        private static final String FIRST_TRAN_ID = "0000000000000001";
+
+        @Test
+        @DisplayName("the added transaction is still there after the request, on a pool that does not "
+                + "auto-commit")
+        void theInsertIsCommitted() {
+            // The pool is configured exactly as application.yml:146 configures production - auto-commit
+            // false - because that setting is what makes this observable. Under it a statement issued
+            // with no transaction open is rolled back when Hikari takes the connection back, and the
+            // screen still names the identifier because the repository reported NORMAL and was telling
+            // the truth about the statement it executed.
+            withTransactionalContext(true, (controller, verifier) -> {
+                ScreenResponse<TransactionViewResponse> response =
+                        controller.addTransaction(completeRequest());
+
+                assertThat(response.screen().getErrmsgo())
+                        .as("the screen the operator is shown")
+                        .startsWith("Transaction added successfully.  Your Tran ID is "
+                                + FIRST_TRAN_ID + ".");
+                assertThat(recordsIn(verifier))
+                        .as("and the record the screen promised, read back on another connection")
+                        .hasSize(1)
+                        .allSatisfy(image -> {
+                            assertThat(image).as("gate G19 - the copybook's 350 bytes")
+                                    .hasSize(TranRecord.RECORD_LENGTH);
+                            assertThat(image).startsWith(FIRST_TRAN_ID);
+                        });
+            });
+        }
+
+        @Test
+        @DisplayName("without the boundary the same call names an identifier and leaves nothing behind, "
+                + "which is the defect this closes")
+        void withoutTheBoundaryTheInsertIsLost() {
+            // The control, and it is what makes the case above evidence rather than assertion. The only
+            // difference is that transaction management is not enabled, so @Transactional advises
+            // nothing - the same runtime the annotation's absence produced. The screen is identical; the
+            // master is empty.
+            withTransactionalContext(false, (controller, verifier) -> {
+                ScreenResponse<TransactionViewResponse> response =
+                        controller.addTransaction(completeRequest());
+
+                assertThat(response.screen().getErrmsgo())
+                        .as("the operator is told the same thing either way")
+                        .startsWith("Transaction added successfully.  Your Tran ID is "
+                                + FIRST_TRAN_ID + ".");
+                assertThat(recordsIn(verifier))
+                        .as("but nothing was committed")
+                        .isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("the probe and the write are one unit, so the next identifier is the committed "
+                + "high-water mark")
+        void theProbeSeesWhatTheLastRequestCommitted() {
+            // Two requests through one controller over one pool. The second request's browse has to see
+            // what the first one committed, or it computes the same key again and the write lands on the
+            // DUPKEY arm instead of adding. That is the second half of why the boundary exists: the
+            // probe and the write have to be on the same connection AND the first unit has to have
+            // finished.
+            withTransactionalContext(true, (controller, verifier) -> {
+                controller.addTransaction(completeRequest());
+
+                ScreenResponse<TransactionViewResponse> second =
+                        controller.addTransaction(completeRequest());
+
+                assertThat(second.screen().getErrmsgo())
+                        .as("the high-water mark advanced, so this is an add and not a duplicate")
+                        .startsWith("Transaction added successfully.  Your Tran ID is "
+                                + "0000000000000002.");
+                assertThat(recordsIn(verifier))
+                        .as("both records are durable")
+                        .hasSize(2)
+                        .satisfiesExactlyInAnyOrder(
+                                first -> assertThat(first).startsWith(FIRST_TRAN_ID),
+                                next -> assertThat(next).startsWith("0000000000000002"));
+            });
+        }
+
+        @Test
+        @DisplayName("the insert enlists in the unit of work, so a task that never commits leaves "
+                + "nothing behind")
+        void theInsertIsRolledBackWithTheUnitOfWork() {
+            // The other half of a boundary. Committing is only meaningful if not committing is equally
+            // possible: this drives the same request inside a unit of work the test then abandons, which
+            // is the CICS task that abends before its syncpoint. The insert has to be enlisted in that
+            // unit rather than standing outside it, or the record would survive an abend the mainframe
+            // would have backed out.
+            withTransactionalContext(true, (controller, verifier) -> {
+                TransactionTemplate abandoned = new TransactionTemplate(new JdbcTransactionManager(
+                        Objects.requireNonNull(verifier.getDataSource())));
+
+                ScreenResponse<TransactionViewResponse> response = abandoned.execute(status -> {
+                    ScreenResponse<TransactionViewResponse> answer =
+                            controller.addTransaction(completeRequest());
+                    status.setRollbackOnly();
+                    return answer;
+                });
+
+                assertThat(response).isNotNull();
+                assertThat(response.screen().getErrmsgo())
+                        .as("the program is unchanged - it still reports what it did")
+                        .startsWith("Transaction added successfully.");
+                assertThat(recordsIn(verifier))
+                        .as("but the unit of work was abandoned, so the insert went with it")
+                        .isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("the boundary is on the HTTP entry point, and mainPara stays free of it")
+        void theBoundaryIsOnTheEntryPoint() throws Exception {
+            // Placement is the whole of it. On the entry point the annotation is advised by the proxy
+            // Spring creates; on mainPara it would be reached by self-invocation from within the same
+            // instance and advise nothing at all - and it would also put a transaction in the path of
+            // every parity test, which drive mainPara directly against a stubbed repository.
+            assertThat(TransactionViewController.class
+                    .getMethod("addTransaction", TransactionViewRequest.class)
+                    .isAnnotationPresent(Transactional.class))
+                    .isTrue();
+            assertThat(TransactionViewController.class
+                    .getMethod("mainPara", TransactionViewRequest.class)
+                    .isAnnotationPresent(Transactional.class))
+                    .isFalse();
+            assertThat(TransactionViewController.class
+                    .getMethod("addTransaction", ProgramState.class)
+                    .isAnnotationPresent(Transactional.class))
+                    .as("ADD-TRANSACTION is a COBOL paragraph, not the CICS task's boundary")
+                    .isFalse();
+            assertThat(Modifier.isFinal(TransactionViewController.class.getModifiers()))
+                    .as("a final class cannot be proxied by CGLIB, so the annotation would be inert")
+                    .isFalse();
+            assertThat(Modifier.isFinal(TransactionViewController.class
+                    .getMethod("addTransaction", TransactionViewRequest.class).getModifiers()))
+                    .as("nor can a final method be overridden by the proxy")
+                    .isFalse();
+        }
+
+        /**
+         * Runs a body against a real controller over a real repository, a real non-auto-commit pool and a
+         * private in-memory database. The cross-reference stays stubbed, because it is read-only and its
+         * outcome is not what this class is about.
+         *
+         * @param transactionManagementEnabled whether {@code @Transactional} is advised at all
+         * @param body                         given the controller as the context exposes it - proxied
+         *                                     when management is enabled - and a template for reading the
+         *                                     master back
+         */
+        private void withTransactionalContext(boolean transactionManagementEnabled,
+                java.util.function.BiConsumer<TransactionViewController, JdbcTemplate> body) {
+            xrefByAccountFound();
+            // A fresh name per test rather than a shared counter, which is how TransactionRepositoryTest
+            // isolates its relations and which keeps this class free of mutable static state (gate G53).
+            String url = "jdbc:h2:mem:tranview_tx" + UUID.randomUUID()
+                    + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+            HikariDataSource pool = new HikariDataSource();
+            pool.setJdbcUrl(url);
+            pool.setDriverClassName("org.h2.Driver");
+            pool.setUsername("sa");
+            pool.setPassword("");
+            // The two settings that matter, and both mirror production: no auto-commit, and a pool small
+            // enough that the connection a request used is the one the next request gets back.
+            pool.setAutoCommit(false);
+            pool.setMaximumPoolSize(2);
+
+            try (HikariDataSource opened = pool) {
+                JdbcTemplate schema = new JdbcTemplate(opened);
+                new TransactionTemplate(new JdbcTransactionManager(opened)).executeWithoutResult(
+                        status -> {
+                            for (String dataset : new String[] { MASTER_DS, SYSTRAN_DS }) {
+                                schema.execute("CREATE TABLE \"" + dataset + "\" (\"" + IMAGE_COLUMN
+                                        + "\" CHAR(" + TranRecord.RECORD_LENGTH + "))");
+                            }
+                        });
+
+                AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+                context.registerBean(DataSource.class, () -> opened);
+                context.registerBean(PlatformTransactionManager.class,
+                        () -> new JdbcTransactionManager(opened));
+                context.registerBean(TransactionViewController.class,
+                        () -> new TransactionViewController(
+                                new TransactionRepository(new JdbcTemplate(opened), bindings(), CHARSET,
+                                        RecordImageForm.CHARACTER, ORDINAL),
+                                cardXrefRepository, dateUtilityJob, FIXED_CLOCK, CHARSET));
+                if (transactionManagementEnabled) {
+                    context.register(TransactionManagementEnabled.class);
+                }
+                try (AnnotationConfigApplicationContext running = context) {
+                    running.refresh();
+                    body.accept(running.getBean(TransactionViewController.class),
+                            new JdbcTemplate(opened));
+                }
+            }
+        }
+
+        /**
+         * @param template a template over the master's database
+         * @return every record image the master holds, read outside any transaction the body opened
+         */
+        private List<String> recordsIn(JdbcTemplate template) {
+            return template.queryForList("SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + MASTER_DS + "\"",
+                    String.class);
+        }
+
+        /** The three bindings the repository resolves, at {@code CVTRA05Y}'s geometry. */
+        private DatasetBindings bindings() {
+            DatasetBindings catalogue = new DatasetBindings();
+            DatasetBinding master = new DatasetBinding(MASTER_DS, "ksds", false, "FB", null,
+                    TranRecord.RECORD_LENGTH, "CVTRA05Y", TranRecord.TRAN_ID_KEY_LENGTH, null, null,
+                    null);
+            catalogue.put(TransactionRepository.CICS_FILE_NAME, master);
+            catalogue.put(TransactionRepository.INPUT_DD_NAME, master);
+            catalogue.put(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME,
+                    new DatasetBinding(SYSTRAN_DS, "sequential", false, "F", 0,
+                            TranRecord.RECORD_LENGTH, "CVTRA05Y", null, null, null, null));
+            return catalogue;
+        }
+
+        /** Turns on the proxying that makes {@code @Transactional} mean anything. */
+        @Configuration
+        @EnableTransactionManagement
+        static class TransactionManagementEnabled {
+        }
+    }
+
+    // =================================================================================================
+    // Synthesised cross-reference read outcomes. A ReadResult carries the decoded record AND the bytes it
+    // was decoded from, because DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96) writes the
+    // record area and the area's FILLER X(14) holds whatever the row held. A test constructing an outcome
+    // has no row, so the image it supplies is the one a row of exactly this record would carry - stated
+    // once here rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The found arm over a synthesised row of this record.
+     *
+     * @param ddName the access path
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefFound(String ddName, CardXrefRecord record) {
+        return CardXrefRepository.ReadResult.found(ddName, record, xrefImageOf(record));
+    }
+
+    /**
+     * The duplicate arm over a synthesised row of this record.
+     *
+     * @param ddName   the access path
+     * @param first    the first of the matching records
+     * @param cicsResp DUPREC for the base key or DUPKEY for an alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefDuplicate(String ddName, CardXrefRecord first,
+            int cicsResp) {
+        return CardXrefRepository.ReadResult.duplicate(ddName, first, xrefImageOf(first), cicsResp);
+    }
+
+    /**
+     * The 50-character image a row of this record would hold.
+     *
+     * @param record the record
+     * @return its encoded image
+     */
+    private static String xrefImageOf(CardXrefRecord record) {
+        return new String(record.encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
     }
 }

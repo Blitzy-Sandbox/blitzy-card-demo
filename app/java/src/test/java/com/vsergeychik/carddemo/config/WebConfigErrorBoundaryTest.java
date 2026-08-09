@@ -1,7 +1,6 @@
 package com.vsergeychik.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.Mockito.mock;
 
 import com.fasterxml.jackson.core.JsonParser;
@@ -10,7 +9,6 @@ import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardDetails;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardUpdateRecord;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.DetailGroup;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
-import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
@@ -24,7 +22,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.PropertySource;
@@ -366,33 +363,6 @@ class WebConfigErrorBoundaryTest {
             assertThat(CobolErrorHandler.internalStateResponse().toString())
                     .doesNotContain("CCXREF")
                     .doesNotContain("carddemo.datasets");
-        }
-    }
-
-    @Nested
-    @DisplayName("A FILE STATUS outcome maps to a status without carrying any record detail")
-    class OutcomeMapping {
-
-        @ParameterizedTest(name = "{0} is handled in-program, so the request itself succeeded")
-        @EnumSource(value = FileStatus.Outcome.class,
-                names = {"OK", "END_OF_FILE", "NOT_FOUND", "DUPLICATE"})
-        @DisplayName("The four outcomes the COBOL handles in-program all map to 200")
-        void theFourHandledOutcomesMapToOk(final FileStatus.Outcome outcome) {
-            assertThat(CobolErrorHandler.statusForOutcome(outcome)).isEqualTo(HttpStatus.OK);
-        }
-
-        @Test
-        @DisplayName("WHEN OTHER maps to 500, the arm every COBOL guard chain abends on")
-        void whenOtherMapsToInternalServerError() {
-            assertThat(CobolErrorHandler.statusForOutcome(FileStatus.Outcome.OTHER))
-                    .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-
-        @Test
-        @DisplayName("An absent outcome is refused rather than defaulted to a status")
-        void anAbsentOutcomeIsRefused() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> CobolErrorHandler.statusForOutcome(null));
         }
     }
 

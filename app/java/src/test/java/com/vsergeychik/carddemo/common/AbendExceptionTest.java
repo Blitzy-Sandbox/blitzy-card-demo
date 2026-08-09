@@ -138,7 +138,7 @@ class AbendExceptionTest {
 
     /** The instance field names the class carries, asserted by the immutability audit. */
     private static final List<String> CARRIED_FIELD_NAMES =
-            List.of("program", "returnCode", "abendCode", "timing", "reason");
+            List.of("program", "returnCode", "abendCode", "timing", "reason", "sourceDiagnostic");
 
     /**
      * Types that gate G22 forbids: no COBOL numeric may be represented in binary floating point.
@@ -235,8 +235,8 @@ class AbendExceptionTest {
             assertThat(Modifier.isPrivate(constructors[0].getModifiers()))
                     .as("the canonical constructor must be private")
                     .isTrue();
-            // program, returnCode, abendCode, timing, reason, cause.
-            assertThat(constructors[0].getParameterCount()).isEqualTo(6);
+            // program, returnCode, abendCode, timing, reason, sourceDiagnostic, cause.
+            assertThat(constructors[0].getParameterCount()).isEqualTo(7);
         }
 
         @Test
@@ -289,7 +289,7 @@ class AbendExceptionTest {
         }
 
         @Test
-        @DisplayName("carries exactly five private final instance fields, so instances are immutable")
+        @DisplayName("carries exactly six private final instance fields, so instances are immutable")
         void carriedStateIsImmutable() {
             List<String> instanceFields = new ArrayList<>();
             for (Field field : AbendException.class.getDeclaredFields()) {
@@ -1164,6 +1164,99 @@ class AbendExceptionTest {
             assertThat(message.indexOf("RETURN-CODE=")).isLessThan(message.indexOf("ABCODE="));
             assertThat(message.indexOf("ABCODE=")).isLessThan(message.indexOf("TIMING="));
             assertThat(message.indexOf("TIMING=")).isLessThan(message.indexOf(" - "));
+        }
+    }
+
+    /**
+     * The source-authored diagnostic - the area a COBOL paragraph transmits before abending.
+     *
+     * <p>Exactly one paragraph in the estate does: {@code app/cbl/COCRDSLC.cbl:865-869} issues
+     * {@code EXEC CICS SEND FROM(ABEND-DATA)} and only then {@code EXEC CICS ABEND ABCODE('9999')}.
+     * Because that transmission reached a terminal, it is observable behaviour and travels with the
+     * exception; the nine {@code CALL 'CEE3ABD'} sites transmit nothing of the kind, so for them it is
+     * absent and no response member appears at all.
+     */
+    @Nested
+    @DisplayName("The transmitted diagnostic - COCRDSLC:865-869 only")
+    class SourceDiagnostic {
+
+        /** The 134-byte area {@code CSMSG02Y} declares, as a paragraph would leave it. */
+        private static final String TRANSMITTED = "9999COCRDSLC"
+                + " ".repeat(SystemMessages.ABEND_REASON_LENGTH)
+                + "UNEXPECTED ABEND OCCURRED."
+                + " ".repeat(SystemMessages.ABEND_MSG_LENGTH - "UNEXPECTED ABEND OCCURRED.".length());
+
+        @Test
+        @DisplayName("a CEE3ABD abend carries none, in either shape")
+        void neitherShapeCarriesOneByDefault() {
+            assertThat(AbendException.standard(STANDARD_SITE_PROGRAM,
+                    AbendException.RETURN_CODE_IO_ERROR).hasSourceDiagnostic()).isFalse();
+            assertThat(AbendException.standard(STANDARD_SITE_PROGRAM,
+                    AbendException.RETURN_CODE_IO_ERROR).getSourceDiagnostic()).isEmpty();
+            assertThat(AbendException.withoutAbendParameters("CBSTM03A",
+                    AbendException.RETURN_CODE_IO_ERROR, OPEN_FAILURE_REASON)
+                    .hasSourceDiagnostic()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a transmitted area is carried verbatim, at the full group length")
+        void aTransmittedAreaIsCarriedVerbatim() {
+            AbendException abend = AbendException.withoutAbendParameters("COCRDSLC",
+                    AbendException.RETURN_CODE_IO_ERROR).withSourceDiagnostic(TRANSMITTED);
+
+            assertThat(abend.hasSourceDiagnostic()).isTrue();
+            assertThat(abend.getSourceDiagnostic()).contains(TRANSMITTED);
+            assertThat(abend.getSourceDiagnostic().orElseThrow())
+                    .hasSize(SystemMessages.ABEND_DATA_LENGTH);
+        }
+
+        @Test
+        @DisplayName("null and blank both state nothing, so both leave the abend without one")
+        void nullAndBlankAreBothAbsent() {
+            AbendException base = AbendException.standard(STANDARD_SITE_PROGRAM,
+                    AbendException.RETURN_CODE_ASSUMED_FAILURE);
+
+            assertThat(base.withSourceDiagnostic(null).hasSourceDiagnostic()).isFalse();
+            assertThat(base.withSourceDiagnostic("").hasSourceDiagnostic()).isFalse();
+            assertThat(base.withSourceDiagnostic("   ").hasSourceDiagnostic()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the original is unchanged, because an exception must not mutate once thrown")
+        void theOriginalIsUnchanged() {
+            AbendException original = AbendException.standard(STANDARD_SITE_PROGRAM,
+                    AbendException.RETURN_CODE_IO_ERROR, OPEN_FAILURE_REASON);
+
+            AbendException carrying = original.withSourceDiagnostic(TRANSMITTED);
+
+            assertThat(original.hasSourceDiagnostic()).isFalse();
+            assertThat(carrying).isNotSameAs(original);
+            assertThat(carrying.getMessage()).isEqualTo(original.getMessage());
+        }
+
+        @Test
+        @DisplayName("the diagnostic is not the reason, and neither becomes the other")
+        void theDiagnosticIsNotTheReason() {
+            // reason is Java-side detail for the server log and may quote a dataset; the diagnostic is
+            // source-authored and is published. Keeping them separate is what makes that split possible.
+            AbendException abend = AbendException.withoutAbendParameters("COCRDSLC",
+                            AbendException.RETURN_CODE_IO_ERROR, OPEN_FAILURE_REASON)
+                    .withSourceDiagnostic(TRANSMITTED);
+
+            assertThat(abend.getReason()).contains(OPEN_FAILURE_REASON);
+            assertThat(abend.getSourceDiagnostic().orElseThrow())
+                    .doesNotContain(OPEN_FAILURE_REASON);
+            assertThat(abend.getMessage()).doesNotContain(TRANSMITTED);
+        }
+
+        @Test
+        @DisplayName("it survives a serialization round trip, like every other carried value")
+        void itSurvivesSerialization() throws IOException, ClassNotFoundException {
+            AbendException restored = serializeAndBack(AbendException
+                    .withoutAbendParameters("COCRDSLC", AbendException.RETURN_CODE_IO_ERROR)
+                    .withSourceDiagnostic(TRANSMITTED));
+
+            assertThat(restored.getSourceDiagnostic()).contains(TRANSMITTED);
         }
     }
 

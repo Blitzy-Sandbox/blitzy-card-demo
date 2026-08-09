@@ -29,6 +29,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -463,6 +465,28 @@ class CustomerServiceTest {
                 assertThat(filler).hasSize(168);
                 assertThat(filler.chars()).allMatch(character -> character == ' ');
             });
+        }
+
+        @Test
+        @DisplayName("a row whose FILLER X(168) is not spaces is displayed twice, as it stands")
+        void aRowsFillerSurvivesBothDisplays() {
+            // READ ... INTO CUSTOMER-RECORD (L92) fills the whole 500-byte area from the row, and both
+            // DISPLAY CUSTOMER-RECORD sites (L96 and L78) write that area. CVCUS01Y's trailing
+            // FILLER X(168) is covered by no field, so whatever the row held there appears on both
+            // lines. Rendering the decoded record instead would blank it - a third of every line wrong.
+            String clean = fixtureRows().get(0);
+            String dirty = clean.substring(0, FILLER_FIRST_BYTE - 1) + "*".repeat(168);
+            assertThat(dirty).hasSize(FIVE_HUNDRED).isNotEqualTo(clean);
+
+            List<String> records = service(seeded(List.of(dirty)))
+                    .readAndPrintCustomerFile().recordLines();
+
+            assertThat(records).hasSize(CustomerService.DISPLAYS_PER_RECORD);
+            assertThat(records).allSatisfy(line -> assertThat(line)
+                    .as("the row's own 500 bytes, FILLER included")
+                    .hasSize(FIVE_HUNDRED)
+                    .isEqualTo(dirty)
+                    .isNotEqualTo(clean));
         }
 
         @Test
@@ -1595,6 +1619,46 @@ class CustomerServiceTest {
             assertThat(sink).isInstanceOf(PrintStreamSysoutSink.class);
             assertThat(((PrintStreamSysoutSink) sink).stream()).isSameAs(System.out);
         }
+    }
+
+    // =============================================================================================
+    // The guard behind the DISPLAY. Only the '00' arm displays, and that arm always carries both the
+    // decoded record and the bytes it was decoded from - which is what makes DISPLAY CUSTOMER-RECORD
+    // reproduce the row rather than a re-encode of it.
+    //
+    // No public path reaches this with a record-less outcome, and that is the point: it is an assertion
+    // about this class's own arm structure, not an error this program can encounter. An assertion that
+    // has never once executed is indistinguishable from a broken one, so it is executed here.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("A DISPLAY reached with no record to display is refused, not silently blanked")
+    class TheDisplayGuard {
+
+        @Test
+        @DisplayName("a record-less outcome raises rather than rendering spaces, and says which status")
+        void aRecordLessOutcomeIsRefused() throws Exception {
+            // END-OF-FILE is a legitimate outcome that carries no customer, so nothing has to be forced
+            // into an illegal shape to reach the guard - only the private method has to be reached.
+            Method recordImageOf = CustomerService.class.getDeclaredMethod("recordImageOf",
+                    CustomerRepository.ReadResult.class, CustomerService.WorkingStorage.class);
+            recordImageOf.setAccessible(true);
+            CustomerService subject = service(seeded(fixtureRows()));
+
+            assertThatExceptionOfType(InvocationTargetException.class)
+                    .isThrownBy(() -> recordImageOf.invoke(subject,
+                            CustomerRepository.ReadResult.endOfFile(),
+                            new CustomerService.WorkingStorage()))
+                    .withCauseInstanceOf(IllegalStateException.class)
+                    .satisfies(raised -> assertThat(raised.getCause())
+                            .hasMessageContaining(FileStatus.END_OF_FILE)
+                            .as("and names the status and the END-OF-FILE flag, so the defect is locatable")
+                            .hasMessageContaining("END-OF-FILE"));
+        }
+
+        // The other arm - a guard that refused everything would pass the test above and break every
+        // DISPLAY - is driven end to end by aRowsFillerSurvivesBothDisplays and the rest of the
+        // fixture-backed run tests, which take the '00' arm for every record of the file.
     }
 
 }

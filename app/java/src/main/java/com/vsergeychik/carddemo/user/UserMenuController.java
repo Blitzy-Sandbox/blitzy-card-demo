@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -231,9 +232,20 @@ public final class UserMenuController {
      *
      * <p>{@code EIBAID} is one byte of the CICS exec interface block. A raw byte cannot travel in a query
      * string, so it arrives as its unsigned integer value and is narrowed by
-     * {@link #resolveEibAid(Integer)}.
+     * {@link #resolveEibAid(Integer, UserListRequest)}.
      */
     static final String EIBAID_PARAM = "eibaid";
+
+    /**
+     * The {@code PIC X} move rule, applied to the inbound {@code CCARD-AID} token so that an unpadded
+     * spelling matches the copybook literal.
+     *
+     * <p>{@code static final} and immutable, and {@link FixedWidthCodec#movePicX(String, int)} is a pure
+     * {@link String} operation that never consults the charset, so the code page named here selects
+     * nothing (practice B9: static final and immutable is not shared mutable state).
+     */
+    private static final FixedWidthCodec AID_TOKEN_RULES =
+            new FixedWidthCodec(StandardCharsets.US_ASCII);
 
     /** The lowest value an unsigned {@code EIBAID} byte can carry. */
     private static final int AID_MIN = 0;
@@ -345,6 +357,16 @@ public final class UserMenuController {
 
     /** The second literal of the {@code DISPLAY} in each {@code WHEN OTHER} arm. */
     static final String DISPLAY_REAS = "REAS:";
+
+    /**
+     * Digit positions in {@code WS-RESP-CD} and {@code WS-REAS-CD}: {@code 9}, from
+     * {@code 01 WS-RESP-CD PIC S9(09) COMP} and {@code 01 WS-REAS-CD PIC S9(09) COMP}.
+     *
+     * <p>Used only to size the image of an unreported response code, so that substitute occupies the
+     * digit positions the field declares. A reported code is rendered as this controller has always
+     * rendered it, and that rendering is not this finding's subject.
+     */
+    static final int WS_RESP_CD_DIGITS = 9;
 
     // =================================================================================================
     // Navigation targets and selection characters.
@@ -672,9 +694,20 @@ public final class UserMenuController {
      * the {@code CDEMO-CU00} paging anchors and the screen the operator was looking at. Nothing is held
      * server-side between the two.
      *
+     * <p><strong>Which key was pressed can be stated two ways, and both are honoured.</strong> A caller
+     * that has the raw {@code EIBAID} byte sends it as the {@value #EIBAID_PARAM} parameter. A caller that
+     * simply echoes the payload it was last given sends nothing of the kind - it sends
+     * {@link UserListRequest#aid()}, the five-character {@code CCARD-AID} token this module publishes on
+     * every response, because a raw byte cannot travel in JSON. Reading only the parameter made
+     * {@code COUSR00C}'s {@code WHEN DFHPF7} and {@code WHEN DFHPF8} arms [{@code :122-131}] unreachable
+     * to exactly the stateless client this projection is designed for: paging forward and back was
+     * impossible without knowing an EBCDIC constant. The parameter still wins when it is supplied, since
+     * it is the more precise statement; the token is decoded when it is not; and
+     * {@link CicsAid#DFHENTER} is the default only when neither names a key.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start
      * @param eibaid  the terminal's attention identifier as an unsigned byte {@code 0..255}, or
-     *                {@code null} for {@link CicsAid#DFHENTER}
+     *                {@code null} to take the key from {@link UserListRequest#aid()}
      * @return the {@code COUSR0AO} projection, or - on a transfer of control - the same payload with
      *         {@code nextProgram} naming where the client goes next
      * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
@@ -688,7 +721,7 @@ public final class UserMenuController {
         // are still reachable when the envelope is built. They are not payload members and never become
         // any, which is exactly why they need the envelope to travel at all.
         WorkArea ws = new WorkArea();
-        UserListResponse painted = listUsers(request, resolveEibAid(eibaid), ws);
+        UserListResponse painted = listUsers(request, resolveEibAid(eibaid, request), ws);
         return ScreenResponse.of(painted, screenMetadataOf(ws));
     }
 
@@ -728,30 +761,111 @@ public final class UserMenuController {
     }
 
     /**
-     * Narrows the {@code EIBAID} value the request presented to the one byte {@code EIBAID} is.
+     * Resolves {@code EIBAID} from the two carriers a stateless caller has, in order of precedence.
      *
-     * <p>The range is checked rather than silently wrapped, because {@code 300} is not an attention
-     * identifier and quietly becoming {@code 0x2C} would send the request down a branch the operator
-     * never asked for.
+     * <ol>
+     *   <li>The {@value #EIBAID_PARAM} parameter, as an unsigned {@code 0}-{@code 255} value. The most
+     *       precise statement, so it wins whenever it is supplied. Its range is checked rather than
+     *       silently wrapped, because {@code 300} is not an attention identifier and quietly becoming
+     *       {@code 0x2C} would send the request down a branch the operator never asked for.</li>
+     *   <li>{@link UserListRequest#aid()}, the five-character {@code CCARD-AID} token every response of
+     *       this module publishes. A client that echoes what it was given states the key this way and no
+     *       other, which is why ignoring it made {@code WHEN DFHPF7} and {@code WHEN DFHPF8}
+     *       [{@code app/cbl/COUSR00C.cbl:122-131}] unreachable over HTTP.</li>
+     *   <li>{@link CicsAid#DFHENTER}, when neither carrier names a key. A CICS terminal always presents
+     *       some AID, and ENTER is the one this program handles first [{@code :123}] - the only default
+     *       that cannot reach a branch the operator could not have reached.</li>
+     * </ol>
      *
-     * @param eibaid the unsigned byte value, or {@code null} when the caller named no key
+     * @param eibaid  the unsigned byte value, or {@code null} when the caller named none
+     * @param request the payload, whose token is the second carrier; may be {@code null}
      * @return the raw AID byte
      * @throws IllegalArgumentException if {@code eibaid} is outside {@code 0..255}
      */
-    static byte resolveEibAid(Integer eibaid) {
-        if (eibaid == null) {
-            // A CICS terminal always presents some AID, and ENTER is the one this program handles first
-            // (:123). It is the only default that cannot reach a branch the operator could not reach.
-            return CicsAid.DFHENTER;
+    static byte resolveEibAid(Integer eibaid, UserListRequest request) {
+        if (eibaid != null) {
+            int value = eibaid;
+            if (value < AID_MIN || value > AID_MAX) {
+                throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
+                        + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
+                        + ". Narrowing it silently would select an attention identifier the caller never "
+                        + "pressed.");
+            }
+            return (byte) value;
         }
-        int value = eibaid;
-        if (value < AID_MIN || value > AID_MAX) {
-            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
-                    + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
-                    + ". Narrowing it silently would select an attention identifier the caller never "
-                    + "pressed.");
+        if (request != null) {
+            OptionalInt fromToken = aidByteOfToken(request.aid());
+            if (fromToken.isPresent()) {
+                return (byte) fromToken.getAsInt();
+            }
         }
-        return (byte) value;
+        return CicsAid.DFHENTER;
+    }
+
+    /**
+     * Maps a {@code CCARD-AID} token back onto the {@code EIBAID} byte it stands for.
+     *
+     * <p>The inverse of {@link PfKeyResolver#resolve(byte)}, written against the tokens
+     * {@link AidKey} itself publishes so the two cannot drift apart, and matched on the token's declared
+     * {@code PIC X(5)} image so that both {@code "PA1"} and {@code "PA1  "} resolve - the copybook
+     * literal carries two trailing spaces and a client may send either form.
+     *
+     * <p>Three inputs yield no key at all, and the caller falls back rather than guessing: {@code null},
+     * a token that is blank or {@code LOW-VALUES}, and a token matching none of the sixteen. The last is
+     * <strong>not</strong> mapped to {@link CicsAid#DFHNULL} here: this program's {@code WHEN OTHER} at
+     * {@code :133-137} flags an error and re-sends, so answering an unintelligible token that way would
+     * turn a caller's mistake into the operator-facing "invalid key" message. Falling back to ENTER
+     * instead reaches the arm the program handles first, which is what a terminal presenting no
+     * recognised key would have produced.
+     *
+     * @param token the token as received, of any length, or {@code null}
+     * @return the byte the token stands for, or {@link OptionalInt#empty()} when it names no key
+     */
+    static OptionalInt aidByteOfToken(String token) {
+        if (token == null) {
+            return OptionalInt.empty();
+        }
+        String image = AID_TOKEN_RULES.movePicX(token, PfKeyResolver.AID_TOKEN_LENGTH);
+        if (image.isBlank() || image.chars().allMatch(character -> character == 0)) {
+            return OptionalInt.empty();
+        }
+        for (AidKey candidate : AidKey.values()) {
+            if (candidate.token().equals(image)) {
+                return OptionalInt.of(canonicalByteOf(candidate) & 0xFF);
+            }
+        }
+        return OptionalInt.empty();
+    }
+
+    /**
+     * The {@code EIBAID} byte {@link PfKeyResolver#resolve(byte)} maps onto each token.
+     *
+     * <p>{@code CSSTRPFY} folds {@code DFHPF13}-{@code DFHPF24} onto {@code PFK01}-{@code PFK12}, so a
+     * token has more than one possible origin; the low key of each pair is returned, which is the one the
+     * resolver and every {@code EVALUATE EIBAID} in this program treat identically to its high twin.
+     *
+     * @param key the token's key; must not be {@code null}
+     * @return the canonical raw AID byte
+     */
+    private static byte canonicalByteOf(AidKey key) {
+        return switch (key) {
+            case ENTER -> CicsAid.DFHENTER;
+            case CLEAR -> CicsAid.DFHCLEAR;
+            case PA1 -> CicsAid.DFHPA1;
+            case PA2 -> CicsAid.DFHPA2;
+            case PFK01 -> CicsAid.DFHPF1;
+            case PFK02 -> CicsAid.DFHPF2;
+            case PFK03 -> CicsAid.DFHPF3;
+            case PFK04 -> CicsAid.DFHPF4;
+            case PFK05 -> CicsAid.DFHPF5;
+            case PFK06 -> CicsAid.DFHPF6;
+            case PFK07 -> CicsAid.DFHPF7;
+            case PFK08 -> CicsAid.DFHPF8;
+            case PFK09 -> CicsAid.DFHPF9;
+            case PFK10 -> CicsAid.DFHPF10;
+            case PFK11 -> CicsAid.DFHPF11;
+            case PFK12 -> CicsAid.DFHPF12;
+        };
     }
 
     // =================================================================================================
@@ -1645,7 +1759,7 @@ public final class UserMenuController {
             return cursor;
         }
         // :607-613  WHEN OTHER
-        display(ws, DISPLAY_RESP + ws.respCd + DISPLAY_REAS + ws.reasCd);       // :608
+        display(ws, DISPLAY_RESP + respImage(ws.respCd) + DISPLAY_REAS + respImage(ws.reasCd));       // :608
         ws.errFlgOn = true;                                                    // :609
         ws.message = codec.movePicX(MSG_UNABLE_TO_LOOKUP, WS_MESSAGE_LENGTH);  // :610-611
         ws.usrIdInLength = CURSOR_ON_USRIDIN;                                  // :612
@@ -1687,7 +1801,7 @@ public final class UserMenuController {
             return read;
         }
         // :641-647  WHEN OTHER
-        display(ws, DISPLAY_RESP + ws.respCd + DISPLAY_REAS + ws.reasCd);           // :642
+        display(ws, DISPLAY_RESP + respImage(ws.respCd) + DISPLAY_REAS + respImage(ws.reasCd));           // :642
         ws.errFlgOn = true;                                                        // :643
         ws.message = codec.movePicX(MSG_UNABLE_TO_LOOKUP, WS_MESSAGE_LENGTH);      // :644-645
         ws.usrIdInLength = CURSOR_ON_USRIDIN;                                      // :646
@@ -1729,7 +1843,7 @@ public final class UserMenuController {
             return read;
         }
         // :675-681  WHEN OTHER
-        display(ws, DISPLAY_RESP + ws.respCd + DISPLAY_REAS + ws.reasCd);           // :676
+        display(ws, DISPLAY_RESP + respImage(ws.respCd) + DISPLAY_REAS + respImage(ws.reasCd));           // :676
         ws.errFlgOn = true;                                                        // :677
         ws.message = codec.movePicX(MSG_UNABLE_TO_LOOKUP, WS_MESSAGE_LENGTH);      // :678-679
         ws.usrIdInLength = CURSOR_ON_USRIDIN;                                      // :680
@@ -1810,6 +1924,31 @@ public final class UserMenuController {
     private void display(WorkArea ws, String text) {
         ws.displays.add(text);
         LOG.info(text);
+    }
+
+    /**
+     * A {@code PIC S9(09) COMP} response or reason code as this program's {@code DISPLAY} renders it -
+     * or, where none was reported, as {@value #WS_RESP_CD_DIGITS} asterisks.
+     *
+     * <p><strong>The reported branch is left exactly as it was.</strong>
+     * {@code DISPLAY 'RESP:' WS-RESP-CD} of a binary field produces a compiler-defined rendering, this
+     * controller has always emitted the value's plain decimal form, and the three lines it composes are
+     * covered by parity cases. Changing them is not this finding's subject and would break those cases
+     * for every reported response.
+     *
+     * <p>What changes is only the case where there is no response code to render. Every number available
+     * there misrepresents it: {@code 0} <em>is</em> {@link FileStatus#NORMAL} and would report a failed
+     * command as a successful one, and {@code -1} would read as a {@code DFHRESP} value CICS does not
+     * define. The asterisk image is not a number at all, which is the only honest report, and it occupies
+     * the digit positions the field declares.
+     *
+     * @param code the value held in {@code WS-RESP-CD} or {@code WS-REAS-CD}
+     * @return the value's decimal form, or {@value #WS_RESP_CD_DIGITS} asterisks when none was reported
+     */
+    private static String respImage(int code) {
+        return FileStatus.respReported(code)
+                ? Integer.toString(code)
+                : FileStatus.respNotReportedImage(WS_RESP_CD_DIGITS);
     }
 
     // =================================================================================================
@@ -2103,15 +2242,20 @@ public final class UserMenuController {
         /**
          * Stores the {@code RESP} and {@code RESP2} a command reported, for the {@code DISPLAY} to render.
          *
-         * <p>A command that reported no response code leaves {@code WS-RESP-CD} at
-         * {@value FileStatus#NORMAL}, which is its {@code VALUE ZEROS} initial state and the value CICS
-         * sets on success.
+         * <p>A command that reported <strong>no</strong> response code records
+         * {@link FileStatus#RESP_NOT_REPORTED} rather than {@link FileStatus#NORMAL}. Recording
+         * {@code NORMAL} was the defect: it is {@code WS-RESP-CD}'s {@code VALUE ZEROS} initial state
+         * <em>and</em> the value CICS sets on success, so the three {@code WHEN OTHER} arms at
+         * {@code :608}, {@code :642} and {@code :676} would each have displayed {@code RESP:0} for a
+         * command that reported nothing at all - a line that says the read succeeded, on the arm reached
+         * only because it did not. The sentinel cannot collide with any {@code DFHRESP} value and is
+         * rendered by {@link UserMenuController#respImage(int)} as asterisks rather than as a number.
          *
          * @param resp  the response code, or empty when none was reported
          * @param resp2 the reason code
          */
         void captureResponse(OptionalInt resp, int resp2) {
-            respCd = resp.orElse(FileStatus.NORMAL);
+            respCd = resp.orElse(FileStatus.RESP_NOT_REPORTED);
             reasCd = resp2;
         }
 

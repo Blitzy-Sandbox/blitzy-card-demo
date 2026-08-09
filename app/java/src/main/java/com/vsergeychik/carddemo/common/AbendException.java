@@ -277,17 +277,46 @@ public final class AbendException extends RuntimeException {
     private final String reason;
 
     /**
+     * The fixed-width diagnostic the COBOL itself transmits immediately before abending, or
+     * {@code null} when the abending paragraph transmits none.
+     *
+     * <p>This is <strong>not</strong> {@link #reason} and the difference is the whole point.
+     * {@code reason} is Java-side detail composed for the server's own log and may quote a
+     * repository's or a dataset's text; this component carries only what the source program itself
+     * put on the wire. One paragraph in the estate does that:
+     * {@code app/cbl/COCRDSLC.cbl:865-869} issues {@code EXEC CICS SEND FROM(ABEND-DATA)} before
+     * {@code EXEC CICS ABEND ABCODE('9999')}, so the operator sees the 134 bytes of
+     * {@code CSMSG02Y}'s {@code ABEND-CODE}, {@code ABEND-CULPRIT}, {@code ABEND-REASON} and
+     * {@code ABEND-MSG}. Discarding them would change observable behaviour, so they travel here and
+     * the error handler publishes them.</p>
+     *
+     * <p>The nine {@code CALL 'CEE3ABD'} sites transmit nothing of the kind - they
+     * {@code DISPLAY} to {@code SYSOUT} and terminate - so for those this stays {@code null} and no
+     * such member appears in any response.</p>
+     *
+     * <p>Callers must place only source-authored text here. It is published outside the trust
+     * boundary, so a Java exception message, a JDBC message, a SQLSTATE, a stack frame or any other
+     * internal detail must never be passed to {@link #withSourceDiagnostic(String)}.</p>
+     */
+    private final String sourceDiagnostic;
+
+    /**
      * The single canonical constructor. All public construction goes through the two factory
      * families so that the two COBOL shapes stay self-documenting at the call site.
      *
-     * @param program    the abending program's COBOL {@code PROGRAM-ID}; must be non-null and
-     *                   non-blank
-     * @param returnCode the value the program placed in {@code APPL-RESULT}
-     * @param abendCode  the {@code ABCODE} argument, or {@code null} when the paragraph set none
-     * @param timing     the {@code TIMING} argument, or {@code null} when the paragraph set none
-     * @param reason     free-text detail, or {@code null}; a blank string is treated as absent
-     * @param cause      the underlying failure that triggered the abend, or {@code null} when the
-     *                   abend was raised from a file-status check rather than from another exception
+     * @param program          the abending program's COBOL {@code PROGRAM-ID}; must be non-null and
+     *                         non-blank
+     * @param returnCode       the value the program placed in {@code APPL-RESULT}
+     * @param abendCode        the {@code ABCODE} argument, or {@code null} when the paragraph set
+     *                         none
+     * @param timing           the {@code TIMING} argument, or {@code null} when the paragraph set
+     *                         none
+     * @param reason           free-text detail, or {@code null}; a blank string is treated as absent
+     * @param sourceDiagnostic the source-authored fixed-width diagnostic the COBOL transmits, or
+     *                         {@code null}; a blank string is treated as absent
+     * @param cause            the underlying failure that triggered the abend, or {@code null} when
+     *                         the abend was raised from a file-status check rather than from another
+     *                         exception
      * @throws NullPointerException     if {@code program} is {@code null}
      * @throws IllegalArgumentException if {@code program} is blank
      */
@@ -296,6 +325,7 @@ public final class AbendException extends RuntimeException {
                            Integer abendCode,
                            Integer timing,
                            String reason,
+                           String sourceDiagnostic,
                            Throwable cause) {
         super(composeMessage(requireProgram(program), returnCode, abendCode, timing,
                 normalizeReason(reason)), cause);
@@ -304,6 +334,7 @@ public final class AbendException extends RuntimeException {
         this.abendCode = abendCode;
         this.timing = timing;
         this.reason = normalizeReason(reason);
+        this.sourceDiagnostic = normalizeReason(sourceDiagnostic);
     }
 
     /**
@@ -366,7 +397,7 @@ public final class AbendException extends RuntimeException {
     public static AbendException standard(String program, int returnCode, String reason,
                                           Throwable cause) {
         return new AbendException(program, returnCode, STANDARD_ABEND_CODE, STANDARD_TIMING, reason,
-                cause);
+                null, cause);
     }
 
     /**
@@ -428,7 +459,7 @@ public final class AbendException extends RuntimeException {
      */
     public static AbendException withoutAbendParameters(String program, int returnCode,
                                                         String reason, Throwable cause) {
-        return new AbendException(program, returnCode, null, null, reason, cause);
+        return new AbendException(program, returnCode, null, null, reason, null, cause);
     }
 
     /**
@@ -527,6 +558,60 @@ public final class AbendException extends RuntimeException {
      */
     public boolean hasReason() {
         return reason != null;
+    }
+
+    /**
+     * Returns this abend carrying the fixed-width diagnostic the COBOL itself transmits immediately
+     * before abending.
+     *
+     * <p>Exactly one paragraph in the estate transmits one: {@code app/cbl/COCRDSLC.cbl:865-869}
+     * sends {@code ABEND-DATA} - {@code CSMSG02Y}'s {@code X(4)} + {@code X(8)} + {@code X(50)} +
+     * {@code X(72)}, 134 bytes - to the terminal, and only then abends. That transmission is
+     * observable behaviour, so the bytes travel with the exception and the HTTP error handler
+     * publishes them beside the status. The nine {@code CALL 'CEE3ABD'} sites transmit nothing of the
+     * kind and never call this method.</p>
+     *
+     * <p>A new instance is returned rather than the field being mutated, because an exception that
+     * changes after it is thrown cannot be reasoned about. Program, return code, {@code ABCODE},
+     * {@code TIMING}, reason and cause are all carried across unchanged, so the shape distinction
+     * between the {@code CEE3ABD} sites and the {@code CICS ABEND} site survives.</p>
+     *
+     * <p><strong>Only source-authored text may be passed here.</strong> The value crosses the trust
+     * boundary in the response body, so a Java exception message, a JDBC or driver message, a
+     * SQLSTATE, a vendor code, a stack frame, a dataset name or a record image must never reach it.
+     * The composed {@code ABEND-DATA} image qualifies because every one of its four fields is either
+     * a copybook literal, a {@code PROGRAM-ID} literal or spaces.</p>
+     *
+     * @param diagnostic the source-authored fixed-width diagnostic; {@code null} or blank leaves the
+     *                   abend without one
+     * @return an abend identical to this one but carrying {@code diagnostic}; never {@code null}
+     */
+    public AbendException withSourceDiagnostic(String diagnostic) {
+        return new AbendException(program, returnCode, abendCode, timing, reason, diagnostic,
+                getCause());
+    }
+
+    /**
+     * Returns the fixed-width diagnostic the COBOL transmitted before abending.
+     *
+     * <p>Present only for an abend raised by a paragraph that transmits one - in this estate,
+     * {@code COCRDSLC}'s {@code ABEND-ROUTINE}. Absent for every {@code CALL 'CEE3ABD'} site, which
+     * is why the HTTP error body omits the member entirely rather than carrying an empty one.</p>
+     *
+     * @return the transmitted diagnostic, or {@link Optional#empty()} when the abending paragraph
+     *         transmitted none
+     */
+    public Optional<String> getSourceDiagnostic() {
+        return Optional.ofNullable(sourceDiagnostic);
+    }
+
+    /**
+     * Reports whether a source-authored diagnostic is present.
+     *
+     * @return {@code true} when the abending paragraph transmitted one, {@code false} otherwise
+     */
+    public boolean hasSourceDiagnostic() {
+        return sourceDiagnostic != null;
     }
 
     /**

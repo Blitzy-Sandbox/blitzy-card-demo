@@ -367,6 +367,18 @@ public class CustomerRepository {
     public static final int RECORD_LENGTH = CustomerRecord.RECORD_LENGTH;
 
     /**
+     * How a stored record image is named in a decoding diagnostic - never its content.
+     *
+     * <p>{@link FixedWidthCodec#decodeImage(byte[], String)} refuses a byte the dataset code page does
+     * not define rather than substituting a replacement character, and it needs a name for what it was
+     * decoding. That name is a source citation, because the stored bytes of a customer record are a name,
+     * a home address, a phone number, a government-issued identifier and a social security number, and
+     * none of those may reach a log or an exception message.
+     */
+    private static final String RECORD_IMAGE_SUBJECT =
+            "the stored CUSTOMER-RECORD image displayed by app/cbl/CBCUS01C.cbl:78 and :96";
+
+    /**
      * The primary-key width in bytes: nine, taken from the declared width of {@code CUST-ID} rather than
      * restated as a literal.
      *
@@ -1442,7 +1454,15 @@ public class CustomerRepository {
                     + "offsets that would not be theirs");
             return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.LENGERR));
         }
-        return ReadResult.found(CustomerRecord.decode(recordImage, codec));
+        // The stored bytes, decoded once, character for character, and carried alongside the decoded
+        // fields. READ ... INTO CUSTOMER-RECORD moves the whole record area, so
+        // DISPLAY CUSTOMER-RECORD (app/cbl/CBCUS01C.cbl:78 and :96) writes bytes the record model cannot
+        // reproduce: CUSTOMER-RECORD ends with a FILLER that holds no field, and rendering the record
+        // through CustomerRecord.recordImage allocates a fresh area and so emits that span as spaces
+        // whatever the row held. The decode is strict - an unmappable byte is refused rather than
+        // replaced - so this String is the row's bytes or nothing.
+        return ReadResult.found(CustomerRecord.decode(recordImage, codec),
+                codec.decodeImage(recordImage, RECORD_IMAGE_SUBJECT));
     }
 
     // =================================================================================================
@@ -2225,6 +2245,7 @@ public class CustomerRepository {
     public record ReadResult(String status,
                              Outcome outcome,
                              Optional<CustomerRecord> customer,
+                             Optional<String> storedImage,
                              Optional<BackendDiagnostic> diagnostic,
                              CicsResponse response) {
 
@@ -2241,6 +2262,8 @@ public class CustomerRepository {
             requireConsistentStatus(status, outcome);
             Objects.requireNonNull(customer, "A read result carries an empty record rather than a null one, "
                     + "so no null escapes the type");
+            Objects.requireNonNull(storedImage, "A read result carries an empty stored image rather than a "
+                    + "null one, so no null escapes the type");
             Objects.requireNonNull(diagnostic, "A read result carries an empty diagnostic rather than a null "
                     + "one, so no null escapes the type");
             Objects.requireNonNull(response, "A read result carries a CICS response pair rather than a null "
@@ -2251,8 +2274,29 @@ public class CustomerRepository {
                         ? "A read that did not succeed carries no record: outcome " + outcome
                                 + " was given one. Only the '00' arm reaches CUSTOMER-RECORD."
                         : "A successful read carries the decoded record, and this one carries none; build it "
-                                + "with ReadResult.found(CustomerRecord).");
+                                + "with ReadResult.found(CustomerRecord, String).");
             }
+            // The stored image travels with the record and never without it. That is what makes
+            // DISPLAY CUSTOMER-RECORD reproducible: a caller on the successful arm can always reach the
+            // row's own bytes and never has to render the decoded record, which allocates a fresh area
+            // and so blanks the trailing FILLER whatever the row held.
+            if (storedImage.isPresent() != customer.isPresent()) {
+                throw new IllegalArgumentException(storedImage.isPresent()
+                        ? "A read that did not succeed carries no record, so it carries no stored image "
+                                + "either: outcome " + outcome + " was given one."
+                        : "A successful read carries the stored image the record was decoded from, and "
+                                + "this one carries none; build it with "
+                                + "ReadResult.found(CustomerRecord, String).");
+            }
+            storedImage.ifPresent(image -> {
+                if (image.length() != CustomerRecord.RECORD_LENGTH) {
+                    throw new IllegalArgumentException("A stored CUSTOMER-RECORD image is "
+                            + CustomerRecord.RECORD_LENGTH + " characters as app/cpy/CVCUS01Y.cpy "
+                            + "declares, but this one is " + image.length()
+                            + ". DISPLAY CUSTOMER-RECORD writes the whole record area, so an image of any "
+                            + "other width would emit a line the program cannot produce.");
+                }
+            });
         }
 
         /**
@@ -2262,14 +2306,25 @@ public class CustomerRepository {
          * {@code DFHRESP(NORMAL)} - {@code SET FOUND-CUST-IN-MASTER TO TRUE} - at
          * {@code app/cbl/COACTVWC.cbl:L837-L838}.
          *
-         * @param customer the decoded record
-         * @return a result carrying {@link FileStatus#OK} and the record
-         * @throws NullPointerException if {@code customer} is {@code null}
+         * <p>Both the decoded record and the bytes it was decoded from are carried, and the second is not
+         * redundant: {@code DISPLAY CUSTOMER-RECORD} ({@code app/cbl/CBCUS01C.cbl:78} and {@code :96})
+         * writes the whole record area, whose trailing {@code FILLER} holds no field and which rendering
+         * the decoded record would therefore blank.
+         *
+         * @param customer    the decoded record
+         * @param storedImage the row's own characters, exactly
+         *                    {@value CustomerRecord#RECORD_LENGTH} of them
+         * @return a result carrying {@link FileStatus#OK}, the record and its stored image
+         * @throws NullPointerException     if either argument is {@code null}
+         * @throws IllegalArgumentException if {@code storedImage} is not
+         *                                  {@value CustomerRecord#RECORD_LENGTH} characters
          */
-        public static ReadResult found(CustomerRecord customer) {
+        public static ReadResult found(CustomerRecord customer, String storedImage) {
             Objects.requireNonNull(customer, "A successful read carries the decoded customer record");
-            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(customer), Optional.empty(),
-                    CicsResponse.ofBatchStatus(FileStatus.OK));
+            Objects.requireNonNull(storedImage, "A successful read carries the stored image the record "
+                    + "was decoded from, so DISPLAY CUSTOMER-RECORD can write the row's own bytes");
+            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(customer),
+                    Optional.of(storedImage), Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.OK));
         }
 
         /**
@@ -2318,6 +2373,7 @@ public class CustomerRepository {
             // that passes a malformed status should read this class's diagnostic rather than one from the
             // status vocabulary two calls deeper.
             return new ReadResult(status, classify(status), Optional.empty(), Optional.empty(),
+                    Optional.empty(),
                     CicsResponse.ofBatchStatus(status));
         }
 
@@ -2339,7 +2395,8 @@ public class CustomerRepository {
          *                                  {@link FileStatus#OK}
          */
         public static ReadResult of(String status, CicsResponse response) {
-            return new ReadResult(status, classify(status), Optional.empty(), Optional.empty(), response);
+            return new ReadResult(status, classify(status), Optional.empty(), Optional.empty(),
+                    Optional.empty(), response);
         }
 
         /**
@@ -2372,7 +2429,8 @@ public class CustomerRepository {
         public static ReadResult of(String status, CicsResponse response, BackendDiagnostic diagnostic) {
             Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use of(String) "
                     + "where there is no backend refusal to report");
-            return new ReadResult(status, classify(status), Optional.empty(), Optional.of(diagnostic),
+            return new ReadResult(status, classify(status), Optional.empty(), Optional.empty(),
+                    Optional.of(diagnostic),
                     response);
         }
 
@@ -2387,6 +2445,28 @@ public class CustomerRepository {
          */
         public boolean isFound() {
             return outcome == Outcome.OK;
+        }
+
+        /**
+         * The row's own bytes as characters, for a caller already on the successful arm.
+         *
+         * <p>This is what {@code DISPLAY CUSTOMER-RECORD} ({@code app/cbl/CBCUS01C.cbl:78} and
+         * {@code :96}) writes: the whole {@value CustomerRepository#RECORD_LENGTH}-byte record area,
+         * exactly as the row held it. Rendering {@link #customer()} through
+         * {@link CustomerRecord#recordImage(FixedWidthCodec)} instead would agree on every declared field
+         * and disagree on the trailing {@code FILLER}, which holds no field and which a fresh area
+         * necessarily emits as spaces - so the two are not interchangeable and a raw display must use
+         * this one.
+         *
+         * @return exactly {@value CustomerRepository#RECORD_LENGTH} characters
+         * @throws IllegalStateException if this arm carries no record, and so no image either
+         */
+        public String requireStoredImage() {
+            return storedImage.orElseThrow(() -> new IllegalStateException("A read that reported file "
+                    + "status " + FileStatus.toStatusImage(status) + " carries no record, so it carries "
+                    + "no stored image. DISPLAY CUSTOMER-RECORD is reached only on the '" + FileStatus.OK
+                    + "' arm - app/cbl/CBCUS01C.cbl:94 tests the status before it displays - so branch on "
+                    + "the outcome first."));
         }
 
         /**

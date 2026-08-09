@@ -362,7 +362,7 @@ class AccountBalanceUpdateJobTest {
      */
     private static BrowseCursor cursorOver(List<CardXrefRecord> records) {
         List<ReadResult> reads = new ArrayList<>();
-        records.forEach(record -> reads.add(ReadResult.found(CardXrefRepository.BASE_DD_NAME, record)));
+        records.forEach(record -> reads.add(xrefFound(CardXrefRepository.BASE_DD_NAME, record)));
         reads.add(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME));
         return cursorYielding(FileStatus.OK, FileStatus.OK, reads);
     }
@@ -828,6 +828,34 @@ class AccountBalanceUpdateJobTest {
             assertThat(fixtureRows()).hasSize(FIXTURE_ROW_COUNT)
                     .allSatisfy(row -> assertThat(row).hasSize(FIXTURE_ROW_WIDTH));
         }
+
+        @Test
+        @DisplayName("a row whose FILLER X(14) is not spaces is displayed twice, as it stands")
+        void aRowsFillerSurvivesBothDisplays() {
+            // READ ... INTO CARD-XREF-RECORD (:93) fills the whole 50-byte area from the row, and both
+            // DISPLAY CARD-XREF-RECORD sites (:96 and :78) write that area. CVACT03Y's trailing
+            // FILLER X(14) is covered by no field, so whatever the row held there appears on both lines.
+            // Rendering the decoded record instead would blank it - 14 wrong bytes, twice per record.
+            CardXrefRecord record = new CardXrefRecord(fixtureRecords().get(0).xrefCardNum(), 50, 50L);
+            String clean = xrefImageOf(record);
+            String dirty = clean.substring(0, CardXrefRecord.FILLER_OFFSET)
+                    + "*".repeat(CardXrefRecord.FILLER_LENGTH);
+            BrowseCursor cursor = cursorYielding(FileStatus.OK, FileStatus.OK, List.of(
+                    ReadResult.found(CardXrefRepository.BASE_DD_NAME, record, dirty),
+                    ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)));
+            CapturingSysout sysout = new CapturingSysout();
+
+            job(repositoryWith(cursor)).execute(sysout);
+
+            assertThat(sysout.lines()).hasSize(4);
+            assertThat(sysout.lines().get(1))
+                    .as("the display at app/cbl/CBACT03C.cbl:96 - the row's own 50 bytes")
+                    .isEqualTo(dirty)
+                    .isNotEqualTo(clean);
+            assertThat(sysout.lines().get(2))
+                    .as("the display at app/cbl/CBACT03C.cbl:78 - the same unchanged record area")
+                    .isEqualTo(dirty);
+        }
     }
 
     // =================================================================================================
@@ -922,7 +950,7 @@ class AccountBalanceUpdateJobTest {
         void aReadFailureAbendsAfterTheLinesAlreadyEmitted() {
             String row = fixtureRows().get(0);
             BrowseCursor cursor = cursorYielding(FileStatus.OK, FileStatus.OK, List.of(
-                    ReadResult.found(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0)),
+                    xrefFound(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0)),
                     ReadResult.other(CardXrefRepository.BASE_DD_NAME, PERMANENT)));
             CapturingSysout sysout = new CapturingSysout();
             AccountBalanceUpdateJob subject = job(repositoryWith(cursor));
@@ -959,7 +987,7 @@ class AccountBalanceUpdateJobTest {
         void aCloseFailureAbendsAfterTheLoop() {
             String row = fixtureRows().get(0);
             BrowseCursor cursor = cursorYielding(FileStatus.OK, PERMANENT, List.of(
-                    ReadResult.found(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0)),
+                    xrefFound(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0)),
                     ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)));
             CapturingSysout sysout = new CapturingSysout();
             AccountBalanceUpdateJob subject = job(repositoryWith(cursor));
@@ -1003,7 +1031,7 @@ class AccountBalanceUpdateJobTest {
             // and '10' does with them (gate G47).
             List<ReadResult> unnamed = List.of(
                     ReadResult.notFound(CardXrefRepository.BASE_DD_NAME),
-                    ReadResult.duplicate(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0),
+                    xrefDuplicate(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0),
                             FileStatus.DUPKEY));
 
             for (ReadResult result : unnamed) {
@@ -1143,6 +1171,40 @@ class AccountBalanceUpdateJobTest {
                     cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
                     .withMessageContaining(AccountBalanceUpdateJob.STEP_NAME + "].program")
                     .withMessageContaining("CBACT02C");
+        }
+
+        @Test
+        @DisplayName("a second step declared beside STEP05 is refused: READXREF.jcl has one EXEC")
+        void anAddedStepIsRefused() {
+            // The program, gating and name checks all resolve STEP05 by name and find it whether it
+            // stands alone or first of two, so none of them can see an added step. Here the extra step
+            // is a well-formed copy of the real one, which is the shape a copy-paste edit produces.
+            JobContracts withASecondStep = new JobContracts();
+            withASecondStep.put(AccountBalanceUpdateJob.JOB_KEY,
+                    new JobContract(AccountBalanceUpdateJob.PROGRAM_NAME, List.of(),
+                            List.of(new StepContract(AccountBalanceUpdateJob.STEP_NAME,
+                                            AccountBalanceUpdateJob.PROGRAM_NAME, false),
+                                    new StepContract("STEP06",
+                                            AccountBalanceUpdateJob.PROGRAM_NAME, false)),
+                            null, Map.of()));
+
+            assertThatIllegalStateException().isThrownBy(() -> new AccountBalanceUpdateJob(
+                    batchConfig(withASecondStep, bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME)),
+                    cardXrefRepositoryMock(), ASCII, new SuppliedProvider<>(null)))
+                    .withMessageContaining("does not declare the step sequence of "
+                            + "app/jcl/READXREF.jcl:22")
+                    .withMessageContaining("configured: [STEP05/CBACT03C, STEP06/CBACT03C]")
+                    .withMessageContaining("required:   [STEP05/CBACT03C]");
+        }
+
+        @Test
+        @DisplayName("the shipped single-step sequence is what the class requires")
+        void theShippedSequenceIsRequired() {
+            assertThat(AccountBalanceUpdateJob.REQUIRED_STEPS)
+                    .containsExactly(new StepContract(AccountBalanceUpdateJob.STEP_NAME,
+                            AccountBalanceUpdateJob.PROGRAM_NAME, false));
+            assertThat(validContracts().get(AccountBalanceUpdateJob.JOB_KEY).steps())
+                    .isEqualTo(AccountBalanceUpdateJob.REQUIRED_STEPS);
         }
 
         @Test
@@ -1731,10 +1793,19 @@ class AccountBalanceUpdateJobTest {
         void theDisplaySitesArePresent() throws IOException {
             String source = subjectSource();
 
-            assertThat(source).contains("sysout.display(displayImageOf(record));")
-                    .contains("sysout.display(displayImageOf(recordArea));")
+            // Both DISPLAY sites write a stored image - the bytes the row actually held - and neither
+            // re-encodes the decoded record. DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96)
+            // writes the whole 50-byte record area, and the area's FILLER X(14) carries whatever the row
+            // carried; re-encoding a decoded record allocates a fresh area and so would blank it.
+            assertThat(source).contains("sysout.display(storedImage);")
+                    .contains("sysout.display(recordAreaImage);")
                     .contains("sysout.display(START_OF_EXECUTION);")
                     .contains("sysout.display(END_OF_EXECUTION);");
+
+            assertThat(source)
+                    .as("neither DISPLAY site may reconstruct the image from the decoded fields, which "
+                            + "would space-normalise the trailing FILLER X(14)")
+                    .doesNotContain("sysout.display(displayImageOf(");
         }
 
         @Test
@@ -1798,5 +1869,47 @@ class AccountBalanceUpdateJobTest {
                         assertThat(subject.defaultSysoutSink()).isNotNull();
                     });
         }
+    }
+
+    // =================================================================================================
+    // Synthesised cross-reference read outcomes. A ReadResult carries the decoded record AND the bytes it
+    // was decoded from, because DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96) writes the
+    // record area and the area's FILLER X(14) holds whatever the row held. A test constructing an outcome
+    // has no row, so the image it supplies is the one a row of exactly this record would carry - stated
+    // once here rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The found arm over a synthesised row of this record.
+     *
+     * @param ddName the access path
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefFound(String ddName, CardXrefRecord record) {
+        return CardXrefRepository.ReadResult.found(ddName, record, xrefImageOf(record));
+    }
+
+    /**
+     * The duplicate arm over a synthesised row of this record.
+     *
+     * @param ddName   the access path
+     * @param first    the first of the matching records
+     * @param cicsResp DUPREC for the base key or DUPKEY for an alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefDuplicate(String ddName, CardXrefRecord first,
+            int cicsResp) {
+        return CardXrefRepository.ReadResult.duplicate(ddName, first, xrefImageOf(first), cicsResp);
+    }
+
+    /**
+     * The 50-character image a row of this record would hold.
+     *
+     * @param record the record
+     * @return its encoded image
+     */
+    private static String xrefImageOf(CardXrefRecord record) {
+        return new String(record.encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
     }
 }

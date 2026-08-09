@@ -1,10 +1,12 @@
 package com.vsergeychik.carddemo;
 
+import com.vsergeychik.carddemo.config.BatchConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.io.IOException;
@@ -19,10 +21,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
+import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
  * Contract tests for {@link CardDemoApplication}, the module's composition root.
@@ -225,10 +229,15 @@ class CardDemoApplicationTest {
     class EntryPointMethod {
 
         @Test
-        @DisplayName("main is the class's only authored method, and is public static void(String[])")
-        void mainIsTheOnlyAuthoredMethod() throws NoSuchMethodException {
-            assertThat(authored(CardDemoApplication.class.getDeclaredMethods()))
-                    .extracting(Method::getName)
+        @DisplayName("main is the only public method, and is public static void(String[])")
+        void mainIsTheOnlyPublicMethod() throws NoSuchMethodException {
+            // Everything beside main is package-private and exists for one reason: the launch mode has
+            // to be decided before the context exists, so the decision cannot live in a bean, and a
+            // decision nobody can call is a decision nobody can test.
+            assertThat(authored(CardDemoApplication.class.getDeclaredMethods()).stream()
+                    .filter(method -> Modifier.isPublic(method.getModifiers()))
+                    .map(Method::getName)
+                    .toList())
                     .containsExactly("main");
 
             Method main = CardDemoApplication.class.getDeclaredMethod("main", String[].class);
@@ -238,9 +247,28 @@ class CardDemoApplicationTest {
         }
 
         @Test
-        @DisplayName("the class declares no field at all, so it holds no static mutable state")
-        void noFieldsAreDeclared() {
-            assertThat(authored(CardDemoApplication.class.getDeclaredFields())).isEmpty();
+        @DisplayName("every authored method is static, because none of them needs an instance")
+        void everyAuthoredMethodIsStatic() {
+            // The entry point is reached with no instance in existence, and so is the launch-mode
+            // decision it takes. An instance method here would imply state this class does not have.
+            assertThat(authored(CardDemoApplication.class.getDeclaredMethods()).stream()
+                    .filter(method -> !Modifier.isStatic(method.getModifiers()))
+                    .map(Method::getName)
+                    .toList())
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every declared field is static final, so the class holds no mutable state")
+        void everyFieldIsStaticFinal() {
+            // Gate G53. The class carries one field - the relaxed environment-variable spelling of the
+            // job-name property, derived rather than transcribed - and a constant is not state.
+            assertThat(authored(CardDemoApplication.class.getDeclaredFields()).stream()
+                    .filter(field -> !(Modifier.isStatic(field.getModifiers())
+                            && Modifier.isFinal(field.getModifiers())))
+                    .map(java.lang.reflect.Field::getName)
+                    .toList())
+                    .isEmpty();
         }
 
         @Test
@@ -272,16 +300,28 @@ class CardDemoApplicationTest {
     class SourceLevelProhibitions {
 
         @Test
-        @DisplayName("exactly two imports, both named: SpringApplication and SpringBootApplication")
-        void importsAreTwoAndNamed() throws IOException {
+        @DisplayName("every import is named, and the set is exactly what the entry point and its launch-"
+                + "mode decision need")
+        void importsAreNamedAndExactlyWhatIsNeeded() throws IOException {
             List<String> imports = code().lines()
                     .map(String::strip)
                     .filter(line -> line.startsWith("import "))
                     .toList();
 
+            // Stated as an exact set rather than a count, so an import added for anything the entry
+            // point has no business doing - persistence, security, cloud, observability - fails here.
+            // The four beyond the two Boot types exist for the launch-mode decision alone: it is taken
+            // before any Environment exists, so it reads the command line and the process itself.
             assertThat(imports).containsExactly(
+                    "import java.util.Locale;",
+                    "import java.util.Objects;",
+                    "import java.util.function.UnaryOperator;",
+                    "import com.vsergeychik.carddemo.config.BatchConfig;",
                     "import org.springframework.boot.SpringApplication;",
-                    "import org.springframework.boot.autoconfigure.SpringBootApplication;");
+                    "import org.springframework.boot.WebApplicationType;",
+                    "import org.springframework.boot.autoconfigure.SpringBootApplication;",
+                    "import org.springframework.core.env.SimpleCommandLinePropertySource;",
+                    "import org.springframework.util.StringUtils;");
         }
 
         @Test
@@ -311,7 +351,6 @@ class CardDemoApplicationTest {
                     "CommandLineRunner",
                     "ApplicationRunner",
                     "setDefaultProperties",
-                    "WebApplicationType",
                     // Excluded technologies, every one of them named in the plan's exclusion table.
                     "springframework.security",
                     "hibernate",
@@ -334,14 +373,167 @@ class CardDemoApplicationTest {
         }
 
         @Test
-        @DisplayName("static appears exactly once in the code, in the signature of main")
-        void staticAppearsOnlyInMain() throws IOException {
+        @DisplayName("the web application type is set for one reason only - a JCL submission is a "
+                + "one-shot non-web process")
+        void theWebApplicationTypeIsSetForOneReasonOnly() throws IOException {
+            // WebApplicationType is not banned here, because gate G35 requires the opposite: a
+            // submission has to end when its job ends and deliver the RETURN-CODE, which a servlet
+            // container's non-daemon threads would prevent. What IS required is that the type is chosen
+            // in exactly one place, from exactly one condition, so no second rule can quietly decide
+            // what kind of process this is.
+            String text = code();
+
+            assertThat(text.lines().filter(line -> line.contains("setWebApplicationType")).count())
+                    .as("one setter call, in the one method that decides the mode")
+                    .isOne();
+            assertThat(text.lines()
+                    .filter(line -> line.contains("WebApplicationType.NONE"))
+                    .count())
+                    .as("the non-web mode is chosen once, by the submission condition")
+                    .isOne();
+            assertThat(text)
+                    .as("the condition is the launcher's own property, so the two halves of a "
+                            + "submission cannot disagree about what kind of process it is")
+                    .contains("BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY");
+            assertThat(text)
+                    .as("no profile is activated from code, and no default property is injected")
+                    .doesNotContain("setAdditionalProfiles")
+                    .doesNotContain("setDefaultProperties");
+        }
+
+        @Test
+        @DisplayName("every static in the code is final or a static method, never static mutable state")
+        void everyStaticIsFinalOrAMethod() throws IOException {
+            // Read from the source rather than by reflection so that a field declared and never read -
+            // which reflection would still report as final - is judged on how it is written. A static
+            // that is neither final nor a method signature would be shared mutable state (gate G53).
             List<String> staticLines = code().lines()
                     .map(String::strip)
-                    .filter(line -> line.contains("static"))
+                    .filter(line -> line.startsWith("static ") || line.contains(" static "))
+                    .filter(line -> !line.contains("static final "))
+                    .filter(line -> !line.endsWith("{"))
                     .toList();
 
-            assertThat(staticLines).containsExactly("public static void main(String[] args) {");
+            assertThat(staticLines)
+                    .as("a static that is neither final nor a method signature is shared mutable state")
+                    .isEmpty();
+        }
+    }
+
+    /**
+     * The launch mode: a JCL submission is a one-shot non-web process, everything else is the web
+     * application.
+     *
+     * <p>The same jar serves the seventeen translated CICS transactions and submits batch jobs, and
+     * those are different kinds of process. A submission has to end when its job ends, delivering the
+     * {@code RETURN-CODE} to the shell (gate G35); a servlet container's non-daemon threads would keep
+     * it alive instead. The web application type is chosen while the environment is being prepared, so
+     * the decision cannot be taken by a bean - it is taken here, and asserted here, without starting
+     * anything.
+     */
+    @Nested
+    @DisplayName("The launch mode - a submission is a one-shot non-web process")
+    class LaunchMode {
+
+        /** The property whose presence makes an invocation a submission. */
+        private static final String JOB_NAME_PROPERTY =
+                BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY;
+
+        /** A process that supplies nothing outside the command line. */
+        private static final UnaryOperator<String> NOTHING_EXTERNAL = name -> null;
+
+        @Test
+        @DisplayName("no job name anywhere means the web application, exactly as before")
+        void noJobNameMeansTheWebApplication() {
+            assertThat(CardDemoApplication.isJclSubmission(new String[0], NOTHING_EXTERNAL)).isFalse();
+            assertThat(CardDemoApplication.webApplicationTypeFor(
+                    new String[] { "--spring.profiles.active=test" }, NOTHING_EXTERNAL))
+                    .isEqualTo(WebApplicationType.SERVLET);
+        }
+
+        @Test
+        @DisplayName("a job name on the command line means a one-shot non-web process")
+        void aJobNameOnTheCommandLineMeansNonWeb() {
+            String[] submission = { "--" + JOB_NAME_PROPERTY + "=accountBalanceJob" };
+
+            assertThat(CardDemoApplication.isJclSubmission(submission, NOTHING_EXTERNAL)).isTrue();
+            assertThat(CardDemoApplication.webApplicationTypeFor(submission, NOTHING_EXTERNAL))
+                    .isEqualTo(WebApplicationType.NONE);
+        }
+
+        @Test
+        @DisplayName("a job name supplied outside the command line counts too, because a container "
+                + "supplies it that way")
+        void aJobNameSuppliedOutsideTheCommandLineCountsToo() {
+            UnaryOperator<String> supplied =
+                    name -> JOB_NAME_PROPERTY.equals(name) ? "statementGenerationJobA" : null;
+
+            assertThat(CardDemoApplication.isJclSubmission(new String[0], supplied)).isTrue();
+            assertThat(CardDemoApplication.webApplicationTypeFor(new String[0], supplied))
+                    .isEqualTo(WebApplicationType.NONE);
+        }
+
+        @Test
+        @DisplayName("a blank job name is not a submission, because there is no job to submit")
+        void aBlankJobNameIsNotASubmission() {
+            UnaryOperator<String> blank = name -> "   ";
+
+            assertThat(CardDemoApplication.isJclSubmission(new String[0], blank)).isFalse();
+        }
+
+        @Test
+        @DisplayName("both arguments are required, because a missing one would silently choose a mode")
+        void bothArgumentsAreRequired() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CardDemoApplication.isJclSubmission(null, NOTHING_EXTERNAL))
+                    .withMessageContaining("command-line arguments are required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CardDemoApplication.isJclSubmission(new String[0], null))
+                    .withMessageContaining("process-value lookup is required");
+        }
+
+        @Test
+        @DisplayName("the application is built with the chosen mode, and this class as its source")
+        void theApplicationIsBuiltWithTheChosenMode() {
+            assertThat(CardDemoApplication.springApplicationFor(new String[0], NOTHING_EXTERNAL))
+                    .isNotNull();
+            assertThat(CardDemoApplication.springApplicationFor(
+                    new String[] { "--" + JOB_NAME_PROPERTY + "=accountBalanceJob" },
+                    NOTHING_EXTERNAL))
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("a system property is read, and it wins over the environment as it does everywhere "
+                + "else")
+        void aSystemPropertyIsReadAndWins() {
+            assertThat(CardDemoApplication.processValueOf(JOB_NAME_PROPERTY)).isNull();
+
+            System.setProperty(JOB_NAME_PROPERTY, "accountInterestCalcJob");
+            try {
+                assertThat(CardDemoApplication.processValueOf(JOB_NAME_PROPERTY))
+                        .isEqualTo("accountInterestCalcJob");
+                assertThat(CardDemoApplication.isJclSubmission(new String[0],
+                        CardDemoApplication::processValueOf)).isTrue();
+            } finally {
+                System.clearProperty(JOB_NAME_PROPERTY);
+            }
+
+            assertThat(CardDemoApplication.processValueOf(JOB_NAME_PROPERTY)).isNull();
+        }
+
+        @Test
+        @DisplayName("the environment-variable spelling is derived from the property, never transcribed")
+        void theEnvironmentVariableSpellingIsDerived() {
+            assertThat(CardDemoApplication.environmentVariableFor(JOB_NAME_PROPERTY))
+                    .isEqualTo("CARDDEMO_BATCH_JOB_NAME");
+            assertThat(CardDemoApplication.JOB_NAME_ENVIRONMENT_VARIABLE)
+                    .isEqualTo("CARDDEMO_BATCH_JOB_NAME");
+            assertThat(CardDemoApplication.environmentVariableFor("carddemo.charset.dataset"))
+                    .isEqualTo("CARDDEMO_CHARSET_DATASET");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CardDemoApplication.environmentVariableFor(null))
+                    .withMessageContaining("property name is required");
         }
     }
 

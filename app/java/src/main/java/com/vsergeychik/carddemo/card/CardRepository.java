@@ -437,6 +437,17 @@ public class CardRepository {
     public static final int RECORD_LENGTH = CardRecord.RECORD_LENGTH;
 
     /**
+     * How a stored record image is named in a decoding diagnostic - never its content.
+     *
+     * <p>{@link FixedWidthCodec#decodeImage(byte[], String)} refuses a byte the dataset code page does
+     * not define rather than substituting a replacement character, and it needs a name for what it was
+     * decoding. That name is a source citation, because the stored bytes of a card record are a
+     * customer's account number and embossed name and must not reach a log or an exception message.
+     */
+    private static final String RECORD_IMAGE_SUBJECT =
+            "the stored CARD-RECORD image displayed by app/cbl/CBACT02C.cbl:78";
+
+    /**
      * The ordinal position of the fixed-width record image in a fetched row: {@value}.
      *
      * <p>Reads address the image <strong>by position</strong>, so no column name is needed to get a
@@ -481,13 +492,22 @@ public class CardRepository {
     private static final int SINGLE_ROW = 1;
 
     /**
-     * Row limit for a keyed read through the alternate index: {@value}.
+     * Row limit for a keyed read: {@value}.
      *
-     * <p>An alternate key need not be unique - an account may carry more than one card - and CICS
-     * reports that by returning the first record together with a duplicate-key response. Fetching one
-     * row more than is needed is what makes that distinguishable: one row means a unique match, two
-     * mean the first of several. Nothing beyond the second row is fetched, because nothing beyond it
-     * changes the answer.
+     * <p>One row more than a single record, on both keyed paths, and the extra row means something
+     * different on each:
+     * <ul>
+     *   <li><strong>through the alternate index</strong> - an alternate key need not be unique, since an
+     *       account may carry more than one card, and CICS reports that by returning the first record
+     *       together with a duplicate-key response. One row means a unique match, two mean the first of
+     *       several, and the read succeeds either way.</li>
+     *   <li><strong>on the base cluster</strong> - {@code CARD-NUM} is the cluster's unique primary key,
+     *       so a second matching row is not a condition VSAM can present. It is an integrity defect in
+     *       the backing relation, and detecting it is the point: a limit of one would make it invisible
+     *       and the read would quietly return whichever row the backend ordered first.</li>
+     * </ul>
+     * Nothing beyond the second row is fetched on either path, because nothing beyond it changes the
+     * answer.
      */
     private static final int DUPLICATE_DETECTION_ROW_LIMIT = 2;
 
@@ -1222,9 +1242,8 @@ public class CardRepository {
      * Executes a keyed read against the base cluster and classifies the result.
      *
      * @param cardNumber the card number, moved into the sixteen-character key
-     * @param statement  the statement to send: the plain read or the locking read
-     * @param locking    {@code true} when the statement holds the record locked; used only to make the
-     *                   diagnostic say which read failed
+     * @param locking    {@code true} to send the locking read rather than the plain one; also makes the
+     *                   diagnostic say which of the two failed
      * @return the read outcome; never {@code null}
      */
     private CardReadResult readOnBaseCluster(String cardNumber, boolean locking) {
@@ -1232,7 +1251,10 @@ public class CardRepository {
         try {
             Statements sql = resolveStatements();
             String statement = locking ? sql.selectForUpdateByCardNumber() : sql.selectByCardNumber();
-            FetchedRows rows = fetch(statement, pattern, SINGLE_ROW);
+            // One row more than a unique primary key can produce, so a violation of that uniqueness in
+            // the backing relation is detected here rather than silently resolved by taking whichever row
+            // the backend ordered first. See classifyRead's fan-out arm.
+            FetchedRows rows = fetch(statement, pattern, DUPLICATE_DETECTION_ROW_LIMIT);
             return classifyRead(rows, false);
         } catch (DataAccessException rejected) {
             return failedRead(READ_OPERATION_NAME, BASE_CICS_FILE_NAME,
@@ -1431,6 +1453,13 @@ public class CardRepository {
      * once. The order matters and is the COBOL's order: a missing record first, then the reasons a row
      * that is present might still not be a readable card record, then the normal arm.
      *
+     * <p>{@code alternateIndex} decides what a <em>second</em> matching row means, and the two meanings
+     * are opposite. Through the path it is expected - an account may carry several cards - and yields the
+     * first record with the duplicate-key response. On the base cluster it is impossible, because
+     * {@code CARD-NUM} is the unique primary key, and yields the invalid-request response with no record
+     * at all. Only the keyed reads can present more than one row; both browse steps fetch a single row,
+     * so a sequential pass never reaches either arm.
+     *
      * @param rows           what the read brought back
      * @param alternateIndex {@code true} when the read went through the path, where a second matching
      *                       row means the alternate key is not unique rather than that the file is
@@ -1442,6 +1471,25 @@ public class CardRepository {
             // WHEN DFHRESP(NOTFND). An ordinary arm, never an exception: COCRDSLC:755-761 sets a screen
             // message and carries on.
             return CardReadResult.notFound();
+        }
+        if (!alternateIndex && rows.rowCount() > SINGLE_ROW) {
+            // Fan-out on the BASE CLUSTER's key. CARDDAT is a KSDS whose CARD-NUM is its unique primary
+            // key (app/csd/CARDDEMO.CSD), so more than one match cannot arise in the legacy system and is
+            // an integrity defect in the backing relation.
+            //
+            // It is REPORTED, not resolved. Returning the first of several with the normal response would
+            // hand the caller one card record chosen by whatever order the backend happened to produce,
+            // with nothing to say a choice was made - and COCRDSLC and COCRDUPC then display or REWRITE
+            // it. The duplicate-key response is not the answer either: CICS reports DUPKEY for a read
+            // through a PATH on a non-unique alternate key, which is a documented and expected condition,
+            // whereas a non-unique PRIMARY key is not a condition VSAM can present at all. So this lands
+            // on WHEN OTHER with the invalid-request response, carrying the row count as the observation.
+            LOG.error("A keyed read of " + BASE_CICS_FILE_NAME.trim() + " matched " + rows.rowCount()
+                    + " rows, but CARD-NUM is the base cluster's unique primary key; reporting the "
+                    + "invalid-request response rather than returning an arbitrary one of them as though "
+                    + "it were the record. The backing relation needs a unique constraint on its key span");
+            return CardReadResult.failed(FileStatus.INVREQ,
+                    DatasetObservation.matchingRows(rows.rowCount()));
         }
         byte[] recordImage = rows.firstImage();
         if (recordImage == null) {
@@ -1466,13 +1514,20 @@ public class CardRepository {
                     DatasetObservation.recordWidth(recordImage.length));
         }
         CardRecord record = CardRecord.decode(recordImage, codec);
+        // The stored bytes, decoded once, character for character, and carried alongside the decoded
+        // fields. READ ... INTO CARD-RECORD moves the whole record area, so DISPLAY CARD-RECORD
+        // (app/cbl/CBACT02C.cbl:78) writes bytes this record model cannot reproduce: CARD-RECORD ends
+        // with FILLER X(59), which carries no field and which a re-encode would therefore emit as
+        // fifty-nine spaces whatever the row actually held. The decode is strict - an unmappable byte
+        // is refused rather than replaced - so this String is the row's bytes or nothing.
+        String storedImage = codec.decodeImage(recordImage, RECORD_IMAGE_SUBJECT);
         if (alternateIndex && rows.rowCount() > 1) {
             // The record is returned AND the caller is told more share this alternate key, which is
             // what CICS reports for a read through a path on a non-unique key.
-            return CardReadResult.duplicateKey(record);
+            return CardReadResult.duplicateKey(record, storedImage);
         }
         // WHEN DFHRESP(NORMAL).
-        return CardReadResult.normal(record);
+        return CardReadResult.normal(record, storedImage);
     }
 
     /**
@@ -1927,7 +1982,7 @@ public class CardRepository {
      *                a row's actual width, for instance. Empty on every arm that measured nothing
      */
     public record CardReadResult(int resp, int resp2, Outcome outcome, Optional<CardRecord> record,
-            Optional<DatasetObservation> observation) {
+            Optional<String> storedImage, Optional<DatasetObservation> observation) {
 
         /**
          * Rejects any result whose parts contradict each other.
@@ -1942,6 +1997,8 @@ public class CardRepository {
                     + "absent");
             Objects.requireNonNull(record, "A read result carries an empty record rather than a null "
                     + "one, so no null escapes the type");
+            Objects.requireNonNull(storedImage, "A read result carries an empty stored image rather than "
+                    + "a null one, so no null escapes the type");
             Objects.requireNonNull(observation, "A read result carries an empty observation rather than "
                     + "a null one, so no null escapes the type");
             requireReasonCode(resp2);
@@ -1959,34 +2016,75 @@ public class CardRepository {
                                 + "normal arm and the duplicate-key arm reach CARD-RECORD."
                         : "Outcome " + outcome + " returns a record, and this result carries none.");
             }
+            // The stored image travels with the record and never without it. That is what makes
+            // DISPLAY CARD-RECORD reproducible: a caller reaching the record-bearing arm can always
+            // reach the row's own bytes, and never has to fall back on re-encoding the decoded fields -
+            // which would emit FILLER X(59) as spaces whatever the row held.
+            if (storedImage.isPresent() != record.isPresent()) {
+                throw new IllegalArgumentException(storedImage.isPresent()
+                        ? "Outcome " + outcome + " returns no record, so it carries no stored image "
+                                + "either; an image with no record to belong to has no meaning."
+                        : "Outcome " + outcome + " returns a record, so it must carry the stored image "
+                                + "that record was decoded from. Build it with "
+                                + "CardReadResult.normal(record, storedImage) or "
+                                + "CardReadResult.duplicateKey(record, storedImage).");
+            }
+            storedImage.ifPresent(image -> {
+                if (image.length() != RECORD_LENGTH) {
+                    throw new IllegalArgumentException("A stored CARD-RECORD image is " + RECORD_LENGTH
+                            + " characters as app/cpy/CVACT02Y.cpy declares, but this one is "
+                            + image.length() + ". DISPLAY CARD-RECORD writes the whole record area, so "
+                            + "an image of any other width would emit a line the program cannot "
+                            + "produce.");
+                }
+            });
         }
 
         /**
          * The normal arm: {@code WHEN DFHRESP(NORMAL)}, the record read.
          *
-         * @param record the record read
+         * <p>Both the decoded record and the bytes it was decoded from are carried, and the second is
+         * not redundant. {@code CARD-RECORD} ends with {@code FILLER X(59)}
+         * ({@code app/cpy/CVACT02Y.cpy}), which holds no field and which the record model therefore
+         * cannot reproduce; {@code DISPLAY CARD-RECORD} ({@code app/cbl/CBACT02C.cbl:78}) writes the
+         * whole area including it. Re-encoding the decoded fields would emit fifty-nine spaces there
+         * whatever the row actually held, so the row's own image is retained instead.
+         *
+         * @param record      the record read
+         * @param storedImage the row's own bytes, decoded in the dataset code page - exactly
+         *                    {@value CardRepository#RECORD_LENGTH} characters
          * @return the result
-         * @throws NullPointerException if {@code record} is {@code null}
+         * @throws NullPointerException     if either argument is {@code null}
+         * @throws IllegalArgumentException if {@code storedImage} is not
+         *                                  {@value CardRepository#RECORD_LENGTH} characters
          */
-        public static CardReadResult normal(CardRecord record) {
+        public static CardReadResult normal(CardRecord record, String storedImage) {
             Objects.requireNonNull(record, "The normal arm carries the record that was read");
+            Objects.requireNonNull(storedImage, "The normal arm carries the stored image the record was "
+                    + "decoded from, so DISPLAY CARD-RECORD can write the row's own bytes");
             return new CardReadResult(FileStatus.NORMAL, NO_REASON_CODE, Outcome.OK,
-                    Optional.of(record), Optional.empty());
+                    Optional.of(record), Optional.of(storedImage), Optional.empty());
         }
 
         /**
          * The duplicate-key arm, reachable only through the alternate-index path: the first record
          * sharing the alternate key, with more behind it. Not an error - the record is returned.
          *
-         * @param record the first record sharing the alternate key
+         * @param record      the first record sharing the alternate key
+         * @param storedImage that record's own bytes, decoded in the dataset code page - exactly
+         *                    {@value CardRepository#RECORD_LENGTH} characters
          * @return the result
-         * @throws NullPointerException if {@code record} is {@code null}
+         * @throws NullPointerException     if either argument is {@code null}
+         * @throws IllegalArgumentException if {@code storedImage} is not
+         *                                  {@value CardRepository#RECORD_LENGTH} characters
          */
-        public static CardReadResult duplicateKey(CardRecord record) {
+        public static CardReadResult duplicateKey(CardRecord record, String storedImage) {
             Objects.requireNonNull(record, "The duplicate-key arm carries the first record sharing the "
                     + "alternate key; the record is returned, which is what makes it not an error");
+            Objects.requireNonNull(storedImage, "The duplicate-key arm returns a record, so it carries "
+                    + "the stored image that record was decoded from");
             return new CardReadResult(FileStatus.DUPKEY, NO_REASON_CODE, Outcome.DUPLICATE,
-                    Optional.of(record), Optional.empty());
+                    Optional.of(record), Optional.of(storedImage), Optional.empty());
         }
 
         /**
@@ -1997,7 +2095,7 @@ public class CardRepository {
          */
         public static CardReadResult notFound() {
             return new CardReadResult(FileStatus.NOTFND, NO_REASON_CODE, Outcome.NOT_FOUND,
-                    Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         /**
@@ -2009,7 +2107,7 @@ public class CardRepository {
          */
         public static CardReadResult endOfFile() {
             return new CardReadResult(FileStatus.ENDFILE, NO_REASON_CODE, Outcome.END_OF_FILE,
-                    Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         /**
@@ -2063,7 +2161,8 @@ public class CardRepository {
          */
         public static CardReadResult reportedFailure(int resp, int resp2) {
             requireOtherArm(resp);
-            return new CardReadResult(resp, resp2, Outcome.OTHER, Optional.empty(), Optional.empty());
+            return new CardReadResult(resp, resp2, Outcome.OTHER, Optional.empty(), Optional.empty(),
+                    Optional.empty());
         }
 
         /**
@@ -2076,7 +2175,7 @@ public class CardRepository {
         private static CardReadResult failed(int resp, Optional<DatasetObservation> observation) {
             requireOtherArm(resp);
             return new CardReadResult(resp, NO_REASON_CODE, Outcome.OTHER, Optional.empty(),
-                    observation);
+                    Optional.empty(), observation);
         }
 
         /**
@@ -2164,6 +2263,25 @@ public class CardRepository {
                     + " returns no record. Branch on the outcome first, as the EVALUATE at "
                     + "app/cbl/COCRDSLC.cbl:752-772 does, and read the record only on an arm that "
                     + "returns one."));
+        }
+
+        /**
+         * The row's own bytes as characters, for a caller already on an arm that returns a record.
+         *
+         * <p>This is what {@code DISPLAY CARD-RECORD} ({@code app/cbl/CBACT02C.cbl:78}) writes: the
+         * whole {@value CardRepository#RECORD_LENGTH}-byte record area, exactly as the row held it.
+         * Re-encoding {@link #requireRecord()} instead would agree on every declared field and disagree
+         * on {@code FILLER X(59)}, which holds no field and which a re-encode necessarily emits as
+         * spaces - so the two are not interchangeable and this is the one a raw display must use.
+         *
+         * @return exactly {@value CardRepository#RECORD_LENGTH} characters
+         * @throws IllegalStateException if this arm returns no record, and so no image either
+         */
+        public String requireStoredImage() {
+            return storedImage.orElseThrow(() -> new IllegalStateException("Outcome " + outcome
+                    + " returns no record, so it carries no stored image. DISPLAY CARD-RECORD is "
+                    + "reached only on the arm that returns one - app/cbl/CBACT02C.cbl:77 tests "
+                    + "END-OF-FILE before it displays - so branch on the outcome first."));
         }
     }
 

@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.config;
 
 import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -35,9 +36,8 @@ import org.springframework.util.StringUtils;
  *   <li>the one pooled {@code DataSource} the whole module shares, assembled entirely from
  *       configuration - see {@link #dataSource(DataSourceProperties)};</li>
  *   <li>the one {@code JdbcTemplate} that the twelve dataset repositories, the three fixed-width
- *       output writers and the report-date parameter reader inject, carrying the configured
- *       per-statement bound from {@value #QUERY_TIMEOUT_PROPERTY} - see
- *       {@link #jdbcTemplate(DataSource, String)};</li>
+ *       output writers and the report-date parameter reader inject, <strong>untuned</strong> - see
+ *       {@link #jdbcTemplate(DataSource)};</li>
  *   <li>{@link DatasetBindings}, the DD-name-keyed catalogue bound from the
  *       {@code carddemo.datasets} configuration prefix.</li>
  * </ol>
@@ -203,10 +203,10 @@ import org.springframework.util.StringUtils;
  * (security posture neither weakened nor unrequestedly strengthened), B7 (the whole file is
  * exercisable by a plain unit test with no application context, which is what lets the per-package
  * branch-coverage gate be met deterministically), B8 (explicit over implicit - explicit imports, no
- * wildcards, every dataset name externalised, and the statement bound stated by configuration rather
- * than by a literal), B9 (no static mutable state - every collaborator is injected, and every
+ * wildcards, every dataset name externalised, and every driver-level bound supplied as configuration
+ * rather than as a literal), B9 (no static mutable state - every collaborator is injected, and every
  * {@code static} member in this file is {@code final}: the diagnostic texts, the serialization
- * constant and one side-effect-free validation function) and B12 (the inability to reach a production backend from this environment is documented
+ * constant and the side-effect-free validation functions) and B12 (the inability to reach a production backend from this environment is documented
  * above and fails fast, rather than being absorbed by an invented driver).
  *
  * @see DatasetBindings
@@ -215,42 +215,6 @@ import org.springframework.util.StringUtils;
 @Configuration
 @EnableConfigurationProperties({ DataSourceProperties.class, DataSourceConfig.DatasetBindings.class })
 public class DataSourceConfig {
-
-    /**
-     * The property that states, in seconds, how long any one JDBC statement this module issues may
-     * run before the driver is told to cancel it: {@value}.
-     *
-     * <p>Bare in Java with no default, exactly as {@code carddemo.charset.dataset} and
-     * {@value RecordImageForm#FORM_PROPERTY} are, so that a deployment which never stated a bound
-     * fails at startup naming the key rather than starting unbounded.
-     * {@code application.yml} states the shipped value and binds it from an environment variable, so
-     * the bound is tunable per site without touching code.
-     */
-    public static final String QUERY_TIMEOUT_PROPERTY = "carddemo.jdbc.query-timeout-seconds";
-
-    /**
-     * Diagnostic raised when the configured statement bound is absent, blank, not a number, or not
-     * positive. Assembled as a constant so the three refusals cannot drift apart.
-     *
-     * <p>It states why zero and negative values are refused rather than accepted as "no limit",
-     * because that is the reading a JDBC author would expect: {@link java.sql.Statement} treats a
-     * query timeout of {@code 0} as unlimited and {@link JdbcTemplate} treats {@code -1} as "leave
-     * the driver's own default alone", so both would reinstate exactly the unbounded behaviour this
-     * property exists to remove.
-     */
-    private static final String QUERY_TIMEOUT_RATIONALE =
-            QUERY_TIMEOUT_PROPERTY + " must be a POSITIVE whole number of seconds. It bounds one "
-                    + "statement, not one job: a batch job may legitimately run for hours while "
-                    + "every individual read, write and browse it issues completes in seconds. "
-                    + "Zero and negative values are refused rather than read as 'no limit', because "
-                    + "java.sql.Statement treats a query timeout of 0 as unlimited and JdbcTemplate "
-                    + "treats -1 as 'use the driver default', so either would reinstate the "
-                    + "unbounded behaviour this property exists to remove. Note that the pool's "
-                    + "spring.datasource.hikari.connection-timeout bounds only how long a caller "
-                    + "waits to BORROW a connection and says nothing about how long a statement may "
-                    + "then run on it, and that socket-level bounds are driver-specific properties "
-                    + "supplied through spring.datasource.hikari.data-source-properties.* because "
-                    + "this module pins no JDBC driver coordinate.";
 
     /**
      * Diagnostic raised when the deployment supplied no JDBC URL. Assembled as a constant so the
@@ -431,40 +395,28 @@ public class DataSourceConfig {
     }
 
     /**
-     * The one {@link JdbcTemplate} in the module, over the one {@link DataSource} above, carrying the
-     * configured statement bound from {@value #QUERY_TIMEOUT_PROPERTY}.
+     * The one {@link JdbcTemplate} in the module, over the one {@link DataSource} above, and
+     * <strong>untuned</strong>.
      *
-     * <h3>One thing is configured on it, and only one</h3>
-     * <p>The query timeout, and nothing else. <strong>No fetch size and no maximum row count</strong>
-     * is set, for the same reason the pool is left alone: this is not a performance refactoring, and a
-     * template that silently capped rows would change what a program reads - a truncated browse is a
-     * short file, and a short file is a different report.
+     * <h3>Nothing is configured on it, and that is the whole specification</h3>
+     * <p>{@code new JdbcTemplate(dataSource)} and nothing more. No query timeout, no fetch size, no
+     * maximum row count, no lazy-initialisation or skip-results-processing switch. AAP 0.8.6 states
+     * that no connection tuning is introduced - this is explicitly not a performance refactoring -
+     * and AAP 0.4.2 specifies this bean as a plain {@code JdbcTemplate} over HikariCP. A template
+     * that capped rows or cancelled statements would change what a program observes: a truncated
+     * browse is a short file, and a short file is a different report; a cancelled statement is a
+     * data-access failure the COBOL has no arm for and therefore no behaviour to reproduce.
      *
-     * <p>A statement bound is a different kind of setting, and that is why it is the exception. It
-     * does not change what a successful statement returns; it changes only how a statement that will
-     * never return ends. Left unset, {@code JdbcTemplate} passes {@code -1}, which means "leave the
-     * driver's own default alone", and for a site whose driver has no default that is unbounded: a
-     * single hung read holds its pool connection, its enclosing transaction and its step for as long
-     * as the process lives, with no diagnostic and no way to end the job short of killing the JVM.
-     * The pool's {@code spring.datasource.hikari.connection-timeout} does <em>not</em> cover this -
-     * it bounds how long a caller waits to <em>borrow</em> a connection, not how long a statement may
-     * then run on one. Bounding the statement is therefore a correctness property of the run, not a
-     * performance tuning knob.
-     *
-     * <h3>The bound is configuration, never a literal</h3>
-     * <p>The value is read from {@value #QUERY_TIMEOUT_PROPERTY} with no Java-side default, so no
-     * number in this file decides how long a site's gateway is allowed to take. It is validated here,
-     * at context refresh, by {@link #queryTimeoutSeconds(String)}: absent, blank, non-numeric and
-     * non-positive values are all refused with the key named, rather than being folded into a silent
-     * "unlimited". That mirrors every other binding in this module - a deployment that never stated a
-     * value is a configuration error caught at startup, not at the first hung query.
-     *
-     * <h3>Socket-level bounds live with the driver</h3>
-     * <p>A statement timeout is the deepest bound this module can set portably: the login, connect
-     * and socket-read timeouts below it are named differently by every driver, and this module pins
-     * no driver coordinate (residual risk R-E). They are supplied at deployment time through
-     * {@code spring.datasource.hikari.data-source-properties.*}, which reaches the driver untouched,
-     * so they too are configuration and appear nowhere in Java.
+     * <p><strong>A statement bound is not this module's decision to take.</strong> It is not that a
+     * hung read is harmless - it holds its pool connection, its enclosing transaction and its step -
+     * but that the remedy is a deployment-time setting rather than a Java one. Every bound below a
+     * statement is driver-specific: the login, connect and socket-read timeouts are named differently
+     * by every driver, and this module pins no driver coordinate at all (residual risk R-E). They are
+     * supplied through {@code spring.datasource.hikari.data-source-properties.*}, which reaches the
+     * driver untouched, so they are configuration and appear nowhere in Java - exactly as no dataset
+     * name appears in Java (gate G46). The pool's own
+     * {@code spring.datasource.hikari.connection-timeout} is a different bound again: it limits how
+     * long a caller waits to <em>borrow</em> a connection, not how long a statement may run on one.
      *
      * <p>This is the bean the twelve dataset repositories, the three fixed-width output writers and
      * the report-date parameter reader inject. Declaring it also makes Spring Boot's
@@ -472,58 +424,13 @@ public class DataSourceConfig {
      * {@code JdbcOperations} bean being present - so, again, exactly one definition and no
      * {@code @Primary}.
      *
-     * @param dataSource               the pooled {@code DataSource} from
-     *                                 {@link #dataSource(DataSourceProperties)}
-     * @param configuredQueryTimeout   the configured statement bound in seconds, as text, from
-     *                                 {@value #QUERY_TIMEOUT_PROPERTY}
-     * @return the module-wide {@code JdbcTemplate}, bounded
-     * @throws IllegalStateException if the configured bound is blank, is not a whole number, or is
-     *                               not positive
+     * @param dataSource the pooled {@code DataSource} from
+     *                   {@link #dataSource(DataSourceProperties)}
+     * @return the module-wide {@code JdbcTemplate}, untuned
      */
     @Bean
-    public JdbcTemplate jdbcTemplate(DataSource dataSource,
-            @Value("${" + QUERY_TIMEOUT_PROPERTY + "}") String configuredQueryTimeout) {
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.setQueryTimeout(queryTimeoutSeconds(configuredQueryTimeout));
-        return template;
-    }
-
-    /**
-     * Reads {@value #QUERY_TIMEOUT_PROPERTY} as a positive whole number of seconds.
-     *
-     * <p>A static function of its argument, so the policy is assertable directly with no application
-     * context and no {@code DataSource} - the same shape as every other decision in this module's
-     * configuration classes.
-     *
-     * <p>Three refusals, all with the property named: no text at all (which is what an
-     * environment-placeholder default of empty produces), text that is not a whole number, and a
-     * number that is not positive. The third is the one worth stating twice: {@code 0} and negative
-     * values are <em>not</em> accepted as "no limit", because accepting them would let a deployment
-     * reinstate the unbounded behaviour by configuration while appearing to have set a bound. See
-     * {@link #QUERY_TIMEOUT_RATIONALE}.
-     *
-     * @param configured the configured value, as text; may be {@code null}
-     * @return the bound in seconds, always {@code >= 1}
-     * @throws IllegalStateException if {@code configured} holds no text, is not a whole number, or is
-     *                               not positive
-     */
-    static int queryTimeoutSeconds(String configured) {
-        if (!StringUtils.hasText(configured)) {
-            throw new IllegalStateException(QUERY_TIMEOUT_PROPERTY + " is not configured, so every "
-                    + "statement this module issues would run unbounded. " + QUERY_TIMEOUT_RATIONALE);
-        }
-        int seconds;
-        try {
-            seconds = Integer.parseInt(configured.trim());
-        } catch (NumberFormatException notANumber) {
-            throw new IllegalStateException(QUERY_TIMEOUT_PROPERTY + " is configured but is not a "
-                    + "whole number of seconds. " + QUERY_TIMEOUT_RATIONALE, notANumber);
-        }
-        if (seconds <= 0) {
-            throw new IllegalStateException(QUERY_TIMEOUT_PROPERTY + " is configured as " + seconds
-                    + ", which is not a bound. " + QUERY_TIMEOUT_RATIONALE);
-        }
-        return seconds;
+    public JdbcTemplate jdbcTemplate(DataSource dataSource) {
+        return new JdbcTemplate(dataSource);
     }
 
     /**
@@ -550,6 +457,26 @@ public class DataSourceConfig {
      * conversion for every record - the same reasoning that leaves {@code carddemo.charset.dataset}
      * without a default.
      *
+     * <h2>The deployment contract {@link RecordImageForm#CHARACTER} carries, which this bean cannot
+     * verify</h2>
+     * <p>A record image is addressed by absolute byte offset, and two of this module's operations
+     * compare that column rather than merely reading it: a keyed read composes a positional
+     * {@code LIKE} over it - one {@code _} wildcard per byte before the key, the key's escaped bytes,
+     * then {@code %} - and a browse composes {@code ORDER BY} it. A COBOL
+     * KSDS matches a key by its <em>bytes</em> and browses in ascending order of those bytes, so
+     * <strong>a deployment choosing {@code CHARACTER} must guarantee that the record-image column's
+     * collation is bytewise - binary or code-point - in the code page named by
+     * {@code carddemo.charset.dataset}.</strong> A deployment that cannot guarantee it configures
+     * {@link RecordImageForm#BINARY}, whose column has no collation to get wrong.
+     *
+     * <p>This is stated here, and on {@code RecordImageForm.CHARACTER}, and beside the key in
+     * {@code application.yml}, because <strong>nothing in this build can check it.</strong> There is no
+     * production connectivity to interrogate (residual risk R-E), and a collation that folds case, folds
+     * accents, treats trailing blanks as equivalent or orders linguistically does not fail - it returns
+     * a wrong record or a differently-ordered browse, with no error anywhere. A requirement that cannot
+     * be enforced by code has to be enforced by being written down where the decision is made, which is
+     * this method and that key.
+     *
      * @param configured the configured representation name, {@code CHARACTER} or {@code BINARY}
      * @return the resolved representation
      * @throws IllegalArgumentException if the configured value names no representation
@@ -558,6 +485,39 @@ public class DataSourceConfig {
     public RecordImageForm carddemoRecordImageForm(
             @Value("${" + RecordImageForm.FORM_PROPERTY + "}") String configured) {
         return RecordImageForm.parse(configured);
+    }
+
+    /**
+     * The one physical-record ordinal every physical-sequential read is ordered by, resolved from
+     * {@value PhysicalSequence#EXPRESSION_PROPERTY}.
+     *
+     * <h2>Why this is a bean and not a constant</h2>
+     * <p>A physical-sequential dataset has no key, so nothing about its <em>content</em> says what order
+     * its records are in - the order is their position, and SQL will not return rows in any order unless
+     * a statement says so. What stands for that position over JDBC is whatever ordinal the deployment's
+     * driver presents: a relative record number, a row identifier, a generated sequence. That is a
+     * property of the driver, and the driver is a deployment-time input (residual risk R-E), so the
+     * ordinal is configuration.
+     *
+     * <p>Publishing it as a bean is what makes it <em>one</em> decision, for the same reason
+     * {@link #carddemoRecordImageForm(String)} is one: the daily-transaction repository, the transaction
+     * master's sequential input path, the statement job's dataset utility port and the date-parameter
+     * reader all inject this instance, so no two of them can order the same kind of dataset differently.
+     *
+     * <p>The placeholder is bare, with no default. A deployment that never stated its ordinal fails here,
+     * naming the key, rather than starting and reading every physical-sequential dataset in whatever
+     * order its backend happened to scan - which would produce reports with the right rows and the wrong
+     * totals, silently.
+     *
+     * @param configured the configured ordinal name
+     * @return the resolved ordinal
+     * @throws IllegalArgumentException if the configured value is absent, blank or not a single bare SQL
+     *                                  identifier
+     */
+    @Bean(PhysicalSequence.BEAN_NAME)
+    public PhysicalSequence carddemoPhysicalSequence(
+            @Value("${" + PhysicalSequence.EXPRESSION_PROPERTY + "}") String configured) {
+        return PhysicalSequence.of(configured);
     }
 
     /**

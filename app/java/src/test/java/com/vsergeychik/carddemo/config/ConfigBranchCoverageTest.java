@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,7 +37,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
@@ -279,7 +279,7 @@ class ConfigBranchCoverageTest {
             DataSource dataSource = new DataSourceConfig().dataSource(properties);
 
             assertThat(dataSource).isNotNull();
-            assertThat(new DataSourceConfig().jdbcTemplate(dataSource, "60").getDataSource())
+            assertThat(new DataSourceConfig().jdbcTemplate(dataSource).getDataSource())
                     .isSameAs(dataSource);
         }
 
@@ -580,7 +580,7 @@ class ConfigBranchCoverageTest {
                     .withMessageContaining("do not close a gap by inventing a tenth job".substring(1));
 
             JobContracts withATenth = validJobs();
-            withATenth.put("date-utility-job", job("CSUTLDTC"));
+            withATenth.put("date-utility-job", inventedJob("CSUTLDTC"));
             assertThatIllegalStateException().isThrownBy(() -> withATenth.validate(validCatalogue()))
                     .withMessageContaining("Missing: []")
                     .withMessageContaining("Unexpected: [date-utility-job]");
@@ -591,7 +591,8 @@ class ConfigBranchCoverageTest {
                 + "the source")
         void aJobRePointedAtAnotherProgramIsRefused() {
             JobContracts rePointed = validJobs();
-            rePointed.put("account-balance-job", job("CBACT02C"));
+            rePointed.put("account-balance-job", new JobContract("CBACT02C", List.of(),
+                    JobContracts.REQUIRED_STEPS.get("account-balance-job"), null, Map.of()));
 
             assertThatIllegalStateException().isThrownBy(() -> rePointed.validate(validCatalogue()))
                     .withMessageContaining("'account-balance-job' is invalid")
@@ -633,6 +634,117 @@ class ConfigBranchCoverageTest {
                             List.of(), List.of(new StepContract("STEP05", "CBACT01C", true)), null,
                             Map.of())).validate(validCatalogue()))
                     .withMessageContaining("but it has no preceding step");
+        }
+
+        @Test
+        @DisplayName("the exact ordered step tuple is required: a step added, dropped, reordered, "
+                + "re-pointed or gated differently is refused")
+        void theStepSequenceMustBeExactlyTheOneTheJclDeclares() {
+            // Every arm below is individually well-formed - non-blank names, no duplicates, an ungated
+            // first step - so each one reaches the tuple comparison rather than tripping an earlier
+            // check. That is the point: these are the five deviations that used to start cleanly and
+            // do different work, which is precisely what the review found.
+            String statementJob = "statement-generation-job-a";
+            List<StepContract> shipped = JobContracts.REQUIRED_STEPS.get(statementJob);
+
+            // 1. A step dropped. CREASTMT's STEP030 is the IEFBR14 that deletes the statement files
+            //    before STEP040 recreates them; without it the job appends to the previous run's output.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithSteps(statementJob, withoutStepNamed(shipped, "STEP030"))
+                            .validate(validCatalogue()))
+                    .withMessageContaining("its step sequence is not the one its JCL declares")
+                    .withMessageContaining("configured: [DELDEF01/IDCAMS, STEP010/SORT, "
+                            + "STEP020/IDCAMS [COND=(0,NE)], STEP040/CBSTM03A [COND=(0,NE)]]")
+                    .withMessageContaining("required:   [DELDEF01/IDCAMS, STEP010/SORT, "
+                            + "STEP020/IDCAMS [COND=(0,NE)], STEP030/IEFBR14 [COND=(0,NE)], "
+                            + "STEP040/CBSTM03A [COND=(0,NE)]]");
+
+            // 2. A step added. CREASTMT has five steps and no sixth, so an extra one runs work the
+            //    mainframe job never ran.
+            List<StepContract> withASixth = new ArrayList<>(shipped);
+            withASixth.add(new StepContract("STEP050", "CBSTM03A", true));
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithSteps(statementJob, withASixth)
+                            .validate(validCatalogue()))
+                    .withMessageContaining("STEP050/CBSTM03A [COND=(0,NE)]")
+                    .withMessageContaining("A step added, removed, reordered, re-pointed at another "
+                            + "program or gated differently");
+
+            // 3. Two steps reordered. Running the REPRO load before the sort that produces its input
+            //    loads the previous run's extract - the concrete hazard the diagnostic names.
+            List<StepContract> reordered = new ArrayList<>(shipped);
+            Collections.swap(reordered, 1, 2);
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithSteps(statementJob, reordered)
+                            .validate(validCatalogue()))
+                    .withMessageContaining("configured: [DELDEF01/IDCAMS, "
+                            + "STEP020/IDCAMS [COND=(0,NE)], STEP010/SORT, ")
+                    .withMessageContaining("reordering CREASTMT's sort and its REPRO loads the "
+                            + "previous run's data");
+
+            // 4. A step re-pointed at another program. STEP010 is DFSORT; naming IDCAMS there would
+            //    have the step attempt a utility function against a sort's DD names.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithSteps(statementJob,
+                            withProgramOfStepNamed(shipped, "STEP010", "IDCAMS"))
+                            .validate(validCatalogue()))
+                    .withMessageContaining("configured: [DELDEF01/IDCAMS, STEP010/IDCAMS, ");
+
+            // 5. A gate removed where CREASTMT declares one, and added where it declares none. Both
+            //    are single-bit changes and neither is visible in any other check.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithSteps(statementJob,
+                            withGateOfStepNamed(shipped, "STEP040", false))
+                            .validate(validCatalogue()))
+                    .withMessageContaining("ungating STEP040 generates statements from a work file "
+                            + "the load never populated");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithSteps(statementJob,
+                            withGateOfStepNamed(shipped, "STEP010", true))
+                            .validate(validCatalogue()))
+                    .withMessageContaining("STEP010/SORT [COND=(0,NE)]");
+
+            // The same comparison on a job whose whole sequence is one step: the reader job declared
+            // with the interest calculator's step name would open the right file under the wrong label.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWithSteps("account-balance-reader-job",
+                            List.of(new StepContract("STEP15", "CBACT02C", false)))
+                            .validate(validCatalogue()))
+                    .withMessageContaining("configured: [STEP15/CBACT02C]")
+                    .withMessageContaining("required:   [STEP05/CBACT02C]");
+        }
+
+        @Test
+        @DisplayName("every required job has a transcribed step sequence, so no job can escape the "
+                + "tuple check")
+        void everyRequiredJobHasATranscribedSequence() {
+            // requireExactSequence dereferences REQUIRED_STEPS by job key. If the two maps ever drifted
+            // apart, the job with no entry would not be validated loosely - it would throw a
+            // NullPointerException at context refresh - so the invariant is asserted here rather than
+            // guarded by an unreachable branch in production code.
+            assertThat(JobContracts.REQUIRED_STEPS.keySet())
+                    .containsExactlyInAnyOrderElementsOf(JobContracts.REQUIRED_JOBS.keySet());
+            JobContracts.REQUIRED_STEPS.forEach((jobKey, steps) -> {
+                assertThat(steps).as("%s declares at least one step", jobKey).isNotEmpty();
+                assertThat(steps.get(0).requirePrecedingExitCodeZero())
+                        .as("%s's first step is not gated", jobKey).isFalse();
+                assertThat(steps).extracting(StepContract::name).doesNotHaveDuplicates();
+                assertThat(steps).allSatisfy(step -> {
+                    assertThat(step.name()).isNotBlank();
+                    assertThat(step.program()).isNotBlank();
+                });
+            });
+            assertThat(JobContracts.REQUIRED_STEPS.get("statement-generation-job-a"))
+                    .as("CREASTMT.JCL gates exactly three of its five steps")
+                    .filteredOn(StepContract::requirePrecedingExitCodeZero)
+                    .extracting(StepContract::name)
+                    .containsExactly("STEP020", "STEP030", "STEP040");
+            assertThat(JobContracts.REQUIRED_STEPS.values().stream()
+                    .flatMap(List::stream)
+                    .filter(StepContract::requirePrecedingExitCodeZero)
+                    .count())
+                    .as("CREASTMT.JCL carries the only COND=(0,NE) gating in the estate")
+                    .isEqualTo(3);
         }
 
         @Test
@@ -839,13 +951,20 @@ class ConfigBranchCoverageTest {
                     .isEmpty();
         }
 
-        /** The nine required jobs, each with its own program and one ungated step. */
+        /**
+         * The nine required jobs, each with its own program and its own exact step sequence.
+         *
+         * <p>The sequences come from {@link JobContracts#REQUIRED_STEPS} rather than being written out
+         * here, because that map is the transcription of the JCL and a second hand-written copy of it
+         * in a test would be a second thing to keep in step. Sourcing the baseline from it means every
+         * deviation arm below is a deliberate, visible edit away from the shipped shape.
+         */
         private JobContracts validJobs() {
             JobContracts contracts = new JobContracts();
-            JobContracts.REQUIRED_JOBS.forEach((jobKey, program) -> contracts.put(jobKey,
+            JobContracts.REQUIRED_JOBS.keySet().forEach(jobKey -> contracts.put(jobKey,
                     JobContracts.PARAMETERISED_JOB.equals(jobKey)
                             ? interestCalcWith("2022071800")
-                            : job(program)));
+                            : job(jobKey)));
             return contracts;
         }
 
@@ -861,11 +980,54 @@ class ConfigBranchCoverageTest {
             Map<String, JobDatasetBinding> overrides = new LinkedHashMap<>();
             overrides.put(ddName, override);
             return jobsWith("statement-generation-job-a", new JobContract("CBSTM03A", List.of(),
-                    List.of(new StepContract("STEP040", "CBSTM03A", false)), null, overrides));
+                    JobContracts.REQUIRED_STEPS.get("statement-generation-job-a"), null, overrides));
         }
 
-        /** A minimal valid contract for the given program: no parameters, one ungated step. */
-        private static JobContract job(String program) {
+        /** The nine jobs with one job's step sequence replaced, everything else shipped-shape. */
+        private JobContracts jobsWithSteps(String jobKey, List<StepContract> steps) {
+            return jobsWith(jobKey, new JobContract(JobContracts.REQUIRED_JOBS.get(jobKey),
+                    List.of(), steps, null, Map.of()));
+        }
+
+        /** The given sequence without the step of that name. */
+        private static List<StepContract> withoutStepNamed(List<StepContract> steps, String name) {
+            return steps.stream().filter(step -> !step.name().equals(name)).toList();
+        }
+
+        /** The given sequence with the named step re-pointed at another program. */
+        private static List<StepContract> withProgramOfStepNamed(List<StepContract> steps, String name,
+                String program) {
+            return steps.stream()
+                    .map(step -> step.name().equals(name)
+                            ? new StepContract(name, program, step.requirePrecedingExitCodeZero())
+                            : step)
+                    .toList();
+        }
+
+        /** The given sequence with the named step's COND=(0,NE) gate set as stated. */
+        private static List<StepContract> withGateOfStepNamed(List<StepContract> steps, String name,
+                boolean gated) {
+            return steps.stream()
+                    .map(step -> step.name().equals(name)
+                            ? new StepContract(name, step.program(), gated)
+                            : step)
+                    .toList();
+        }
+
+        /** The shipped contract for the given job key: no parameters, its transcribed step sequence. */
+        private static JobContract job(String jobKey) {
+            return new JobContract(JobContracts.REQUIRED_JOBS.get(jobKey), List.of(),
+                    JobContracts.REQUIRED_STEPS.get(jobKey), null, Map.of());
+        }
+
+        /**
+         * A contract for a job key this migration does not recognise.
+         *
+         * <p>It cannot source a step sequence from {@link JobContracts#REQUIRED_STEPS}, because the whole
+         * point of the arm that uses it is that the key has no entry there. The key-set check runs first
+         * and rejects it, so the step sequence is never examined.
+         */
+        private static JobContract inventedJob(String program) {
             return new JobContract(program, List.of(),
                     List.of(new StepContract("STEP05", program, false)), null, Map.of());
         }
@@ -875,7 +1037,7 @@ class ConfigBranchCoverageTest {
             return new JobContract("CBACT04C",
                     List.of(new JobParameterContract(BatchConfig.PARM_DATE_PARAMETER, "string",
                             parmDateValue)),
-                    List.of(new StepContract("STEP15", "CBACT04C", false)), null, Map.of());
+                    JobContracts.REQUIRED_STEPS.get(JobContracts.PARAMETERISED_JOB), null, Map.of());
         }
 
         /** An override that is purely an alias of a global entry. */
@@ -1508,31 +1670,6 @@ class ConfigBranchCoverageTest {
                     .doesNotContain("org.springframework")
                     .doesNotContain("com.vsergeychik")
                     .doesNotContain("/"));
-        }
-    }
-
-    /**
-     * {@code statusForOutcome} maps the five-valued repository vocabulary onto a status, and the
-     * division it draws is the COBOL's own: the four outcomes a guard chain handles in-program leave
-     * the request successful, and {@code WHEN OTHER} does not.
-     */
-    @Nested
-    @DisplayName("CobolErrorHandler.statusForOutcome - only WHEN OTHER is a server error")
-    class RepositoryOutcomeStatuses {
-
-        @ParameterizedTest(name = "{0} is an outcome the COBOL handles in-program, so 200")
-        @EnumSource(value = FileStatus.Outcome.class,
-                names = { "OK", "END_OF_FILE", "NOT_FOUND", "DUPLICATE" })
-        @DisplayName("the four in-program outcomes are 200, so the program's own text survives")
-        void inProgramOutcomesAreOk(FileStatus.Outcome outcome) {
-            assertThat(CobolErrorHandler.statusForOutcome(outcome)).isEqualTo(HttpStatus.OK);
-        }
-
-        @Test
-        @DisplayName("OTHER is the WHEN OTHER arm every guard chain abends on, so 500")
-        void otherIsAServerError() {
-            assertThat(CobolErrorHandler.statusForOutcome(FileStatus.Outcome.OTHER))
-                    .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
 

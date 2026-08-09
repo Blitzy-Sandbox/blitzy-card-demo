@@ -2,6 +2,9 @@ package com.vsergeychik.carddemo.user;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -44,6 +47,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 /**
  * {@link UserUpdateController} - the {@code COUSR02C} / {@code CU02} update-user screen.
@@ -930,8 +938,28 @@ class UserUpdateControllerTest {
                     .isEqualTo("RESP:000000000REAS:000000000");
             assertThat(UserUpdateController.displayLine(13, 8))
                     .isEqualTo("RESP:000000013REAS:000000008");
-            assertThat(UserUpdateController.displayLine(-1, 123456789))
-                    .isEqualTo("RESP:-000000001REAS:123456789");
+            assertThat(UserUpdateController.displayLine(-2, 123456789))
+                    .as("a negative that is not the sentinel still renders as a signed number")
+                    .isEqualTo("RESP:-000000002REAS:123456789");
+        }
+
+        @Test
+        @DisplayName("an unreported response renders as nine asterisks, never as nine zeros")
+        void anUnreportedResponseIsNotRenderedAsANumber() {
+            // Zero would be indistinguishable from a reported DFHRESP(NORMAL), and -000000001 would read
+            // as a response code CICS does not define. Neither is what the field holds: it holds nothing.
+            assertThat(UserUpdateController.displayLine(FileStatus.RESP_NOT_REPORTED, 0))
+                    .isEqualTo("RESP:*********REAS:000000000")
+                    .doesNotContain("RESP:000000000")
+                    .doesNotContain("-000000001");
+
+            // Width-preserving, so the composed line keeps the shape DISPLAY gives it.
+            assertThat(UserUpdateController.displayLine(FileStatus.RESP_NOT_REPORTED, 0))
+                    .hasSameSizeAs(UserUpdateController.displayLine(FileStatus.NORMAL, 0));
+
+            // And it applies to the reason operand too, on the same terms.
+            assertThat(UserUpdateController.displayLine(0, FileStatus.RESP_NOT_REPORTED))
+                    .isEqualTo("RESP:000000000REAS:*********");
         }
     }
 
@@ -1201,6 +1229,69 @@ class UserUpdateControllerTest {
         }
 
         @Test
+        @DisplayName("the path variable lands in CDEMO-CU02-USR-SELECTED too, which first entry reads")
+        void thePathVariableAlsoFillsTheSelectedId() {
+            // app/cbl/COUSR02C.cbl:99-102 copies the extension's selected id OVER USRIDINI on first
+            // entry, and :157-171 then paints the record it names - including SEC-USR-PWD. An extension
+            // the caller controls would therefore outrank the URI on exactly the arm that discloses a
+            // password, so the URI is projected into it as well.
+            stubFoundRead();
+            Cu02Info selectsAnotherUser =
+                    new Cu02Info(null, null, 0, Cu02Info.NEXT_PAGE_NO, "S", "USER0002");
+
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    withExtension(populated(enter()), selectsAnotherUser), null));
+
+            verify(repository).readForUpdate(USER_ID);
+            verify(repository, never()).readForUpdate("USER0002");
+            assertThat(response.usrIdIn()).isEqualTo(USER_ID);
+            assertThat(response.cu02Info().usrSelected()).isEqualTo(USER_ID);
+        }
+
+        @Test
+        @DisplayName("the extension's other five items are carried untouched - only the key is the URI's")
+        void theExtensionsOtherItemsAreCarriedUntouched() {
+            stubFoundRead();
+            Cu02Info arrived = new Cu02Info("USER0005", "USER0009", 3, Cu02Info.NEXT_PAGE_YES, "S",
+                    "USER0002");
+
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    withExtension(populated(enter()), arrived), null));
+
+            assertThat(response.cu02Info().usridFirst()).isEqualTo(arrived.usridFirst());
+            assertThat(response.cu02Info().usridLast()).isEqualTo(arrived.usridLast());
+            assertThat(response.cu02Info().pageNum()).isEqualTo(3);
+            assertThat(response.cu02Info().nextPageFlg()).isEqualTo(Cu02Info.NEXT_PAGE_YES);
+            assertThat(response.cu02Info().usrSelFlg()).isEqualTo("S");
+            assertThat(response.cu02Info().usrSelected()).isEqualTo(USER_ID);
+        }
+
+        @Test
+        @DisplayName("over HTTP, an extension naming another user discloses neither its password nor it")
+        void theUriIsTheOnlyIdentityOverHttp() throws Exception {
+            // Driven through the real HTTP binder, because that is the only place the two identities are
+            // separately bound: PUT /api/users/A with CDEMO-CU02-USR-SELECTED naming B used to paint B's
+            // plaintext SEC-USR-PWD (app/cbl/COUSR02C.cbl:99-102 then :157-171).
+            stubFoundRead();
+            ObjectMapper mapper = new ObjectMapper();
+            MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                    .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
+                    .build();
+            UserUpdateRequest arriving = withExtension(populated(enter()),
+                    new Cu02Info(null, null, 0, Cu02Info.NEXT_PAGE_NO, "S", "USER0002"));
+
+            mockMvc.perform(put("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(arriving)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.usrIdIn").value(USER_ID))
+                    .andExpect(jsonPath("$.cu02Info.usrSelected").value(USER_ID));
+
+            verify(repository).readForUpdate(USER_ID);
+            verify(repository, never()).readForUpdate("USER0002");
+        }
+
+        @Test
         @DisplayName("a path identity wider than PIC X(08) is REFUSED, never truncated onto another user")
         void anOverWidePathIdentityIsRefused() {
             assertThatThrownBy(() -> controller.updateUser("USER00019",
@@ -1286,14 +1377,19 @@ class UserUpdateControllerTest {
         }
 
         @Test
-        @DisplayName("a payload naming no extension is given the state its VALUE clauses declare")
+        @DisplayName("a payload naming no extension is given its VALUE clauses, keyed by the URI")
         void anAbsentExtensionIsInitialised() {
             stubFoundRead();
 
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
                     populated(reenter()), null));
 
-            assertThat(response.cu02Info()).isEqualTo(Cu02Info.initial());
+            // Five items at their VALUE-clause state, and the sixth - the one identity item - carrying
+            // the URI's user, because the path is authoritative in every carrier of the key.
+            Cu02Info initial = Cu02Info.initial();
+            assertThat(response.cu02Info())
+                    .isEqualTo(new Cu02Info(initial.usridFirst(), initial.usridLast(),
+                            initial.pageNum(), initial.nextPageFlg(), initial.usrSelFlg(), USER_ID));
         }
 
         @Test

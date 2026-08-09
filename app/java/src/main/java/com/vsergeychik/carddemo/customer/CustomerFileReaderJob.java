@@ -152,6 +152,17 @@ public class CustomerFileReaderJob {
      */
     public static final String JOB_NAME = "customerFileReaderJob";
 
+    /**
+     * The whole step sequence of {@code app/jcl/READCUST.jcl}: one step,
+     * {@value CustomerService#STEP_NAME}, running {@value CustomerService#PROGRAM_ID}, ungated.
+     *
+     * <p>A sequence rather than a step name, because the JCL declares one {@code EXEC} and no second
+     * one, and only a whole-sequence comparison states that. Checking that the named step is present
+     * would accept a contract carrying an extra step, or carrying this one second.
+     */
+    public static final List<StepContract> REQUIRED_STEPS =
+            List.of(new StepContract(CustomerService.STEP_NAME, CustomerService.PROGRAM_ID, false));
+
     // =================================================================================================
     // Collaborators. All final, all constructor-injected, none holding per-run state.
     // =================================================================================================
@@ -220,9 +231,16 @@ public class CustomerFileReaderJob {
     /**
      * Resolves and validates this job's step contract.
      *
+     * <p>The two guards below name the two plausible mistakes - a step re-pointed at another program,
+     * and a gate on the only step a single-step job has - and each says specifically what is wrong.
+     * Behind them the sequence is compared against {@link #REQUIRED_STEPS} as a whole, which is what
+     * rejects a second step declared alongside this one or this one declared second: a per-step check
+     * cannot see either.
+     *
      * @param scaffolding the batch scaffolding holding the {@code carddemo.jobs} catalogue
      * @return the validated step contract
-     * @throws IllegalStateException if the contract is absent, names another program, or gates the step
+     * @throws IllegalStateException if the contract is absent, names another program, gates the step, or
+     *                               declares any sequence other than {@link #REQUIRED_STEPS}
      */
     private static StepContract requireUngatedStep(BatchConfig scaffolding) {
         StepContract contract = scaffolding.contract(JOB_KEY).step(CustomerService.STEP_NAME);
@@ -239,6 +257,7 @@ public class CustomerFileReaderJob {
                     + "app/jcl/READCUST.jcl carries no COND and declares only this step. Gating the only "
                     + "step of a single-step job would bypass all of its work.");
         }
+        scaffolding.requireSteps(JOB_KEY, REQUIRED_STEPS, "app/jcl/READCUST.jcl:L6");
         return contract;
     }
 

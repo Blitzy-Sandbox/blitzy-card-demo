@@ -21,6 +21,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -140,6 +141,13 @@ class TransactionRepositoryTest {
     /** The code page of the ASCII fixtures, named explicitly - never a platform default. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
+    /**
+     * The physical-record ordinal a physical-sequential read is ordered by, as
+     * {@code application-test.yml} configures it: H2's own row-identifier pseudo-column, which increases
+     * with each insert and so returns records in the order they were written.
+     */
+    private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
+
     /** The declared record width of {@code app/cpy/CVTRA05Y.cpy}. */
     private static final int RECORD_LENGTH = 350;
 
@@ -191,7 +199,7 @@ class TransactionRepositoryTest {
         template.execute("CREATE TABLE \"" + RAGGED_DS + "\" (\"" + IMAGE_COLUMN + "\" VARCHAR("
                 + RECORD_LENGTH + "))");
         repository = new TransactionRepository(template, validBindings(), ASCII,
-                RecordImageForm.CHARACTER);
+                RecordImageForm.CHARACTER, ORDINAL);
     }
 
     /**
@@ -340,7 +348,7 @@ class TransactionRepositoryTest {
         bindings.put(TransactionRepository.INPUT_DD_NAME, ksds("CARDDEMO.TEST.ABSENT.INPUT"));
         bindings.put(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME,
                 sequential("CARDDEMO.TEST.ABSENT.OUTPUT"));
-        return new TransactionRepository(template, bindings, ASCII, RecordImageForm.CHARACTER);
+        return new TransactionRepository(template, bindings, ASCII, RecordImageForm.CHARACTER, ORDINAL);
     }
 
     // =================================================================================================
@@ -356,16 +364,16 @@ class TransactionRepositoryTest {
         void collaboratorsAreRequired() {
             DatasetBindings bindings = validBindings();
             assertThatNullPointerException().isThrownBy(() -> new TransactionRepository(
-                    null, bindings, ASCII, RecordImageForm.CHARACTER))
+                    null, bindings, ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("JdbcTemplate");
             assertThatNullPointerException().isThrownBy(() -> new TransactionRepository(
-                    template, null, ASCII, RecordImageForm.CHARACTER))
+                    template, null, ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("carddemo.datasets");
             assertThatNullPointerException().isThrownBy(() -> new TransactionRepository(
-                    template, bindings, null, RecordImageForm.CHARACTER))
+                    template, bindings, null, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("code page");
             assertThatNullPointerException().isThrownBy(() -> new TransactionRepository(
-                    template, bindings, ASCII, null))
+                    template, bindings, ASCII, null, ORDINAL))
                     .withMessageContaining("record-image representation");
         }
 
@@ -377,7 +385,7 @@ class TransactionRepositoryTest {
                     RECORD_LENGTH - 1, "CVTRA05Y", KEY_LENGTH, null, null, null);
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template, bindingsWith(ddName, wrong),
-                            ASCII, RecordImageForm.CHARACTER))
+                            ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("CVTRA05Y")
                     .withMessageContaining(ddName);
         }
@@ -388,7 +396,7 @@ class TransactionRepositoryTest {
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, sequential(MASTER_DS)),
-                            ASCII, RecordImageForm.CHARACTER))
+                            ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("indexed cluster");
         }
 
@@ -400,14 +408,14 @@ class TransactionRepositoryTest {
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, noKeyLength), ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("TRAN-ID PIC X(16)");
             DatasetBinding wrongKeyLength = new DatasetBinding(MASTER_DS, "ksds", false, "FB", null,
                     RECORD_LENGTH, "CVTRA05Y", KEY_LENGTH + 1, null, null, null);
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, wrongKeyLength), ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("TRAN-TYPE-CD");
         }
 
@@ -419,7 +427,7 @@ class TransactionRepositoryTest {
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, offset), ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("key offset 1");
         }
 
@@ -431,14 +439,14 @@ class TransactionRepositoryTest {
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, withBase), ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("base cluster");
             DatasetBinding withAlternateKey = new DatasetBinding(MASTER_DS, "ksds", false, "FB", null,
                     RECORD_LENGTH, "CVTRA05Y", KEY_LENGTH, null, null, "TRAN-CARD-NUM");
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, withAlternateKey), ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("no alternate index");
         }
 
@@ -449,7 +457,7 @@ class TransactionRepositoryTest {
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME,
                                     ksds(SYSTRAN_DS)),
-                            ASCII, RecordImageForm.CHARACTER))
+                            ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("sequential output");
         }
 
@@ -462,7 +470,7 @@ class TransactionRepositoryTest {
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, unset), ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("declares no dataset name");
         }
 
@@ -474,7 +482,7 @@ class TransactionRepositoryTest {
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new TransactionRepository(template,
                             bindingsWith(TransactionRepository.CICS_FILE_NAME, malformed), ASCII,
-                            RecordImageForm.CHARACTER));
+                            RecordImageForm.CHARACTER, ORDINAL));
         }
 
         @Test
@@ -484,7 +492,7 @@ class TransactionRepositoryTest {
             incomplete.put(TransactionRepository.CICS_FILE_NAME, ksds(MASTER_DS));
             assertThatIllegalStateException()
                     .isThrownBy(() -> new TransactionRepository(template, incomplete, ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining(TransactionRepository.INPUT_DD_NAME);
         }
     }
@@ -953,20 +961,53 @@ class TransactionRepositoryTest {
         @Test
         @DisplayName("a job-scoped sequential binding is read in the order its records were written")
         void aSequentialBindingIsReadInWrittenOrder() {
+            // Seeded in an order that is neither ascending nor descending by key, so no ordering over the
+            // record image - in either direction - could reproduce it by accident. What does reproduce it
+            // is the physical-record ordinal, which stands for a record's position and for nothing in its
+            // content: ordering by the image would reorder the file the SORT step produced, since
+            // app/jcl/TRANREPT.jcl:46 sorts by TRAN-CARD-NUM while the image begins with TRAN-ID.
             seed(DALY_DS, record("0000000000000002"));
+            seed(DALY_DS, record("0000000000000003"));
             seed(DALY_DS, record("0000000000000001"));
 
             try (InputFile input = repository.openInput(sequential(DALY_DS))) {
                 assertThat(input.openStatus()).isEqualTo(FileStatus.OK);
                 assertThat(input.datasetName()).contains(DALY_DS);
-                // Written order, NOT key order: an ORDER BY here would reorder the file the SORT step
-                // produced (app/jcl/TRANREPT.jcl:46 sorts by TRAN-CARD-NUM, not by TRAN-ID).
                 assertThat(input.readNext().requireRecord().tranId()).isEqualTo("0000000000000002");
+                assertThat(input.readNext().requireRecord().tranId()).isEqualTo("0000000000000003");
                 assertThat(input.readNext().requireRecord().tranId()).isEqualTo("0000000000000001");
                 assertThat(input.readNext().isEndOfFile()).isTrue();
                 assertThat(input.readNext().isEndOfFile()).isTrue();
-                assertThat(input.position()).isEqualTo(2);
+                assertThat(input.position()).isEqualTo(3);
             }
+        }
+
+        @Test
+        @DisplayName("the same pass repeated returns the same sequence, which is what an order contract "
+                + "buys and an unordered select does not")
+        void aSequentialPassIsRepeatable() {
+            // SQL guarantees no row order without an ORDER BY, so an unordered select's sequence is a
+            // property of the backend's scan rather than of the dataset - and two passes are entitled to
+            // differ. The ordinal is what makes the two agree, which is what CBTRN03C's account
+            // subtotalling and CBTRN02C's reject sequence both rest on.
+            seed(DALY_DS, record("0000000000000009"));
+            seed(DALY_DS, record("0000000000000004"));
+            seed(DALY_DS, record("0000000000000007"));
+
+            List<String> first = new ArrayList<>();
+            List<String> second = new ArrayList<>();
+            for (List<String> pass : List.of(first, second)) {
+                try (InputFile input = repository.openInput(sequential(DALY_DS))) {
+                    for (ReadResult read = input.readNext(); read.isRecordReturned();
+                            read = input.readNext()) {
+                        pass.add(read.requireRecord().tranId());
+                    }
+                }
+            }
+
+            assertThat(first).containsExactly("0000000000000009", "0000000000000004",
+                    "0000000000000007");
+            assertThat(second).isEqualTo(first);
         }
 
         @Test
@@ -984,7 +1025,7 @@ class TransactionRepositoryTest {
             seed(DALY_DS, record("0000000000000001"));
             RecordingDataSource recording = new RecordingDataSource(dataSource);
             TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
-                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+                    validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
 
             InputFile input = subject.openInput(sequential(DALY_DS));
 
@@ -1026,7 +1067,7 @@ class TransactionRepositoryTest {
             seed(DALY_DS, record("0000000000000001"));
             RecordingDataSource recording = new RecordingDataSource(dataSource);
             TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
-                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+                    validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
 
             try (InputFile input = subject.openInput(sequential(DALY_DS))) {
                 assertThat(input.readNext().isFound()).isTrue();
@@ -1042,7 +1083,7 @@ class TransactionRepositoryTest {
         void closingAnUnreadSequentialPassReportsOk() throws SQLException {
             RecordingDataSource recording = new RecordingDataSource(dataSource);
             TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
-                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+                    validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
 
             InputFile input = subject.openInput(sequential(DALY_DS));
 
@@ -1057,7 +1098,7 @@ class TransactionRepositoryTest {
             seed(DALY_DS, record("0000000000000001"));
             RecordingDataSource recording = new RecordingDataSource(dataSource);
             TransactionRepository subject = new TransactionRepository(new JdbcTemplate(recording),
-                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+                    validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
 
             try (InputFile input = subject.openInput(sequential(DALY_DS))) {
                 assertThat(input.readNext().isFound()).isTrue();
@@ -1464,7 +1505,7 @@ class TransactionRepositoryTest {
         void buildStub() {
             stub = mock(JdbcTemplate.class);
             stubbed = new TransactionRepository(stub, validBindings(), ASCII,
-                    RecordImageForm.CHARACTER);
+                    RecordImageForm.CHARACTER, ORDINAL);
         }
 
         @Test
@@ -1499,7 +1540,7 @@ class TransactionRepositoryTest {
             doReturn(connection).when(refusing).getConnection();
 
             TransactionRepository subject = new TransactionRepository(new JdbcTemplate(refusing),
-                    validBindings(), ASCII, RecordImageForm.CHARACTER);
+                    validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
             InputFile input = subject.openInput(sequential(DALY_DS));
 
             assertThat(input.openStatus()).isEqualTo(FileStatus.OK);
@@ -2413,7 +2454,7 @@ class TransactionRepositoryTest {
             String otherName = "CARDDEMO.OTHER.TRANSACT.VSAM.KSDS";
             TransactionRepository rebound = new TransactionRepository(template,
                     bindingsWith(TransactionRepository.CICS_FILE_NAME, ksds(otherName)), ASCII,
-                    RecordImageForm.CHARACTER);
+                    RecordImageForm.CHARACTER, ORDINAL);
             assertThat(rebound.datasetName()).isEqualTo(otherName);
             assertThat(rebound.describeStatement()).contains(otherName);
             // And the three keys the bindings are looked up under are DD and file names, not datasets.
@@ -2589,6 +2630,80 @@ class TransactionRepositoryTest {
                     .isThrownBy(() -> repository.openOutput(null,
                             AccountInterestCalcJob.TRANSACT_DD_NAME))
                     .withMessageContaining(AccountInterestCalcJob.TRANSACT_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("a handle reports the dataset and the DD it was opened for, not the configured ones")
+        void aHandleReportsWhatItWasOpenedFor() {
+            template.execute("CREATE TABLE \"" + SYSTRAN_DS + ".ALT\" (\"" + IMAGE_COLUMN + "\" CHAR("
+                    + RECORD_LENGTH + "))");
+
+            TransactionRepository.OutputFile file = repository.openOutput(
+                    sequential(SYSTRAN_DS + ".ALT"), "SYSTRAN2");
+
+            assertThat(file.datasetName()).isEqualTo(SYSTRAN_DS + ".ALT");
+            assertThat(file.ddName()).isEqualTo("SYSTRAN2");
+        }
+
+        @Test
+        @DisplayName("the abnormal disposition deletes the generation this run opened, not another")
+        void theDiscardTargetsTheRelationActuallyOpened() {
+            // The decisive case. DISP=(NEW,CATLG,DELETE) deletes a generation, and deleting the wrong one
+            // is unrecoverable, so a handle must delete what it wrote rather than whatever the repository
+            // resolved at construction. Two live destinations, both non-empty, and only one is the
+            // generation this run allocated.
+            template.execute("CREATE TABLE \"" + SYSTRAN_DS + ".ALT\" (\"" + IMAGE_COLUMN + "\" CHAR("
+                    + RECORD_LENGTH + "))");
+            template.update("INSERT INTO \"" + SYSTRAN_DS + "\" (\"" + IMAGE_COLUMN + "\") VALUES (?)",
+                    " ".repeat(RECORD_LENGTH));
+
+            TransactionRepository.OutputFile file = repository.openOutput(
+                    sequential(SYSTRAN_DS + ".ALT"), AccountInterestCalcJob.TRANSACT_DD_NAME);
+            assertThat(file.writeSequential(record("2022071800001")).isWritten()).isTrue();
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.OK);
+
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + SYSTRAN_DS + ".ALT\"",
+                    Integer.class)).isZero();
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"",
+                    Integer.class)).isOne();
+        }
+
+        @Test
+        @DisplayName("the count that gates the discard is read from the opened relation")
+        void theGatingCountIsReadFromTheOpenedRelation() {
+            // The configured relation is left holding one record more than this run wrote. Were the count
+            // read from there, the counts would disagree and the discard would refuse - so a discard that
+            // succeeds proves the count came from the relation actually opened.
+            template.execute("CREATE TABLE \"" + SYSTRAN_DS + ".ALT\" (\"" + IMAGE_COLUMN + "\" CHAR("
+                    + RECORD_LENGTH + "))");
+            template.update("INSERT INTO \"" + SYSTRAN_DS + "\" (\"" + IMAGE_COLUMN + "\") VALUES (?)",
+                    " ".repeat(RECORD_LENGTH));
+            template.update("INSERT INTO \"" + SYSTRAN_DS + "\" (\"" + IMAGE_COLUMN + "\") VALUES (?)",
+                    " ".repeat(RECORD_LENGTH));
+
+            TransactionRepository.OutputFile file = repository.openOutput(
+                    sequential(SYSTRAN_DS + ".ALT"), AccountInterestCalcJob.TRANSACT_DD_NAME);
+            assertThat(file.writeSequential(record("2022071800001")).isWritten()).isTrue();
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.OK);
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + SYSTRAN_DS + "\"",
+                    Integer.class)).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("a close probes the opened relation, so it succeeds where the configured one is gone")
+        void aCloseProbesTheOpenedRelation() {
+            template.execute("CREATE TABLE \"" + SYSTRAN_DS + ".ALT\" (\"" + IMAGE_COLUMN + "\" CHAR("
+                    + RECORD_LENGTH + "))");
+
+            TransactionRepository.OutputFile file = repository.openOutput(
+                    sequential(SYSTRAN_DS + ".ALT"), AccountInterestCalcJob.TRANSACT_DD_NAME);
+            assertThat(file.writeSequential(record("2022071800001")).isWritten()).isTrue();
+            template.execute("DROP TABLE \"" + SYSTRAN_DS + "\"");
+
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.OK);
+            assertThat(file.closeApplResult()).isZero();
         }
     }
 }

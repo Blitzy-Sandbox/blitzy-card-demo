@@ -1,6 +1,5 @@
 package com.vsergeychik.carddemo.transaction;
 
-import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CobolDecimal;
@@ -27,6 +26,8 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.Charset;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
@@ -3306,11 +3307,36 @@ public class ReportRequestController {
         private final RuntimeException refusal;
 
         /**
-         * Serializes appends to this port's one destination.
+         * Serializes appends to this port's one destination, <strong>within this JVM</strong>.
          *
          * <p>A dedicated monitor rather than {@code this}, so no caller holding a reference to the port can
          * take the lock that a record's write depends on. Held across the containment check and the open
          * together, which is what keeps the two from being separable by a concurrent request.
+         *
+         * <h4>What this monitor cannot do, and the requirement that follows</h4>
+         * <p>A Java monitor is an <em>in-process</em> construct. It orders this JVM's threads and says
+         * nothing whatever about another process appending to the same file - and the internal reader is
+         * a queue precisely because more than one writer feeds it: a second application instance, a
+         * mainframe utility, an operator's script. So the monitor alone left the whole finding standing
+         * for every writer outside this JVM, and the record it protects is
+         * {@code RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED)}, where a write landing in two pieces with
+         * another writer's bytes between them is not one corrupt record but two, plus every record after
+         * them shifted. The inter-process half is an exclusive {@link java.nio.channels.FileLock} taken
+         * on the channel itself - see {@code appendWithinApprovedRoot}.
+         *
+         * <p>The two are complementary and both are needed. The file lock cannot replace this monitor,
+         * because a {@code FileLock} is held by the <em>JVM</em> rather than by a thread: two threads of
+         * one JVM taking overlapping locks on one file raises
+         * {@link java.nio.channels.OverlappingFileLockException} instead of queueing, so something has to
+         * order them first, and this is it. And this monitor cannot replace the file lock, for the reason
+         * above.
+         *
+         * <p><strong>The requirement that remains: exactly one port instance per destination in a JVM.</strong>
+         * This monitor is an instance field, so it orders the threads of one port and not two ports over
+         * one file. The wiring already satisfies that - the port is a singleton bound to the single
+         * configured {@code carddemo.job-submission} destination - and where it somehow does not, the
+         * overlapping-lock attempt is caught and reported as {@code RESP NOTOPEN} rather than escaping as
+         * an unchecked exception, so a misconfiguration is a refused write and never a torn record.
          */
         private final Object appendLock = new Object();
 
@@ -3328,14 +3354,18 @@ public class ReportRequestController {
          * Wires the port from configuration, encoding records in the code page
          * {@code carddemo.job-submission.charset} declares.
          *
-         * <p><strong>The code page comes from configuration, not from this class.</strong> It used to
-         * be {@link ReportRequestController#DEFAULT_WORKING_STORAGE_CHARSET} - the program's
-         * {@code WORKING-STORAGE} code page, hard-wired here - while the two-argument constructor that
-         * could have carried a real one was never wired to anything. A region whose internal reader
-         * consumes EBCDIC would therefore have received 80 bytes of ASCII per record and a
-         * {@code NORMAL} response for each one. Which code page a reader consumes cannot be inferred
-         * from inside this process, so it is declared, validated once by
-         * {@link JobSubmissionProperties#validate()} and read back here.
+         * <p><strong>This is the constructor Spring uses, and it is the only one that reads the
+         * configured queue code page.</strong> The record's code page is
+         * {@code carddemo.job-submission.charset}, validated once by
+         * {@link JobSubmissionProperties#validate()} and read back through
+         * {@link JobSubmissionProperties#queueCharset()}. Which code page a region's internal reader
+         * consumes cannot be inferred from inside this process, so it is declared rather than derived -
+         * and in particular it is <em>not</em> the dataset code page. The two are independent settings
+         * that disagree under the shipped configuration: the queue defaults to {@code IBM037} because
+         * an internal reader consumes EBCDIC, while the datasets default to {@code US-ASCII} because
+         * the fixtures are ASCII. Encoding the queue in the dataset's code page would send 80 bytes of
+         * ASCII per record to a reader expecting EBCDIC and report {@code NORMAL} for every one of
+         * them.
          *
          * @param properties the {@code carddemo.job-submission} binding; must not be {@code null}
          * @throws NullPointerException  if {@code properties} is {@code null}
@@ -3344,6 +3374,7 @@ public class ReportRequestController {
          * @throws IllegalArgumentException if the configured code page names nothing this platform
          *                               provides
          */
+        @Autowired
         public InternalReaderJobSubmissionPort(JobSubmissionProperties properties) {
             this(Objects.requireNonNull(properties, "The carddemo.job-submission binding is required: "
                             + "the queue name, the record geometry, the code page and the destination "
@@ -3352,20 +3383,26 @@ public class ReportRequestController {
         }
 
         /**
-         * Wires the port from configuration with an explicit code page - {@code IBM037} for a region
-         * whose internal reader expects EBCDIC, for instance.
+         * Wires the port with an explicit queue code page, overriding
+         * {@code carddemo.job-submission.charset}.
+         *
+         * <p><strong>Not the constructor Spring uses</strong>, deliberately, and carrying no
+         * {@code @Qualifier}. It once did carry one - {@code @Qualifier(DATASET_CHARSET_BEAN_NAME)} - and
+         * being the annotated constructor it was also the one Spring selected, so the queue's records
+         * were encoded in the <em>dataset</em> code page and {@code carddemo.job-submission.charset}
+         * reached nothing. Under the shipped configuration those two settings differ, which made the
+         * queue silently ASCII where it was declared EBCDIC. A code page arriving by qualifier is
+         * therefore the one thing this parameter must never be: it exists for a caller that has a
+         * specific code page in hand - a test asserting exact bytes - and for nothing else.
          *
          * @param properties   the {@code carddemo.job-submission} binding; must not be {@code null}
-         * @param queueCharset the active dataset code page,
-         *                     {@code @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)}; must not
-         *                     be {@code null}
+         * @param queueCharset the code page the 80-byte records are encoded in, supplied by the caller
+         *                     rather than injected; must not be {@code null}
          * @throws NullPointerException  if either argument is {@code null}
          * @throws IllegalStateException if the configured record length is not the CSD's
          *                               {@code RECORDSIZE(80)}
          */
-        @Autowired
         public InternalReaderJobSubmissionPort(JobSubmissionProperties properties,
-                                              @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)
                                               Charset queueCharset) {
             this.properties = Objects.requireNonNull(properties, "The carddemo.job-submission binding is "
                     + "required: the queue name, the record geometry and the destination are configured, "
@@ -3540,6 +3577,28 @@ public class ReportRequestController {
          * short write would leave a record of fewer than {@code RECORDSIZE} bytes in a
          * {@code RECORDFORMAT(FIXED)} dataset.
          *
+         * <h4>The drain loop is indivisible to every other writer, not just to this JVM's threads</h4>
+         * <p>An exclusive {@link FileLock} is taken over the destination and held for exactly the length of
+         * that loop. This is the inter-process guarantee the instance monitor cannot give: an internal
+         * reader is a queue because several writers feed it - a second application instance, a mainframe
+         * utility, an operator's script - and a monitor orders none of them. Without the lock, two writers'
+         * partial writes could interleave inside one eighty-byte record, which in a
+         * {@code RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED)} dataset does not produce one damaged record
+         * but two, and shifts every record after them. {@code O_APPEND} is atomic on the platforms that
+         * have it, but the {@code java.nio.file} contract promises nothing of the sort and this module is
+         * not entitled to assume a provider.
+         *
+         * <p>Both locks are needed and neither replaces the other. A {@code FileLock} belongs to the
+         * <em>JVM</em>, so two threads of one JVM taking overlapping locks on one file raise
+         * {@link OverlappingFileLockException} rather than queueing - the monitor is what orders them
+         * first. That exception is nevertheless caught here and reported as {@code NOTOPEN}, because
+         * reaching it means two ports were wired over one destination and a refused write is a far better
+         * outcome for a fixed-format queue than a torn record.
+         *
+         * <p>The lock is released by try-with-resources <em>before</em> the channel closes, which is the
+         * order {@link FileLock} requires: closing a channel releases its locks, and releasing a lock
+         * after its channel has gone is undefined.
+         *
          * <p><strong>The residual limitation, stated rather than absorbed</strong> (practice
          * <strong>B12</strong>): the platform-independent Java API exposes no directory handle, so
          * there is no {@code openat}-relative form of step 2. The leaf is protected atomically and any
@@ -3622,10 +3681,51 @@ public class ReportRequestController {
                     ? FileChannel.open(current, options, PosixFilePermissions.asFileAttribute(
                             PosixFilePermissions.fromString(FILE_PERMISSIONS)))
                     : FileChannel.open(current, options)) {
-                ByteBuffer record = ByteBuffer.wrap(image);
-                while (record.hasRemaining()) {
-                    channel.write(record);
+                // The inter-process half of the record's integrity. Exclusive, over the whole file, and
+                // held for exactly as long as the drain loop - see the note below on why the monitor
+                // this method is called under is not enough on its own, and why it is still needed.
+                try (FileLock exclusive = channel.lock()) {
+                    ByteBuffer record = ByteBuffer.wrap(image);
+                    while (record.hasRemaining()) {
+                        channel.write(record);
+                    }
+                    // Named rather than ignored: the lock is what the loop above is protected by, and a
+                    // reader who cannot see it referenced cannot see that. Released by try-with-resources
+                    // before the channel closes, which is the order FileLock requires.
+                    assertHeld(exclusive);
                 }
+            } catch (OverlappingFileLockException alreadyHeldByThisJvm) {
+                // Another thread of THIS JVM holds a lock over this file. The instance monitor makes that
+                // unreachable for one port, so reaching it means two ports were wired over one
+                // destination - a misconfiguration. Converted to IOException so the caller reports
+                // RESP NOTOPEN: a refused write is the right outcome, and letting an unchecked exception
+                // escape a WRITEQ TD would be a worse one.
+                throw new IOException("Another writer in this application instance holds a lock on the "
+                        + "job-submission destination '" + current + "'. The record was NOT written. "
+                        + "Exactly one job-submission port may be wired per destination, because a "
+                        + "RECORDFORMAT(FIXED) queue whose writers are not ordered yields torn records "
+                        + "rather than a reported failure", alreadyHeldByThisJvm);
+            }
+        }
+
+        /**
+         * Requires that a lock taken for the drain loop is still held while the loop runs.
+         *
+         * <p>This exists so the lock is a named participant in the write rather than an object created and
+         * forgotten. A {@code try (FileLock ignored = channel.lock())} would protect the loop just as well
+         * and would read as though the lock were incidental, which is the opposite of true: the eighty
+         * bytes below it are a whole record of a {@code RECORDFORMAT(FIXED)} queue, and what makes them one
+         * record to every other writer is this lock and nothing else.
+         *
+         * @param exclusive the lock taken over the destination
+         * @throws IOException if the lock is no longer valid, which would mean the loop about to run is
+         *                     unprotected
+         */
+        private static void assertHeld(final FileLock exclusive) throws IOException {
+            if (!exclusive.isValid()) {
+                throw new IOException("The exclusive lock on the job-submission destination was released "
+                        + "before the record was written, so the write would not have been indivisible to "
+                        + "another writer. The record was NOT written");
             }
         }
 

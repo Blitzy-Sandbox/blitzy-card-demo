@@ -79,11 +79,22 @@
     10.1.56 and 10.1.57, and jackson-databind 2.21.4 falls in the range fixed by 2.21.5. Direct
     exploitability is not established for this application - the implicated optional Tomcat
     features are not enabled and Jackson case-insensitive property matching is not switched on -
-    and the module declares no dependency of its own on either family. Closing the advisory gap
-    nonetheless needs one of two things that only a plan-level decision can supply: an authorized
-    update to AAP 0.5.4's inventory, or a commercially supported patched 3.x BOM (unavailable to
-    this build, which resolves solely from repo1.maven.org with no credentials and no private
-    registry). Until then the resolved versions are the BOM's, as the plan states them.
+    and the module declares no dependency of its own on either family.
+
+    THE STATE OF THAT RISK, STATED SO NOBODY HAS TO RE-DERIVE IT. Overriding tomcat.version to
+    10.1.57 and jackson-bom.version to 2.21.5 was tried, and both artifacts do resolve, so the gap
+    is not held open by a missing artifact - it is held open by the plan. AAP 0.5.4 states that
+    every library version is inherited from the parent BOM and names 10.1.55 and 2.21.4 as the
+    inventory this module is accepted against, and AAP 0.8.9 forbids moving off the closed set in
+    0.5.4. A property here would move eight coordinates across the two families off that inventory
+    while leaving 0.5.4 saying otherwise, which is the silent scope creep practice B4 exists to
+    prevent, and it would strengthen the security posture beyond what was asked, which is what
+    practice B6 rules out in the same breath as weakening it. So the decision does not belong in
+    this file at all. Exactly two things can close the gap, and both are plan-level: an authorized
+    revision of AAP 0.5.4's inventory to the patched versions, or a commercially supported patched
+    3.x BOM (unavailable to this build, which resolves solely from repo1.maven.org with no
+    credentials and no private registry). Until one of them arrives the resolved versions are the
+    BOM's, exactly as the plan states them, and the advisory position is this paragraph.
 
   CLOSED DEPENDENCY SET (AAP 0.5.6)
     Exactly six dependencies are declared below and nothing may be added to them. No technology
@@ -179,9 +190,12 @@
          confusingly as a cascade of "managed version is missing" errors. The empty element tells
          Maven to skip the filesystem search and resolve the parent from the repository. -->
     <!-- 3.5.16 is the last published OSS 3.5.x release and is a deliberate pin, not staleness.
-         Two of the versions it manages are overridden in <properties> below under a documented
-         security exception; that exception overrides BOM PROPERTIES and does not change this
-         parent, its version, or the rejection of the 4.x line. -->
+         NOTHING this parent manages is overridden below: <properties> redeclares no version
+         property of spring-boot-dependencies-3.5.16, so every library version in the resolved
+         graph is the one AAP 0.5.4 pins. Two of those managed versions sit in advisory-affected
+         ranges; that position is recorded, with the two plan-level routes that could close it, in
+         this file's header under "THE DEPENDENCY INVENTORY IS FROZEN", and it is escalated there
+         rather than closed by a property here (practices B4 and B12). -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>

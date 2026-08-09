@@ -540,19 +540,31 @@ public final class TransactionAddController {
      * faithful for a value that fits; for one that does not there is nothing faithful to reproduce, so
      * the request is refused at the boundary before any padding and any repository call.
      *
-     * <h4>Why the path wins, and how the body still gets a say</h4>
-     * {@code TRNIDIN} is both the resource's identity and the one field on this map the operator types
-     * into. When the two agree there is nothing to decide. When the body leaves it blank - spaces or
-     * {@code LOW-VALUES}, which {@code :147} treats alike - the path supplies it, which is how a client
-     * re-sends a screen it painted from a URI. When the body names a <em>different</em> transaction the
-     * two statements of identity contradict each other, and answering one of them silently would be a
-     * guess; it is refused instead.
+     * <h4>The path is projected into both carriers of the key</h4>
+     * This program reads the transaction id from two places, and which one it reads depends on the turn:
+     * {@code CDEMO-CT01-TRN-SELECTED} on first entry [{@code :103-106}], the id the transaction-list
+     * screen hands over when the operator marks a row, and {@code TRNIDINI} on re-entry [{@code :147},
+     * {@code :217-224}]. Both are set from the path here, before a single line of source logic runs, so
+     * the URI is the only statement of which record is read.
+     *
+     * <p>Leaving either carrier as the caller sent it would leave a second, independently
+     * client-controlled identity. That is not hypothetical: with the extension naming one transaction and
+     * the path naming another, first entry would read the extension's - a URI returning a record it does
+     * not name - and with the extension blank, the path-driven immediate lookup the URI asks for would not
+     * happen at all. Projecting both closes both.
+     *
+     * <p>No disagreement error is raised. {@code COTRN01C} has no such condition, so inventing one would
+     * add a failure mode the legacy screen cannot produce; a client that echoes a painted screen agrees
+     * with the path and sees no difference, and one that names a second transaction has that value
+     * replaced rather than acted on. The blank-field branch at {@code :147} stays reachable, because a
+     * path segment of percent-encoded spaces is a blank identifier and {@link #mainPara} is callable
+     * directly with any buffer at all.
      *
      * @param tranId  the path variable; must not be {@code null}
      * @param request the bound body, or {@code null} for a cold start
-     * @return the request to execute, with {@code TRNIDIN} set from the path; never {@code null}
-     * @throws IllegalArgumentException if the path value is wider than {@code TRNIDIN}, or the body
-     *                                  states a different transaction
+     * @return the request to execute, with {@code TRNIDIN} and {@code CDEMO-CT01-TRN-SELECTED} both set
+     *         from the path; never {@code null}
+     * @throws IllegalArgumentException if the path value is wider than {@code TRNIDIN}
      */
     TransactionAddRequest bind(String tranId, TransactionAddRequest request) {
         if (tranId.length() > TransactionAddRequest.TRNIDIN_LENGTH) {
@@ -570,15 +582,18 @@ public final class TransactionAddController {
                 ? new TransactionAddRequest()
                 : new TransactionAddRequest(request);
 
-        String stated = received.getTrnidin();
-        if (!isSpacesOrLowValues(stated)
-                && !codec.movePicX(stated, TransactionAddRequest.TRNIDIN_LENGTH)
-                        .equals(codec.movePicX(tranId, TransactionAddRequest.TRNIDIN_LENGTH))) {
-            throw new IllegalArgumentException("The request body states a transaction id that is not "
-                    + "the one the path addresses. TRNIDIN is the resource's identity here, so the two "
-                    + "cannot disagree; send the field as spaces to let the path supply it.");
-        }
-        received.setTrnidin(codec.movePicX(tranId, TransactionAddRequest.TRNIDIN_LENGTH));
+        // The identity, at TRNIDIN's declared PIC X(16) width - which is what the field holds on a
+        // terminal and what a client echoing the painted screen sends back. The path has already been
+        // required to fit, so this MOVE only pads.
+        String identity = codec.movePicX(tranId, TransactionAddRequest.TRNIDIN_LENGTH);
+
+        // :147, :217-224 read TRNIDINI on re-entry.
+        received.setTrnidin(identity);
+
+        // :103-106 read CDEMO-CT01-TRN-SELECTED on first entry. Written at Ct01Info's own declared width
+        // for the same reason, and the extension's other items are left exactly as they arrived.
+        received.getCt01Info().setTrnSelected(
+                codec.movePicX(tranId, Ct01Info.TRN_SELECTED_LENGTH));
         return received;
     }
 
@@ -901,11 +916,13 @@ public final class TransactionAddController {
         // L269-278, UPDATE included: the locking read, inside the unit of work mainPara opened.
         ReadResult result = transactionRepository.readForUpdateByTranId(state.tranId());
         state.setReadResult(result);
-        // ifPresent, never orElse: WS-RESP-CD is PIC S9(09) COMP VALUE ZEROS and the command is the
-        // only thing that writes it. Where the repository reports no CICS condition - an artefact of
-        // the JDBC substitution, never of CICS itself - nothing is stored and the item keeps the zero
-        // its VALUE clause gave it, rather than a number this class invented.
-        result.cicsResp().ifPresent(state::setRespCd);
+        // RESP(WS-RESP-CD). Where the repository reports no CICS condition - an artefact of the JDBC
+        // substitution, never of CICS itself - the sentinel is stored rather than the item being left
+        // at the zero its VALUE clause gave it. Leaving it at zero would be indistinguishable from a
+        // reported DFHRESP(NORMAL), so the DISPLAY below would render RESP: 000000000 for a read that
+        // did not work. FileStatus.RESP_NOT_REPORTED cannot collide with any DFHRESP value, and the
+        // renderer shows it as asterisks rather than as a number it is not.
+        state.setRespCd(result.cicsResp().orElse(FileStatus.RESP_NOT_REPORTED));
         state.setReasCd(result.cicsResp2());
 
         // L280 EVALUATE WS-RESP-CD.
@@ -917,9 +934,32 @@ public final class TransactionAddController {
             return;
         }
         // L289 WHEN OTHER.
-        display(state, DISPLAY_RESP_PREFIX + codec.movePic9(state.respCd(), WS_RESP_CD_DIGITS)
-                + DISPLAY_REAS_PREFIX + codec.movePic9(state.reasCd(), WS_RESP_CD_DIGITS));  // L290
+        display(state, DISPLAY_RESP_PREFIX + respImage(state.respCd())
+                + DISPLAY_REAS_PREFIX + respImage(state.reasCd()));                          // L290
         rejectAndSend(state, MSG_UNABLE_TO_LOOKUP);                                          // L291-295
+    }
+
+    /**
+     * A {@code PIC S9(09) COMP} response or reason code as {@code DISPLAY} renders it - or, where none
+     * was reported, as {@value FileStatus#RESP_NOT_REPORTED}'s width-preserving image.
+     *
+     * <p>{@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} ({@code :290}) concatenates its operands
+     * at their declared widths, so both branches here are exactly
+     * {@value #WS_RESP_CD_DIGITS} characters and the line's shape is the source's either way.
+     *
+     * <p>The unreported case cannot go through {@link FixedWidthCodec#movePic9(long, int)} at all:
+     * {@link FileStatus#RESP_NOT_REPORTED} is negative and a {@code PIC 9} receiver has no image for a
+     * negative value, so the codec refuses it. That refusal is the reason this method exists rather than
+     * the two operands being rendered inline - the alternative would be storing zero, which is
+     * {@link FileStatus#NORMAL} and would report a failed command as a successful one.
+     *
+     * @param code the value held in {@code WS-RESP-CD} or {@code WS-REAS-CD}
+     * @return exactly {@value #WS_RESP_CD_DIGITS} characters
+     */
+    private String respImage(int code) {
+        return FileStatus.respReported(code)
+                ? codec.movePic9(code, WS_RESP_CD_DIGITS)
+                : FileStatus.respNotReportedImage(WS_RESP_CD_DIGITS);
     }
 
     /**

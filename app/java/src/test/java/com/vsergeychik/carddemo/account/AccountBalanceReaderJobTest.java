@@ -394,7 +394,7 @@ class AccountBalanceReaderJobTest {
      */
     private static CardRepository repositoryOverWholeFixture() {
         List<CardReadResult> results = new ArrayList<>(
-                fixtureRecords().stream().map(CardReadResult::normal).toList());
+                fixtureRecords().stream().map(AccountBalanceReaderJobTest::cardRead).toList());
         results.add(CardReadResult.endOfFile());
         return repositoryReturning(results);
     }
@@ -677,6 +677,30 @@ class AccountBalanceReaderJobTest {
         }
 
         @Test
+        @DisplayName("a row whose FILLER X(59) is not spaces is displayed as it stands, not re-encoded")
+        void aRowsFillerSurvivesTheDisplay() {
+            // DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the FD record area, and READ INTO
+            // filled that area from the row. The area's FILLER X(59) is covered by no field of
+            // CVACT02Y, so whatever the row held there is what the line carries. Rendering the decoded
+            // record instead allocates a fresh area and blanks that span - which is a line the program
+            // cannot produce, and 59 wrong bytes on every one of the fifty records.
+            CardRecord record = fixtureRecords().get(0);
+            String clean = record.encodeToImage(StandardCharsets.US_ASCII);
+            String dirty = clean.substring(0, CardRecord.RECORD_LENGTH - CardRecord.FILLER_LENGTH)
+                    + "*".repeat(CardRecord.FILLER_LENGTH);
+
+            List<String> lines = linesFrom(repositoryReturning(List.of(
+                    CardReadResult.normal(record, dirty), CardReadResult.endOfFile())));
+
+            assertThat(lines).hasSize(3);
+            assertThat(lines.get(1))
+                    .as("the row's own 150 bytes, FILLER included")
+                    .hasSize(CardRecord.RECORD_LENGTH)
+                    .isEqualTo(dirty)
+                    .isNotEqualTo(clean);
+        }
+
+        @Test
         @DisplayName("no field-label line is ever emitted - there is no 1100 paragraph to emit one")
         void noFieldLabelLineIsEverEmitted() {
             List<String> lines = linesFrom(repositoryOverWholeFixture());
@@ -715,7 +739,7 @@ class AccountBalanceReaderJobTest {
         void lineCountIsRecordCountPlusTwo(int recordCount) {
             List<CardReadResult> results = new ArrayList<>(
                     fixtureRecords().subList(0, recordCount).stream()
-                            .map(CardReadResult::normal).toList());
+                            .map(AccountBalanceReaderJobTest::cardRead).toList());
             results.add(CardReadResult.endOfFile());
 
             assertThat(linesFrom(repositoryReturning(results))).hasSize(recordCount + 2);
@@ -749,7 +773,7 @@ class AccountBalanceReaderJobTest {
             CardRecord first = fixtureRecords().get(0);
 
             List<String> lines = linesFrom(repositoryReturning(
-                    List.of(CardReadResult.normal(first), CardReadResult.endOfFile())));
+                    List.of(cardRead(first), CardReadResult.endOfFile())));
 
             assertThat(lines).containsExactly(
                     AccountBalanceReaderJob.START_BANNER,
@@ -789,7 +813,7 @@ class AccountBalanceReaderJobTest {
             CardRecord first = fixtureRecords().get(0);
             CollectingSink sink = new CollectingSink();
             CardRepository repository =
-                    repositoryReturning(List.of(CardReadResult.duplicateKey(first)));
+                    repositoryReturning(List.of(cardReadDuplicate(first)));
 
             assertThatAbend(repository, sink);
 
@@ -832,8 +856,8 @@ class AccountBalanceReaderJobTest {
             List<CardRecord> records = fixtureRecords();
             CollectingSink sink = new CollectingSink();
             CardRepository repository = repositoryReturning(List.of(
-                    CardReadResult.normal(records.get(0)),
-                    CardReadResult.normal(records.get(1)),
+                    cardRead(records.get(0)),
+                    cardRead(records.get(1)),
                     CardReadResult.notFound()));
 
             assertThatAbend(repository, sink);
@@ -1272,6 +1296,40 @@ class AccountBalanceReaderJobTest {
         }
 
         @Test
+        @DisplayName("a second step declared beside STEP05 is refused, because READCARD.jcl has one "
+                + "EXEC and no other")
+        void anAddedStepIsRefused() {
+            // Resolving STEP05 by name finds it whether it stands alone or first of two, so the
+            // per-step checks cannot see this. A second step would read the CARDFILE dataset twice and
+            // emit two passes of DISPLAY output for one submission.
+            JobContract withASecondStep = new JobContract(AccountBalanceReaderJob.PROGRAM_ID, List.of(),
+                    List.of(new StepContract(AccountBalanceReaderJob.STEP_NAME,
+                                    AccountBalanceReaderJob.PROGRAM_ID, false),
+                            new StepContract("STEP06", AccountBalanceReaderJob.PROGRAM_ID, false)),
+                    null, Map.of());
+            AccountBalanceReaderJob job = new AccountBalanceReaderJob(
+                    batchConfig(withASecondStep, "CARDDEMO.TEST.CARDDATA.VSAM.KSDS"),
+                    cardRepositoryMock(), FIXTURE_CHARSET, new SingleValueProvider<>(null));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(job::readCardfileStep)
+                    .withMessageContaining("does not declare the step sequence of "
+                            + "app/jcl/READCARD.jcl:22")
+                    .withMessageContaining("configured: [STEP05/CBACT02C, STEP06/CBACT02C]")
+                    .withMessageContaining("required:   [STEP05/CBACT02C]");
+        }
+
+        @Test
+        @DisplayName("the shipped single-step sequence is what the class requires")
+        void theShippedSequenceIsRequired() {
+            assertThat(AccountBalanceReaderJob.REQUIRED_STEPS)
+                    .containsExactly(new StepContract(AccountBalanceReaderJob.STEP_NAME,
+                            AccountBalanceReaderJob.PROGRAM_ID, false));
+            assertThat(sourceDerivedContract().steps())
+                    .isEqualTo(AccountBalanceReaderJob.REQUIRED_STEPS);
+        }
+
+        @Test
         @DisplayName("a contract declaring the wrong step name is refused at wiring time")
         void aWrongStepNameIsRefused() {
             JobContract wrongStep = new JobContract(AccountBalanceReaderJob.PROGRAM_ID, List.of(),
@@ -1572,5 +1630,33 @@ class AccountBalanceReaderJobTest {
         ObjectProvider<SysoutSink> published = new SingleValueProvider<>(present);
         assertThat(published.getIfAvailable(fallback)).isSameAs(present);
         assertThat(published.stream()).containsExactly(present);
+    }
+
+    // =================================================================================================
+    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
+    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
+    // image it supplies is the one a row of exactly this record would carry - which is what these two
+    // helpers state, once, rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The normal arm over a synthesised row of this record.
+     *
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardRead(CardRecord record) {
+        return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * The duplicate-key arm over a synthesised row of this record.
+     *
+     * @param record the first record sharing the alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardReadDuplicate(CardRecord record) {
+        return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 }

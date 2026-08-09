@@ -104,6 +104,35 @@ public enum RecordImageForm {
      *
      * <p>This is the representation a gateway that surfaces a KSDS as a {@code CHAR}/{@code VARCHAR}
      * column presents, and it is the one the in-memory relations this module is tested against use.
+     *
+     * <h2>The deployment contract this constant carries: a bytewise collation</h2>
+     * <p><strong>A deployment choosing this form must guarantee, and document, that the record-image
+     * column's collation is bytewise - binary or code-point - in the configured dataset code page.</strong>
+     * Reading the column is not the only thing done with it: a keyed read composes a positional
+     * {@code LIKE} over it - one {@code _} wildcard per byte before the key, the key's escaped bytes,
+     * then {@code %} - and a browse composes {@code ORDER BY} it
+     * ({@link DatasetRelation}), and a COBOL KSDS matches a key by its <em>bytes</em> and returns records
+     * in ascending order of those bytes. Under this form both of those become the backend's own character
+     * comparison, so the backend's collation <em>is</em> the key semantics.
+     *
+     * <p>A collation that is not bytewise does not fail; it answers wrongly, in ways nothing reports:
+     * <ul>
+     *   <li>case-insensitive - card number {@code 'A1'} and {@code 'a1'} become one key;</li>
+     *   <li>trailing-blank equivalent - an eight-character user id matches a shorter one;</li>
+     *   <li>accent- or width-folding - two distinct stored keys become one, and a folding in which one
+     *       character stands for two breaks the byte offsets the {@code _} run encodes;</li>
+     *   <li>linguistic ordering - {@code 'a'} sorts before {@code 'B'}, so a browse returns records in an
+     *       order the COBOL never produces and every page boundary moves with it.</li>
+     * </ul>
+     *
+     * <p>{@link #BINARY} exists partly for this: a binary column has no collation to get wrong, because
+     * its equality and its ordering <em>are</em> its bytes'. It is therefore the correct choice for any
+     * byte-addressed dataset whose backend collation is unknown or outside the deployment's control.
+     *
+     * <p>Nothing in this module can check the guarantee - there is no production connectivity to
+     * interrogate (residual risk R-E) - so it is written down at each of the three places the decision is
+     * visible: here, on {@code DataSourceConfig.carddemoRecordImageForm}, and beside
+     * {@value #FORM_PROPERTY} in {@code application.yml}.
      */
     CHARACTER {
         @Override

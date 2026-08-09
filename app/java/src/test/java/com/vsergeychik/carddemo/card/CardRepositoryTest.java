@@ -1014,15 +1014,76 @@ class CardRepositoryTest {
         }
 
         @Test
-        @DisplayName("bounds the fetch: a unique key cannot want more than one row")
+        @DisplayName("bounds the fetch at two rows: one more than a unique key can produce")
         void boundsTheFetch() throws SQLException {
             stubFetch(FetchedRows.empty());
 
             repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
 
+            // Two, not one. CARD-NUM is the base cluster's unique primary key, so a second matching row
+            // is an integrity defect in the backing relation - and a cap of one row would make it
+            // invisible, leaving the read to return whichever row the backend ordered first as though it
+            // were the record. One extra row is what makes "more than one" detectable, and nothing
+            // beyond it is fetched because nothing beyond it changes the answer.
             PreparedStatement prepared = capturePreparedStatement();
-            verify(prepared).setMaxRows(1);
-            verify(prepared).setFetchSize(1);
+            verify(prepared).setMaxRows(2);
+            verify(prepared).setFetchSize(2);
+            verify(prepared, never()).setMaxRows(1);
+        }
+
+        @Test
+        @DisplayName("a key matching more than one row is refused, not resolved by taking the first")
+        void aFanOutOnThePrimaryKeyIsRefused() {
+            // CARD-NUM is the base cluster's unique primary key, so two matches cannot arise in the
+            // legacy system and are an integrity defect in the backing relation. Returning the first with
+            // the normal response would hand COCRDSLC or COCRDUPC a card record chosen by whatever order
+            // the backend produced - and COCRDUPC would then REWRITE it. So the read reports WHEN OTHER.
+            CardRecord first = cardRecord(FIRST_FIXTURE_CARD_NUM);
+            stubFetch(new FetchedRows(first.encode(codec), 2));
+
+            CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
+            assertThat(result.record())
+                    .as("no record is handed over, so nothing arbitrary can be displayed or rewritten")
+                    .isEmpty();
+            assertThat(result.storedImage()).isEmpty();
+            assertThat(result.observation()).isPresent();
+            assertThat(result.observation().orElseThrow().value())
+                    .as("the row count travels labelled, so the diagnostic says how many matched")
+                    .isEqualTo(2);
+            assertThat(result.resp())
+                    .as("DUPKEY belongs to a read through a PATH on a non-unique ALTERNATE key, which is "
+                            + "an expected condition; a non-unique PRIMARY key is not one VSAM can present")
+                    .isNotEqualTo(FileStatus.DUPKEY)
+                    .isNotEqualTo(FileStatus.DUPREC);
+        }
+
+        @Test
+        @DisplayName("the locking read refuses a fan-out too, before any record is held for update")
+        void theLockingReadRefusesAFanOutAsWell() {
+            stubFetch(new FetchedRows(cardRecord(FIRST_FIXTURE_CARD_NUM).encode(codec), 2));
+
+            CardReadResult result = inUnitOfWork(
+                    () -> repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM));
+
+            assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
+            assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
+            assertThat(result.record()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("exactly one match still succeeds, so the extra probe row is not over-eager")
+        void aUniqueMatchStillSucceeds() {
+            CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
+            stubFetch(new FetchedRows(stored.encode(codec), 1));
+
+            CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(result.outcome()).isEqualTo(Outcome.OK);
+            assertThat(result.resp()).isEqualTo(FileStatus.NORMAL);
+            assertThat(result.record()).contains(stored);
         }
 
         @Test
@@ -2291,6 +2352,82 @@ class CardRepositoryTest {
     }
 
     // =============================================================================================
+    // Raw record image fidelity. DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the whole
+    // 150-byte FD record area, and CVACT02Y ends in FILLER X(59) that no field of the record covers.
+    // A read must therefore hand its caller the bytes the row held, because reconstructing an image
+    // from the decoded fields allocates a fresh area and so writes spaces across that span whatever
+    // the row carried. Gates G19 and G21, and AAP R5.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("raw record image fidelity - the FILLER X(59) of CVACT02Y")
+    class RawRecordImageFidelityTest {
+
+        /** The 59 bytes of CVACT02Y FILLER, carrying a value no field of the record can hold. */
+        private static final String DIRTY_FILLER = "*".repeat(CardRecord.FILLER_LENGTH);
+
+        @Test
+        @DisplayName("a keyed read hands back the row's own bytes, FILLER included")
+        void aKeyedReadRetainsTheRowsBytes() {
+            String dirty = dirtyImage();
+            stubFetch(new FetchedRows(dirty.getBytes(StandardCharsets.US_ASCII), 1));
+
+            CardReadResult read = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(read.outcome()).isEqualTo(Outcome.OK);
+            assertThat(read.requireStoredImage())
+                    .as("the record area DISPLAY writes is the row's, byte for byte")
+                    .isEqualTo(dirty);
+        }
+
+        @Test
+        @DisplayName("a browse step hands back the row's own bytes, FILLER included")
+        void aBrowseStepRetainsTheRowsBytes() {
+            // This is the arm CBACT02C actually reads through: 1000-CARDFILE-GET-NEXT then DISPLAY.
+            String dirty = dirtyImage();
+            stubFetch(new FetchedRows(dirty.getBytes(StandardCharsets.US_ASCII), 1));
+
+            CardReadResult read = repository
+                    .openBrowse(" ".repeat(CardRecord.CARD_NUM_LENGTH), BrowseDirection.FORWARD)
+                    .readNext();
+
+            assertThat(read.outcome()).isEqualTo(Outcome.OK);
+            assertThat(read.requireStoredImage()).isEqualTo(dirty);
+        }
+
+        @Test
+        @DisplayName("re-encoding the decoded record would have lost the FILLER, which is the finding")
+        void reEncodingTheDecodedRecordWouldHaveLostIt() {
+            String dirty = dirtyImage();
+            stubFetch(new FetchedRows(dirty.getBytes(StandardCharsets.US_ASCII), 1));
+
+            CardReadResult read = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            CardRecord decoded = read.record().orElseThrow();
+
+            // Every field round trips. Only the span no field covers does not - and DISPLAY writes it.
+            assertThat(decoded).isEqualTo(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            assertThat(decoded.encodeToImage(StandardCharsets.US_ASCII))
+                    .as("a fresh record area blanks FILLER X(59), so this is not what CBACT02C:78 writes")
+                    .hasSize(CardRepository.RECORD_LENGTH)
+                    .isNotEqualTo(dirty)
+                    .endsWith(" ".repeat(CardRecord.FILLER_LENGTH));
+        }
+
+        /**
+         * The fixture record's own bytes, with the trailing {@code FILLER X(59)} overwritten.
+         *
+         * @return a 150-character image every field of which decodes, whose FILLER holds no spaces
+         */
+        private String dirtyImage() {
+            String clean = storedImage(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            String dirty = clean.substring(0, CardRepository.RECORD_LENGTH - CardRecord.FILLER_LENGTH)
+                    + DIRTY_FILLER;
+            assertThat(dirty).hasSize(CardRepository.RECORD_LENGTH).isNotEqualTo(clean);
+            return dirty;
+        }
+    }
+
+    // =============================================================================================
     // The result types: no part of a result may contradict another part.
     // =============================================================================================
 
@@ -2303,8 +2440,8 @@ class CardRepositoryTest {
         void factoriesAgreeWithThemselves() {
             CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
 
-            assertThat(CardReadResult.normal(stored).batchStatus()).contains(FileStatus.OK);
-            assertThat(CardReadResult.duplicateKey(stored).batchStatus())
+            assertThat(cardRead(stored).batchStatus()).contains(FileStatus.OK);
+            assertThat(cardReadDuplicate(stored).batchStatus())
                     .contains(FileStatus.DUPLICATE);
             assertThat(CardReadResult.notFound().batchStatus()).contains(FileStatus.NOT_FOUND);
             assertThat(CardReadResult.endOfFile().batchStatus()).contains(FileStatus.END_OF_FILE);
@@ -2316,9 +2453,9 @@ class CardRepositoryTest {
         @Test
         @DisplayName("gate G47: all four batch statuses are reachable from this class")
         void allFourBatchStatusesAreReachable() {
-            assertThat(List.of(CardReadResult.normal(cardRecord(FIRST_FIXTURE_CARD_NUM)),
+            assertThat(List.of(cardRead(cardRecord(FIRST_FIXTURE_CARD_NUM)),
                             CardReadResult.endOfFile(),
-                            CardReadResult.duplicateKey(cardRecord(FIRST_FIXTURE_CARD_NUM)),
+                            cardReadDuplicate(cardRecord(FIRST_FIXTURE_CARD_NUM)),
                             CardReadResult.notFound())
                     .stream()
                     .map(result -> result.batchStatus().orElseThrow())
@@ -2331,9 +2468,11 @@ class CardRepositoryTest {
         @DisplayName("a read factory refuses a null record where the arm returns one")
         void readFactoriesRefuseANullRecord() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> CardReadResult.normal(null));
+                    .isThrownBy(() -> CardReadResult.normal(null, " ".repeat(
+                            CardRepository.RECORD_LENGTH)));
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> CardReadResult.duplicateKey(null));
+                    .isThrownBy(() -> CardReadResult.duplicateKey(null, " ".repeat(
+                            CardRepository.RECORD_LENGTH)));
         }
 
         @ParameterizedTest(name = "response {0} cannot be reported as WHEN OTHER")
@@ -2383,7 +2522,8 @@ class CardRepositoryTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OTHER,
-                            Optional.of(stored), Optional.empty()));
+                            Optional.of(stored), Optional.of(storedImage(stored)),
+                            Optional.empty()));
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
                     () -> new CardWriteResult(FileStatus.NORMAL, 0, Outcome.OTHER,
                             Optional.empty()));
@@ -2396,10 +2536,53 @@ class CardRepositoryTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NOTFND, 0, Outcome.NOT_FOUND,
-                            Optional.of(stored), Optional.empty()));
+                            Optional.of(stored), Optional.of(storedImage(stored)),
+                            Optional.empty()));
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, Optional.empty(),
-                            Optional.empty()));
+                            Optional.empty(), Optional.empty()));
+        }
+
+        @Test
+        @DisplayName("the stored image travels with the record and never without it, at its own width")
+        void theStoredImageTravelsWithTheRecord() {
+            // DISPLAY CARD-RECORD writes the record area, and the area's FILLER X(59) holds whatever the
+            // row held. A record-bearing arm with no image would leave a raw display with nothing to write
+            // but a re-encoding of the fields, which blanks that span - so the type refuses the shape.
+            CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
+
+            assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
+                    () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, Optional.of(stored),
+                            Optional.empty(), Optional.empty()))
+                    .withMessageContaining("must carry the stored image");
+            assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
+                    () -> new CardReadResult(FileStatus.NOTFND, 0, Outcome.NOT_FOUND, Optional.empty(),
+                            Optional.of(storedImage(stored)), Optional.empty()))
+                    .withMessageContaining("no stored image");
+            assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
+                    () -> CardReadResult.normal(stored, storedImage(stored).substring(1)))
+                    .withMessageContaining(String.valueOf(CardRepository.RECORD_LENGTH));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                    () -> CardReadResult.normal(stored, null));
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                    () -> CardReadResult.duplicateKey(stored, null));
+        }
+
+        @Test
+        @DisplayName("requireStoredImage yields the row's bytes, and refuses an arm that carries none")
+        void requireStoredImageYieldsTheRowsBytes() {
+            CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(cardRead(stored).requireStoredImage())
+                    .hasSize(CardRepository.RECORD_LENGTH)
+                    .isEqualTo(storedImage(stored));
+            assertThat(cardReadDuplicate(stored).requireStoredImage())
+                    .isEqualTo(storedImage(stored));
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> CardReadResult.notFound().requireStoredImage())
+                    .withMessageContaining("no stored image");
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> CardReadResult.endOfFile().requireStoredImage());
         }
 
         @Test
@@ -2409,13 +2592,17 @@ class CardRepositoryTest {
 
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NORMAL, 0, null, Optional.empty(),
-                            Optional.empty()));
+                            Optional.empty(), Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, null,
-                            Optional.empty()));
+                            Optional.empty(), Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                     () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, Optional.of(stored),
-                            null))
+                            null, Optional.empty()))
+                    .withMessageContaining("empty stored image");
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                    () -> new CardReadResult(FileStatus.NORMAL, 0, Outcome.OK, Optional.of(stored),
+                            Optional.of(storedImage(stored)), null))
                     .withMessageContaining("empty observation");
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                     () -> new CardWriteResult(FileStatus.NORMAL, 0, null, Optional.empty()));
@@ -2427,7 +2614,7 @@ class CardRepositoryTest {
         @Test
         @DisplayName("requireRecord refuses to invent one on an arm that returns none")
         void requireRecordOnAnArmWithoutOne() {
-            assertThat(CardReadResult.normal(cardRecord(FIRST_FIXTURE_CARD_NUM)).requireRecord())
+            assertThat(cardRead(cardRecord(FIRST_FIXTURE_CARD_NUM)).requireRecord())
                     .isNotNull();
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> CardReadResult.notFound().requireRecord());
@@ -2439,8 +2626,8 @@ class CardRepositoryTest {
         @DisplayName("the predicates agree with the response they are derived from")
         void predicatesAgreeWithTheResponse() {
             CardRecord stored = cardRecord(FIRST_FIXTURE_CARD_NUM);
-            CardReadResult normal = CardReadResult.normal(stored);
-            CardReadResult duplicate = CardReadResult.duplicateKey(stored);
+            CardReadResult normal = cardRead(stored);
+            CardReadResult duplicate = cardReadDuplicate(stored);
             CardReadResult notFound = CardReadResult.notFound();
             CardReadResult endOfFile = CardReadResult.endOfFile();
             CardReadResult failed =
@@ -3021,5 +3208,43 @@ class CardRepositoryTest {
             assertThat(rebound.describeAlternateIndexStatement())
                     .isEqualTo(repository.describeAlternateIndexStatement());
         }
+    }
+
+    // =================================================================================================
+    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
+    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
+    // image it supplies is the one a row of exactly this record would carry - which is what these two
+    // helpers state, once, rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The normal arm over a synthesised row of this record.
+     *
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardRead(CardRecord record) {
+        return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * The duplicate-key arm over a synthesised row of this record.
+     *
+     * @param record the first record sharing the alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardReadDuplicate(CardRecord record) {
+        return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * The 150-character image a row of this record would hold.
+     *
+     * @param record the record
+     * @return its encoded image
+     */
+    private static String storedImage(CardRecord record) {
+        return record.encodeToImage(StandardCharsets.US_ASCII);
     }
 }

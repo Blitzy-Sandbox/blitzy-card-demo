@@ -10,9 +10,11 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -38,6 +40,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +57,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementSetter;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 
 /**
  * Behavioural-parity tests for {@link StatementHtmlWriter}, the owner of the 100-byte
@@ -2973,6 +2977,214 @@ class StatementHtmlWriterTest {
         @Override
         public String close() {
             return this.closeStatus;
+        }
+    }
+
+    // =============================================================================================
+    // The abnormal disposition - the THIRD positional of DISP=(NEW,CATLG,DELETE).
+    //
+    // app/jcl/CREASTMT.JCL:L92-L96 declares three dispositions for HTMLFILE and the writer used to
+    // reproduce two. NEW is the open's clear; CATLG is what the close leaves behind; DELETE is what an
+    // abended run must leave - which is nothing. Here the partial output is worse than the plain text's:
+    // CBSTM03A writes the closing </html> line only on the normal path (:916-923 abends before it), so
+    // an abended run leaves unterminated markup over an incomplete account set.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The abnormal disposition deletes the HTML an abended run wrote")
+    class TheAbnormalDisposition {
+
+        /**
+         * A real in-memory relation, so the count-then-delete is measured rather than mocked.
+         *
+         * <p>{@code DB_CLOSE_DELAY=-1} because {@link SimpleDriverDataSource} opens a connection per
+         * call: without it H2 would discard the database the moment the connection that created the
+         * relation was returned.
+         *
+         * @return a template over a private H2 database already holding the HTMLFILE relation
+         */
+        private JdbcTemplate liveTemplate() {
+            final JdbcTemplate template = new JdbcTemplate(new SimpleDriverDataSource(
+                    new org.h2.Driver(),
+                    "jdbc:h2:mem:htmlfile-disp-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+            template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (RECORD_IMAGE CHAR("
+                    + StatementHtmlWriter.RECORD_LENGTH + "))");
+            return template;
+        }
+
+        /** @return how many records the relation holds */
+        private int held(final JdbcTemplate template) {
+            final Integer count = template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class);
+            return count == null ? 0 : count;
+        }
+
+        @Test
+        @DisplayName("every HTML line this run wrote is deleted, and the close deleted nothing")
+        void theGenerationIsDeleted() {
+            final JdbcTemplate template = liveTemplate();
+            final StatementHtmlWriter subject = newWriter(template,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+            final HtmlStatementFile handle = subject.open();
+
+            assertThat(subject.writeFixedLine(handle, HtmlFixedLine.HTML_L01))
+                    .isEqualTo(FileStatus.Outcome.OK);
+            assertThat(subject.writeFixedLine(handle, HtmlFixedLine.HTML_L02))
+                    .isEqualTo(FileStatus.Outcome.OK);
+            // CATLG: the close leaves the HTML where it is. That is the whole distinction.
+            assertThat(subject.close(handle)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isEqualTo(2);
+
+            assertThat(subject.discardGeneration(handle)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a closed handle is accepted, because the abnormal path closes before it disposes")
+        void aClosedHandleIsAccepted() {
+            // Every other operation on this writer refuses a closed handle. This one must not: z/OS closes
+            // the dataset and then applies its disposition, and that is the order the job follows.
+            final JdbcTemplate template = liveTemplate();
+            final StatementHtmlWriter subject = newWriter(template,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+            final HtmlStatementFile handle = subject.open();
+            assertThat(subject.writeFixedLine(handle, HtmlFixedLine.HTML_L01))
+                    .isEqualTo(FileStatus.Outcome.OK);
+            assertThat(subject.close(handle)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(handle.isOpen()).isFalse();
+
+            assertThatCode(() -> assertThat(subject.discardGeneration(handle))
+                    .isEqualTo(FileStatus.Outcome.OK)).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a second discard neither issues anything nor contradicts the first")
+        void theDiscardIsIdempotent() {
+            final JdbcTemplate template = liveTemplate();
+            final StatementHtmlWriter subject = newWriter(template,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+            final HtmlStatementFile handle = subject.open();
+            assertThat(subject.writeFixedLine(handle, HtmlFixedLine.HTML_L01))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(subject.discardGeneration(handle)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(subject.discardGeneration(handle)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a run that wrote no line deletes nothing and reports OK")
+        void anEmptyRunDeletesNothing() {
+            final JdbcTemplate template = liveTemplate();
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)",
+                    " ".repeat(StatementHtmlWriter.RECORD_LENGTH));
+            final StatementHtmlWriter subject = newWriter(template,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+            final HtmlStatementFile handle = subject.open(record -> FileStatus.OK);
+
+            assertThat(subject.discardGeneration(handle)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isOne();
+        }
+
+        @Test
+        @DisplayName("a relation holding HTML this run did not write is left untouched")
+        void aCountMismatchIsRefused() {
+            final JdbcTemplate template = liveTemplate();
+            final StatementHtmlWriter subject = newWriter(template,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+            final HtmlStatementFile handle = subject.open();
+            assertThat(subject.writeFixedLine(handle, HtmlFixedLine.HTML_L01))
+                    .isEqualTo(FileStatus.Outcome.OK);
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)",
+                    " ".repeat(StatementHtmlWriter.RECORD_LENGTH));
+
+            assertThat(subject.discardGeneration(handle)).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(template)).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("a count the backend will not state is refused exactly as a wrong count is")
+        void anUnstatedCountIsRefused() {
+            // The other half of the guard above. A backend answering the count with SQL NULL has not said
+            // the generation holds what this run wrote - it has said nothing - and nothing is not
+            // permission to delete HTML statements. A real COUNT(*) cannot be null, so the one call is
+            // bent and everything else, including the open's own clear, runs for real.
+            final JdbcTemplate live = liveTemplate();
+            final JdbcTemplate template = spy(live);
+            final StatementHtmlWriter subject = newWriter(template,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+            final HtmlStatementFile handle = subject.open();
+            assertThat(subject.writeFixedLine(handle, HtmlFixedLine.HTML_L01))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            doReturn(null).when(template)
+                    .queryForObject(anyString(), ArgumentMatchers.eq(Long.class));
+
+            assertThat(subject.discardGeneration(handle)).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(live))
+                    .as("refused means untouched: the HTML line this run wrote is still there")
+                    .isOne();
+        }
+
+        @Test
+        @DisplayName("a delete that removes a different number than it counted is reported, not called OK")
+        void aDeleteRemovingADifferentCountIsReported() {
+            // The count agreed and the delete was issued, then removed a different number of rows than the
+            // count promised. Reporting OK would say DISP=(NEW,CATLG,DELETE) had been honoured when
+            // unterminated HTML over an incomplete account set may still be present.
+            final JdbcTemplate template = spy(liveTemplate());
+            final StatementHtmlWriter subject = newWriter(template,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+            final HtmlStatementFile handle = subject.open();
+            assertThat(subject.writeFixedLine(handle, HtmlFixedLine.HTML_L01))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            doReturn(99).when(template).update(anyString());
+
+            assertThat(subject.discardGeneration(handle)).isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
+        @DisplayName("a null handle is reported rather than raised, because this path is already abending")
+        void aNullHandleIsReported() {
+            assertThatCode(() -> assertThat(
+                    StatementHtmlWriterTest.this.writer.discardGeneration(null))
+                    .isEqualTo(FileStatus.Outcome.OTHER)).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a sink that holds no catalogued generation reports OK without implementing "
+                + "anything, and the method is a default so a lambda still compiles")
+        void aLambdaSinkDefaultsToOk() {
+            final HtmlRecordSink minimal = record -> FileStatus.OK;
+            final HtmlStatementFile handle = StatementHtmlWriterTest.this.writer.open(minimal);
+            assertThat(StatementHtmlWriterTest.this.writer.writeFixedLine(handle,
+                    HtmlFixedLine.HTML_L01)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(StatementHtmlWriterTest.this.writer.discardGeneration(handle))
+                    .isEqualTo(FileStatus.Outcome.OK);
+        }
+
+        @Test
+        @DisplayName("a sink answering null from discard is read as OTHER rather than raising")
+        void aNullDiscardStatusIsReported() {
+            final HtmlStatementFile handle = StatementHtmlWriterTest.this.writer.open(
+                    new HtmlRecordSink() {
+                        @Override
+                        public String write(final byte[] record) {
+                            return FileStatus.OK;
+                        }
+
+                        @Override
+                        public String discard(final long recordsWritten) {
+                            return null;
+                        }
+                    });
+            assertThat(StatementHtmlWriterTest.this.writer.writeFixedLine(handle,
+                    HtmlFixedLine.HTML_L01)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(StatementHtmlWriterTest.this.writer.discardGeneration(handle))
+                    .isEqualTo(FileStatus.Outcome.OTHER);
         }
     }
 }

@@ -135,7 +135,7 @@ final class CardListControllerTest {
     }
 
     private static CardReadResult normal(int n) {
-        return CardReadResult.normal(card(n));
+        return cardRead(card(n));
     }
 
     /** Stubs the forward browse to hand back these cards and then end the file. */
@@ -690,7 +690,7 @@ final class CardListControllerTest {
         @Test
         @DisplayName("a duplicate-key response is treated exactly like a normal one - :1157-1158")
         void duplicateKeyIsANormalRead() {
-            when(browse.readNext()).thenReturn(CardReadResult.duplicateKey(card(4)),
+            when(browse.readNext()).thenReturn(cardReadDuplicate(card(4)),
                     CardReadResult.endOfFile());
 
             CardListResponse response = controller.listCards(null, CicsAid.DFHENTER);
@@ -775,7 +775,7 @@ final class CardListControllerTest {
         @DisplayName("a duplicate-key look-ahead also reports a next page - :1208-1214")
         void duplicateKeyLookAhead() {
             when(browse.readNext()).thenReturn(normal(1), normal(2), normal(3), normal(4), normal(5),
-                    normal(6), normal(7), CardReadResult.duplicateKey(card(8)));
+                    normal(6), normal(7), cardReadDuplicate(card(8)));
             WorkArea ws = new WorkArea();
 
             controller.readForward(ws);
@@ -951,8 +951,8 @@ final class CardListControllerTest {
         @Test
         @DisplayName("a duplicate-key READPREV is a normal read in both loops")
         void duplicateKeyIsANormalRead() {
-            when(browse.readPrev()).thenReturn(CardReadResult.duplicateKey(card(15)),
-                    CardReadResult.duplicateKey(card(14)), CardReadResult.endOfFile());
+            when(browse.readPrev()).thenReturn(cardReadDuplicate(card(15)),
+                    cardReadDuplicate(card(14)), CardReadResult.endOfFile());
             WorkArea ws = new WorkArea();
 
             CardListResponse response = controller.listCards(onPageThree(), CicsAid.DFHPF7, ws);
@@ -964,7 +964,7 @@ final class CardListControllerTest {
         @Test
         @DisplayName("a duplicate-key first read decrements, then normal reads fill the page")
         void duplicateKeyFirstReadThenNormalReads() {
-            when(browse.readPrev()).thenReturn(CardReadResult.duplicateKey(card(15)), normal(14),
+            when(browse.readPrev()).thenReturn(cardReadDuplicate(card(15)), normal(14),
                     normal(13), normal(12), normal(11), normal(10), normal(9), normal(8),
                     CardReadResult.endOfFile());
             WorkArea ws = new WorkArea();
@@ -2713,7 +2713,7 @@ final class CardListControllerTest {
         void recordResponseKeepsTheLastRecord() {
             WorkArea ws = new WorkArea();
 
-            CardListController.recordResponse(ws, CardReadResult.normal(card(5)));
+            CardListController.recordResponse(ws, cardRead(card(5)));
             assertThat(ws.lastCardRead.cardAcctId()).isEqualTo(10_000_000_005L);
 
             CardListController.recordResponse(ws, CardReadResult.endOfFile());
@@ -3078,5 +3078,33 @@ final class CardListControllerTest {
                     .isEqualTo("1  ");
             assertThat(visible(response.getPagenoo())).isEqualTo("1  ");
         }
+    }
+
+    // =================================================================================================
+    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
+    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
+    // image it supplies is the one a row of exactly this record would carry - which is what these two
+    // helpers state, once, rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The normal arm over a synthesised row of this record.
+     *
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardRead(CardRecord record) {
+        return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * The duplicate-key arm over a synthesised row of this record.
+     *
+     * @param record the first record sharing the alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardReadDuplicate(CardRecord record) {
+        return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 }

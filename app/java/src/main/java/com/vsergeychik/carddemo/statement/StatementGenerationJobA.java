@@ -7,9 +7,9 @@ import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
-import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
@@ -311,6 +311,45 @@ public class StatementGenerationJobA {
      */
     public static final List<String> GATED_STEP_NAMES = List.of(STEP_020, STEP_030, STEP_040);
 
+    /**
+     * The utility {@value #STEP_DELDEF01} and {@value #STEP_020} run: {@code EXEC PGM=IDCAMS}
+     * ({@code app/jcl/CREASTMT.JCL:L22} and {@code L56}).
+     *
+     * <p>The same program in two steps doing opposite work - {@value #STEP_DELDEF01} is the
+     * {@code DELETE}/{@code DEFINE} of the work file, {@value #STEP_020} is the {@code REPRO} that loads
+     * it - which is exactly why the pair is pinned by position rather than by program alone.
+     */
+    public static final String UTILITY_PROGRAM = "IDCAMS";
+
+    /** The program {@value #STEP_010} runs: {@code EXEC PGM=SORT} ({@code app/jcl/CREASTMT.JCL:L44}). */
+    public static final String SORT_PROGRAM = "SORT";
+
+    /**
+     * The program {@value #STEP_030} runs: {@code EXEC PGM=IEFBR14} ({@code app/jcl/CREASTMT.JCL:L66}) -
+     * the no-op utility whose only effect is the {@code DISP} disposition on its DD statements, which is
+     * how the statement outputs are deleted before {@value #STEP_040} recreates them.
+     */
+    public static final String NOOP_PROGRAM = "IEFBR14";
+
+    /**
+     * The whole step sequence of {@code app/jcl/CREASTMT.JCL}: five steps, each with the program its
+     * {@code EXEC PGM=} names, the last three gated on {@code COND=(0,NE)}.
+     *
+     * <p>{@link #STEP_NAMES} and {@link #GATED_STEP_NAMES} state the names and the gates separately, and
+     * each is useful on its own, but neither states the programs and no combination of the two states
+     * them <em>positionally</em>. This does, and the positions matter here more than anywhere else in the
+     * estate: {@value #STEP_DELDEF01} and {@value #STEP_020} both run {@value #UTILITY_PROGRAM} while
+     * doing opposite things to the same work file, so a contract that swapped them would delete and
+     * redefine the file where the JCL loads it, and load it where the JCL defines it. The job would run
+     * to completion and generate statements from an empty extract.
+     */
+    public static final List<StepContract> REQUIRED_STEPS = List.of(
+            new StepContract(STEP_DELDEF01, UTILITY_PROGRAM, false),
+            new StepContract(STEP_010, SORT_PROGRAM, false),
+            new StepContract(STEP_020, UTILITY_PROGRAM, true),
+            new StepContract(STEP_030, NOOP_PROGRAM, true),
+            new StepContract(STEP_040, PROGRAM_ID, true));
+
     // -------------------------------------------------------------------------------------------------
     // DD binding keys. Every dataset is addressed by key through carddemo.datasets; no mainframe dataset
     // name appears anywhere in this file (gate G46).
@@ -458,8 +497,13 @@ public class StatementGenerationJobA {
      * <p>It is a record-length-conflict status. The loop read at {@code L837} does <em>not</em> accept it:
      * that site uses a three-way {@code EVALUATE} whose {@code WHEN OTHER} arm abends. Three different
      * status-checking shapes in one program, and they are not interchangeable.
+     *
+     * <p>Taken from {@link FileStatus#RECORD_LENGTH_CONFLICT} rather than restated as a literal, so the
+     * status this program accepts and the status
+     * {@link StatementGenerationJobB} produces are the same
+     * character pair by construction and cannot drift apart.
      */
-    public static final String STATUS_RECORD_LENGTH_CONFLICT = "04";
+    public static final String STATUS_RECORD_LENGTH_CONFLICT = FileStatus.RECORD_LENGTH_CONFLICT;
 
     // -------------------------------------------------------------------------------------------------
     // Every DISPLAY literal, byte-exact. app/cbl/CBSTM03A.CBL:L270-L290 and the ten guard sites.
@@ -587,6 +631,30 @@ public class StatementGenerationJobA {
      * zero, and nothing here sets one.
      */
     public static final int ABEND_RETURN_CODE = AbendException.RETURN_CODE_ASSUMED_FAILURE;
+
+    /**
+     * Names the disposition applied when {@value #STEP_010} does not complete normally:
+     * {@code DISP=(NEW,CATLG,DELETE)} on {@value #SORTOUT_DD} ({@code app/jcl/CREASTMT.JCL:L48-L51}).
+     *
+     * <p>Carried into {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)}
+     * so a disposition that itself fails can name what it was applying.
+     */
+    static final String SORTOUT_ABNORMAL_DISPOSITION =
+            SORTOUT_DD + " DISP=(NEW,CATLG,DELETE) abnormal disposition";
+
+    /**
+     * Names the disposition applied when {@value #STEP_040} does not complete normally:
+     * {@code DISP=(NEW,CATLG,DELETE)} on {@value #STMTFILE_DD} ({@code app/jcl/CREASTMT.JCL:L87-L91}).
+     */
+    static final String STMTFILE_ABNORMAL_DISPOSITION =
+            STMTFILE_DD + " DISP=(NEW,CATLG,DELETE) abnormal disposition";
+
+    /**
+     * Names the disposition applied when {@value #STEP_040} does not complete normally:
+     * {@code DISP=(NEW,CATLG,DELETE)} on {@value #HTMLFILE_DD} ({@code app/jcl/CREASTMT.JCL:L92-L96}).
+     */
+    static final String HTMLFILE_ABNORMAL_DISPOSITION =
+            HTMLFILE_DD + " DISP=(NEW,CATLG,DELETE) abnormal disposition";
 
     // -------------------------------------------------------------------------------------------------
     // STEP010 - SORT FIELDS and OUTREC FIELDS. app/jcl/CREASTMT.JCL:L53-L54.
@@ -879,6 +947,19 @@ public class StatementGenerationJobA {
     private final DatasetUtilityPort datasetUtilityPort;
 
     /**
+     * The boundary an abnormal dataset disposition is applied in.
+     *
+     * <p>Held rather than only handed to the default utility port, because the third positional of a
+     * {@code DISP} parameter is this program's to apply and it has to be applied <em>outside</em>
+     * whatever transaction the step was inside. A disposition is the initiator's work: the mainframe
+     * applies it after the step has ended, so enrolling it in the step's transaction would let the very
+     * failure that triggered the disposition undo the disposition - leaving exactly the partial output it
+     * exists to remove. This is the same reasoning, and the same seam,
+     * {@code AccountInterestCalcJob.releaseAbnormally()} uses for {@code SYSTRAN}.
+     */
+    private final DatasetUnitOfWork unitOfWork;
+
+    /**
      * The five validated step contracts, in JCL declaration order, keyed by position in
      * {@link #STEP_NAMES}.
      */
@@ -917,6 +998,10 @@ public class StatementGenerationJobA {
      *                                  {@value RecordImageForm#FORM_PROPERTY} - carried into the default
      *                                  utility port so every component of the module reads and writes a
      *                                  record image the same way
+     * @param physicalSequence          the deployment's physical-record ordinal, from
+     *                                  {@value PhysicalSequence#EXPRESSION_PROPERTY} - carried into the
+     *                                  default utility port so every {@code SORT} and {@code REPRO} moves
+     *                                  records in the order they were written
      * @param datasetUtilityPortProvider provider for an injected utility port; may resolve to no bean, in
      *                                  which case the {@link JdbcTemplate}-backed default is used
      * @throws NullPointerException  if any required argument is {@code null}
@@ -931,6 +1016,7 @@ public class StatementGenerationJobA {
             @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
             JdbcTemplate jdbcTemplate,
             RecordImageForm recordImageForm,
+            PhysicalSequence physicalSequence,
             DatasetUnitOfWork unitOfWork,
             ObjectProvider<SysoutSink> sysoutSinkProvider,
             ObjectProvider<TiotSource> tiotSourceProvider,
@@ -955,6 +1041,10 @@ public class StatementGenerationJobA {
         Objects.requireNonNull(recordImageForm, "A record-image representation is required to build the "
                 + "default dataset utility port: SORT and REPRO move records whole, so whether the driver "
                 + "presents an image as characters or as bytes decides whether they survive");
+        Objects.requireNonNull(physicalSequence, "A physical-record ordinal is required to build the "
+                + "default dataset utility port: SORT and REPRO move records in order, and SQL returns "
+                + "rows in no order unless a statement says which. It is stated once, by "
+                + PhysicalSequence.EXPRESSION_PROPERTY + ", and never decided per step");
         Objects.requireNonNull(unitOfWork, "A unit of work is required to build the default dataset "
                 + "utility port: app/jcl/CREASTMT.JCL:59 binds OUTFILE with DISP=SHR, so a REPRO that "
                 + "fails part way leaves what it had already loaded, and each record's insert therefore "
@@ -967,20 +1057,31 @@ public class StatementGenerationJobA {
                 + "required; it may resolve to no bean, in which case the JDBC-backed default is used");
 
         this.codec = new FixedWidthCodec(datasetCharset);
+        this.unitOfWork = unitOfWork;
         this.stepContracts = requireJclContract(batchConfig);
         this.sysoutSink = sysoutSinkProvider.getIfAvailable(() -> standardOutput(datasetCharset));
         this.tiotSource = tiotSourceProvider.getIfAvailable(this::configuredTiotSource);
         this.datasetUtilityPort = datasetUtilityPortProvider.getIfAvailable(() ->
-                new JdbcDatasetUtilityPort(jdbcTemplate, datasetCharset, recordImageForm, unitOfWork));
+                new JdbcDatasetUtilityPort(jdbcTemplate, datasetCharset, recordImageForm,
+                        physicalSequence, unitOfWork));
     }
 
     /**
      * Resolves and validates the five step contracts against {@code app/jcl/CREASTMT.JCL}.
      *
+     * <p>The loop below walks {@link #STEP_NAMES} and resolves each step by name, which means it reads
+     * the five steps it expects wherever they happen to sit and is silent about the order they sit in, a
+     * sixth step declared beside them, and the programs of the four steps that are not
+     * {@value #STEP_040}. Every one of those is a live hazard in this job specifically -
+     * {@value #STEP_DELDEF01} and {@value #STEP_020} run the same utility for opposite purposes - so the
+     * sequence is compared against {@link #REQUIRED_STEPS} as a whole once the per-step gate and program
+     * diagnostics have had their say.
+     *
      * @param scaffolding the batch scaffolding holding the {@code carddemo.jobs} catalogue
      * @return the five validated contracts, in JCL declaration order
      * @throws IllegalStateException if a step is absent, names another program, is gated when the JCL
-     *                               does not gate it or ungated when it does, or if the job declares a
+     *                               does not gate it or ungated when it does, if the declared sequence is
+     *                               not exactly {@link #REQUIRED_STEPS}, or if the job declares a
      *                               parameter
      */
     private static List<StepContract> requireJclContract(BatchConfig scaffolding) {
@@ -1012,6 +1113,7 @@ public class StatementGenerationJobA {
                     + "step of app/jcl/CREASTMT.JCL carries a PARM. The only PARM in this estate is "
                     + "app/jcl/INTCALC.jcl:L22, which belongs to the interest calculator alone.");
         }
+        scaffolding.requireSteps(JOB_KEY, REQUIRED_STEPS, "app/jcl/CREASTMT.JCL");
         return List.copyOf(contracts);
     }
 
@@ -1031,7 +1133,18 @@ public class StatementGenerationJobA {
      * unconditionally; before each of {@value #STEP_020}, {@value #STEP_030} and {@value #STEP_040} a gate
      * asks whether every step so far returned zero, and if not the job ends without running the rest.
      * Ending is not failing: on the mainframe a step flushed by {@code COND} does not itself fail the
-     * job, and the non-zero code that caused the bypass is already recorded on the step that produced it.
+     * job.
+     *
+     * <h2>A bypass ends at a code, not at COMPLETED</h2>
+     * <p>Each of the three bypass arms terminates at {@link BatchConfig#COND_BYPASSED_EXIT_CODE} rather
+     * than at a bare {@code end()}. A bare {@code end()} terminates the flow at {@code COMPLETED}, and
+     * {@code COMPLETED} is return code zero - so the job would report success for the one outcome that
+     * is definitively not success, since the sole reason the flow reached that arm is that a preceding
+     * step did not return zero. z/OS reports a job's highest executed condition code, and
+     * {@link BatchConfig#condBypassExitStatusJobListener()} - attached to every job by
+     * {@link BatchConfig#job(String)} - substitutes exactly that for the terminal's code once every step
+     * has run. So a sort returning {@code 4} here flushes the load, the pre-delete and the program, and
+     * the job reports {@code 4} to whatever submitted it.
      *
      * <p>The gate itself is {@link BatchConfig#precedingExitCodeZeroDecider()} - it is consumed, never
      * re-implemented here. Three <em>distinct</em> {@link CondGate} instances wrap it because Spring
@@ -1055,9 +1168,12 @@ public class StatementGenerationJobA {
                 .next(beforeStep020).on(BatchConfig.PROCEED.getName()).to(step020Step())
                 .next(beforeStep030).on(BatchConfig.PROCEED.getName()).to(step030Step())
                 .next(beforeStep040).on(BatchConfig.PROCEED.getName()).to(step040Step())
-                .from(beforeStep020).on(BatchConfig.SKIP.getName()).end()
-                .from(beforeStep030).on(BatchConfig.SKIP.getName()).end()
-                .from(beforeStep040).on(BatchConfig.SKIP.getName()).end()
+                .from(beforeStep020).on(BatchConfig.SKIP.getName())
+                        .end(BatchConfig.COND_BYPASSED_EXIT_CODE)
+                .from(beforeStep030).on(BatchConfig.SKIP.getName())
+                        .end(BatchConfig.COND_BYPASSED_EXIT_CODE)
+                .from(beforeStep040).on(BatchConfig.SKIP.getName())
+                        .end(BatchConfig.COND_BYPASSED_EXIT_CODE)
                 .end()
                 .build();
     }
@@ -1503,8 +1619,53 @@ public class StatementGenerationJobA {
         // lexicographic comparison is correct for these two spans and a backend's collation is not
         // knowable from here.
         List<String> input = datasetUtilityPort.readAllRecordImages(datasetBinding(SORTIN_DD));
-        return datasetUtilityPort.writeRecordImages(datasetBinding(SORTOUT_DD), sortAndReformat(input),
-                stopSignal);
+        boolean completedNormally = false;
+        try {
+            int written = datasetUtilityPort.writeRecordImages(datasetBinding(SORTOUT_DD),
+                    sortAndReformat(input), stopSignal);
+            completedNormally = true;
+            return written;
+        } finally {
+            if (!completedNormally) {
+                discardSortOutGeneration();
+            }
+        }
+    }
+
+    /**
+     * Applies {@value #SORTOUT_DD}'s abnormal disposition - the {@code DELETE} positional of
+     * {@code DISP=(NEW,CATLG,DELETE)} at {@code app/jcl/CREASTMT.JCL:L48-L51}.
+     *
+     * <p>{@value #STEP_010} allocates this dataset ({@code NEW}) and catalogues it only if the step ends
+     * normally. Any other ending - a failure, or a stop request, which on z/OS is an abnormal step
+     * termination too - deletes it. That is not the same outcome as a rollback, and it matters here for a
+     * concrete reason: {@value #STEP_020} is gated {@code COND=(0,NE)} and so does not run, but the
+     * dataset {@value #STEP_010} left behind is catalogued under a name a later run will read as
+     * {@value #INFILE_DD}. A half-sorted intermediate file is not a subset of a sorted one - the sort
+     * places records only after seeing every key - so leaving it would leave records in an order the
+     * card-break grouping in {@link #readTrnxRead} is not correct for.
+     *
+     * <p>Everything in the dataset is deleted rather than a counted subset, and that is what {@code NEW}
+     * means: this step allocated the generation, so every record in it is this step's. The preceding
+     * {@value #STEP_DELDEF01} has already cleared it ({@link #deleteAndDefineWorkDatasets()}), so there is
+     * nothing of an earlier run to preserve.
+     *
+     * <p>Applied in its own boundary, silently, and it never throws: this runs on a path that is already
+     * failing, and an exception raised here would replace the reason the step failed with a diagnostic
+     * about the cleanup.
+     */
+    private void discardSortOutGeneration() {
+        try {
+            int removed = unitOfWork.persistDisposition(SORTOUT_ABNORMAL_DISPOSITION,
+                    () -> datasetUtilityPort.deleteAllRecords(datasetBinding(SORTOUT_DD)));
+            if (removed > 0) {
+                LOG.info("Discarded " + removed + " record(s) from " + SORTOUT_DD
+                        + " because " + STEP_010 + " did not complete normally; "
+                        + "app/jcl/CREASTMT.JCL:L49 declares DISP=(NEW,CATLG,DELETE)");
+            }
+        } catch (RuntimeException dispositionFailure) {
+            reportCleanupFailure(SORTOUT_ABNORMAL_DISPOSITION, dispositionFailure);
+        }
     }
 
     /**
@@ -1906,6 +2067,20 @@ public class StatementGenerationJobA {
         private final RecordImageForm recordImageForm;
 
         /**
+         * The physical-record ordinal every read this port performs is ordered by.
+         *
+         * <p>All four datasets this port addresses - {@value #SORTIN_DD}, {@value #SORTOUT_DD},
+         * {@value #INFILE_DD} and {@value #OUTFILE_DD} - are moved <strong>record for record and in
+         * order</strong>: {@code app/jcl/CREASTMT.JCL:53-54} sorts into {@value #SORTOUT_DD} and
+         * {@code :61} {@code REPRO}s that file into the work cluster, and {@code CBSTM03A}'s card-break
+         * grouping is correct only because the sequence is card number then transaction id. A read with no
+         * ordering would hand those steps the right records in an order the backend chose, so the sort
+         * would be sorting an arbitrary permutation and the copy would load one. See
+         * {@link PhysicalSequence}.
+         */
+        private final PhysicalSequence physicalSequence;
+
+        /**
          * The boundary that makes one {@code REPRO} record durable on its own, or {@code null}.
          *
          * <p>Reached only from {@link #copyRecordImages(DatasetBinding, DatasetBinding)}. The three other
@@ -1931,12 +2106,14 @@ public class StatementGenerationJobA {
          * @param datasetCharset  the dataset code page, stated explicitly and never defaulted; must not be
          *                        {@code null}
          * @param recordImageForm how the driver presents a record image; must not be {@code null}
+         * @param physicalSequence the physical-record ordinal every read is ordered by; must not be
+         *                        {@code null}
          * @throws NullPointerException     if any argument is {@code null}
          * @throws IllegalArgumentException if {@code datasetCharset} is not a total single-byte code page
          */
         public JdbcDatasetUtilityPort(JdbcTemplate jdbcTemplate, Charset datasetCharset,
-                RecordImageForm recordImageForm) {
-            this(jdbcTemplate, datasetCharset, recordImageForm, null);
+                RecordImageForm recordImageForm, PhysicalSequence physicalSequence) {
+            this(jdbcTemplate, datasetCharset, recordImageForm, physicalSequence, null);
         }
 
         /**
@@ -1944,13 +2121,16 @@ public class StatementGenerationJobA {
          * @param datasetCharset  the dataset code page, stated explicitly and never defaulted; must not be
          *                        {@code null}
          * @param recordImageForm how the driver presents a record image; must not be {@code null}
+         * @param physicalSequence the physical-record ordinal every read is ordered by; must not be
+         *                        {@code null}
          * @param unitOfWork      the boundary each copied record is persisted in, or {@code null} when the
          *                        destination's disposition discards the whole generation on failure
          * @throws NullPointerException     if any argument other than {@code unitOfWork} is {@code null}
          * @throws IllegalArgumentException if {@code datasetCharset} is not a total single-byte code page
          */
         public JdbcDatasetUtilityPort(JdbcTemplate jdbcTemplate, Charset datasetCharset,
-                RecordImageForm recordImageForm, DatasetUnitOfWork unitOfWork) {
+                RecordImageForm recordImageForm, PhysicalSequence physicalSequence,
+                DatasetUnitOfWork unitOfWork) {
             this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required to "
                     + "address a dataset; the data-source configuration declares the single instance "
                     + "this module shares");
@@ -1962,6 +2142,12 @@ public class StatementGenerationJobA {
                     + "representation is required: whether this deployment's driver presents a record "
                     + "image as characters or as bytes is stated once, by " + RecordImageForm.FORM_PROPERTY
                     + ", and never decided per dataset or per step");
+            this.physicalSequence = Objects.requireNonNull(physicalSequence, "A physical-record ordinal "
+                    + "is required: every dataset these utility steps move is physical-sequential and is "
+                    + "moved record for record and in order, and SQL returns rows in no order unless a "
+                    + "statement says which. It is stated once, by "
+                    + PhysicalSequence.EXPRESSION_PROPERTY + ", and never decided per dataset or per "
+                    + "step");
             // Nullable by contract - see the field. A DISP=SHR REPRO needs a boundary per record; a
             // DISP=(NEW,CATLG,DELETE) one does not, and inventing a boundary for it would claim a
             // durability its own disposition contradicts.
@@ -1978,7 +2164,7 @@ public class StatementGenerationJobA {
         public List<String> readAllRecordImages(DatasetBinding binding) {
             DatasetRelation relation = relationOf(binding);
             int recordLength = binding.recordLength();
-            return jdbcTemplate.query(relation.selectAll(),
+            return jdbcTemplate.query(relation.selectAllInPhysicalSequence(physicalSequence),
                     (row, rowNumber) -> requireRecordImage(readImage(row), relation.identifier(),
                             rowNumber, recordLength));
         }
@@ -2052,7 +2238,8 @@ public class StatementGenerationJobA {
             int sourceLength = source.recordLength();
             int targetLength = target.recordLength();
             RowCounter copied = new RowCounter();
-            jdbcTemplate.query(streamed(from.selectAll()), (ResultSet row) -> {
+            jdbcTemplate.query(streamed(from.selectAllInPhysicalSequence(physicalSequence)),
+                    (ResultSet row) -> {
                 while (row.next()) {
                     String recordImage = requireRecordImage(readImage(row), from.identifier(),
                             copied.count(), sourceLength);
@@ -2501,6 +2688,10 @@ public class StatementGenerationJobA {
         // G53), so two concurrent runs share not one byte of table, counter or accumulator.
         WorkingStorage ws = new WorkingStorage(codec, statementSubroutine.newSession());
 
+        // Whether this pass reached GOBACK. Read by the finally block, which is the only place that can
+        // tell a normal end from an abnormal one - and app/jcl/CREASTMT.JCL:L87-L96 declares a different
+        // disposition for each. Not a field: it is per-pass state (practice B9, gate G53).
+        boolean completedNormally = false;
         try {
             // The unnamed paragraph that runs before 0000-START.                            L266-L294
             checkUnitControlBlocks(ws, sysout);
@@ -2517,9 +2708,10 @@ public class StatementGenerationJobA {
             // The run unit ends. Releasing the subroutine's cursors is not a COBOL CLOSE and reports no
             // status; the four CLOSE statements already happened, inside 1000-MAINLINE.
             ws.session().close();
+            completedNormally = true;
             return statements;
         } finally {
-            releaseHandles(ws);
+            releaseHandles(ws, completedNormally);
         }
     }
 
@@ -2545,9 +2737,18 @@ public class StatementGenerationJobA {
      *       still diagnosable.</li>
      * </ul>
      *
+     * <p>The closing is unconditional; the <em>disposition</em> is not. Both output datasets are declared
+     * {@code DISP=(NEW,CATLG,DELETE)} ({@code app/jcl/CREASTMT.JCL:L87-L96}), whose second and third
+     * positionals are different outcomes: a pass that reached {@code 9999-GOBACK} leaves them catalogued,
+     * and a pass that did not must leave nothing. So a non-normal end additionally runs
+     * {@link #discardStatementGenerations(WorkingStorage)}, after the closes and never before them.
+     *
      * @param ws this run's working storage; must not be {@code null}
+     * @param completedNormally whether the pass reached {@code 9999-GOBACK}. It decides which
+     *                          {@code DISP} positional applies to the two output datasets and nothing
+     *                          else: the closing is identical either way
      */
-    private void releaseHandles(WorkingStorage ws) {
+    private void releaseHandles(WorkingStorage ws, boolean completedNormally) {
         HtmlStatementFile html = ws.htmlFileOrNull();
         if (html != null && html.isOpen()) {
             try {
@@ -2564,12 +2765,87 @@ public class StatementGenerationJobA {
                 reportCleanupFailure(STMTFILE_DD, cleanupFailure);
             }
         }
+        if (!completedNormally) {
+            // Close first, then dispose: the order z/OS uses, and the order both writers document.
+            discardStatementGenerations(ws);
+        }
         try {
             // Session.close releases the subroutine's four cursors and is idempotent, so the normal
             // path's own call at L341-L342 has already done this and this call is a no-op.
             ws.session().close();
         } catch (RuntimeException cleanupFailure) {
             reportCleanupFailure(PROGRAM_ID + " subroutine session", cleanupFailure);
+        }
+    }
+
+    /**
+     * Applies the abnormal disposition {@code app/jcl/CREASTMT.JCL:L87-L96} declares for both statement
+     * outputs - the {@code DELETE} positional of {@code DISP=(NEW,CATLG,DELETE)}.
+     *
+     * <p><strong>Why this is not a rollback.</strong> {@value #STEP_040} allocates both datasets
+     * ({@code NEW}) and catalogues them only if it ends normally; any other ending deletes them. A
+     * rollback offers two outcomes - every write kept, or the uncommitted writes dropped - and the
+     * mainframe's third is neither, because every statement written here is durable as it completes.
+     *
+     * <p><strong>Why it matters more here than anywhere else in the estate.</strong> These two datasets are
+     * customer statements. A run that abends part-way has written complete, well-formed statements for the
+     * accounts it reached and nothing at all for the rest, with no marker saying where it stopped -
+     * {@code L916-L923} abends without writing the closing HTML line or any trailer. Nothing downstream can
+     * tell that set apart from a complete one, so publishing it would send some customers a statement and
+     * others silence. The mainframe leaves nothing to publish, and so does this.
+     *
+     * <p><strong>Order.</strong> Both handles have already been closed by the time this runs, which is the
+     * order z/OS uses - the dataset is closed, then its disposition is applied - and is what
+     * {@link StatementFile#discardGeneration()} and
+     * {@link StatementHtmlWriter#discardGeneration(StatementHtmlWriter.HtmlStatementFile)} both document
+     * accepting.
+     *
+     * <p><strong>Silent, per-resource, and non-throwing.</strong> Each disposition is applied in its own
+     * {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)} boundary, so the
+     * failure that brought the run here cannot undo the cleanup, and a plain-text disposition that fails
+     * does not prevent the HTML one from being attempted. Nothing is displayed on {@code SYSOUT}: the COBOL
+     * has no paragraph for a disposition, so a line here would be output the program does not produce.
+     * Nothing is thrown: the {@link AbendException} the caller needs is always the more important of the
+     * two, and a status that cannot be applied is logged instead so it stays diagnosable.
+     *
+     * <p>A dataset this run never wrote to is left alone - both handles report a discard as a no-op when
+     * their record count is zero, so a run that abended before its first statement deletes nothing and says
+     * nothing.
+     *
+     * @param ws this run's working storage, holding whichever handles were opened
+     */
+    private void discardStatementGenerations(WorkingStorage ws) {
+        StatementFile stmt = ws.stmtFileOrNull();
+        if (stmt != null) {
+            try {
+                FileStatus.Outcome disposition = unitOfWork.persistDisposition(
+                        STMTFILE_ABNORMAL_DISPOSITION, stmt::discardGeneration);
+                if (disposition != FileStatus.Outcome.OK) {
+                    LOG.error("The " + STMTFILE_DD + " generation of this abended run could not be "
+                            + "discarded; it reported FILE STATUS outcome " + disposition.name()
+                            + ". app/jcl/CREASTMT.JCL:L87 declares DISP=(NEW,CATLG,DELETE), so an "
+                            + "incomplete set of plain-text statements may remain where the mainframe "
+                            + "would leave none; it must not be issued");
+                }
+            } catch (RuntimeException dispositionFailure) {
+                reportCleanupFailure(STMTFILE_ABNORMAL_DISPOSITION, dispositionFailure);
+            }
+        }
+        HtmlStatementFile html = ws.htmlFileOrNull();
+        if (html != null) {
+            try {
+                FileStatus.Outcome disposition = unitOfWork.persistDisposition(
+                        HTMLFILE_ABNORMAL_DISPOSITION, () -> htmlWriter.discardGeneration(html));
+                if (disposition != FileStatus.Outcome.OK) {
+                    LOG.error("The " + HTMLFILE_DD + " generation of this abended run could not be "
+                            + "discarded; it reported FILE STATUS outcome " + disposition.name()
+                            + ". app/jcl/CREASTMT.JCL:L92 declares DISP=(NEW,CATLG,DELETE), so "
+                            + "unterminated HTML over an incomplete account set may remain where the "
+                            + "mainframe would leave none; it must not be issued");
+                }
+            } catch (RuntimeException dispositionFailure) {
+                reportCleanupFailure(HTMLFILE_ABNORMAL_DISPOSITION, dispositionFailure);
+            }
         }
     }
 

@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
@@ -15,6 +16,7 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.DatasetUtilityPort;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.JdbcDatasetUtilityPort;
 import com.vsergeychik.carddemo.transaction.model.TranCategoryRecord;
@@ -296,6 +298,33 @@ public class TransactionReportJob {
      */
     public static final String SORT_STEP_NAME = "STEP05R";
 
+    /**
+     * The utility {@value #BACKUP_STEP_NAME} runs: {@code EXEC PGM=IDCAMS}, reached through
+     * {@code EXEC PROC=REPROC} at {@code app/proc/TRANREPT.prc:L21} whose own {@code PRC001} step is
+     * {@code EXEC PGM=IDCAMS} in {@code app/proc/REPROC.prc}.
+     */
+    public static final String BACKUP_STEP_PROGRAM = "IDCAMS";
+
+    /** The utility {@value #SORT_STEP_NAME} runs: {@code EXEC PGM=SORT}, {@code app/proc/TRANREPT.prc:L35}. */
+    public static final String SORT_STEP_PROGRAM = "SORT";
+
+    /**
+     * The whole step sequence of {@code app/proc/TRANREPT.prc}: the {@value #BACKUP_STEP_PROGRAM}
+     * unload, the {@value #SORT_STEP_PROGRAM} filter-and-sort, then {@value #PROGRAM_NAME}, in that
+     * order and none of them gated.
+     *
+     * <p>The names alone are not the contract. Each step's {@code EXEC PGM=} is part of it too, and it is
+     * the part a name-only comparison is blind to: a contract naming {@value #SORT_STEP_PROGRAM} on
+     * {@value #BACKUP_STEP_NAME} would keep the sequence looking right while asking the unload step to
+     * run a sort against {@code FILEIN} and {@code FILEOUT}, which are DD names DFSORT does not use.
+     * Because the utility steps take their data path from configuration, that failure would surface as
+     * an empty backup rather than as a wrong program.
+     */
+    public static final List<StepContract> REQUIRED_STEPS = List.of(
+            new StepContract(BACKUP_STEP_NAME, BACKUP_STEP_PROGRAM, false),
+            new StepContract(SORT_STEP_NAME, SORT_STEP_PROGRAM, false),
+            new StepContract(STEP_NAME, PROGRAM_NAME, false));
+
     // =================================================================================================
     // DD names. Each is a configuration key; what it resolves to is configuration's business, so no
     // dataset name appears anywhere in this file (gate G46).
@@ -347,6 +376,17 @@ public class TransactionReportJob {
      * ({@code app/cbl/CBTRN03C.cbl:L51-L53}), {@code RECFM=FB LRECL=133}.
      */
     public static final String TRANREPT_DD_NAME = TranReportWriter.DD_NAME;
+
+    /**
+     * Names the disposition applied when this run does not complete normally:
+     * {@code DISP=(NEW,CATLG,DELETE)} on {@value #TRANREPT_DD_NAME}
+     * ({@code app/jcl/TRANREPT.jcl:76-80}).
+     *
+     * <p>Carried into {@link DatasetUnitOfWork#persistDisposition(String, java.util.function.Supplier)}
+     * so a disposition that itself fails can name what it was applying.
+     */
+    static final String TRANREPT_ABNORMAL_DISPOSITION =
+            TRANREPT_DD_NAME + " DISP=(NEW,CATLG,DELETE) abnormal disposition";
 
     /**
      * {@value #BACKUP_STEP_NAME}'s input: {@code //PRC001.FILEIN DD DISP=SHR}
@@ -707,6 +747,17 @@ public class TransactionReportJob {
     private final TranReportWriter tranReportWriter;
 
     /**
+     * The boundary {@value #TRANREPT_DD_NAME}'s abnormal disposition is applied in.
+     *
+     * <p>The third positional of {@code DISP=(NEW,CATLG,DELETE)} ({@code app/jcl/TRANREPT.jcl:76-80}) is
+     * this job's to apply, and it has to be applied <em>outside</em> whatever transaction the step was
+     * inside. A disposition is the initiator's work: z/OS applies it after the step has ended, so
+     * enrolling the delete in the step's transaction would let the failure that triggered the disposition
+     * undo the disposition - leaving exactly the partial report it exists to remove.
+     */
+    private final DatasetUnitOfWork unitOfWork;
+
+    /**
      * The data path the two utility steps use: {@value #BACKUP_STEP_NAME}'s {@code IDCAMS REPRO} and
      * {@value #SORT_STEP_NAME}'s {@code DFSORT}.
      *
@@ -784,6 +835,10 @@ public class TransactionReportJob {
      * @param jdbcTemplate           the module's single {@link JdbcTemplate}, used only to build the
      *                               default {@linkplain DatasetUtilityPort utility port} when the
      *                               deployment supplies none; never {@code null}
+     * @param physicalSequence       the deployment's physical-record ordinal, from
+     *                               {@value PhysicalSequence#EXPRESSION_PROPERTY} - carried into the
+     *                               default utility port so the backup unload and the sort move records
+     *                               in the order they were written; never {@code null}
      * @param recordImageForm        how this deployment's driver presents a record image, from
      *                               {@value RecordImageForm#FORM_PROPERTY} - carried into that default
      *                               port so the two preparatory steps read and write a record image
@@ -814,6 +869,8 @@ public class TransactionReportJob {
             ObjectProvider<SysoutSink> sysoutSinkProvider,
             JdbcTemplate jdbcTemplate,
             RecordImageForm recordImageForm,
+            PhysicalSequence physicalSequence,
+            DatasetUnitOfWork unitOfWork,
             ObjectProvider<DatasetUtilityPort> datasetUtilityPortProvider) {
 
         this.batchConfig = Objects.requireNonNull(batchConfig, "The batch configuration seam is "
@@ -850,18 +907,33 @@ public class TransactionReportJob {
         Objects.requireNonNull(recordImageForm, "A record-image representation is required: whether "
                 + "this deployment's driver presents a record image as characters or as bytes is stated "
                 + "once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided per component");
+        Objects.requireNonNull(physicalSequence, "A physical-record ordinal is required: the backup "
+                + "unload and the sort move a physical-sequential dataset record for record and in "
+                + "order, and SQL returns rows in no order unless a statement says which. It is stated "
+                + "once, by " + PhysicalSequence.EXPRESSION_PROPERTY + ", and never decided per "
+                + "component");
+        this.unitOfWork = Objects.requireNonNull(unitOfWork, "A unit of work is required: "
+                + "app/jcl/TRANREPT.jcl:76-80 declares " + TRANREPT_DD_NAME
+                + " with DISP=(NEW,CATLG,DELETE), so a run that does not complete normally must leave no "
+                + "report at all - and that deletion has to be persisted in a boundary of its own, or the "
+                + "very failure that triggered it would undo it");
         Objects.requireNonNull(datasetUtilityPortProvider, "A dataset-utility port provider is "
                 + "required: the two preparatory steps run mainframe utilities over whole record images, "
                 + "and which data path they use is a deployment-time input rather than a decision this "
                 + "job makes");
         this.datasetUtilityPort = datasetUtilityPortProvider.getIfAvailable(
-                () -> new JdbcDatasetUtilityPort(jdbcTemplate, datasetCharset, recordImageForm));
+                () -> new JdbcDatasetUtilityPort(jdbcTemplate, datasetCharset, recordImageForm,
+                        physicalSequence));
 
         JobContract contract = batchConfig.contract(JOB_KEY);
         requireProgram(contract.program(), "carddemo.jobs." + JOB_KEY + ".program");
         requireNoJobParameters(contract);
         requireDateRangeSource(contract);
         requireStepSequence(contract);
+        // requireStepSequence compares names and refuses a gate; this compares the whole tuple, so each
+        // step's EXEC PGM= is pinned as well. Both are kept because the first two produce diagnostics
+        // that name the specific mistake, and this one closes the case neither can see.
+        batchConfig.requireSteps(JOB_KEY, REQUIRED_STEPS, "app/proc/TRANREPT.prc");
 
         StepContract step = contract.step(STEP_NAME);
         requireProgram(step.program(), "carddemo.jobs." + JOB_KEY + ".steps[" + STEP_NAME
@@ -1977,10 +2049,16 @@ public class TransactionReportJob {
          * @throws BatchConfig.StopRequestedException if the step is asked to stop
          */
         private ExecutionSummary run(StopSignal stopSignal) {
+            // Whether this run reached 9999-GOBACK. Read by the finally block, which is the only place
+            // that can tell a normal end from an abnormal one - and app/jcl/TRANREPT.jcl:76-80 declares a
+            // different disposition for each. Per-run state, never a field on the job (gate G53).
+            boolean completedNormally = false;
             try {
-                return runToGoback(stopSignal);
+                ExecutionSummary summary = runToGoback(stopSignal);
+                completedNormally = true;
+                return summary;
             } finally {
-                releaseHandles();
+                releaseHandles(completedNormally);
             }
         }
 
@@ -2020,8 +2098,21 @@ public class TransactionReportJob {
          * {@value TransactionReportJob#DATEPARM_DD_NAME} hold nothing to release: their repositories
          * expose {@code open}/{@code close} as dataset probes rather than handles, so there is no
          * per-run object for this method to reclaim.
+         *
+         * <p>The closing is unconditional; the <em>disposition</em> is not.
+         * {@value TransactionReportJob#TRANREPT_DD_NAME} is declared
+         * {@code DISP=(NEW,CATLG,DELETE)} ({@code app/jcl/TRANREPT.jcl:76-80}), whose second and third
+         * positionals are different outcomes: a run that reached {@code 9999-GOBACK} leaves the report
+         * catalogued for whoever prints it, and a run that did not must leave no report at all. So a
+         * non-normal end additionally runs {@link #discardReportGeneration()}, after the close and never
+         * before it.
+         *
+         * @param completedNormally whether the run reached {@code 9999-GOBACK}. It decides which
+         *                          {@code DISP} positional applies to
+         *                          {@value TransactionReportJob#TRANREPT_DD_NAME} and nothing else: the
+         *                          closing is identical either way
          */
-        private void releaseHandles() {
+        private void releaseHandles(boolean completedNormally) {
             if (tranFile != null && tranFile.isOpen()) {
                 try {
                     tranFile.closeInput();
@@ -2042,6 +2133,56 @@ public class TransactionReportJob {
                 } catch (RuntimeException cleanupFailure) {
                     reportCleanupFailure(CARDXREF_DD_NAME, cleanupFailure);
                 }
+            }
+            if (!completedNormally) {
+                // Close first, then dispose: the order z/OS uses, and the order the writer documents.
+                discardReportGeneration();
+            }
+        }
+
+        /**
+         * Applies {@value TransactionReportJob#TRANREPT_DD_NAME}'s abnormal disposition - the
+         * {@code DELETE} positional of {@code DISP=(NEW,CATLG,DELETE)} at
+         * {@code app/jcl/TRANREPT.jcl:76-80}.
+         *
+         * <p><strong>Why this is not a rollback.</strong> The step allocates the report ({@code NEW}) and
+         * catalogues it only if it ends normally; any other ending deletes it. A rollback offers two
+         * outcomes - every write kept, or the uncommitted writes dropped - and the mainframe's third is
+         * neither, because every line written here is durable as it completes over a
+         * {@code RECOVERY(NONE)} dataset.
+         *
+         * <p><strong>Why it matters for this dataset specifically.</strong> A transaction detail report is
+         * read by people, and one truncated at the page a run abended on is not obviously truncated: the
+         * page totals of {@code :299-321} are all present, and only the account and grand totals of
+         * {@code :322-344} - the figures anyone would actually rely on - are missing or partial. z/OS
+         * leaves nothing to misread, and so does this.
+         *
+         * <p><strong>Silent and non-throwing.</strong> Nothing is displayed on {@code SYSOUT}: the COBOL has
+         * no paragraph for a disposition, so a line here would be output the program does not produce.
+         * Nothing is thrown: this runs in a {@code finally} on a path that is already failing, and the
+         * {@link AbendException} the caller needs is always the more important of the two. A disposition
+         * that cannot be applied is logged instead, so it stays diagnosable.
+         *
+         * <p>A run that wrote no line deletes nothing and says nothing -
+         * {@link TranReportWriter.ReportFile#discardGeneration()} reports a discard as a no-op when its
+         * record count is zero - so a run that abended at its own open leaves no trace here.
+         */
+        private void discardReportGeneration() {
+            if (reportFile == null) {
+                return;
+            }
+            try {
+                FileStatus.Outcome disposition = unitOfWork.persistDisposition(
+                        TRANREPT_ABNORMAL_DISPOSITION, reportFile::discardGeneration);
+                if (disposition != FileStatus.Outcome.OK) {
+                    LOG.error("The " + TRANREPT_DD_NAME + " generation of this abended run could not be "
+                            + "discarded; it reported FILE STATUS outcome " + disposition.name()
+                            + ". app/jcl/TRANREPT.jcl:76 declares DISP=(NEW,CATLG,DELETE), so a partial "
+                            + "report may remain where the mainframe would leave none; its account and "
+                            + "grand totals are not trustworthy");
+                }
+            } catch (RuntimeException dispositionFailure) {
+                reportCleanupFailure(TRANREPT_ABNORMAL_DISPOSITION, dispositionFailure);
             }
         }
 
@@ -2794,6 +2935,21 @@ public class TransactionReportJob {
         // -----------------------------------------------------------------------------------------
         // The three keyed lookups - app/cbl/CBTRN03C.cbl:484-512. Each is an INVALID KEY arm and
         // nothing else: there is no NOT INVALID KEY branch and no fallback value anywhere.
+        //
+        // WHICH FAILURES REACH THAT ARM, AND WHICH DO NOT. All three files declare a FILE STATUS
+        // (:33-49), and the INVALID KEY phrase of a COBOL READ runs for the invalid-key condition
+        // ALONE - a keyed read whose key matches no record, status '23'. A read that fails for any
+        // other reason sets the FILE STATUS item and, with no USE AFTER ERROR declarative anywhere in
+        // this program, execution passes the END-READ without executing the imperative at all. So the
+        // DISPLAY, the MOVE 23 TO IO-STATUS and the 9910/9999 PERFORMs are the invalid-key arm's
+        // statements and no other outcome's.
+        //
+        // Branching on "did it find a record" instead of "was it the invalid-key condition" is
+        // therefore wrong twice over on a backend refusal or a malformed row: it emits an
+        // 'INVALID CARD NUMBER : <key>' line the program never wrote, and it renders
+        // FILE STATUS IS: NNNN0023 in place of the status that actually failed - the one line an
+        // operator needs. Each lookup now separates the two, and a non-invalid-key failure reports the
+        // repository's own status through readFailedOtherThanInvalidKey.
         // -----------------------------------------------------------------------------------------
 
         /**
@@ -2815,12 +2971,14 @@ public class TransactionReportJob {
          * reports the absence as {@link FileStatus.Outcome#NOT_FOUND}; the decision to abend, and the
          * text displayed, belong here.
          *
-         * <p>{@code MOVE 23 TO IO-STATUS} is <em>not</em> the status the read reported - the program
-         * overwrites whatever it was with the {@code INVALID KEY} status - so the rendered line is
-         * always {@code FILE STATUS IS: NNNN0023}, even for a read that failed for another reason
-         * entirely. Transcribed as written.
+         * <p>{@code MOVE 23 TO IO-STATUS} is <em>not</em> the status the read reported - inside the
+         * {@code INVALID KEY} arm the program overwrites it with the literal {@code 23} - so the
+         * rendered line on that arm is always {@code FILE STATUS IS: NNNN0023}. Transcribed as written.
+         * It applies to the invalid-key condition only; a read that failed for another reason never
+         * reaches this arm and reports its own status instead.
          *
-         * @throws AbendException whenever the read does not find a record
+         * @throws AbendException whenever the read does not deliver a record, whether because the key
+         *                        is invalid or because the read failed for another reason
          */
         private void lookupXref() {
             // :485  READ XREF-FILE INTO CARD-XREF-RECORD  - keyed by FD-XREF-CARD-NUM.
@@ -2831,6 +2989,10 @@ public class TransactionReportJob {
                         + "are contradictory: " + PROGRAM_NAME + ":364 moves XREF-ACCT-ID out of the "
                         + "area the read populates."));
                 return;
+            }
+            if (!read.isNotFound()) {
+                // Not the INVALID KEY condition, so :487-489 do not run at all.
+                throw readFailedOtherThanInvalidKey(CARDXREF_DD_NAME, read.status());
             }
             // :487  DISPLAY 'INVALID CARD NUMBER : '  FD-XREF-CARD-NUM
             // :488-489  MOVE 23 TO IO-STATUS, then 9910-DISPLAY-IO-STATUS.
@@ -2855,7 +3017,8 @@ public class TransactionReportJob {
          * <p>Read once per detail line, not once per account: two records of the same card may carry
          * different type codes.
          *
-         * @throws AbendException whenever the read does not find a record
+         * @throws AbendException whenever the read does not deliver a record, whether because the key
+         *                        is invalid or because the read failed for another reason
          */
         private void lookupTranType() {
             // :495  READ TRANTYPE-FILE INTO TRAN-TYPE-RECORD  - keyed by FD-TRAN-TYPE.
@@ -2866,6 +3029,10 @@ public class TransactionReportJob {
                         + "which are contradictory: " + PROGRAM_NAME + ":366 moves TRAN-TYPE-DESC out "
                         + "of the area the read populates."));
                 return;
+            }
+            if (!read.isNotFound()) {
+                // Not the INVALID KEY condition, so :497-499 do not run at all.
+                throw readFailedOtherThanInvalidKey(TRANTYPE_DD_NAME, read.status());
             }
             // :497-499  DISPLAY 'INVALID TRANSACTION TYPE : ' with the 2-byte key, MOVE 23 TO IO-STATUS,
             // then 9910-DISPLAY-IO-STATUS. The repository echoes the key image the read actually used.
@@ -2893,7 +3060,8 @@ public class TransactionReportJob {
          * It is rendered by {@link TranCategoryRepository#keyImage(String, int)} so the composition
          * happens in one place and cannot drift from the key the read used.
          *
-         * @throws AbendException whenever the read does not find a record
+         * @throws AbendException whenever the read does not deliver a record, whether because the key
+         *                        is invalid or because the read failed for another reason
          */
         private void lookupTranCategory() {
             // :505  READ TRANCATG-FILE INTO TRAN-CAT-RECORD  - keyed by FD-TRAN-CAT-KEY.
@@ -2906,6 +3074,10 @@ public class TransactionReportJob {
                         + "out of the area the read populates."));
                 return;
             }
+            if (!read.isNotFound()) {
+                // Not the INVALID KEY condition, so :507-509 do not run at all.
+                throw readFailedOtherThanInvalidKey(TRANCATG_DD_NAME, read.status());
+            }
             // :507-509  DISPLAY 'INVALID TRAN CATG KEY : ' with the 6-byte key, MOVE 23 TO IO-STATUS,
             // then 9910-DISPLAY-IO-STATUS.
             String displayed = INVALID_TRAN_CATG_KEY
@@ -2915,6 +3087,45 @@ public class TransactionReportJob {
             throw abendProgram(sysout, displayed, IO_STATUS_INVALID_KEY);
         }
 
+        /**
+         * The outcome of a keyed lookup that delivered no record and was <em>not</em> the
+         * {@code INVALID KEY} condition - a backend refusal, a row that carries no record image, or a
+         * row whose width is not its copybook's.
+         *
+         * <p><strong>The {@code INVALID KEY} imperative does not run, and that is the point.</strong>
+         * All three of these files declare a {@code FILE STATUS}
+         * ({@code app/cbl/CBTRN03C.cbl:33-49}), and the {@code INVALID KEY} phrase of a COBOL
+         * {@code READ} covers the invalid-key condition alone. So none of the three statements inside
+         * that phrase belongs to this outcome: not the {@code DISPLAY} naming the key as invalid - the
+         * key is not invalid, the dataset could not be read - and not {@code MOVE 23 TO IO-STATUS},
+         * which would render {@code FILE STATUS IS: NNNN0023} and discard the status that actually
+         * failed. The read's own status is carried into the abend reason instead, so the one fact an
+         * operator needs survives.
+         *
+         * <p>What <em>does</em> happen is the abend. {@code 9999-ABEND-PROGRAM} displays
+         * {@code 'ABENDING PROGRAM'} and nothing else, so no line this program never wrote reaches
+         * {@code SYSOUT}. Continuing past the failed read instead - which is what the COBOL runtime
+         * would do with a declared {@code FILE STATUS} and no {@code USE AFTER ERROR} declarative -
+         * would leave the record area holding the previous detail line's values and compose a report
+         * line out of them, silently. A report is read as fact; an abend that names the dataset and the
+         * status is the only outcome here that cannot mislead.
+         *
+         * <p>The log line names the DD and the status and carries no record content: the transaction
+         * detail report is built from card numbers and account identifiers.
+         *
+         * @param ddName the DD whose keyed read failed
+         * @param status the two-character file status the repository reported, carried through unchanged
+         * @return the exception to throw
+         */
+        private AbendException readFailedOtherThanInvalidKey(String ddName, String status) {
+            LOG.error("A keyed read of DD " + ddName + " reported file status "
+                    + FileStatus.toStatusImage(status) + ", which is not the INVALID KEY condition, so "
+                    + PROGRAM_NAME + "'s INVALID KEY arm does not run and no status is substituted for "
+                    + "this one. Abending rather than composing a report line from a record area the "
+                    + "read did not populate.");
+            return abendProgram(sysout, "A keyed read of DD " + ddName + " failed other than through the "
+                    + "INVALID KEY condition", status);
+        }
 
         // -----------------------------------------------------------------------------------------
         // The six opens - app/cbl/CBTRN03C.cbl:376-482. Every one is the same three-stage shape:

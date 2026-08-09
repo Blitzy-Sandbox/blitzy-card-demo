@@ -310,6 +310,18 @@ public class AccountBalanceJob {
     public static final String STEP_NAME = "STEP05";
 
     /**
+     * The whole step sequence of {@code app/jcl/READACCT.jcl}: one step, {@value #STEP_NAME}, running
+     * {@value #PROGRAM_ID}, ungated.
+     *
+     * <p>Stated as a sequence rather than as a step name alone because a sequence is what the JCL
+     * declares and what {@link BatchConfig#requireSteps(String, List, String)} compares. "One step, and
+     * that one" is a stronger statement than "this step is present", and it is the statement the JCL
+     * actually makes: there is no second {@code EXEC} in that job.
+     */
+    public static final List<StepContract> REQUIRED_STEPS =
+            List.of(new StepContract(STEP_NAME, PROGRAM_ID, false));
+
+    /**
      * The DD name the JCL binds the account master under, {@code app/jcl/READACCT.jcl:L25-L26}.
      *
      * <p>Taken from {@link AccountRepository#BATCH_DD_NAME} rather than restated, so the job and the
@@ -602,9 +614,22 @@ public class AccountBalanceJob {
     /**
      * Resolves and validates this job's step contract.
      *
+     * <p>The whole sequence is required, not just the one step this job runs. {@code app/jcl/READACCT.jcl}
+     * declares exactly one step, {@value #STEP_NAME} running {@value #PROGRAM_ID}, with no {@code PARM}
+     * and no {@code COND}; confirming only that such a step is present would accept a contract that also
+     * declared a second step, or that put another one first. Either would run work this JCL never ran,
+     * against DD names it never named, and nothing further downstream would notice - so the required
+     * sequence is stated in full and compared as a whole.
+     *
+     * <p>The step-level program and gating diagnostics are kept ahead of that comparison because they
+     * name the two mistakes that are actually plausible here - a contract pointing this job at another
+     * program, and a gate on the only step a single-step job has - and each says specifically what is
+     * wrong. The sequence comparison behind them catches everything else.
+     *
      * @param scaffolding the batch scaffolding holding the {@code carddemo.jobs} catalogue
      * @return the validated step contract
-     * @throws IllegalStateException if the contract is absent, names another program, or gates the step
+     * @throws IllegalStateException if the contract is absent, names another program, gates the step, or
+     *                               declares anything other than this one step
      */
     private static StepContract requireUngatedStep(BatchConfig scaffolding) {
         StepContract contract = scaffolding.contract(JOB_KEY).step(STEP_NAME);
@@ -620,6 +645,7 @@ public class AccountBalanceJob {
                     + "COND and declares only this step. Gating the only step of a single-step job would "
                     + "bypass all of its work.");
         }
+        scaffolding.requireSteps(JOB_KEY, REQUIRED_STEPS, "app/jcl/READACCT.jcl:L22");
         return contract;
     }
 

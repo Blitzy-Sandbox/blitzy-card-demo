@@ -120,8 +120,15 @@ class FileStatusTest {
      * Statuses that no program in the estate enumerates, used to drive every {@code WHEN OTHER} and
      * {@code ELSE} arm. All are well-formed two-character values, so they pass the width guard and
      * reach the classification logic itself.
+     *
+     * <p>{@code '04'} is deliberately <strong>not</strong> among them, and used to be. It is a named
+     * constant now - {@link FileStatus#RECORD_LENGTH_CONFLICT} - because
+     * {@code app/cbl/CBSTM03A.CBL} enumerates it at nine sites, so calling it unenumerated would be
+     * false. {@code '35'} stands in its place: a real COBOL file status that no program in this estate
+     * compares against, keeping the four samples spread across a VSAM extended status, two ordinary
+     * unlisted ones and a non-numeric one.
      */
-    private static final List<String> UNENUMERATED_STATUSES = List.of("99", "37", "04", "9A");
+    private static final List<String> UNENUMERATED_STATUSES = List.of("99", "37", "35", "9A");
 
     @Nested
     @DisplayName("Batch FILE STATUS literals")
@@ -132,6 +139,29 @@ class FileStatusTest {
         void okIsZeroZero() {
             // IF ACCTFILE-STATUS = '00' [app/cbl/CBACT01C.cbl:94, :136, :154]
             assertThat(FileStatus.OK).isEqualTo("00");
+        }
+
+        @Test
+        @DisplayName("'04' is a record-length conflict - a SUCCESSFUL read of a non-conforming record")
+        void recordLengthConflictIsZeroFour() {
+            // IF WS-M03B-RC = '00' OR '04' [app/cbl/CBSTM03A.CBL:736, :748, :771, :789, :807, :862,
+            // :879, :895, :911] - nine sites, and the one at :748 is a READ rather than an OPEN or a
+            // CLOSE, which is what makes '04' a status the program expects to see on a record it goes on
+            // to use.
+            assertThat(FileStatus.RECORD_LENGTH_CONFLICT).isEqualTo("04")
+                    .hasSize(FileStatus.STATUS_LENGTH);
+        }
+
+        @Test
+        @DisplayName("'04' is not folded into success, because three sites in one program abend on it")
+        void recordLengthConflictIsNotSuccess() {
+            // The loop read's EVALUATE at app/cbl/CBSTM03A.CBL:836-847 has arms for '00' and '10' only,
+            // so '04' reaches WHEN OTHER and abends; the two keyed reads (:379-386, :403-410) do the
+            // same. Which sites accept '04' is therefore a property of each site, and no compound
+            // predicate here may decide it for them.
+            assertThat(FileStatus.isOk(FileStatus.RECORD_LENGTH_CONFLICT)).isFalse();
+            assertThat(FileStatus.isOkOrNotFound(FileStatus.RECORD_LENGTH_CONFLICT)).isFalse();
+            assertThat(FileStatus.RECORD_LENGTH_CONFLICT).isNotEqualTo(FileStatus.OK);
         }
 
         @Test
@@ -159,7 +189,7 @@ class FileStatusTest {
         }
 
         @ParameterizedTest(name = "\"{0}\" is exactly two characters")
-        @ValueSource(strings = {"00", "10", "22", "23"})
+        @ValueSource(strings = {"00", "04", "10", "22", "23"})
         @DisplayName("every status literal is exactly two characters, matching the PIC X pair")
         void everyLiteralIsExactlyTwoCharacters(String literal) {
             // 05 IO-STAT1 PIC X. 05 IO-STAT2 PIC X. [app/cbl/CBACT01C.cbl:51-52] - two single-byte
@@ -168,13 +198,13 @@ class FileStatusTest {
         }
 
         @Test
-        @DisplayName("the four literals are the exact set, with no duplicates among them")
-        void theFourLiteralsAreDistinct() {
+        @DisplayName("the five literals are the exact set, with no duplicates among them")
+        void theFiveLiteralsAreDistinct() {
             Set<String> literals = new LinkedHashSet<>(
-                    List.of(FileStatus.OK, FileStatus.END_OF_FILE, FileStatus.DUPLICATE,
-                            FileStatus.NOT_FOUND));
+                    List.of(FileStatus.OK, FileStatus.RECORD_LENGTH_CONFLICT, FileStatus.END_OF_FILE,
+                            FileStatus.DUPLICATE, FileStatus.NOT_FOUND));
 
-            assertThat(literals).hasSize(4).containsExactly("00", "10", "22", "23");
+            assertThat(literals).hasSize(5).containsExactly("00", "04", "10", "22", "23");
         }
 
         @Test
@@ -221,8 +251,12 @@ class FileStatusTest {
             // same arm evidences a genuine default.
             "99, OTHER",
             "37, OTHER",
-            "04, OTHER",
+            "35, OTHER",
             "9A, OTHER",
+            // '04' is a NAMED constant with no named Outcome, and that is correct rather than an
+            // oversight: the Outcome vocabulary is the four statuses the estate's guard chains branch on,
+            // and no program branches on '04' as a class of outcome - CBSTM03A tests the literal.
+            "04, OTHER",
         })
         @DisplayName("each status maps to its outcome, and everything unenumerated maps to OTHER")
         void statusMapsToOutcome(String status, Outcome expected) {
@@ -426,6 +460,13 @@ class FileStatusTest {
             assertThat(FileStatus.isOk(status)).isEqualTo(expected);
         }
 
+        @ParameterizedTest(name = "isRecordLengthConflict(\"{0}\") is {1}")
+        @CsvSource({"04, true", "00, false", "10, false", "22, false", "23, false", "99, false"})
+        @DisplayName("isRecordLengthConflict is true only for '04'")
+        void isRecordLengthConflictIsTrueOnlyForZeroFour(String status, boolean expected) {
+            assertThat(FileStatus.isRecordLengthConflict(status)).isEqualTo(expected);
+        }
+
         @ParameterizedTest(name = "isEndOfFile(\"{0}\") is {1}")
         @CsvSource({"10, true", "00, false", "22, false", "23, false", "99, false"})
         @DisplayName("isEndOfFile is true only for '10'")
@@ -460,6 +501,10 @@ class FileStatusTest {
             "10, false",
             "22, false",
             "99, false",
+            // '04' is not part of this compound condition either. It belongs to a different program's
+            // guard shape entirely, and folding it in here would make every '00' OR '23' site in
+            // CBACT04C and CBTRN02C silently accept a record-length conflict.
+            "04, false",
         })
         @DisplayName("isOkOrNotFound reproduces IF <FILE>-STATUS = '00' OR '23' exactly")
         void isOkOrNotFoundReproducesTheCompoundCondition(String status, boolean expected) {
@@ -467,11 +512,12 @@ class FileStatusTest {
         }
 
         @ParameterizedTest(name = "exactly one predicate matches \"{0}\"")
-        @ValueSource(strings = {"00", "10", "22", "23"})
-        @DisplayName("the four predicates are mutually exclusive over the four recognised statuses")
+        @ValueSource(strings = {"00", "04", "10", "22", "23"})
+        @DisplayName("the five predicates are mutually exclusive over the five recognised statuses")
         void thePredicatesAreMutuallyExclusive(String status) {
             List<Boolean> matches = List.of(
                     FileStatus.isOk(status),
+                    FileStatus.isRecordLengthConflict(status),
                     FileStatus.isEndOfFile(status),
                     FileStatus.isNotFound(status),
                     FileStatus.isDuplicate(status));
@@ -484,6 +530,7 @@ class FileStatusTest {
         @DisplayName("no predicate matches an unenumerated status, so none of them is a catch-all")
         void noPredicateMatchesAnUnenumeratedStatus(String status) {
             assertThat(FileStatus.isOk(status)).isFalse();
+            assertThat(FileStatus.isRecordLengthConflict(status)).isFalse();
             assertThat(FileStatus.isEndOfFile(status)).isFalse();
             assertThat(FileStatus.isNotFound(status)).isFalse();
             assertThat(FileStatus.isDuplicate(status)).isFalse();
@@ -673,6 +720,74 @@ class FileStatusTest {
          */
         private static Stream<Arguments> everyResponse() {
             return ALL_RESPONSES.stream().map(Arguments::of);
+        }
+
+        @Test
+        @DisplayName("RESP_NOT_REPORTED is -1, and so cannot collide with any DFHRESP value")
+        void respNotReportedCannotCollideWithAnyResponse() {
+            // Every DFHRESP value is non-negative, so a negative sentinel is the one choice that no
+            // EVALUATE arm can name. That is what sends it to WHEN OTHER exactly as an unrecognised
+            // response would, and what stops it from being mistaken for NORMAL - which is zero, and is
+            // also the VALUE ZEROS state every WS-RESP-CD starts in.
+            assertThat(FileStatus.RESP_NOT_REPORTED).isEqualTo(-1).isNegative();
+            assertThat(ALL_RESPONSES).allSatisfy(response -> assertThat(response).isNotNegative());
+            assertThat(ALL_RESPONSES).doesNotContain(FileStatus.RESP_NOT_REPORTED);
+            assertThat(FileStatus.RESP_NOT_REPORTED).isNotEqualTo(FileStatus.NORMAL);
+        }
+
+        @ParameterizedTest(name = "respReported({0}) is true")
+        @MethodSource("everyResponse")
+        @DisplayName("respReported is true for every real response, including NORMAL and NOTFND")
+        void respReportedIsTrueForEveryRealResponse(int cicsResp) {
+            // Not a success test. NORMAL and NOTFND both answer true here: the only question asked is
+            // whether there is a response code to show.
+            assertThat(FileStatus.respReported(cicsResp)).isTrue();
+        }
+
+        @Test
+        @DisplayName("respReported is false only for the sentinel")
+        void respReportedIsFalseOnlyForTheSentinel() {
+            assertThat(FileStatus.respReported(FileStatus.RESP_NOT_REPORTED)).isFalse();
+            assertThat(FileStatus.respReported(FileStatus.NORMAL)).isTrue();
+            assertThat(FileStatus.respReported(0)).isTrue();
+            assertThat(FileStatus.respReported(-2))
+                    .as("another negative is not the sentinel; only -1 is")
+                    .isTrue();
+            assertThat(FileStatus.respReported(Integer.MAX_VALUE)).isTrue();
+            assertThat(FileStatus.respReported(Integer.MIN_VALUE)).isTrue();
+        }
+
+        @ParameterizedTest(name = "respNotReportedImage({0}) is {0} asterisks")
+        @ValueSource(ints = {1, 4, 9, 18})
+        @DisplayName("the image is exactly as wide as asked, and holds no digit")
+        void theImageIsWidthPreservingAndNotNumeric(int digits) {
+            String image = FileStatus.respNotReportedImage(digits);
+
+            assertThat(image).hasSize(digits);
+            assertThat(image.chars()).allMatch(character -> character == '*');
+            assertThat(image.chars().anyMatch(Character::isDigit))
+                    .as("no reader can mistake the image for a value")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the nine-digit image lines up with a rendered PIC S9(09) operand")
+        void theNineDigitImageMatchesADisplayedOperandsWidth() {
+            // The whole reason the image is width-preserving: DISPLAY concatenates its operands at their
+            // declared widths, so a substitute of any other length would shift every character after it
+            // and change a line the parity contract covers.
+            assertThat(FileStatus.respNotReportedImage(9))
+                    .isEqualTo("*********")
+                    .hasSameSizeAs("000000000");
+        }
+
+        @ParameterizedTest(name = "respNotReportedImage({0}) is refused")
+        @ValueSource(ints = {0, -1, Integer.MIN_VALUE})
+        @DisplayName("a width below one digit is refused, because no such field exists")
+        void aWidthBelowOneDigitIsRefused(int digits) {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FileStatus.respNotReportedImage(digits))
+                    .withMessageContaining("at least one digit position");
         }
     }
 
@@ -1218,9 +1333,10 @@ class FileStatusTest {
          * the usual way mutable static state gets in - fails with the offending name in the report.
          */
         private static final List<String> PUBLISHED_CONSTANT_NAMES = List.of(
-                "OK", "END_OF_FILE", "DUPLICATE", "NOT_FOUND", "STATUS_LENGTH",
+                "OK", "RECORD_LENGTH_CONFLICT", "END_OF_FILE", "DUPLICATE", "NOT_FOUND", "STATUS_LENGTH",
                 "STATUS_IMAGE_LENGTH", "NORMAL", "NOTFND", "DUPREC", "DUPKEY", "INVREQ", "NOTOPEN",
-                "ENDFILE", "LENGERR", "NO_REASON_CODE", "APPL_AOK", "APPL_EOF", "DISPLAY_PREFIX");
+                "ENDFILE", "LENGERR", "NO_REASON_CODE", "RESP_NOT_REPORTED", "APPL_AOK", "APPL_EOF",
+                "DISPLAY_PREFIX");
 
         @Test
         @DisplayName("the class is final, so no subclass can add state to it")

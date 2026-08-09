@@ -142,6 +142,37 @@ public final class FileStatus {
     public static final String OK = "00";
 
     /**
+     * Record-length conflict, COBOL {@code '04'}.
+     *
+     * <p><strong>The read succeeded.</strong> {@code '04'} says the {@code READ} completed and
+     * transferred the record, but the record's length did not conform to the file's fixed attributes.
+     * The receiving item therefore holds the record, moved under the receiver's own {@code MOVE} rule -
+     * which for a {@code PIC X} receiver means left justified, space-padded when short and truncated on
+     * the right when long. A translation that reported {@code '04'} <em>without</em> delivering the
+     * record area, or that collapsed the condition into a permanent error, would both be wrong.
+     *
+     * <p>One program pair in the estate distinguishes it, and it does so in three different and
+     * <strong>non-interchangeable</strong> shapes:
+     * <ul>
+     *   <li>{@code IF WS-M03B-RC = '00' OR '04'} - nine sites in {@code app/cbl/CBSTM03A.CBL}: the four
+     *       {@code OPEN} guards ({@code L736}, {@code L771}, {@code L789}, {@code L807}), the four
+     *       {@code CLOSE} guards ({@code L862}, {@code L879}, {@code L895}, {@code L911}) and,
+     *       notably, the <strong>first</strong> {@code TRNXFILE} read ({@code L748}). All nine accept
+     *       it and continue.</li>
+     *   <li>the loop read at {@code app/cbl/CBSTM03A.CBL:L836-L847} - a three-way {@code EVALUATE} over
+     *       {@code '00'}, {@code '10'} and {@code WHEN OTHER}. {@code '04'} reaches {@code WHEN OTHER}
+     *       and <strong>abends</strong>.</li>
+     *   <li>the two keyed reads ({@code :L379-L386} and {@code :L403-L410}) - {@code '00'} against
+     *       {@code WHEN OTHER}, so {@code '04'} abends there too.</li>
+     * </ul>
+     * That is why this is a plain constant with a narrow predicate rather than a member of any compound
+     * "success" test: which sites accept it is a property of each site, not of the status.
+     *
+     * @see #isRecordLengthConflict(String)
+     */
+    public static final String RECORD_LENGTH_CONFLICT = "04";
+
+    /**
      * End of file, COBOL {@code '10'}.
      *
      * <p>Reached at the end of every sequential browse. {@code app/cbl/CBTRN02C.cbl:351} tests
@@ -313,6 +344,47 @@ public final class FileStatus {
      * what is known.
      */
     public static final int NO_REASON_CODE = 0;
+
+    /**
+     * The value recorded in {@code WS-RESP-CD} when a command reported <strong>no CICS
+     * {@code RESP} at all</strong>: {@code -1}.
+     *
+     * <p><strong>Why a sentinel is needed, and why zero cannot serve.</strong> Every online program
+     * declares its response item as {@code PIC S9(09) COMP VALUE ZEROS} and lets
+     * {@code RESP(WS-RESP-CD)} write it, so on the mainframe the item is either zero because CICS
+     * reported {@link #NORMAL} or non-zero because CICS reported a condition - the two cases the
+     * {@code EVALUATE} distinguishes. This migration adds a third case that CICS does not have: a
+     * JDBC-backed repository can fail in a way that maps to no CICS condition, and reports no
+     * response code rather than inventing one. Leaving the item at its {@code VALUE ZEROS} state in
+     * that case makes the failure <em>indistinguishable from success</em>, because zero
+     * <strong>is</strong> {@link #NORMAL} - a {@code DISPLAY 'RESP:' WS-RESP-CD} then renders
+     * {@code 000000000} for a command that did not work, which is the one line an operator reads to
+     * decide what happened.
+     *
+     * <p>{@code -1} is chosen because it cannot collide with any CICS response: every
+     * {@code DFHRESP} value is non-negative, so the sentinel can never be mistaken for
+     * {@link #NORMAL}, {@link #NOTFND}, {@link #DUPKEY}, {@link #DUPREC} or any other named
+     * condition, and an {@code EVALUATE} translated as an ordered chain of tests therefore sends it
+     * to {@code WHEN OTHER} exactly as an unrecognised response would.
+     *
+     * <p>It is <strong>never rendered as a number.</strong> A negative value has no image in a
+     * {@code PIC 9} receiver - {@link FixedWidthCodec#movePic9(long, int)} refuses one, deliberately -
+     * so a diagnostic renders it through {@link #respNotReportedImage(int)} instead, which preserves
+     * the field's declared width while being unmistakably not a response code.
+     *
+     * @see #respReported(int)
+     * @see #respNotReportedImage(int)
+     */
+    public static final int RESP_NOT_REPORTED = -1;
+
+    /**
+     * The character a rendered {@link #RESP_NOT_REPORTED} is filled with: {@code '*'}.
+     *
+     * <p>Chosen because it is not a digit, so no reader can mistake the image for a value, and
+     * because it is what a mainframe operator already reads as "this field has no representable
+     * value" from {@code PIC} overflow indicators.
+     */
+    private static final char RESP_NOT_REPORTED_FILL = '*';
 
     // ---------------------------------------------------------------------------------------
     // APPL-RESULT condition values
@@ -547,6 +619,65 @@ public final class FileStatus {
      */
     public static boolean isOk(final String status) {
         return OK.equals(requireTwoCharacterStatus(status));
+    }
+
+    /**
+     * Whether a response code is one a command actually reported, as opposed to
+     * {@link #RESP_NOT_REPORTED}.
+     *
+     * <p>The test a diagnostic performs before rendering {@code WS-RESP-CD}. Note what this is
+     * <em>not</em>: it is not a success test. {@link #NORMAL} and {@link #NOTFND} are both reported
+     * response codes and both answer {@code true} here. The only question asked is whether there is a
+     * response code to show.
+     *
+     * @param resp the value held in {@code WS-RESP-CD}
+     * @return {@code true} unless {@code resp} is {@link #RESP_NOT_REPORTED}
+     */
+    public static boolean respReported(final int resp) {
+        return resp != RESP_NOT_REPORTED;
+    }
+
+    /**
+     * The image a {@link #RESP_NOT_REPORTED} response code is rendered as: {@code digits} asterisks.
+     *
+     * <p>Width-preserving on purpose. {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD}
+     * concatenates its operands at their declared widths, so a substitute of any other length would
+     * shift every character after it and change a line the parity contract covers. Nine asterisks
+     * occupy exactly the nine digit positions a {@code PIC S9(09)} operand occupies, so the line's
+     * shape is the source's and only the value's appearance differs - which is the honest report,
+     * because there is no value.
+     *
+     * @param digits the receiver's declared digit count; at least 1
+     * @return exactly {@code digits} asterisks
+     * @throws IllegalArgumentException if {@code digits} is below 1
+     */
+    public static String respNotReportedImage(final int digits) {
+        if (digits < 1) {
+            throw new IllegalArgumentException("A response-code field has at least one digit position, "
+                    + "so an image of " + digits + " character(s) cannot be one. WS-RESP-CD is "
+                    + "PIC S9(09) COMP in every online program that declares it.");
+        }
+        return String.valueOf(RESP_NOT_REPORTED_FILL).repeat(digits);
+    }
+
+    /**
+     * Tests {@code IF <FILE>-STATUS = '04'}: did the read succeed while transferring a record whose
+     * length does not conform to the file's fixed attributes?
+     *
+     * <p>Deliberately <strong>not</strong> folded into {@link #isOk(String)}, and deliberately not
+     * offered as a compound "success" predicate. As documented on {@link #RECORD_LENGTH_CONFLICT}, the
+     * one program pair that distinguishes {@code '04'} accepts it at nine sites and abends on it at
+     * three others, so whether it is acceptable is a property of the call site. Each site therefore
+     * states its own test - {@code StatementGenerationJobA.isOkOrRecordLengthConflict} for the nine
+     * that accept it, and a plain {@link #isOk(String)} for the three that do not.
+     *
+     * @param status the two-character file status
+     * @return {@code true} if the status is exactly {@link #RECORD_LENGTH_CONFLICT}
+     * @throws NullPointerException     if {@code status} is {@code null}
+     * @throws IllegalArgumentException if {@code status} is not exactly two characters long
+     */
+    public static boolean isRecordLengthConflict(final String status) {
+        return RECORD_LENGTH_CONFLICT.equals(requireTwoCharacterStatus(status));
     }
 
     /**

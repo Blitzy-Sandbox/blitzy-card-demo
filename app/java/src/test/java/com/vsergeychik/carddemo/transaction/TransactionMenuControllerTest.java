@@ -297,8 +297,10 @@ final class TransactionMenuControllerTest {
             assertThat(ws.isTransferred()).isTrue();
             assertThat(response.getNextProgram().strip())
                     .isEqualTo(TransactionMenuController.LIT_SIGNON_PGM);
-            assertThat(response.getNextMapset()).isEqualTo(TransactionListResponse.MAPSET_NAME);
-            assertThat(response.getNextMap()).isEqualTo(TransactionListResponse.MAP_NAME);
+            // XCTL states PROGRAM and COMMAREA only, and COTRN00C never writes CDEMO-LAST-MAP or
+            // CDEMO-LAST-MAPSET, so the target is handed neither and picks its own.
+            assertThat(response.getNextMapset()).isBlank();
+            assertThat(response.getNextMap()).isBlank();
             assertThat(response.getNavigationContext().pgmContext())
                     .isEqualTo(NavigationContext.PGM_CONTEXT_ENTER);
             assertThat(response.getNavigationContext().fromTranid().strip())
@@ -2058,10 +2060,11 @@ final class TransactionMenuControllerTest {
             assertThat(response.getNextProgram()).isEqualTo("COSGN00C");
             assertThat(response.getNavigationContext().pgmContext())
                     .isEqualTo(NavigationContext.PGM_CONTEXT_ENTER);
-            // XCTL names a program and nothing else, so no mapset is invented for the target: the
-            // response still carries this screen's own pair, and the client resolves the rest.
-            assertThat(response.getNextMapset()).isEqualTo("COTRN00");
-            assertThat(response.getNextMap()).isEqualTo("COTRN0A");
+            // XCTL names a program and nothing else, so no mapset is invented for the target: both are
+            // blanked and the target program names its own, exactly as this one named COTRN00 / COTRN0A
+            // for itself.
+            assertThat(response.getNextMapset()).isBlank();
+            assertThat(response.getNextMap()).isBlank();
         }
 
         @Test

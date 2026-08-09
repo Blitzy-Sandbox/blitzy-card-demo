@@ -182,9 +182,19 @@ class CustomerFileReaderJobTest {
      * @return the catalogue
      */
     private static JobContracts jobContracts(StepContract step) {
+        return jobContracts(List.of(step));
+    }
+
+    /**
+     * The {@code carddemo.jobs} catalogue carrying a deliberately chosen step sequence.
+     *
+     * @param steps the sequence to declare, in order
+     * @return the catalogue
+     */
+    private static JobContracts jobContracts(List<StepContract> steps) {
         JobContracts catalogue = new JobContracts();
         catalogue.put(CustomerFileReaderJob.JOB_KEY, new JobContract(CustomerService.PROGRAM_ID,
-                List.of(), List.of(step), null, Map.of()));
+                List.of(), steps, null, Map.of()));
         return catalogue;
     }
 
@@ -458,6 +468,37 @@ class CustomerFileReaderJobTest {
                             new CustomerService(repository), repository, new AbsentBean<>()))
                     .withMessageContaining("COND")
                     .withMessageContaining("bypass");
+        }
+
+        @Test
+        @DisplayName("a second step declared beside STEP05 is refused - READCUST.jcl has one EXEC")
+        void anAddedStepIsRefused() {
+            // Both guards above resolve STEP05 by name, so both find it whether it stands alone or first
+            // of two. A second step would read CUSTFILE twice and emit two passes of the DISPLAY output
+            // the parity harness compares line for line.
+            CustomerRepository repository = new CustomerRepository(seeded(List.of()), bindings(), ASCII,
+                    RecordImageForm.CHARACTER);
+            BatchConfig extra = scaffolding(jobContracts(List.of(
+                    new StepContract(CustomerService.STEP_NAME, CustomerService.PROGRAM_ID, false),
+                    new StepContract("STEP06", CustomerService.PROGRAM_ID, false))));
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> new CustomerFileReaderJob(extra,
+                            new CustomerService(repository), repository, new AbsentBean<>()))
+                    .withMessageContaining("does not declare the step sequence of "
+                            + "app/jcl/READCUST.jcl:L6")
+                    .withMessageContaining("configured: [STEP05/CBCUS01C, STEP06/CBCUS01C]")
+                    .withMessageContaining("required:   [STEP05/CBCUS01C]");
+        }
+
+        @Test
+        @DisplayName("the shipped single-step sequence is what the class requires")
+        void theShippedSequenceIsRequired() {
+            assertThat(CustomerFileReaderJob.REQUIRED_STEPS)
+                    .containsExactly(new StepContract(CustomerService.STEP_NAME,
+                            CustomerService.PROGRAM_ID, false));
+            assertThat(jobContracts().get(CustomerFileReaderJob.JOB_KEY).steps())
+                    .isEqualTo(CustomerFileReaderJob.REQUIRED_STEPS);
         }
 
         @Test

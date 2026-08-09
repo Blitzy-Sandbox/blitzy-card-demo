@@ -281,6 +281,29 @@ import java.util.Objects;
  * filesystem, no application context and no {@code JobLauncher} (practice <strong>B10</strong>, gate
  * <strong>G51</strong>): a caller supplies a collector and reads the emitted bytes back directly.
  *
+ * <h2>What the posting job must call, and when</h2>
+ *
+ * <p>{@code app/jcl/POSTTRAN.jcl:L34-L38} declares {@code DISP=(NEW,CATLG,DELETE)}, which is
+ * <strong>three</strong> dispositions rather than two, and a caller has to honour all three:
+ * <ul>
+ *   <li>{@code NEW} - {@link #openOutput()} clears the destination, so a run writes into an empty
+ *       generation. Nothing further is required of the caller.</li>
+ *   <li>{@code CATLG} - the <em>normal</em> disposition. {@link RejectsFile#closeOutput()} leaves the
+ *       rejects catalogued, which is what a run that reached {@code GOBACK} must do.</li>
+ *   <li>{@code DELETE} - the <em>abnormal</em> disposition, and the one a caller can forget.
+ *       {@link RejectsFile#discardGeneration()} must be called - after the close, and
+ *       <strong>only</strong> when the step is ending abnormally - so an abended run leaves no
+ *       generation at all. It is idempotent and never throws, so it is safe in a {@code finally}, and
+ *       it must be applied in a boundary of its own
+ *       ({@code DatasetUnitOfWork.persistDisposition}) or the failure that triggered it would undo
+ *       it.</li>
+ * </ul>
+ *
+ * <p>A close alone is not enough and a transaction rollback is not a substitute: each reject is durable
+ * as it is written, so the third outcome - no dataset at all - has to be produced explicitly.
+ * {@code AccountInterestCalcJob.releaseAbnormally()} and {@code TransactionReportJob} show the same
+ * three-disposition handling for their own outputs.
+ *
  * <h2>Provenance of the expectations - residual risk R-E</h2>
  *
  * <p>The legacy COBOL <strong>cannot be executed in this environment</strong>: there is no z/OS
@@ -745,6 +768,52 @@ public final class DalyRejectWriter {
         default FileStatus.Outcome close() {
             return FileStatus.Outcome.OK;
         }
+
+        /**
+         * Applies the <strong>abnormal</strong> disposition {@code app/jcl/POSTTRAN.jcl:L34-L38} declares
+         * for {@value DalyRejectWriter#DD_NAME}: the third positional of
+         * {@code DISP=(NEW,CATLG,DELETE)}.
+         *
+         * <p>A {@code DISP} parameter carries three dispositions, and only two of them were reproduced
+         * before this method existed. {@code NEW} is the status - the step allocates the generation -
+         * and {@link #open()} reproduces it by clearing. {@code CATLG} is the <em>normal</em>
+         * disposition - a step that ends normally leaves the generation catalogued - and
+         * {@link #close()} reproduces it by leaving the records in place. {@code DELETE} is the
+         * <em>abnormal</em> disposition, and it is a different outcome from either: a run that abends
+         * leaves <strong>no generation at all</strong>. MVS does not unwrite the records; it deletes the
+         * dataset that held them. So a step that wrote 40 rejects and then abended leaves nothing
+         * behind, and the next run's {@code DALYREJS(+1)} is generation one again.
+         *
+         * <p>That is why this is not a transaction rollback and cannot be delegated to one. A rollback
+         * offers two outcomes - every write kept, or the uncommitted writes dropped - and the mainframe's
+         * third is neither. Each write here is durable as it completes, exactly as {@code RECOVERY(NONE)}
+         * makes it ({@code app/csd/CARDDEMO.CSD:84}); this discard then removes them, in the same order
+         * of events the mainframe uses. Nothing is buffered to make it possible, so the memory a run
+         * needs does not grow with the number of rejects it writes.
+         *
+         * <p>Defaulted to {@link FileStatus.Outcome#OK} for the same reason {@link #open()} and
+         * {@link #close()} are: an in-memory collector - what a unit test and the parity harness supply -
+         * holds no catalogued generation. Its records are per-run state that ceases to exist when the run
+         * does, which is precisely the outcome {@code DELETE} produces, so reporting {@code OK} without
+         * issuing anything is the honest answer rather than a stub. Every sink that does address a
+         * catalogued destination overrides this.
+         *
+         * <p>Called at most once per handle, by {@link RejectsFile#discardGeneration()}, and only on a
+         * path that is already abending. An implementation must therefore <strong>not throw</strong>: a
+         * failed disposition must not replace the abend that caused it.
+         *
+         * @param recordsWritten how many records this run handed to the sink, so an implementation
+         *                       addressing a shared destination can establish that what it is about to
+         *                       delete is the generation <em>this</em> run allocated rather than another
+         *                       run's records
+         * @return {@link FileStatus.Outcome#OK} when the generation was discarded or there was none, or
+         *         {@link FileStatus.Outcome#OTHER} when it could not be. <strong>Never
+         *         {@code null}</strong>, for the same reason {@link #write(byte[])} is never
+         *         {@code null}
+         */
+        default FileStatus.Outcome discard(int recordsWritten) {
+            return FileStatus.Outcome.OK;
+        }
     }
 
     // =================================================================================================
@@ -994,7 +1063,7 @@ public final class DalyRejectWriter {
     public RejectsFile openOutput() {
         return new RejectsFile(new JdbcRecordSink(jdbcTemplate, insertStatement(), recordImageForm,
                 codec.charset(), requireRelation().describeStatement(),
-                requireRelation().deleteAll()));
+                requireRelation().deleteAll(), requireRelation().countAllStatement()));
     }
 
     /**
@@ -1129,6 +1198,12 @@ public final class DalyRejectWriter {
         private final String clearStatement;
 
         /**
+         * Counts what the destination holds, so {@link #discard(int)} can establish that the generation
+         * it is about to delete is the one this run allocated. Read-only, and issued nowhere else.
+         */
+        private final String countStatement;
+
+        /**
          * Creates the sink.
          *
          * @param jdbcTemplate      the template that issues the insert
@@ -1137,15 +1212,18 @@ public final class DalyRejectWriter {
          * @param charset           the dataset code page
          * @param describeStatement the read-only probe {@link #open()} and {@link #close()} issue
          * @param clearStatement    the statement {@link #open()} issues to establish an empty generation
+         * @param countStatement    the read-only count {@link #discard(int)} issues before deleting
          */
         JdbcRecordSink(JdbcTemplate jdbcTemplate, String statement, RecordImageForm recordImageForm,
-                       Charset charset, String describeStatement, String clearStatement) {
+                       Charset charset, String describeStatement, String clearStatement,
+                       String countStatement) {
             this.jdbcTemplate = jdbcTemplate;
             this.statement = statement;
             this.recordImageForm = recordImageForm;
             this.charset = charset;
             this.describeStatement = describeStatement;
             this.clearStatement = clearStatement;
+            this.countStatement = countStatement;
         }
 
         /**
@@ -1207,6 +1285,58 @@ public final class DalyRejectWriter {
                         + BackendDiagnostic.of(refused).describe()
                         + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
                         + " to the caller, which is the arm that sets APPL-RESULT to 12");
+                return FileStatus.Outcome.OTHER;
+            }
+        }
+
+        /**
+         * Deletes the generation this run wrote: the {@code DELETE} positional of
+         * {@code app/jcl/POSTTRAN.jcl:L34-L38}.
+         *
+         * <p><strong>Refused unless the destination holds exactly this run's records.</strong>
+         * {@code NEW} means the step allocates the generation, so a faithful deployment gives a run a
+         * relation of its own and the two counts agree. A deployment that instead maps successive
+         * generations onto one relation would have this delete another generation's rejects, so the count
+         * is read first and a disagreement is reported rather than acted on. That is deliberately loud:
+         * it is a deployment-time binding question, and silently deleting rejected customer transactions
+         * that this run did not write would be far worse than an operator seeing an outcome.
+         *
+         * <p>Never throws. The caller is already abending.
+         *
+         * @param recordsWritten how many records this run handed to this sink
+         * @return {@link FileStatus.Outcome#OK} when the generation was discarded, or
+         *         {@link FileStatus.Outcome#OTHER} when it was not
+         */
+        @Override
+        public FileStatus.Outcome discard(int recordsWritten) {
+            try {
+                Integer held = jdbcTemplate.queryForObject(countStatement, Integer.class);
+                if (held == null || held != recordsWritten) {
+                    LOG.error("Refusing to apply the " + DD_NAME + " abnormal disposition of "
+                            + "app/jcl/POSTTRAN.jcl:L34: this run wrote " + recordsWritten
+                            + " record(s) but the destination holds " + held
+                            + ". DISP=(NEW,CATLG,DELETE) deletes the generation this step allocated, so "
+                            + "a destination holding records this step did not write is not that "
+                            + "generation. Leaving it untouched and reporting FILE STATUS outcome "
+                            + FileStatus.Outcome.OTHER.name() + "; bind " + DD_NAME
+                            + " to a relation of its own so each run allocates its own generation");
+                    return FileStatus.Outcome.OTHER;
+                }
+                int removed = jdbcTemplate.update(clearStatement);
+                if (removed == recordsWritten) {
+                    return FileStatus.Outcome.OK;
+                }
+                LOG.error("The " + DD_NAME + " abnormal disposition removed " + removed
+                        + " record(s) where this run wrote " + recordsWritten
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " rather than reporting the generation as discarded");
+                return FileStatus.Outcome.OTHER;
+            } catch (DataAccessException refused) {
+                LOG.error("Could not apply the " + DD_NAME + " abnormal disposition after "
+                        + recordsWritten + " record(s) - " + BackendDiagnostic.of(refused).describe()
+                        + "; reporting FILE STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + ". The generation may remain catalogued, which DISP=(NEW,CATLG,DELETE) says it "
+                        + "should not; it must be deleted by hand before the next run");
                 return FileStatus.Outcome.OTHER;
             }
         }
@@ -1316,6 +1446,17 @@ public final class DalyRejectWriter {
 
         /** How many records have been handed to the sink, successfully or not. */
         private int recordsWritten;
+
+        /**
+         * Whether the abnormal disposition has already been applied, so
+         * {@link #discardGeneration()} is idempotent.
+         *
+         * <p>It has to be: an abnormal path can reach a cleanup more than once - a {@code finally} inside
+         * a {@code finally}, or a caller that discards and then closes through try-with-resources - and a
+         * second delete would find a count of zero against a non-zero {@code recordsWritten} and report a
+         * refusal for work that had already succeeded.
+         */
+        private boolean discarded;
 
         /**
          * Allocates the record area and prepares the destination, in that order.
@@ -1800,6 +1941,51 @@ public final class DalyRejectWriter {
                             + "FileStatus.Outcome.OK when it closed cleanly or "
                             + "FileStatus.Outcome.OTHER otherwise, because there is no COBOL FILE "
                             + "STATUS meaning 'no answer'.");
+        }
+
+        /**
+         * Applies the abnormal disposition of {@code app/jcl/POSTTRAN.jcl:L34-L38} -
+         * {@code DISP=(NEW,CATLG,DELETE)} - by discarding everything this run wrote.
+         *
+         * <p><strong>Call this only when the step is ending abnormally</strong>, and after
+         * {@link #closeOutput()}. The two are separate on purpose, because {@code DISP} says they are:
+         * {@code CATLG} is the normal disposition and a close alone reproduces it, leaving the generation
+         * catalogued. {@code DELETE} is the abnormal one, and a run that abends must leave no generation
+         * at all. Closing then discarding is the order the mainframe uses - the dataset is closed, then
+         * its disposition is applied - so a sink sees the same sequence of verbs it would there.
+         *
+         * <p>The record count is owned here rather than passed in, so a caller cannot get it wrong: it is
+         * the same counter {@link #writeRejectRec()} increments, and it is what lets the sink establish
+         * that the generation it is deleting is the one this run allocated.
+         *
+         * <p>Idempotent, and it never throws - not even a {@link NullPointerException} for a sink that
+         * breaks its contract by answering {@code null}. Every other outcome on this handle is checked for
+         * {@code null} and refuses, because a caller can still act on the refusal; here the caller is
+         * already abending, and replacing the abend that a posting failure caused with a diagnostic about
+         * the cleanup would lose the reason the run failed. A {@code null} is therefore logged and read as
+         * {@link FileStatus.Outcome#OTHER}.
+         *
+         * @return {@link FileStatus.Outcome#OK} when the generation was discarded, when this run wrote
+         *         nothing, or when the disposition had already been applied; otherwise
+         *         {@link FileStatus.Outcome#OTHER}; never {@code null}
+         */
+        public FileStatus.Outcome discardGeneration() {
+            if (discarded || recordsWritten == 0) {
+                // Nothing was written, so there is no generation to delete. On the mainframe the step
+                // still allocates and still deletes an empty dataset; there is no observable difference.
+                discarded = true;
+                return FileStatus.Outcome.OK;
+            }
+            discarded = true;
+            FileStatus.Outcome outcome = sink.discard(recordsWritten);
+            if (outcome == null) {
+                LOG.error("The record sink supplied for " + DD_NAME + " returned a null outcome from "
+                        + "discard(int) after " + recordsWritten + " record(s); reading it as FILE "
+                        + "STATUS outcome " + FileStatus.Outcome.OTHER.name()
+                        + " rather than raising, because this path is already abending");
+                return FileStatus.Outcome.OTHER;
+            }
+            return outcome;
         }
 
         /**

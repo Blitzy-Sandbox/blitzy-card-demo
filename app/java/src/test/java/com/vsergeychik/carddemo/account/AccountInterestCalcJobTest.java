@@ -14,6 +14,7 @@ import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.config.BatchConfig;
@@ -39,6 +40,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.JobParametersValidator;
@@ -68,6 +70,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -155,6 +158,13 @@ import static org.mockito.Mockito.when;
 class AccountInterestCalcJobTest {
 
     private static final Charset ASCII = StandardCharsets.US_ASCII;
+
+    /**
+     * The physical-record ordinal a physical-sequential read is ordered by, as
+     * {@code application-test.yml} configures it: H2's own row-identifier pseudo-column, which increases
+     * with each insert and so returns records in the order they were written.
+     */
+    private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
     private static final AtomicInteger SEQ = new AtomicInteger();
 
     private static final String TCATBAL_DS = "TEST.TCATBALF.KSDS";
@@ -272,9 +282,20 @@ class AccountInterestCalcJobTest {
      */
     private static JobContracts contracts(StepContract step, List<JobParameterContract> parameters,
             Map<String, JobDatasetBinding> datasets) {
+        return contracts(List.of(step), parameters, datasets);
+    }
+
+    /**
+     * @param steps      the step sequence to declare, in order
+     * @param parameters the declared job parameters
+     * @param datasets   this job's job-scoped dataset overrides
+     * @return the contract catalogue
+     */
+    private static JobContracts contracts(List<StepContract> steps,
+            List<JobParameterContract> parameters, Map<String, JobDatasetBinding> datasets) {
         JobContracts c = new JobContracts();
         c.put(AccountInterestCalcJob.JOB_KEY, new JobContract(AccountInterestCalcJob.PROGRAM_ID,
-                parameters, List.of(step), null, datasets));
+                parameters, steps, null, datasets));
         return c;
     }
 
@@ -364,11 +385,11 @@ class AccountInterestCalcJobTest {
                 new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
-                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
                 unitOfWork(t),
-                new PresentBean<>(sysout), new PresentBean<>(FIXED));
+                new PresentBean<>(sysout), FIXED);
     }
 
     private static String tcatbalImage(long acctId, String typeCd, int catCd, String balance) {
@@ -973,11 +994,11 @@ class AccountInterestCalcJobTest {
                 new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
-                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
                 unitOfWork(t),
-                new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)));
+                new PresentBean<>(new CapturedSysout()), FIXED));
 
         JobContracts wrongProgram = contracts(new StepContract("STEP15", "CBACT01C", false),
                 List.of(new JobParameterContract(BatchConfig.PARM_DATE_PARAMETER, "string", PARM)));
@@ -986,11 +1007,11 @@ class AccountInterestCalcJobTest {
                 new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
-                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
                 unitOfWork(t),
-                new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)));
+                new PresentBean<>(new CapturedSysout()), FIXED));
 
         JobContracts noParm = contracts(new StepContract("STEP15", "CBACT04C", false), List.of());
         assertThatIllegalStateException().isThrownBy(() -> new AccountInterestCalcJob(
@@ -998,11 +1019,91 @@ class AccountInterestCalcJobTest {
                 new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
-                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
                 unitOfWork(t),
-                new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)));
+                new PresentBean<>(new CapturedSysout()), FIXED));
+    }
+
+    @Test
+    @DisplayName("a second step declared beside STEP15 is refused: INTCALC.jcl has one EXEC, and "
+            + "running it twice would post interest twice")
+    void anAddedStepIsRefused() {
+        // The gating and program checks resolve STEP15 by name, so both find it whether it stands alone
+        // or first of two, and neither can see this. It is the worst of the single-step cases to leave
+        // open: this job adds accrued interest to ACCT-CURR-BAL and rewrites the account
+        // (app/cbl/CBACT04C.cbl:L352-L356), so a second pass over the same TCATBALF would post every
+        // account's interest a second time and write a second SYSTRAN generation, reporting success.
+        JdbcTemplate t = database();
+        DatasetBindings b = bindings();
+        JobContracts twoSteps = contracts(
+                List.of(new StepContract(AccountInterestCalcJob.STEP_NAME,
+                                AccountInterestCalcJob.PROGRAM_ID, false),
+                        new StepContract("STEP16", AccountInterestCalcJob.PROGRAM_ID, false)),
+                List.of(new JobParameterContract(BatchConfig.PARM_DATE_PARAMETER, "string", PARM)),
+                TRANSACT_ALIASED_TO_SYSTRAN);
+
+        assertThatIllegalStateException().isThrownBy(() -> new AccountInterestCalcJob(
+                scaffolding(twoSteps, b),
+                new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
+                AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
+                        RecordImageForm.CHARACTER),
+                unitOfWork(t),
+                new PresentBean<>(new CapturedSysout()), FIXED))
+                .withMessageContaining("does not declare the step sequence of app/jcl/INTCALC.jcl:22")
+                .withMessageContaining("configured: [STEP15/CBACT04C, STEP16/CBACT04C]")
+                .withMessageContaining("required:   [STEP15/CBACT04C]");
+    }
+
+    @Test
+    @DisplayName("the Clock is a required collaborator, not an optional one with a system-clock default")
+    void theClockIsRequired() {
+        // FUNCTION CURRENT-DATE (app/cbl/CBACT04C.cbl:L212) supplies the two timestamps every generated
+        // transaction carries, and every parity case pins them. An optional clock defaulting to
+        // Clock.systemDefaultZone() could only ever take effect where the single unconditional Clock bean
+        // WebConfig declares had been mis-wired - and it would hide that by writing timestamps that look
+        // plausible and can never be reproduced. Refusing null is what turns that into a startup failure.
+        JdbcTemplate t = database();
+        DatasetBindings b = bindings();
+
+        assertThatNullPointerException().isThrownBy(() -> new AccountInterestCalcJob(
+                scaffolding(contracts(), b),
+                new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
+                AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
+                        RecordImageForm.CHARACTER),
+                unitOfWork(t),
+                new PresentBean<>(new CapturedSysout()), null))
+                .withMessageContaining("A Clock is required")
+                .withMessageContaining("CURRENT-DATE");
+
+        // And the constructor takes a Clock outright - no ObjectProvider - which is the shape every
+        // other Clock consumer in this module already uses.
+        assertThat(Arrays.stream(AccountInterestCalcJob.class.getDeclaredConstructors())
+                .flatMap(constructor -> Arrays.stream(constructor.getParameterTypes()))
+                .filter(Clock.class::equals)
+                .count())
+                .as("exactly one constructor parameter, and it is a Clock rather than a provider of one")
+                .isEqualTo(1);
+        assertThat(new Doubles().job().currentDate().image())
+                .as("the injected clock is what CURRENT-DATE reads, so the rendering is reproducible")
+                .isEqualTo(new Doubles().job().currentDate().image());
+    }
+
+    @Test
+    @DisplayName("the shipped single-step sequence is what the class requires")
+    void theShippedSequenceIsRequired() {
+        assertThat(AccountInterestCalcJob.REQUIRED_STEPS)
+                .containsExactly(new StepContract(AccountInterestCalcJob.STEP_NAME,
+                        AccountInterestCalcJob.PROGRAM_ID, false));
+        assertThat(contracts().get(AccountInterestCalcJob.JOB_KEY).steps())
+                .isEqualTo(AccountInterestCalcJob.REQUIRED_STEPS);
     }
 
     @Test
@@ -1039,11 +1140,11 @@ class AccountInterestCalcJobTest {
                             new TranCatBalRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
                             new AccountRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
                             new CardXrefRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
-                            new TransactionRepository(t, sound, ASCII, RecordImageForm.CHARACTER),
+                            new TransactionRepository(t, sound, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                             AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, sound, ASCII,
                                     RecordImageForm.CHARACTER),
                             unitOfWork(t),
-                            new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)))
+                            new PresentBean<>(new CapturedSysout()), FIXED))
                     .withMessageContaining(ddName)
                     .withMessageContaining("TEST.SOMETHING.ELSE");
         }
@@ -1068,11 +1169,11 @@ class AccountInterestCalcJobTest {
                 new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
                 new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
-                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
                 AccountInterestCalcJob.carddemoDisclosureGroupAccess(t, b, ASCII,
                         RecordImageForm.CHARACTER),
                 unitOfWork(t),
-                new PresentBean<>(new CapturedSysout()), new PresentBean<>(FIXED)))
+                new PresentBean<>(new CapturedSysout()), FIXED))
                 .withMessageContaining(AccountInterestCalcJob.TRANSACT_DD_NAME)
                 .withMessageContaining(TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME);
     }
@@ -1289,7 +1390,7 @@ class AccountInterestCalcJobTest {
             when(accountFile.readByKey(anyLong())).thenReturn(AccountRepository.ReadResult.found(
                     AccountRecord.decode(acctImage(11L, "500.00", "A000000000"), ASCII)));
             when(xrefRepository.readByAccountIdViaAltIndex(anyLong()))
-                    .thenReturn(CardXrefRepository.ReadResult.found(
+                    .thenReturn(xrefFound(
                             CardXrefRepository.BASE_DD_NAME,
                             new CardXrefRecord("4444333322221111", 1, 11L)));
             when(accountFile.rewrite(Mockito.any(AccountRecord.class)))
@@ -1306,7 +1407,7 @@ class AccountInterestCalcJobTest {
             return new AccountInterestCalcJob(scaffolding(contracts(), bindings()), tcatbalRepository,
                     accountRepository, xrefRepository, transactionRepository, discgrp,
                     mockedUnitOfWork(),
-                    new PresentBean<>(sysout), new PresentBean<>(FIXED));
+                    new PresentBean<>(sysout), FIXED);
         }
 
         /**
@@ -1389,7 +1490,7 @@ class AccountInterestCalcJobTest {
             CardXrefRepository rebound = mock(CardXrefRepository.class);
             when(rebound.openBrowse()).thenReturn(doubles.xrefCursor);
             when(rebound.readByAccountIdViaAltIndex(anyLong()))
-                    .thenReturn(CardXrefRepository.ReadResult.found(
+                    .thenReturn(xrefFound(
                             CardXrefRepository.BATCH_DD_NAME,
                             new CardXrefRecord("4444333322221111", 1, 11L)));
             when(doubles.xrefRepository.addressing(any(), any(), any(), any())).thenReturn(rebound);
@@ -1894,7 +1995,7 @@ class AccountInterestCalcJobTest {
                     AccountRepository.ReadResult.found(
                             AccountRecord.decode(acctImage(11L, "500.00", "A000000000"), ASCII)));
             when(doubles.xrefRepository.readByAccountIdViaAltIndex(anyLong()))
-                    .thenReturn(CardXrefRepository.ReadResult.found(
+                    .thenReturn(xrefFound(
                             CardXrefRepository.BASE_DD_NAME,
                             new CardXrefRecord("4444333322221111", 1, 11L)));
             when(doubles.transactionFile.writeSequential(Mockito.any(TranRecord.class)))
@@ -2217,7 +2318,8 @@ class AccountInterestCalcJobTest {
         }
 
         @Test
-        @DisplayName("the job attaches the exact-width validator, so a bad launch writes nothing at all")
+        @DisplayName("the job's validator enforces both the exact PARM width and the parameter "
+                + "allow-list, so neither a bad width nor an invented key can launch it")
         void theJobAttachesTheParmDateValidator() throws Exception {
             Doubles doubles = new Doubles();
             Job job = doubles.job().accountInterestCalcJob();
@@ -2231,8 +2333,29 @@ class AccountInterestCalcJobTest {
                     .isThrownBy(() -> validator.validate(new JobParametersBuilder()
                             .addString(BatchConfig.PARM_DATE_PARAMETER, "2023")
                             .toJobParameters()));
+
+            // This job must NOT attach a validator of its own. BatchConfig.job(String) already attaches
+            // one that applies the width rule AND the allow-list, and JobBuilder keeps a single
+            // validator, so a second .validator(...) call here would replace that pair with the width
+            // rule alone - letting an undeclared key through to change which JobInstance a submission
+            // resolves to. Asserting the allow-list arm is what pins that down.
+            assertThatExceptionOfType(JobParametersInvalidException.class)
+                    .isThrownBy(() -> validator.validate(new JobParametersBuilder()
+                            .addString(BatchConfig.PARM_DATE_PARAMETER, PARM)
+                            .addString("reportDate", PARM)
+                            .toJobParameters()))
+                    .withMessageContaining("Undeclared: [reportDate]");
+            assertThatExceptionOfType(JobParametersInvalidException.class)
+                    .as("the declared PARM is required, not merely permitted")
+                    .isThrownBy(() -> validator.validate(new JobParameters()))
+                    .withMessageContaining("Missing: [" + BatchConfig.PARM_DATE_PARAMETER + "]");
+
             validator.validate(new JobParametersBuilder()
                     .addString(BatchConfig.PARM_DATE_PARAMETER, PARM)
+                    .toJobParameters());
+            validator.validate(new JobParametersBuilder()
+                    .addString(BatchConfig.PARM_DATE_PARAMETER, PARM)
+                    .addLong(BatchConfig.RUN_IDENTITY_PARAMETER, 7L)
                     .toJobParameters());
         }
 
@@ -3009,8 +3132,8 @@ class AccountInterestCalcJobTest {
                     doubles.accountRepository, doubles.xrefRepository, doubles.transactionRepository,
                     doubles.discgrp, mockedUnitOfWork(),
                     new PresentBean<>(doubles.sysout),
-                    new PresentBean<>(Clock.fixed(Instant.parse("2022-07-18T12:34:56.780Z"),
-                            ZoneOffset.ofHoursMinutes(-5, -30))));
+                    Clock.fixed(Instant.parse("2022-07-18T12:34:56.780Z"),
+                            ZoneOffset.ofHoursMinutes(-5, -30)));
 
             assertThat(subject.currentDate().rest()).isEqualTo("-0530")
                     .hasSize(5);
@@ -3025,8 +3148,8 @@ class AccountInterestCalcJobTest {
                     east.accountRepository, east.xrefRepository, east.transactionRepository,
                     east.discgrp, mockedUnitOfWork(),
                     new PresentBean<>(east.sysout),
-                    new PresentBean<>(Clock.fixed(Instant.parse("2022-07-18T12:34:56.780Z"),
-                            ZoneOffset.ofHoursMinutes(5, 45))));
+                    Clock.fixed(Instant.parse("2022-07-18T12:34:56.780Z"),
+                            ZoneOffset.ofHoursMinutes(5, 45)));
 
             assertThat(subject.currentDate().rest()).isEqualTo("+0545");
             assertThat(new Doubles().job().currentDate().rest()).isEqualTo("+0000");
@@ -3057,7 +3180,7 @@ class AccountInterestCalcJobTest {
                 super(scaffolding(contracts(), bindings()), doubles.tcatbalRepository,
                         doubles.accountRepository, doubles.xrefRepository,
                         doubles.transactionRepository, doubles.discgrp, mockedUnitOfWork(),
-                        new PresentBean<>(doubles.sysout), new PresentBean<>(FIXED));
+                        new PresentBean<>(doubles.sysout), FIXED);
             }
 
             @Override
@@ -3275,4 +3398,45 @@ class AccountInterestCalcJobTest {
         }
     }
 
+    // =================================================================================================
+    // Synthesised cross-reference read outcomes. A ReadResult carries the decoded record AND the bytes it
+    // was decoded from, because DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96) writes the
+    // record area and the area's FILLER X(14) holds whatever the row held. A test constructing an outcome
+    // has no row, so the image it supplies is the one a row of exactly this record would carry - stated
+    // once here rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The found arm over a synthesised row of this record.
+     *
+     * @param ddName the access path
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefFound(String ddName, CardXrefRecord record) {
+        return CardXrefRepository.ReadResult.found(ddName, record, xrefImageOf(record));
+    }
+
+    /**
+     * The duplicate arm over a synthesised row of this record.
+     *
+     * @param ddName   the access path
+     * @param first    the first of the matching records
+     * @param cicsResp DUPREC for the base key or DUPKEY for an alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefDuplicate(String ddName, CardXrefRecord first,
+            int cicsResp) {
+        return CardXrefRepository.ReadResult.duplicate(ddName, first, xrefImageOf(first), cicsResp);
+    }
+
+    /**
+     * The 50-character image a row of this record would hold.
+     *
+     * @param record the record
+     * @return its encoded image
+     */
+    private static String xrefImageOf(CardXrefRecord record) {
+        return new String(record.encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
+    }
 }

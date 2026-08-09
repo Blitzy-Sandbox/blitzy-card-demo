@@ -10,8 +10,12 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -588,6 +592,201 @@ class RecordImageFormTest {
         template.execute("CREATE TABLE " + table + " (RECORD_IMAGE " + columnType + ")");
         assertThat(charset).as("a code page is always named, never defaulted").isNotNull();
         return template;
+    }
+
+    // =============================================================================================
+    // The deployment contract CHARACTER carries, and cannot enforce.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The bytewise-collation requirement is stated at every place the form is decided")
+    class TheCollationContract {
+
+        /** Repository-relative path of the shipped default profile. */
+        private static final String APPLICATION_YML = "app/java/src/main/resources/application.yml";
+
+        /** Repository-relative path of the class that binds the form to a bean. */
+        private static final String DATA_SOURCE_CONFIG =
+                "app/java/src/main/java/com/vsergeychik/carddemo/config/DataSourceConfig.java";
+
+        /** Repository-relative path of this type's own source. */
+        private static final String RECORD_IMAGE_FORM =
+                "app/java/src/main/java/com/vsergeychik/carddemo/common/RecordImageForm.java";
+
+        // -----------------------------------------------------------------------------------------
+        // Why these are guarded by a test at all.
+        //
+        // Under CHARACTER the record image is not merely read: DatasetRelation composes a positional
+        // LIKE over that column for a keyed read and an ORDER BY over it for a browse. A COBOL KSDS
+        // matches a key by its BYTES and browses in ascending order of those bytes, so under this form
+        // the backend's collation IS the key semantics. A collation that folds case, folds accents,
+        // treats trailing blanks as equivalent or orders linguistically does not fail - it returns the
+        // wrong record, or a browse in an order the COBOL never produces, with no error anywhere.
+        //
+        // Nothing in this build can check that (no production connectivity - residual risk R-E), so the
+        // only enforcement available is that the requirement is written down where the decision gets
+        // made. That makes the words themselves the deliverable, and a deliverable with no test is one
+        // a later edit removes silently. These tests assert the SUBSTANCE - the collation requirement,
+        // both comparing operations, and the BINARY alternative - not the prose, so rewording is free
+        // and deletion is not.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("beside the key in application.yml, in the block attached to it")
+        void theConfiguredKeyCarriesIt() {
+            String block = documentationAbove(read(repositoryFile(APPLICATION_YML)), "  record-image:",
+                    line -> line.isBlank() || line.stripLeading().startsWith("#"));
+
+            assertContractSubstance(block, "the application.yml block attached to record-image:");
+        }
+
+        @Test
+        @DisplayName("on the bean method that binds it, in that method's own Javadoc")
+        void theBindingCarriesIt() {
+            String javadoc = javadocAbove(read(repositoryFile(DATA_SOURCE_CONFIG)),
+                    "public RecordImageForm carddemoRecordImageForm(");
+
+            assertContractSubstance(javadoc, "the carddemoRecordImageForm Javadoc");
+            assertThat(javadoc)
+                    .as("and says plainly that this build cannot verify it, so a reader does not assume "
+                            + "some startup check already has")
+                    .containsIgnoringCase("cannot");
+        }
+
+        @Test
+        @DisplayName("on the CHARACTER constant, so the contract travels with the type")
+        void theConstantCarriesIt() {
+            String javadoc = javadocAbove(read(repositoryFile(RECORD_IMAGE_FORM)), "    CHARACTER {");
+
+            assertContractSubstance(javadoc, "the CHARACTER constant's Javadoc");
+        }
+
+        @Test
+        @DisplayName("and the two operations it constrains are the two DatasetRelation actually composes")
+        void theContractDescribesTheRealStatements() {
+            // The contract is only worth stating if it names the operations that exist. DatasetRelation
+            // composes exactly these two comparisons of the image column, so if either were renamed or
+            // removed the wording above would be describing something that no longer happens.
+            String relation = read(repositoryFile(
+                    "app/java/src/main/java/com/vsergeychik/carddemo/common/DatasetRelation.java"));
+
+            assertThat(relation)
+                    .as("a keyed read compares the image column with an escaped LIKE")
+                    .contains("\" LIKE ? ESCAPE '\"");
+            assertThat(relation)
+                    .as("and a browse orders by that same column")
+                    .contains("\" ORDER BY \"");
+        }
+
+        /**
+         * Requires a block of documentation to carry the whole contract rather than a fragment of it.
+         *
+         * @param documentation the block attached to the declaration under test
+         * @param where         a description of that block, for the failure message
+         */
+        private void assertContractSubstance(String documentation, String where) {
+            assertThat(documentation)
+                    .as(where + " states the collation the backend must provide")
+                    .containsIgnoringCase("collation");
+            assertThat(documentation)
+                    .as(where + " says which collation: a bytewise one")
+                    .containsIgnoringCase("bytewise");
+            assertThat(documentation)
+                    .as(where + " names the keyed comparison that makes the collation matter")
+                    .containsIgnoringCase("LIKE");
+            assertThat(documentation)
+                    .as(where + " names the ordered comparison too, which is the browse")
+                    .containsIgnoringCase("ORDER BY");
+            assertThat(documentation)
+                    .as(where + " gives the deployment that cannot guarantee it somewhere to go")
+                    .containsIgnoringCase("BINARY");
+        }
+
+        /**
+         * The contiguous run of comment and blank lines immediately above a line, which is what
+         * "documented at the key" means in a YAML document.
+         *
+         * @param text        the whole document
+         * @param declaration the line the documentation is attached to
+         * @param isComment   whether a line belongs to a documentation block
+         * @return the attached block, newest line last
+         */
+        private String documentationAbove(String text, String declaration,
+                java.util.function.Predicate<String> isComment) {
+            List<String> lines = text.lines().toList();
+            int at = -1;
+            for (int index = 0; index < lines.size(); index++) {
+                if (lines.get(index).startsWith(declaration)) {
+                    at = index;
+                    break;
+                }
+            }
+            assertThat(at).as("found the declaration '" + declaration + "'").isNotNegative();
+
+            int first = at;
+            while (first > 0 && isComment.test(lines.get(first - 1))) {
+                first--;
+            }
+            assertThat(first)
+                    .as("'" + declaration + "' has a documentation block attached to it at all")
+                    .isLessThan(at);
+            return String.join("\n", lines.subList(first, at));
+        }
+
+        /**
+         * The Javadoc comment immediately above a declaration.
+         *
+         * @param source      the whole source file
+         * @param declaration the declaration text to find
+         * @return the Javadoc attached to it
+         */
+        private String javadocAbove(String source, String declaration) {
+            int at = source.indexOf(declaration);
+            assertThat(at).as("found the declaration '" + declaration + "'").isNotNegative();
+            int opened = source.lastIndexOf("/**", at);
+            assertThat(opened)
+                    .as("'" + declaration + "' has a Javadoc comment attached to it at all")
+                    .isNotNegative();
+            int closed = source.indexOf("*/", opened);
+            assertThat(closed).as("that Javadoc comment is terminated").isLessThan(at);
+            return source.substring(opened, closed);
+        }
+    }
+
+    /**
+     * Locates a repository-relative path by walking upwards from the working directory.
+     *
+     * <p>The same approach {@code NoRawBackendDiagnosticTest} and {@code CardDemoApplicationTest} use, so
+     * every suite that reads the checkout does it one way.
+     *
+     * @param relativePath the repository-relative path
+     * @return the resolved path
+     */
+    private static Path repositoryFile(String relativePath) {
+        Path candidate = Path.of("").toAbsolutePath();
+        while (candidate != null) {
+            Path resolved = candidate.resolve(relativePath);
+            if (Files.exists(resolved)) {
+                return resolved;
+            }
+            candidate = candidate.getParent();
+        }
+        throw new IllegalStateException("Could not find " + relativePath + " at or above "
+                + Path.of("").toAbsolutePath());
+    }
+
+    /**
+     * Reads a checkout file as UTF-8.
+     *
+     * @param source the file to read
+     * @return its text
+     */
+    private static String read(Path source) {
+        try {
+            return Files.readString(source, StandardCharsets.UTF_8);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Could not read " + source, unreadable);
+        }
     }
 
     /**

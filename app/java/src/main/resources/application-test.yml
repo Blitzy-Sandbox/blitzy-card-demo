@@ -1,3 +1,4 @@
+---
 # =============================================================================================
 #  AWS CardDemo - Java 21 / Spring Boot 3.5.16 migration module
 #  'test' PROFILE CONFIGURATION
@@ -219,26 +220,32 @@ carddemo:
     form: CHARACTER
 
   # -------------------------------------------------------------------------------------------
-  # carddemo.jdbc.query-timeout-seconds - the per-statement bound, restated for this profile.
+  # carddemo.physical-sequence.expression - the physical-record ordinal, for this profile.
   #
-  # REQUIRED, exactly as in application.yml: DataSourceConfig binds it with a bare placeholder and
-  # no Java-side default, so omitting it fails the context at startup naming the key. It is restated
-  # here rather than inherited because a profile document replaces the keys it declares, and because
-  # the guarantee is worth seeing in the profile that actually exercises it.
+  # _ROWID_, which is H2's own row-identifier pseudo-column. This profile's relations are in-memory H2
+  # tables holding a single record-image column, and _ROWID_ increases with each insert, so ORDER BY
+  # _ROWID_ ASC returns the records in the order the harness seeded them - which is exactly what a
+  # sequential COBOL READ of a physical-sequential dataset returns.
   #
-  # SHORTER THAN PRODUCTION'S, on purpose. This profile's relations are the in-memory ones the suite
-  # creates, where every statement is sub-millisecond, so a bound of thirty seconds is already three
-  # orders of magnitude of headroom - while being short enough that a suite which somehow deadlocks
-  # against its own database fails with a diagnostic instead of hanging the build. The value must
-  # stay POSITIVE: zero or negative is refused at startup rather than read as "no limit".
+  # It is a PSEUDO-COLUMN, which is why common/PhysicalSequence renders the value unquoted. Measured
+  # against H2 2.3.232: ORDER BY _ROWID_ ASC resolves and yields insertion order, while
+  # ORDER BY "_ROWID_" ASC fails with 'Column "_ROWID_" not found'. It is also not part of SELECT *, so
+  # the record image stays at column position 1 for every read in this profile.
   #
-  # It is emphatically NOT a parity value. Nothing observable depends on it: a statement either
-  # completes, in which case the bound had no effect on what it returned, or it is cancelled, in
-  # which case there is no result to compare. That is why this profile may legitimately differ from
-  # production here, where it may not differ about a code page or a record length.
+  # application.yml documents the grammar, why the key carries no default, and why the ordinal is a
+  # site input; this profile states it for the same reason the charset keys are restated here - so the
+  # guarantee is visible where it is exercised.
   # -------------------------------------------------------------------------------------------
-  jdbc:
-    query-timeout-seconds: ${CARDDEMO_JDBC_QUERY_TIMEOUT_SECONDS:30}
+  physical-sequence:
+    expression: _ROWID_
+
+  # -------------------------------------------------------------------------------------------
+  # NO carddemo.jdbc SECTION HERE EITHER, for exactly the reason application.yml gives: the
+  # JdbcTemplate is constructed untuned (AAP 0.8.6, AAP 0.4.2), so there is no per-statement bound
+  # for this profile to restate. This is one of the places the two documents must agree, and they
+  # do: a key absent from production may not be present here, because a test that configured a
+  # bound would be validating behaviour production does not have.
+  # -------------------------------------------------------------------------------------------
 
   # -------------------------------------------------------------------------------------------
   # carddemo.test.* - TEST-PROFILE-ONLY FACTS. Consumed by the parity harness.

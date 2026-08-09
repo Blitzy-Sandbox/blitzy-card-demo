@@ -1340,13 +1340,13 @@ class StatementGenerationJobBTest {
                     .isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
         }
 
-        @ParameterizedTest(name = "a mis-sized row of {0} is refused as a status, gate G19")
+        @ParameterizedTest(name = "a short row of {0} reports '04' AND delivers the record")
         @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#allDds")
-        void misSizedRowIsRefusedAsAStatus(String dd) {
+        void misSizedRowReportsARecordLengthConflict(String dd) {
             JdbcTemplate template = mock(JdbcTemplate.class);
             // One byte short of the copybook width: the layout and the data disagree.
-            backend(template).storing(datasetOf(dd),
-                    List.of(row(digitKeyOf(dd), widthOf(dd) - 1)));
+            String stored = row(digitKeyOf(dd), widthOf(dd) - 1);
+            backend(template).storing(datasetOf(dd), List.of(stored));
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
             subject.open(session, dd);
@@ -1354,13 +1354,69 @@ class StatementGenerationJobBTest {
             Response response = subject.supportedOperations(dd).contains(Operation.READ)
                     ? subject.readNext(session, dd)
                     : subject.readByKey(session, dd, digitKeyOf(dd), callerKeyOf(dd));
-            assertThat(response.rc()).isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
-            assertThat(response.fldt()).isEqualTo(StatementGenerationJobB.SPACES_FLDT);
+
+            // FILE STATUS '04', not a permanent error. In COBOL the READ succeeded; only the record's
+            // length disagrees with the file's fixed attributes. Nine sites in app/cbl/CBSTM03A.CBL
+            // accept exactly this status - IF WS-M03B-RC = '00' OR '04', including the first TRNXFILE
+            // read at :748 - and every one of those arms is dead if this class cannot produce it.
+            assertThat(response.rc()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+            assertThat(FileStatus.isRecordLengthConflict(response.rc())).isTrue();
+            assertThat(response.rc()).isNotEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
+
+            // And the record area IS delivered, because READ INTO transferred it. The receiver is
+            // PIC X(1000), so the short record lands left-justified and the remainder is spaces.
+            assertThat(response.fldt())
+                    .as("the record area is filled, not left at SPACES: '04' is a successful read")
+                    .isNotEqualTo(StatementGenerationJobB.SPACES_FLDT)
+                    .hasSize(StatementGenerationJobB.FLDT_LENGTH)
+                    .startsWith(stored);
+            assertThat(response.fldt().substring(stored.length()))
+                    .isEqualTo(" ".repeat(StatementGenerationJobB.FLDT_LENGTH - stored.length()));
+        }
+
+        @ParameterizedTest(name = "an over-wide row of {0} reports '04' and is truncated on the right")
+        @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#allDds")
+        void anOverWideRowIsTruncatedOnTheRight(String dd) {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            // Wider than the PIC X(1000) receiver, so the MOVE has to discard the overflow rather than
+            // refuse: COBOL fills a PIC X receiver from the left and truncates on the RIGHT.
+            String stored = row(digitKeyOf(dd), StatementGenerationJobB.FLDT_LENGTH + 7);
+            backend(template).storing(datasetOf(dd), List.of(stored));
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            Response response = subject.supportedOperations(dd).contains(Operation.READ)
+                    ? subject.readNext(session, dd)
+                    : subject.readByKey(session, dd, digitKeyOf(dd), callerKeyOf(dd));
+
+            assertThat(response.rc()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
+            assertThat(response.fldt())
+                    .hasSize(StatementGenerationJobB.FLDT_LENGTH)
+                    .isEqualTo(stored.substring(0, StatementGenerationJobB.FLDT_LENGTH));
         }
 
         @Test
-        @DisplayName("a keyed read matching more than one row returns the first with '00', as VSAM would")
-        void duplicateKeyedMatchReturnsTheFirstWithOk() {
+        @DisplayName("a conforming row still reports '00', so '04' is not reported for every read")
+        void aConformingRowStillReportsOk() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            String dd = StatementGenerationJobB.TRNXFILE_DD;
+            String stored = row(digitKeyOf(dd), widthOf(dd));
+            backend(template).storing(datasetOf(dd), List.of(stored));
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            Response response = subject.readNext(session, dd);
+
+            assertThat(response.rc()).isEqualTo(FileStatus.OK);
+            assertThat(FileStatus.isRecordLengthConflict(response.rc())).isFalse();
+            assertThat(response.recordImage(widthOf(dd))).isEqualTo(stored);
+        }
+
+        @Test
+        @DisplayName("a keyed read matching more than one row is refused, not resolved by taking the first")
+        void duplicateKeyedMatchIsRefused() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             String dd = StatementGenerationJobB.ACCTFILE_DD;
             String key = "12345678901";
@@ -1371,8 +1427,38 @@ class StatementGenerationJobBTest {
             subject.open(session, dd);
 
             Response response = subject.readByKey(session, dd, key, 11);
-            assertThat(response.rc()).as("'22' is a WRITE-time condition no program compares against; "
-                    + "inventing it here would be inventing a status").isEqualTo(FileStatus.OK);
+
+            // FD-ACCT-ID is the RECORD KEY of an indexed file (app/cbl/CBSTM03B.CBL:52), so a unique
+            // key matching two rows is an integrity defect in the backing relation and not a condition
+            // VSAM can present. Returning the first match with '00' would hand CBSTM03A one of two
+            // accounts chosen by whatever order the backend produced, with nothing to say a choice was
+            // made, and the statement it composed would be plausible and possibly wrong. '22' would be
+            // no better - no program in the estate compares against it, so it would be an invented
+            // status. The permanent-error status reaches the caller's WHEN OTHER arm, which abends.
+            assertThat(response.rc()).isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
+            assertThat(response.rc()).isNotEqualTo(FileStatus.OK)
+                    .isNotEqualTo(FileStatus.DUPLICATE);
+            assertThat(response.fldt())
+                    .as("no record is handed over at all, so nothing arbitrary can be used")
+                    .isEqualTo(StatementGenerationJobB.SPACES_FLDT);
+        }
+
+        @Test
+        @DisplayName("a key matching exactly one row still succeeds, so the probe is not over-eager")
+        void aUniqueKeyedMatchStillSucceeds() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            String dd = StatementGenerationJobB.ACCTFILE_DD;
+            String key = "12345678901";
+            String other = "99999999999";
+            backend(template).storing(ACCT_DS, List.of(
+                    row(key, widthOf(dd)), row(other, widthOf(dd))));
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            Response response = subject.readByKey(session, dd, key, 11);
+
+            assertThat(response.rc()).isEqualTo(FileStatus.OK);
             assertThat(response.recordImage(widthOf(dd))).isEqualTo(row(key, widthOf(dd)));
         }
 
@@ -1488,6 +1574,67 @@ class StatementGenerationJobBTest {
         void trnxKeyIsThirtyTwoBytes() {
             assertThat(StatementGenerationJobB.TRNXFILE_KEY_LENGTH).isEqualTo(32)
                     .isEqualTo(TrnxRecord.TRNX_CARD_NUM_LENGTH + TrnxRecord.TRNX_ID_LENGTH);
+        }
+    }
+
+    // =================================================================================================
+    // FILE STATUS '04', end to end. CBSTM03A has ten status-checking sites whose behaviour turns on
+    // '04' - nine that accept it and three that abend on it - and every one of them is dead code unless
+    // THIS class can produce the status. These tests prove the producer and the consumer agree, so the
+    // agreement cannot be broken from either side without a failure here.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("FILE STATUS '04' is producible, and is the status CBSTM03A's nine guards accept")
+    class RecordLengthConflictReachability {
+
+        @Test
+        @DisplayName("the status this class produces is the very constant CBSTM03A tests against")
+        void theProducerAndTheConsumerShareOneConstant() {
+            // Not two literals that happen to read the same. StatementGenerationJobA takes its constant
+            // from FileStatus, so a change on either side is a change on both.
+            assertThat(StatementGenerationJobA.STATUS_RECORD_LENGTH_CONFLICT)
+                    .isSameAs(FileStatus.RECORD_LENGTH_CONFLICT)
+                    .isEqualTo("04");
+        }
+
+        @ParameterizedTest(name = "a short row of {0} yields a status CBSTM03A's OPEN/CLOSE guards accept")
+        @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#allDds")
+        void theStatusProducedIsAcceptedByTheNineGuards(String dd) {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            backend(template).storing(datasetOf(dd), List.of(row(digitKeyOf(dd), widthOf(dd) - 1)));
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+            subject.open(session, dd);
+
+            Response response = subject.supportedOperations(dd).contains(Operation.READ)
+                    ? subject.readNext(session, dd)
+                    : subject.readByKey(session, dd, digitKeyOf(dd), callerKeyOf(dd));
+
+            // IF WS-M03B-RC = '00' OR '04' - the nine accepting sites, expressed once as a predicate.
+            assertThat(StatementGenerationJobA.isOkOrRecordLengthConflict(response.rc()))
+                    .as("the arms at CBSTM03A:736, :748, :771, :789, :807, :862, :879, :895 and :911 are "
+                            + "reachable only if this read produces a status they accept")
+                    .isTrue();
+            // And the three rejecting sites still reject it: the loop read's EVALUATE (:836-847) and the
+            // two keyed reads (:379-386, :403-410) all test plain '00'.
+            assertThat(FileStatus.isOk(response.rc()))
+                    .as("the loop read and the two keyed reads test '00' alone, so they still abend")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("an OPEN and a CLOSE of a conforming dataset still report '00', not '04'")
+        void aConformingDatasetReportsOkThroughout() {
+            JdbcTemplate template = mock(JdbcTemplate.class);
+            String dd = StatementGenerationJobB.TRNXFILE_DD;
+            backend(template).storing(datasetOf(dd), List.of(row(digitKeyOf(dd), widthOf(dd))));
+            StatementGenerationJobB subject = subroutine(template);
+            Session session = subject.newSession();
+
+            assertThat(subject.open(session, dd).rc()).isEqualTo(FileStatus.OK);
+            assertThat(subject.readNext(session, dd).rc()).isEqualTo(FileStatus.OK);
+            assertThat(subject.close(session, dd).rc()).isEqualTo(FileStatus.OK);
         }
     }
 

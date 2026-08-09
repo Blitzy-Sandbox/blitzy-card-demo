@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -140,14 +141,17 @@ import org.springframework.stereotype.Repository;
  *       {@code DALYTRAN-ID} order, and both consumers depend on the order they were written:
  *       {@code CBTRN02C} accumulates into {@code TCATBALF} and {@code ACCTFILE} as it goes
  *       ({@code L508}, {@code L527}, {@code L547-L551}) and {@code CBTRN01C} displays each record as it
- *       reads it ({@code L168}). {@link DatasetRelation#selectAll()} is the unordered statement, and its
- *       own documentation records that it exists for exactly this case.</li>
+ *       reads it ({@code L168}). The read is therefore ordered by the deployment's
+ *       <em>physical-record ordinal</em> instead - {@link PhysicalSequence}, injected - which stands for
+ *       a record's position and for nothing in its content. Leaving the statement with no
+ *       {@code ORDER BY} at all was the defect this replaced: SQL guarantees no row order without one,
+ *       so the written order was not preserved, it was merely usually observed.</li>
  *   <li><strong>Materialising every row image at open and walking the snapshot</strong> would be a
  *       cache, which AAP section 0.8.6 rules out - this is not a performance refactoring - and it would
  *       make an open of a real daily-transaction file proportional to the file rather than to one
  *       record.</li>
- *   <li><strong>Re-reading with a growing row limit</strong> would be quadratic and, worse, would rest
- *       on an unordered statement returning the same sequence twice, which nothing guarantees.</li>
+ *   <li><strong>Re-reading with a growing row limit</strong> would be quadratic and would issue one
+ *       statement per record where the COBOL issues one {@code OPEN}.</li>
  * </ul>
  * A single held cursor is the only one of the four that is both faithful and bounded, and it transfers
  * one row per {@code READ}.
@@ -348,11 +352,27 @@ public class DalyTranRepository {
     private final DatasetRelation relation;
 
     /**
-     * The unordered select this class reads through, composed once at construction.
+     * The physical-record ordinal every read of this dataset is ordered by: the deployment's answer to
+     * how a stored record's position is recovered, injected rather than decided here.
      *
-     * <p>Composed once because it never varies: there is no key to bind, no position to express and no
-     * ordering to impose, so the statement for the first record and the statement for the last are the
-     * same text.
+     * <p>{@value DalyTranRepository#DD_NAME} is a <strong>physical-sequential</strong> dataset. It has no
+     * key, so its order is the order its records were written - and that is not a property of any byte in
+     * them, which is why it cannot be recovered from the record image. See {@link PhysicalSequence}.
+     */
+    private final PhysicalSequence physicalSequence;
+
+    /**
+     * The select this class reads through, composed once at construction.
+     *
+     * <p>Composed once because it never varies: there is no key to bind and no position to express, so
+     * the statement for the first record and the statement for the last are the same text.
+     *
+     * <p>It is <strong>ordered</strong>, by {@link #physicalSequence}. {@code CBTRN02C} validates and then
+     * posts or rejects each daily transaction as it arrives and writes its rejects in the same sequence,
+     * and {@code app/jcl/TRANREPT.jcl:46} sorts this file before {@code CBTRN03C} subtotals it by account
+     * as the records arrive - so the order this read returns is part of what both jobs produce. SQL
+     * guarantees no order without an {@code ORDER BY}, and an ordering over the record image would be a
+     * <em>different</em> order rather than the file's.
      */
     private final String selectRecordSql;
 
@@ -393,6 +413,8 @@ public class DalyTranRepository {
      *                        explicitly at every encode and decode
      * @param recordImageForm how the deployment's driver presents a record image, from
      *                        {@value RecordImageForm#FORM_PROPERTY}
+     * @param physicalSequence the physical-record ordinal this dataset's sequential read is ordered by,
+     *                        from {@value PhysicalSequence#EXPRESSION_PROPERTY}
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if no binding is configured for {@link #DD_NAME}, if the binding
      *                               declares a record length other than {@link #RECORD_LENGTH}, if the
@@ -404,7 +426,8 @@ public class DalyTranRepository {
             JdbcTemplate jdbcTemplate,
             DatasetBindings datasetBindings,
             @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
-            RecordImageForm recordImageForm) {
+            RecordImageForm recordImageForm,
+            PhysicalSequence physicalSequence) {
 
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required: the "
                 + DD_NAME + " read cursor is opened on the data source the module's shared template "
@@ -418,6 +441,11 @@ public class DalyTranRepository {
                 + "is required: whether this deployment's driver presents a record image as characters "
                 + "or as bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never "
                 + "decided per repository");
+        this.physicalSequence = Objects.requireNonNull(physicalSequence, "A physical-record ordinal is "
+                + "required: " + DD_NAME + " is a physical-sequential dataset, so the order its records "
+                + "were written in is what a sequential READ returns, and SQL returns rows in no order "
+                + "unless a statement says which. It is stated once, by "
+                + PhysicalSequence.EXPRESSION_PROPERTY + ", and never decided per repository");
         RecordImageForm.requireSingleByteCodePage(datasetCharset);
 
         DatasetBinding binding = datasetBindings.binding(DD_NAME);
@@ -434,7 +462,7 @@ public class DalyTranRepository {
         this.layout = requireDeclaredGeometry(DalyTranRecord.LAYOUT,
                 DalyTranRecord.sumOfDeclaredSpanLengths());
         this.relation = DatasetRelation.of(requireUsableDatasetName(binding.dsname()), RECORD_LENGTH);
-        this.selectRecordSql = this.relation.selectAll();
+        this.selectRecordSql = this.relation.selectAllInPhysicalSequence(this.physicalSequence);
     }
 
     /**
@@ -473,12 +501,13 @@ public class DalyTranRepository {
     }
 
     /**
-     * The unordered select this repository reads through.
+     * The select this repository reads through.
      *
      * <p>Package-visible so this class's tests assert the composed text - in particular that it carries
-     * no {@code ORDER BY} - without reaching around the class.
+     * the physical-sequence {@code ORDER BY} and orders by the configured ordinal rather than by the
+     * record image - without reaching around the class.
      *
-     * @return {@code SELECT * FROM <relation>}
+     * @return {@code SELECT * FROM <relation> ORDER BY <ordinal> ASC}
      */
     String selectRecordSql() {
         return selectRecordSql;
@@ -513,7 +542,7 @@ public class DalyTranRepository {
      * out on this class - the two consumers do not use the same text.
      *
      * <p><strong>What an open actually does here.</strong> It takes a connection of its own from the
-     * module's data source, prepares the unordered select forward-only and read-only, executes it, and
+     * module's data source, prepares the ordered select forward-only and read-only, executes it, and
      * confirms the answer presents a column at position {@value #RECORD_IMAGE_COLUMN_INDEX}. That is a
      * genuine dataset-scoped check rather than a connection test: an absent or unreachable dataset fails
      * here, which is what a COBOL {@code OPEN} reports, whereas a connection-only probe would succeed
@@ -960,7 +989,7 @@ public class DalyTranRepository {
         /** The dedicated connection this cursor runs on. Never the thread's transactional connection. */
         private final Connection connection;
 
-        /** The prepared unordered select, forward-only and read-only. */
+        /** The prepared select, ordered by the physical-record ordinal, forward-only and read-only. */
         private final PreparedStatement statement;
 
         /** The open result set. This is the file position: {@code next()} is the {@code READ}. */

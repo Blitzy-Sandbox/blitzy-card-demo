@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.zaxxer.hikari.HikariDataSource;
 import java.lang.reflect.Modifier;
@@ -220,18 +221,15 @@ class DataSourceConfigTest {
             RecordImageForm.FORM_PROPERTY + "=CHARACTER";
 
     /**
-     * The per-statement bound, supplied inline by the no-document slices.
+     * The physical-record ordinal, supplied inline by the no-document slices.
      *
-     * <p>{@value DataSourceConfig#QUERY_TIMEOUT_PROPERTY} carries no default either, for the same
-     * reason: a bound that defaulted would let a deployment which never stated one run unbounded. So a
-     * slice with no configuration document has to state it before any {@code JdbcTemplate} can be
-     * built - which is the property {@link StatementBound} asserts directly.
-     *
-     * <p>The value is arbitrary and deliberately not the shipped one, so no assertion below can pass
-     * by accidentally agreeing with {@code application.yml}.
+     * <p>{@value PhysicalSequence#EXPRESSION_PROPERTY} carries no default for the same reason
+     * {@value RecordImageForm#FORM_PROPERTY} does, so a slice with no configuration document has to
+     * state it before any bean graph can be built - which is the property
+     * {@link PhysicalRecordOrdinal} asserts directly.
      */
-    private static final String QUERY_TIMEOUT_PROPERTY =
-            DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=17";
+    private static final String PHYSICAL_SEQUENCE_PROPERTY =
+            PhysicalSequence.EXPRESSION_PROPERTY + "=_ROWID_";
 
     /**
      * What makes a "shipped default profile" slice actually mean the default profile.
@@ -356,7 +354,7 @@ class DataSourceConfigTest {
     private ApplicationContextRunner withInlinePropertiesOnly(String... inlineProperties) {
         return new ApplicationContextRunner()
                 .withUserConfiguration(DataSourceConfig.class)
-                .withPropertyValues(RECORD_IMAGE_FORM_PROPERTY, QUERY_TIMEOUT_PROPERTY)
+                .withPropertyValues(RECORD_IMAGE_FORM_PROPERTY, PHYSICAL_SEQUENCE_PROPERTY)
                 .withPropertyValues(inlineProperties);
     }
 
@@ -1104,152 +1102,98 @@ class DataSourceConfigTest {
      * disguised by an invented driver class.
      */
     /**
-     * {@value DataSourceConfig#QUERY_TIMEOUT_PROPERTY} - the per-statement bound (N-02).
+     * The published {@link JdbcTemplate} is <strong>untuned</strong>, and no {@code carddemo.jdbc}
+     * key exists for a deployment to tune it with (N-02).
      *
-     * <p>Two properties are asserted here and they are different in kind. That the bound is
-     * <em>finite</em> is a correctness property of a run: without it a hung statement holds its pool
-     * connection, its transaction and its batch step for as long as the process lives. That the bound is
-     * <em>configured</em> is a property of this module: no number in Java decides how long a site's
-     * gateway may take, which is the same rule that keeps dataset names and code pages out of Java.
+     * <p>Two properties are asserted, and they are different in kind. That the template is untuned is
+     * an AAP requirement: 0.8.6 states that no connection tuning is introduced by this migration and
+     * 0.4.2 specifies this bean as a plain {@code JdbcTemplate} over HikariCP. That <em>no key is
+     * read</em> is the stronger of the two, because a key still bound in Java would let a deployment
+     * reintroduce statement cancellation without any Java change - so the absence is asserted rather
+     * than assumed, by starting a context that supplies nothing but a URL and a record-image form.
      *
-     * <p>The decision is a static function, so most of this needs no application context at all; the
-     * context slices are here only to prove the wiring - that the value really reaches the published
-     * bean, and that an unstated one really refuses startup.
+     * <p>Where a site's bounds do belong is asserted too: driver-level timeouts reach the driver
+     * untouched through {@code spring.datasource.hikari.data-source-properties.*}, which is the route
+     * {@link DataSourceConfig#jdbcTemplate(DataSource)} documents. A documented route that did not
+     * work would be worse than none.
      */
     @Nested
-    @DisplayName("The statement bound - finite, and stated by configuration rather than by Java")
-    class StatementBound {
+    @DisplayName("The template - untuned, with every driver-level bound supplied as configuration")
+    class UntunedTemplate {
+
+        /**
+         * What an untouched {@code JdbcTemplate} reports, so each assertion below compares against the
+         * framework's own default rather than against a number transcribed by hand.
+         */
+        private final JdbcTemplate untouched = new JdbcTemplate();
 
         @Test
-        @DisplayName("a positive value is the bound, in seconds")
-        void aPositiveValueIsTheBound() {
-            assertThat(DataSourceConfig.queryTimeoutSeconds("30")).isEqualTo(30);
-            assertThat(DataSourceConfig.queryTimeoutSeconds("1")).isOne();
-        }
+        @DisplayName("nothing is configured on the published template: no statement bound, no fetch "
+                + "size, no maximum row count")
+        void nothingIsConfiguredOnThePublishedTemplate() {
+            shippedDefaultProfile().run(context -> {
+                JdbcTemplate template = context.getBean(JdbcTemplate.class);
 
-        @ParameterizedTest(name = "\"{0}\" is read as the same bound")
-        @ValueSource(strings = { "45", " 45", "45 ", "  45  " })
-        @DisplayName("surrounding whitespace is tolerated, because a YAML value can carry it")
-        void whitespaceIsTolerated(String configured) {
-            assertThat(DataSourceConfig.queryTimeoutSeconds(configured)).isEqualTo(45);
-        }
-
-        @ParameterizedTest(name = "\"{0}\" is refused as no bound at all")
-        @ValueSource(strings = { "", "   ", "\t" })
-        @DisplayName("an absent or blank value is refused, naming the key - never read as 'no limit'")
-        void anAbsentValueIsRefused(String configured) {
-            assertThatIllegalStateException()
-                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(configured))
-                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY)
-                    .withMessageContaining("is not configured")
-                    .withMessageContaining("unbounded");
+                // -1 is JdbcTemplate's own "leave the driver's default alone". Setting a positive
+                // bound would make a cancelled statement a data-access failure the COBOL has no arm
+                // for, and row shaping would change what a program reads: a truncated browse is a
+                // short file, and a short file is a different report.
+                assertThat(template.getQueryTimeout()).isEqualTo(untouched.getQueryTimeout());
+                assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
+                assertThat(template.getMaxRows()).isEqualTo(untouched.getMaxRows());
+            });
         }
 
         @Test
-        @DisplayName("a null value is refused the same way a blank one is, because an unresolved "
-                + "environment placeholder produces one or the other")
-        void aNullValueIsRefused() {
-            assertThatIllegalStateException()
-                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(null))
-                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY);
-        }
+        @DisplayName("the test profile's template is untuned in exactly the same way, so no profile "
+                + "validates behaviour the other does not have")
+        void theTestProfileTemplateIsUntunedTheSameWay() {
+            shippedTestProfile().run(context -> {
+                JdbcTemplate template = context.getBean(JdbcTemplate.class);
 
-        @ParameterizedTest(name = "\"{0}\" is refused as not a whole number of seconds")
-        @ValueSource(strings = { "30s", "PT30S", "thirty", "30.5", "1_000", "30000ms" })
-        @DisplayName("a value that is not a whole number is refused, and says what a whole number is")
-        void aNonNumericValueIsRefused(String configured) {
-            assertThatIllegalStateException()
-                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(configured))
-                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY)
-                    .withMessageContaining("whole number of seconds")
-                    .withCauseInstanceOf(NumberFormatException.class);
-        }
-
-        @ParameterizedTest(name = "{0} is refused, because it is not a bound")
-        @ValueSource(strings = { "0", "-1", "-30" })
-        @DisplayName("zero and negative are REFUSED rather than accepted as 'no limit', which is what "
-                + "JDBC would read them as")
-        void zeroAndNegativeAreRefused(String configured) {
-            // The refusal that matters most. java.sql.Statement treats a query timeout of 0 as unlimited
-            // and JdbcTemplate treats -1 as "use the driver default", so accepting either would let a
-            // deployment reinstate unbounded statements by configuration while appearing to have set a
-            // bound - which is worse than not having the key at all.
-            assertThatIllegalStateException()
-                    .isThrownBy(() -> DataSourceConfig.queryTimeoutSeconds(configured))
-                    .withMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY)
-                    .withMessageContaining("is not a bound")
-                    .withMessageContaining("java.sql.Statement treats a query timeout of 0 as "
-                            + "unlimited");
+                assertThat(template.getQueryTimeout()).isEqualTo(untouched.getQueryTimeout());
+                assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
+                assertThat(template.getMaxRows()).isEqualTo(untouched.getMaxRows());
+            });
         }
 
         @Test
-        @DisplayName("the published template carries the configured bound, and nothing else is tuned")
-        void thePublishedTemplateCarriesTheBound() {
+        @DisplayName("the context starts with no carddemo.jdbc key in the environment at all, which is "
+                + "what proves none is read")
+        void theContextStartsWithNoJdbcKeyAtAll() {
+            // Deliberately NOT withInlinePropertiesOnly: this slice states the URL, the record-image
+            // form and a valid catalogue and nothing else. If any carddemo.jdbc.* placeholder were
+            // still bound in Java the refresh would fail on the unresolved placeholder.
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY).run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context.getEnvironment().containsProperty("carddemo.jdbc.query-timeout-seconds"))
+                        .isFalse();
+                assertThat(context.getBean(JdbcTemplate.class).getQueryTimeout())
+                        .isEqualTo(untouched.getQueryTimeout());
+            });
+        }
+
+        @Test
+        @DisplayName("a stray carddemo.jdbc key in the environment changes nothing, because nothing "
+                + "reads it")
+        void aStrayJdbcKeyChangesNothing() {
+            // A deployment that carries the removed key forward from an older configuration must not
+            // quietly get statement cancellation back.
             withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
-                    DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=23")
-                    .run(context -> {
-                        JdbcTemplate template = context.getBean(JdbcTemplate.class);
-                        JdbcTemplate untouched = new JdbcTemplate();
-
-                        assertThat(template.getQueryTimeout()).isEqualTo(23);
-                        // Row shaping is deliberately untouched: a template that capped rows or fetched
-                        // in pages would change what a program reads, and a truncated browse is a short
-                        // file.
-                        assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
-                        assertThat(template.getMaxRows()).isEqualTo(untouched.getMaxRows());
-                    });
+                    "carddemo.jdbc.query-timeout-seconds=17")
+                    .run(context -> assertThat(context.getBean(JdbcTemplate.class).getQueryTimeout())
+                            .isEqualTo(untouched.getQueryTimeout()));
         }
 
         @Test
-        @DisplayName("the shipped default profile states a finite bound, so no deployment starts "
-                + "unbounded by omission")
-        void theShippedDefaultProfileStatesAFiniteBound() {
-            shippedDefaultProfile().run(context -> assertThat(
-                    context.getBean(JdbcTemplate.class).getQueryTimeout()).isPositive());
-        }
-
-        @Test
-        @DisplayName("the shipped test profile states one too, so neither profile defaults it")
-        void theShippedTestProfileStatesOneToo() {
-            shippedTestProfile().run(context -> assertThat(
-                    context.getBean(JdbcTemplate.class).getQueryTimeout()).isPositive());
-        }
-
-        @Test
-        @DisplayName("with the bound unstated the context refuses to start rather than running "
-                + "unbounded")
-        void anUnstatedBoundRefusesStartup() {
-            new ApplicationContextRunner()
-                    .withUserConfiguration(DataSourceConfig.class)
-                    .withPropertyValues(Stream.concat(minimalValidCatalogue(),
-                                    Stream.of(IN_MEMORY_URL_PROPERTY, RECORD_IMAGE_FORM_PROPERTY))
-                            .toArray(String[]::new))
-                    .run(context -> assertThat(context).hasFailed());
-        }
-
-        @Test
-        @DisplayName("a configured bound that is not a bound refuses startup rather than being ignored")
-        void aNonBoundRefusesStartup() {
+        @DisplayName("driver-level bounds reach the driver through configuration, so no timeout is "
+                + "named in Java either")
+        void driverLevelBoundsReachTheDriverThroughConfiguration() {
+            // The login, connect and socket-read timeouts are spelled differently by every driver and
+            // this module pins no driver coordinate (R-E). The javadoc on jdbcTemplate says they are
+            // supplied under spring.datasource.hikari.data-source-properties.*, and this asserts that
+            // claim rather than leaving it as prose.
             withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
-                    DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=0")
-                    .run(context -> {
-                        assertThat(context).hasFailed();
-                        assertThat(context.getStartupFailure())
-                                .hasMessageContaining(DataSourceConfig.QUERY_TIMEOUT_PROPERTY);
-                    });
-        }
-
-        @Test
-        @DisplayName("a driver-level bound below the statement one reaches the driver through "
-                + "configuration, so no socket timeout is named in Java either")
-        void aDriverLevelBoundReachesTheDriverThroughConfiguration() {
-            // The statement timeout is the deepest bound this module can set portably; the login, connect
-            // and socket-read timeouts below it are spelled differently by every driver and this module
-            // pins no driver coordinate (R-E). The javadoc on jdbcTemplate says those are supplied under
-            // spring.datasource.hikari.data-source-properties.*, and this asserts that claim rather than
-            // leaving it as prose - a documented route that did not work would be worse than none.
-            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
-                    DataSourceConfig.QUERY_TIMEOUT_PROPERTY + "=15",
                     "spring.datasource.hikari.data-source-properties.socketTimeout=20000",
                     "spring.datasource.hikari.data-source-properties.loginTimeout=5")
                     .run(context -> {
@@ -1261,12 +1205,12 @@ class DataSourceConfigTest {
                         // And they are handed to the driver untouched: no Java source reads, renames or
                         // validates them, because their names belong to the site's driver.
                         assertThat(context.getBean(JdbcTemplate.class).getQueryTimeout())
-                                .isEqualTo(15);
+                                .isEqualTo(untouched.getQueryTimeout());
                     });
         }
 
         @Test
-        @DisplayName("the bound is still the only JdbcOperations definition, with no @Primary anywhere")
+        @DisplayName("it is still the only JdbcOperations definition, with no @Primary anywhere")
         void thereIsStillExactlyOneTemplate() {
             shippedDefaultProfile().run(context -> {
                 assertThat(context).hasSingleBean(JdbcTemplate.class);
@@ -1562,7 +1506,7 @@ class DataSourceConfigTest {
      * and stop the context from starting at all.
      */
     @Nested
-    @DisplayName("The negative contract - six beans, no transaction manager, and nothing "
+    @DisplayName("The negative contract - seven beans, no transaction manager, and nothing "
             + "schema-shaped")
     class NegativeContract {
 
@@ -1573,12 +1517,13 @@ class DataSourceConfigTest {
          */
         private static final List<Class<?>> PERMITTED_BEAN_TYPES = List.of(
                 DataSourceConfig.class, HikariDataSource.class, JdbcTemplate.class,
-                DataSourceProperties.class, DatasetBindings.class, RecordImageForm.class);
+                DataSourceProperties.class, DatasetBindings.class, RecordImageForm.class,
+                PhysicalSequence.class);
 
         @Test
-        @DisplayName("the configuration contributes exactly six beans, and each is one of the six "
+        @DisplayName("the configuration contributes exactly seven beans, and each is one of the seven "
                 + "it is answerable for")
-        void theConfigurationContributesExactlySixBeans() {
+        void theConfigurationContributesExactlySevenBeans() {
             shippedDefaultProfile().run(context -> {
                 List<String> contributed = new ArrayList<>();
                 for (String beanName : context.getBeanDefinitionNames()) {
@@ -1603,9 +1548,8 @@ class DataSourceConfigTest {
         }
 
         @Test
-        @DisplayName("the sixth bean is the record-image representation, and it is the only one of its "
-                + "kind")
-        void theRecordImageRepresentationIsTheSixthAndOnlyOne() {
+        @DisplayName("the record-image representation is one bean, and it is the only one of its kind")
+        void theRecordImageRepresentationIsTheOnlyOneOfItsKind() {
             // One authority means one bean. Two definitions would let two repositories be injected with
             // different representations of the same column, which is the divergence this bean exists to
             // end - so the count is asserted, not just the presence.
@@ -1614,6 +1558,18 @@ class DataSourceConfigTest {
                         .containsExactly(RecordImageForm.FORM_BEAN_NAME);
                 assertThat(context.getBean(RecordImageForm.class))
                         .isSameAs(RecordImageForm.CHARACTER);
+            });
+        }
+
+        @Test
+        @DisplayName("the physical-record ordinal is one bean too, for the same reason: two would let "
+                + "two components order the same dataset differently")
+        void thePhysicalOrdinalIsTheOnlyOneOfItsKind() {
+            shippedDefaultProfile().run(context -> {
+                assertThat(context.getBeanNamesForType(PhysicalSequence.class))
+                        .containsExactly(PhysicalSequence.BEAN_NAME);
+                assertThat(context.getBean(PhysicalSequence.class).expression())
+                        .isEqualTo("RECORD_ORDINAL");
             });
         }
 
@@ -1727,6 +1683,75 @@ class DataSourceConfigTest {
      * the empty catalogue: with nothing configured, nothing is bound - so there is no hidden default
      * anywhere in the class.
      */
+    /**
+     * The physical-record ordinal: one configured name, no default, and a grammar that keeps an
+     * operator's value from reaching an {@code ORDER BY} clause as anything but a name.
+     *
+     * <p>Why it matters enough to have its own set of assertions: a physical-sequential dataset has no
+     * key, so its order is its records' position, and SQL returns rows in no order unless a statement
+     * says which. A deployment that never named its ordinal must therefore not start - the alternative
+     * is a report with the right rows and the wrong totals, produced silently.
+     */
+    @Nested
+    @DisplayName("The physical-record ordinal - configured, required, and grammar-checked")
+    class PhysicalRecordOrdinal {
+
+        @Test
+        @DisplayName("the shipped default profile states it, so the bean resolves without a default")
+        void theShippedDefaultProfileStatesIt() {
+            shippedDefaultProfile().run(context ->
+                    assertThat(context.getBean(PhysicalSequence.class).expression())
+                            .isEqualTo("RECORD_ORDINAL"));
+        }
+
+        @Test
+        @DisplayName("the fixture-backed test profile states H2's own row identifier")
+        void theTestProfileStatesTheRowIdentifier() {
+            shippedTestProfile().run(context ->
+                    assertThat(context.getBean(PhysicalSequence.class).expression())
+                            .isEqualTo("_ROWID_"));
+        }
+
+        @Test
+        @DisplayName("with the ordinal unstated the context refuses to start rather than reading a "
+                + "physical-sequential dataset in whatever order the backend scanned")
+        void anUnstatedOrdinalRefusesStartup() {
+            new ApplicationContextRunner()
+                    .withUserConfiguration(DataSourceConfig.class)
+                    .withPropertyValues(Stream.concat(minimalValidCatalogue(),
+                                    Stream.of(IN_MEMORY_URL_PROPERTY, RECORD_IMAGE_FORM_PROPERTY))
+                            .toArray(String[]::new))
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @ParameterizedTest(name = "carddemo.physical-sequence.expression={0} is refused")
+        @ValueSource(strings = {
+            "RRN DESC",
+            "RRN;DROP TABLE X",
+            "RRN,SEQ",
+            "COUNT(*)",
+            "1RRN",
+            "'RRN'",
+            "\"RRN\"",
+        })
+        @DisplayName("a value that is not a bare identifier is refused at startup, never rendered")
+        void aNonIdentifierRefusesStartup(String configured) {
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    PhysicalSequence.EXPRESSION_PROPERTY + "=" + configured)
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @ParameterizedTest(name = "carddemo.physical-sequence.expression={0} resolves")
+        @ValueSource(strings = { "_ROWID_", "RRN", "RECORD_ORDINAL", "seq9", "#POS", "@ORD", "$N" })
+        @DisplayName("every shape a gateway ordinal legitimately takes resolves, whitespace-tolerantly")
+        void everyLegitimateOrdinalResolves(String configured) {
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    PhysicalSequence.EXPRESSION_PROPERTY + "= " + configured + " ")
+                    .run(context -> assertThat(context.getBean(PhysicalSequence.class).expression())
+                            .isEqualTo(configured));
+        }
+    }
+
     @Nested
     @DisplayName("Dataset locations come from configuration - nothing is defaulted inside Java")
     class DatasetNameExternalisation {

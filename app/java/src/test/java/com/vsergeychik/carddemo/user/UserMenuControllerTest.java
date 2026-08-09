@@ -7,6 +7,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -1103,6 +1105,38 @@ class UserMenuControllerTest {
             assertThat(ws.displays().get(0))
                     .startsWith(UserMenuController.DISPLAY_RESP)
                     .contains(UserMenuController.DISPLAY_REAS);
+
+            // The relation is missing, so the open reported no CICS response at all. WS-RESP-CD's
+            // VALUE ZEROS state is indistinguishable from a reported DFHRESP(NORMAL) - zero IS NORMAL -
+            // so leaving it there made :608 display RESP:0 for a STARTBR that did not work, on the arm
+            // reached only because it did not.
+            assertThat(ws.respCd())
+                    .isEqualTo(FileStatus.RESP_NOT_REPORTED)
+                    .isNotEqualTo(FileStatus.NORMAL);
+            assertThat(FileStatus.respReported(ws.respCd())).isFalse();
+            assertThat(ws.displays().get(0))
+                    .as("the response operand is not a number, because there is no response code")
+                    .isEqualTo(UserMenuController.DISPLAY_RESP
+                            + FileStatus.respNotReportedImage(UserMenuController.WS_RESP_CD_DIGITS)
+                            + UserMenuController.DISPLAY_REAS + FileStatus.NO_REASON_CODE)
+                    .doesNotContain(UserMenuController.DISPLAY_RESP + FileStatus.NORMAL
+                            + UserMenuController.DISPLAY_REAS);
+        }
+
+        @Test
+        @DisplayName("a READNEXT that DOES report a response renders that response as its number")
+        void aReportedResponseStaysNumeric() {
+            // The other side of the sentinel: it must not be over-applied. ENDFILE is a real DFHRESP
+            // value, and this program's :634 arm captures it before painting the bottom message.
+            WorkArea ws = new WorkArea();
+            UserMenuController controller = controllerOver(1);
+            BrowseCursor cursor = controller.startBrowseUserSecFile(ws);
+            controller.readNextUserSecFile(ws, cursor);
+
+            controller.readNextUserSecFile(ws, cursor);
+
+            assertThat(ws.respCd()).isEqualTo(FileStatus.ENDFILE);
+            assertThat(FileStatus.respReported(ws.respCd())).isTrue();
         }
 
         @Test
@@ -1662,18 +1696,105 @@ class UserMenuControllerTest {
         }
 
         @Test
-        @DisplayName("an absent AID parameter defaults to ENTER; an out-of-range one is refused")
+        @DisplayName("the parameter wins when supplied, and an out-of-range one is refused")
         void theAidParameterIsNarrowedSafely() {
-            assertThat(UserMenuController.resolveEibAid(null)).isEqualTo(CicsAid.DFHENTER);
-            assertThat(UserMenuController.resolveEibAid(0xF7)).isEqualTo(CicsAid.DFHPF7);
-            assertThat(UserMenuController.resolveEibAid(0xF8)).isEqualTo(CicsAid.DFHPF8);
-            assertThat(UserMenuController.resolveEibAid(0)).isZero();
-            assertThat(UserMenuController.resolveEibAid(255)).isEqualTo((byte) 0xFF);
+            assertThat(UserMenuController.resolveEibAid(0xF7, null)).isEqualTo(CicsAid.DFHPF7);
+            assertThat(UserMenuController.resolveEibAid(0xF8, null)).isEqualTo(CicsAid.DFHPF8);
+            assertThat(UserMenuController.resolveEibAid(0, null)).isZero();
+            assertThat(UserMenuController.resolveEibAid(255, null)).isEqualTo((byte) 0xFF);
+            // The more precise statement wins over a token that says something else.
+            assertThat(UserMenuController.resolveEibAid(0xF7, entering().withAid("PFK08")))
+                    .isEqualTo(CicsAid.DFHPF7);
 
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> UserMenuController.resolveEibAid(-1));
+                    .isThrownBy(() -> UserMenuController.resolveEibAid(-1, null));
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> UserMenuController.resolveEibAid(256));
+                    .isThrownBy(() -> UserMenuController.resolveEibAid(256, null));
+        }
+
+        @Test
+        @DisplayName("with no parameter, the payload's CCARD-AID token names the key")
+        void theTokenIsTheSecondCarrier() {
+            // The defect this pins: reading only the query parameter made COUSR00C:122-131 - WHEN DFHPF7
+            // and WHEN DFHPF8 - unreachable to a client that echoes the DTO it was given, because the
+            // token was ignored and the absent parameter defaulted to ENTER.
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK07")))
+                    .isEqualTo(CicsAid.DFHPF7);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK08")))
+                    .isEqualTo(CicsAid.DFHPF8);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK03")))
+                    .isEqualTo(CicsAid.DFHPF3);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("CLEAR")))
+                    .isEqualTo(CicsAid.DFHCLEAR);
+            // The copybook literal carries two trailing spaces, and either spelling resolves.
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PA1")))
+                    .isEqualTo(CicsAid.DFHPA1);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PA1  ")))
+                    .isEqualTo(CicsAid.DFHPA1);
+        }
+
+        @Test
+        @DisplayName("ENTER is the default only when neither carrier names a key")
+        void enterIsTheLastResort() {
+            assertThat(UserMenuController.resolveEibAid(null, null)).isEqualTo(CicsAid.DFHENTER);
+            assertThat(UserMenuController.resolveEibAid(null, entering()))
+                    .as("UserListRequest.empty() carries no token")
+                    .isEqualTo(CicsAid.DFHENTER);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("     ")))
+                    .isEqualTo(CicsAid.DFHENTER);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("\u0000".repeat(5))))
+                    .isEqualTo(CicsAid.DFHENTER);
+            // A token naming no key of the sixteen is not turned into the operator-facing "invalid key"
+            // message: WHEN OTHER at :133-137 belongs to a key the terminal really presented.
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK99")))
+                    .isEqualTo(CicsAid.DFHENTER);
+        }
+
+        @ParameterizedTest(name = "the token {0} maps back to the byte PfKeyResolver maps onto it")
+        @EnumSource(AidKey.class)
+        @DisplayName("every one of the sixteen tokens round-trips through the resolver")
+        void everyTokenRoundTripsThroughTheResolver(AidKey key) {
+            // The inverse must agree with PfKeyResolver for all sixteen, or a client echoing a token it
+            // was given would be understood as a different key than the one that produced it.
+            int mapped = UserMenuController.aidByteOfToken(key.token()).orElseThrow();
+
+            assertThat(PfKeyResolver.resolve((byte) mapped)).contains(key);
+        }
+
+        @Test
+        @DisplayName("the three inputs that name no key are each answered with no key")
+        void theInputsThatNameNoKeyAreEmpty() {
+            // The three empty results the method documents, asserted on the method itself rather than
+            // through resolveEibAid, because one of them cannot arrive that way: UserListRequest's
+            // canonical constructor normalises a null aid to spaces, so a null token only reaches here
+            // from a direct caller. It is a documented outcome, so it is pinned.
+            assertThat(UserMenuController.aidByteOfToken(null)).isEmpty();
+            assertThat(UserMenuController.aidByteOfToken("     ")).isEmpty();
+            assertThat(UserMenuController.aidByteOfToken("\u0000".repeat(5))).isEmpty();
+            assertThat(UserMenuController.aidByteOfToken("PFK99")).isEmpty();
+
+            // And the positive case, so the emptiness above is not vacuous.
+            assertThat(UserMenuController.aidByteOfToken(AidKey.PFK07.token()))
+                    .hasValue(CicsAid.DFHPF7 & 0xFF);
+        }
+
+        @Test
+        @DisplayName("the PF7 and PF8 paging arms are reachable from the token alone, end to end")
+        void thePagingArmsAreReachableFromTheTokenAlone() {
+            // Not just the resolution: the arms themselves. A stateless client that only echoes the
+            // payload can page backwards and forwards.
+            UserMenuController controller = controllerOver(PAGE_SIZE);
+
+            UserListResponse forward = controller
+                    .getUsers(reentering().withAid("PFK08"), null).screen();
+            UserListResponse backward = controller
+                    .getUsers(reentering().withAid("PFK07"), null).screen();
+
+            assertThat(forward.errMsg().strip())
+                    .as("PF8 from page one either pages or says it cannot; either way it is not ENTER")
+                    .isNotEqualTo(UserMenuController.MSG_INVALID_KEY);
+            assertThat(backward.errMsg().strip())
+                    .isEqualTo(UserMenuController.MSG_ALREADY_AT_TOP);
         }
 
         @Test

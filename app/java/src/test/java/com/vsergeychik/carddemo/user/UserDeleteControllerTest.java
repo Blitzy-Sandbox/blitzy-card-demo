@@ -1418,6 +1418,30 @@ class UserDeleteControllerTest {
         }
 
         @Test
+        @DisplayName("over HTTP, a body naming another user cannot make the URI delete it")
+        void theUriIsTheOnlyIdentityOverHttp() throws Exception {
+            // Only reachable through the HTTP binder: DELETE /api/users/A with USRIDIN naming B used to
+            // reach B's record, and a blank USRIDIN reached no record at all.
+            HeldRecord hold = stubHeldRead(USER_ID);
+            when(hold.deleteHeld()).thenReturn(WriteResult.written());
+            String body = mapper.writeValueAsString(withAid(screen("USER0002", reenter()), "PFK05"));
+
+            mockMvc.perform(delete("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isOk())
+                    // The confirmation names the record that was actually deleted, and it is the URI's -
+                    // COUSR03C:315 performs INITIALIZE-ALL-FIELDS first, which is why USRIDIN comes back
+                    // blank rather than naming either user.
+                    .andExpect(jsonPath("$.errMsg")
+                            .value(errMsgImage("User USER0001 has been deleted ...")))
+                    .andExpect(jsonPath("$.cu03Info.usrSelected").value(USER_ID));
+
+            verify(repository).readForUpdate(USER_ID);
+            verify(repository, never()).readForUpdate("USER0002");
+        }
+
+        @Test
         @DisplayName("no metadata item leaks into the JSON - gate G9")
         void noMetadataLeaksIntoTheJson() throws Exception {
             stubHeldRead(USER_ID);
@@ -1511,25 +1535,50 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("a body USRIDIN naming a different user is refused before the record is held")
-        void aBodyIdentityThatDisagreesIsRefused() {
-            UserDeleteRequest other = screen("USER0002", reenter());
+        @DisplayName("a body USRIDIN naming a different user is replaced by the path, which is the key")
+        void aBodyIdentityThatDisagreesIsProjectedOver() {
+            // The URI is the resource identity. A second, client-controlled statement of it must not be
+            // able to act on a record the URI does not name, so re-entry reads the path's user - never
+            // USER0002 - and the painted field shows the path's user too.
+            stubHeldRead(USER_ID);
 
-            assertThatThrownBy(() -> controller.deleteUser(USER_ID, other))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("USRIDIN names a user that is not the one the path addresses");
-            verify(repository, never()).readForUpdate(anyString());
+            UserDeleteResponse screen = controller
+                    .deleteUser(USER_ID, withAid(screen("USER0002", reenter()), "ENTER")).screen();
+
+            verify(repository).readForUpdate(USER_ID);
+            verify(repository, never()).readForUpdate("USER0002");
+            assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
         }
 
         @Test
-        @DisplayName("a CDEMO-CU03-USR-SELECTED naming a different user is refused for the same reason")
-        void anExtensionSelectionThatDisagreesIsRefused() {
-            UserDeleteRequest request = withSelection(screen(" ".repeat(8), enter()), "USER0002");
+        @DisplayName("a CDEMO-CU03-USR-SELECTED naming a different user is replaced for the same reason")
+        void anExtensionSelectionThatDisagreesIsProjectedOver() {
+            // app/cbl/COUSR03C.cbl:99-102 reads the extension, not the screen field, on first entry - so
+            // an unprojected extension would be the identity that wins on exactly that arm.
+            stubHeldRead(USER_ID);
 
-            assertThatThrownBy(() -> controller.deleteUser(USER_ID, request))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("CDEMO-CU03-USR-SELECTED names a user that is not the one");
-            verify(repository, never()).readForUpdate(anyString());
+            ScreenResponse<UserDeleteResponse> answer = controller.deleteUser(USER_ID,
+                    withSelection(screen(" ".repeat(8), enter()), "USER0002"));
+
+            verify(repository).readForUpdate(USER_ID);
+            verify(repository, never()).readForUpdate("USER0002");
+            assertThat(answer.screen().usrIdIn()).isEqualTo(USER_ID);
+            assertThat(answer.screen().cu03Info().usrSelected()).isEqualTo(USER_ID);
+        }
+
+        @Test
+        @DisplayName("a blank body USRIDIN is filled from the path, so re-entry reads a real key")
+        void aBlankBodyIdentityIsFilledFromThePath() {
+            // The defect this replaces: a blank USRIDIN left the source's validation, read and delete key
+            // blank on re-entry, so the URI's user was never read at all.
+            stubHeldRead(USER_ID);
+
+            UserDeleteResponse screen = controller
+                    .deleteUser(USER_ID, withAid(screen(" ".repeat(8), reenter()), "ENTER")).screen();
+
+            verify(repository).readForUpdate(USER_ID);
+            assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
+            assertThat(screen.errMsg()).isNotEqualTo(errMsgImage("User ID can NOT be empty..."));
         }
 
         @Test
@@ -1545,7 +1594,7 @@ class UserDeleteControllerTest {
         }
 
         @Test
-        @DisplayName("the extension travels in the payload, and its absence is its VALUE-clause state")
+        @DisplayName("the extension travels in the payload, carrying the path's identity in its one key")
         void theExtensionTravelsInThePayload() {
             stubHeldRead(USER_ID);
 
@@ -1553,8 +1602,24 @@ class UserDeleteControllerTest {
                     withSelection(screen(USER_ID, enter()), USER_ID));
 
             assertThat(answer.screen().cu03Info().usrSelected()).isEqualTo(USER_ID);
-            assertThat(controller.deleteUser(USER_ID, screen(USER_ID, enter())).screen().cu03Info())
-                    .isEqualTo(UserDeleteRequest.Cu03Info.initial());
+
+            // The other five items of the 34-byte group are carried untouched - only the selected id is
+            // the URI's to state - so a payload naming none of them still round-trips its VALUE clauses.
+            UserDeleteRequest.Cu03Info echoed =
+                    controller.deleteUser(USER_ID, screen(USER_ID, enter())).screen().cu03Info();
+            UserDeleteRequest.Cu03Info initial = UserDeleteRequest.Cu03Info.initial();
+            assertThat(echoed.usridFirst()).isEqualTo(initial.usridFirst());
+            assertThat(echoed.usridLast()).isEqualTo(initial.usridLast());
+            assertThat(echoed.pageNum()).isEqualTo(initial.pageNum());
+            assertThat(echoed.nextPageFlg()).isEqualTo(initial.nextPageFlg());
+            assertThat(echoed.usrSelFlg()).isEqualTo(initial.usrSelFlg());
+            assertThat(echoed.usrSelected()).isEqualTo(USER_ID);
+        }
+
+        @Test
+        @DisplayName("bindPathIdentity cannot invent a body: an absent one stays the EIBCALEN = 0 state")
+        void bindPathIdentityLeavesAnAbsentBodyAbsent() {
+            assertThat(controller.bindPathIdentity(USER_ID, null)).isNull();
         }
     }
 

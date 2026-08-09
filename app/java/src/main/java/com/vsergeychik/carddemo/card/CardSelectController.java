@@ -1201,12 +1201,6 @@ public class CardSelectController {
     static final String EIBCALEN_PARAM = "eibcalen";
 
     /**
-     * The {@code CARDSID} values that mean "the operator typed no card number", per
-     * {@code app/cbl/COCRDSLC.cbl:622-626}, where {@code '*'} and {@code SPACES} are treated alike.
-     */
-    private static final String NO_CRITERION = "*";
-
-    /**
      * Displays one credit card's detail screen: {@code GET /api/cards/{cardNum}}, transaction
      * {@code CCDL}, mapset {@code COCRDSL}, map {@code CCRDSLA}, fifteen fields.
      *
@@ -1225,9 +1219,10 @@ public class CardSelectController {
      *
      * @param cardNum  {@code CARDSIDI PIC X(16)} - the card number this URI addresses, and the
      *                 {@code CARDDAT} key {@code 9100-GETCARD-BYACCTCARD} reads with. Required, because
-     *                 it is the path, and authoritative: it is moved into {@code CARDSID}. A body that
-     *                 states {@code CARDSID} as well must agree with it, or state the source's own
-     *                 "no criterion" value - spaces or {@code '*'} ({@code :622-626})
+     *                 it is the path, and authoritative: it is moved into {@code CARDSID} and, when a
+     *                 communication area was passed, into that area's {@code CDEMO-CARD-NUM} as well, so
+     *                 that neither of the two arms that read a card number can read a different one. A
+     *                 body stating either carrier has its value replaced rather than refused
      * @param request  the whole {@code 01 CCRDSLAI} symbolic-map request, validated against the declared
      *                 widths, together with the 160-byte {@code CARDDEMO-COMMAREA} and the 12-byte
      *                 {@code WS-THIS-PROGCOMMAREA} trailer {@code :274-278} restores from.
@@ -1245,11 +1240,11 @@ public class CardSelectController {
      *         commarea, the 12-byte trailer and the attribute quads, all in the body so nothing is
      *         retained server-side
      * @throws IllegalArgumentException if {@code cardNum} or a bound field is wider than its
-     *                                  {@code PICTURE}, if the body's {@code CARDSID} names a different
-     *                                  card, if {@code eibAid} is outside {@code 0}-{@code 255}, or if
-     *                                  {@code eibcalen} is neither of the two lengths or disagrees with
-     *                                  the carrier - each answered {@code 400} by
-     *                                  {@code WebConfig.CobolErrorHandler} with no value echoed
+     *                                  {@code PICTURE}, if {@code eibAid} is outside
+     *                                  {@code 0}-{@code 255}, or if {@code eibcalen} is neither of the
+     *                                  two lengths or disagrees with the carrier - each answered
+     *                                  {@code 400} by {@code WebConfig.CobolErrorHandler} with no value
+     *                                  echoed
      */
     @GetMapping(path = "/api/cards/{cardNum}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<ScreenResponse<CardSelectResponse>> viewCardDetail(
@@ -1282,19 +1277,35 @@ public class CardSelectController {
      * not, there is nothing faithful to reproduce, so the request is refused at the boundary before any
      * padding, any repository call and any lock.
      *
-     * <h4>Why the path wins, and how the body still gets a say</h4>
-     * {@code CARDSID} is both the resource's identity and a screen field the operator types into. When
-     * the two agree there is nothing to decide. When the body leaves the field at its "no criterion"
-     * state - spaces or {@code '*'}, which {@code :622-626} treats alike - the path supplies it, which
-     * is how a client re-sends a screen it painted from a URI. When the body names a
-     * <em>different</em> card the two statements of identity contradict each other, and answering one
-     * of them silently would be a guess; it is refused instead.
+     * <h4>The path is projected into both carriers of the key</h4>
+     * This program reads the card number from two places, and which one it reads depends on which arm of
+     * {@code :268-371} the request lands on. On re-entry it is the typed field {@code CARDSIDI}, edited by
+     * {@code :622-627} into {@code CC-CARD-NUM}. On a fresh arrival from the card-list screen it is
+     * {@code CDEMO-CARD-NUM} in the communication area, which {@code :343} moves straight into
+     * {@code CC-CARD-NUM-N} before reading - the typed field is not consulted at all on that arm. Both
+     * carriers are therefore set from the path here, before any arm is selected and before any repository
+     * call, so the URI is the only statement of which record is read.
+     *
+     * <p>Leaving the communication area as the caller sent it would leave a second, independently
+     * client-controlled identity, and {@code GET /api/cards/A} with a context naming card B would return
+     * B's card number, account, embossed name, status and expiry - a URI answering with a record it does
+     * not name. {@code 9100-GETCARD-BYACCTCARD} keys the read on the card number alone (its
+     * {@code MOVE CC-ACCT-ID-N TO WS-CARD-RID-ACCT-ID} is commented out in the source), so projecting the
+     * card number is what closes it; {@code CDEMO-ACCT-ID} stays as the payload delivered it, because it
+     * is a painted echo rather than part of the key.
+     *
+     * <p>No disagreement error is raised. {@code COCRDSLC} has no such condition - a terminal has one
+     * value, not two - so inventing one would add a failure mode the legacy screen cannot produce. A
+     * client that re-sends a screen it painted from this URI agrees with the path and sees no difference;
+     * one that names a second card has that value replaced rather than acted on. The source's own
+     * "no criterion" handling at {@code :622-626} and its {@code 2220-EDIT-CARD} messages stay reachable,
+     * because a path value that is blank or not sixteen digits is passed to them unchanged.
      *
      * @param cardNum the path variable; must not be {@code null}
      * @param request the bound body, or {@code null} for a cold start
-     * @return the request to execute, with {@code CARDSID} set from the path; never {@code null}
-     * @throws IllegalArgumentException if the path value is wider than {@code CARDSID}, or the body
-     *                                  states a different card
+     * @return the request to execute, with {@code CARDSID} and - when a communication area was passed -
+     *         {@code CDEMO-CARD-NUM} both set from the path; never {@code null}
+     * @throws IllegalArgumentException if the path value is wider than {@code CARDSID}
      */
     CardSelectRequest bind(String cardNum, CardSelectRequest request) {
         if (cardNum.length() > CardSelectRequest.CARDSID_LENGTH) {
@@ -1305,13 +1316,15 @@ public class CardSelectController {
         }
 
         CardSelectRequest received = request == null ? coldStartRequest() : new CardSelectRequest(request);
-        String stated = received.getCardsid();
-        if (statesADifferentCard(cardNum, stated)) {
-            throw new IllegalArgumentException("The request body states a card number that is not the "
-                    + "one the path addresses. CARDSID is the resource's identity here, so the two "
-                    + "cannot disagree; send the field as spaces or '*' to let the path supply it.");
-        }
         received.setCardsid(codec.movePicX(cardNum, CardSelectRequest.CARDSID_LENGTH));
+
+        // The communication area's own card number, the one :343 reads. Projected only when an area was
+        // actually passed: a null context is EIBCALEN = 0, which :268 branches on, and fabricating one
+        // here would send the request down an arm the caller never reached.
+        if (received.hasNavigationContext()) {
+            received.setNavigationContext(
+                    received.getNavigationContext().withCardNum(carriedCardNumber(cardNum)));
+        }
 
         // Never null: initializeState() fills all fifteen items at their declared widths, setAcctsid
         // normalises a null - including an explicit JSON null, because Jackson binds through the setter
@@ -1330,26 +1343,38 @@ public class CardSelectController {
     }
 
     /**
-     * Whether the body's {@code CARDSID} names a card other than the one the URI addresses.
+     * The URI's card number as {@code CDEMO-CARD-NUM PIC 9(16)} holds it.
      *
-     * <p>Three values are <strong>not</strong> a different card: {@code null}, the "no criterion" states
-     * {@code app/cbl/COCRDSLC.cbl:622-626} treats alike - spaces and {@code '*'} - and the path value
-     * itself. Everything else is a second, contradicting statement of identity.
+     * <p>{@code CARDSID} is {@code PIC X(16)} and the communication area's carried card number is
+     * {@code PIC 9(16)} - alphanumeric on the screen, numeric in the commarea - so the projection has to
+     * cross that boundary. A path value of sixteen digits or fewer is the number it spells, leading zeros
+     * and all, since {@code :343} writes through the numeric {@code REDEFINES} view and zero-fills on the
+     * left. Anything a {@code PIC 9(16)} item cannot hold - a blank segment, {@code '*'}, or any value
+     * with a non-digit in it - yields zero, which is the area's own unset value and the one
+     * {@code 1000-SEND-MAP} already tests for. Zero rather than a refusal, because zero is the only answer
+     * that cannot name a card the URI does not: the arm reads it, finds nothing, and the source's
+     * {@code NOTFND} handling paints its own message, exactly as it does for a card the operator typed
+     * that does not exist.
      *
-     * <p>Compared trimmed, because {@code CARDSID} is {@code PIC X(16)} and a client that echoes a
-     * painted screen back sends the field space-padded to its declared width; a padded form of the same
-     * card number is the same card number.
+     * <p>Trailing and leading spaces are stripped before the digit test, because a client echoing a
+     * painted screen sends {@code CARDSID} space-padded to its declared width and a padded number is the
+     * same number.
      *
-     * @param cardNum the path variable
-     * @param stated  the body's {@code CARDSID}, possibly {@code null}
-     * @return {@code true} when the two contradict each other
+     * @param cardNum the path variable, already known to fit {@code CARDSID}
+     * @return the number for {@code CDEMO-CARD-NUM}, or {@code 0} when the path states none a
+     *         {@code PIC 9(16)} item could hold
      */
-    static boolean statesADifferentCard(String cardNum, String stated) {
-        if (stated == null) {
-            return false;
+    static long carriedCardNumber(String cardNum) {
+        String trimmed = cardNum.trim();
+        if (trimmed.isEmpty()) {
+            return 0L;
         }
-        String trimmed = stated.trim();
-        return !trimmed.isEmpty() && !NO_CRITERION.equals(trimmed) && !cardNum.equals(trimmed);
+        for (int index = 0; index < trimmed.length(); index++) {
+            if (trimmed.charAt(index) < '0' || trimmed.charAt(index) > '9') {
+                return 0L;
+            }
+        }
+        return Long.parseLong(trimmed);
     }
 
     /**
@@ -3209,8 +3234,34 @@ public class CardSelectController {
         //
         // RETURN_CODE_IO_ERROR (12) is the estate's convention for an abend arising from a
         // data-access failure, which every path into this handler is.
+        //
+        // withSourceDiagnostic carries the 134 bytes :865-869 actually transmits, so the error handler
+        // can publish what the operator would have read instead of replacing it with a constant. Every
+        // one of the four fields is source-authored - a copybook literal, this PROGRAM-ID, or spaces -
+        // and the triggering failure is deliberately NOT among them: it travels as the cause, which the
+        // handler never renders.
         return AbendException.withoutAbendParameters(LIT_THISPGM,
-                AbendException.RETURN_CODE_IO_ERROR,
-                "ABCODE " + ABEND_ROUTINE_ABCODE + ": " + abendData.abendMsg().trim(), cause);
+                        AbendException.RETURN_CODE_IO_ERROR,
+                        "ABCODE " + ABEND_ROUTINE_ABCODE + ": " + abendData.abendMsg().trim(), cause)
+                .withSourceDiagnostic(abendDataImage(abendData));
+    }
+
+    /**
+     * {@code ABEND-DATA} as the {@code EXEC CICS SEND FROM(ABEND-DATA) LENGTH(LENGTH OF ABEND-DATA)}
+     * at {@code app/cbl/COCRDSLC.cbl:865-869} puts it on the wire: the four fields concatenated at their
+     * declared widths, {@value SystemMessages#ABEND_DATA_LENGTH} characters in total.
+     *
+     * <p>{@code LENGTH OF ABEND-DATA} is the group's length, so the transmission is the whole 4 + 8 + 50
+     * + 72 with no separator and no trimming - which is why the components are brought to their declared
+     * widths first and then joined. A trimmed rendering would be a different number of bytes than the
+     * terminal received.
+     *
+     * @param abendData the area as the routine leaves it; must not be {@code null}
+     * @return the transmitted image, exactly {@value SystemMessages#ABEND_DATA_LENGTH} characters
+     */
+    static String abendDataImage(SystemMessages.AbendData abendData) {
+        SystemMessages.AbendData atWidth = abendData.toDeclaredWidths();
+        return atWidth.abendCode() + atWidth.abendCulprit() + atWidth.abendReason()
+                + atWidth.abendMsg();
     }
 }

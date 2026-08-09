@@ -275,7 +275,7 @@ class CardUpdateServiceTest {
         @BeforeEach
         void lockSucceeds() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(storedRecord()));
+                    .thenReturn(cardRead(storedRecord()));
         }
 
         @Test
@@ -342,7 +342,7 @@ class CardUpdateServiceTest {
                 + ":1499 INSPECT runs first")
         void caseOnlyNameDifferenceIsNotAChange() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(
+                    .thenReturn(cardRead(
                             CardUpdateServiceTest.this.storedRecord()
                                     .withCardEmbossedName("john q public")));
             when(cardRepository.rewrite(any())).thenReturn(CardWriteResult.normal());
@@ -364,7 +364,7 @@ class CardUpdateServiceTest {
                 + "the reference modifications skip them")
         void differingSeparatorsAreNotAChange() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(CardUpdateServiceTest.this.storedRecord()
+                    .thenReturn(cardRead(CardUpdateServiceTest.this.storedRecord()
                             .withCardExpiraionDate("2027/03/09")));
             when(cardRepository.rewrite(any())).thenReturn(CardWriteResult.normal());
 
@@ -1019,7 +1019,7 @@ class CardUpdateServiceTest {
                                 completion.add(status);
                             }
                         });
-                return CardReadResult.normal(stored);
+                return cardRead(stored);
             });
             when(cardRepository.rewrite(any(CardRecord.class))).thenAnswer(invocation -> {
                 insideAUnitOfWork.add(DatasetUnitOfWork.active());
@@ -1055,7 +1055,7 @@ class CardUpdateServiceTest {
                                 completion.add(status);
                             }
                         });
-                return CardReadResult.normal(stored);
+                return cardRead(stored);
             });
             when(cardRepository.rewrite(any(CardRecord.class)))
                     .thenReturn(CardWriteResult.reportedFailure(FileStatus.INVREQ, 42));
@@ -1112,5 +1112,33 @@ class CardUpdateServiceTest {
             Assertions.assertThat(CardUpdateService.READ_OPERATION_NAME).isEqualTo("READ");
             Assertions.assertThat(CardUpdateService.REWRITE_OPERATION_NAME).isEqualTo("REWRITE");
         }
+    }
+
+    // =================================================================================================
+    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
+    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
+    // image it supplies is the one a row of exactly this record would carry - which is what these two
+    // helpers state, once, rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The normal arm over a synthesised row of this record.
+     *
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardRead(CardRecord record) {
+        return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * The duplicate-key arm over a synthesised row of this record.
+     *
+     * @param record the first record sharing the alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardReadDuplicate(CardRecord record) {
+        return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 }

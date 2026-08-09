@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.Charset;
+import java.util.List;
 import java.util.Objects;
 
 import org.apache.commons.logging.Log;
@@ -223,6 +224,17 @@ public class AccountBalanceUpdateJob {
      * same name: an operator reading a failed execution sees the step the mainframe would have named.
      */
     public static final String STEP_NAME = "STEP05";
+
+    /**
+     * The whole step sequence of {@code app/jcl/READXREF.jcl}: one step, {@value #STEP_NAME}, running
+     * {@value #PROGRAM_NAME}, ungated.
+     *
+     * <p>Named as a sequence because that is the unit the JCL declares. The three checks below it -
+     * the step's program, its gating, its name - each examine one field of one step and are silent
+     * about a second step declared alongside it. Comparing the sequence closes that.
+     */
+    public static final List<StepContract> REQUIRED_STEPS =
+            List.of(new StepContract(STEP_NAME, PROGRAM_NAME, false));
 
     /**
      * The DD name of this job's one input dataset, as {@code app/jcl/READXREF.jcl} declares it and as
@@ -455,6 +467,11 @@ public class AccountBalanceUpdateJob {
         requireProgram(step.program(), "carddemo.jobs." + JOB_KEY + ".steps[" + STEP_NAME
                 + "].program");
         requireUngatedStep(step);
+        // The three checks above examine one field each of one step, and none of them can see a second
+        // step declared beside it or a different step declared first. READXREF.jcl has exactly one EXEC,
+        // so the sequence is compared whole - one comparison covering the cardinality and order the
+        // field-level checks are structurally blind to.
+        batchConfig.requireSteps(JOB_KEY, REQUIRED_STEPS, "app/jcl/READXREF.jcl:22");
         this.stepName = step.name();
 
         // The DD name is a configuration key; what it resolves to is configuration's business. This
@@ -754,6 +771,11 @@ public class AccountBalanceUpdateJob {
             // :65  01 END-OF-FILE PIC X(01) VALUE 'N'.   - and the record area COPY CVACT03Y declares.
             String endOfFile = NOT_AT_END_OF_FILE;
             CardXrefRecord recordArea = null;
+            // The record area's own characters, moved by the same READ ... INTO that filled recordArea.
+            // Kept alongside it because DISPLAY CARD-XREF-RECORD names the 01 group item and so writes
+            // the whole 50 bytes - including the FILLER X(14) that holds no field and that a re-encode
+            // of recordArea would emit as spaces whatever the row held.
+            String recordAreaImage = null;
             int recordsRead = 0;
 
             // :74  PERFORM UNTIL END-OF-FILE = 'Y'
@@ -772,13 +794,15 @@ public class AccountBalanceUpdateJob {
                     endOfFile = next.endOfFile();
                     if (next.record() != null) {
                         recordArea = next.record();
+                        recordAreaImage = next.storedImage();
                         recordsRead++;
                     }
 
                     // :77  IF END-OF-FILE = 'N'
                     if (NOT_AT_END_OF_FILE.equals(endOfFile)) {
-                        // :78  DISPLAY CARD-XREF-RECORD  - the SECOND display of the same record area.
-                        sysout.display(displayImageOf(recordArea));
+                        // :78  DISPLAY CARD-XREF-RECORD  - the SECOND display of the same record area,
+                        // and therefore of the same bytes: the area is unchanged between the two.
+                        sysout.display(recordAreaImage);
                     }
                 }
             }
@@ -899,6 +923,7 @@ public class AccountBalanceUpdateJob {
 
         int applResult;
         CardXrefRecord record = null;
+        String storedImage = null;
         if (FileStatus.isOk(status)) {
             // :95  MOVE 0 TO APPL-RESULT
             applResult = FileStatus.APPL_AOK;
@@ -906,8 +931,12 @@ public class AccountBalanceUpdateJob {
                     + XREFFILE_DD_NAME + " reported file status " + FileStatus.toStatusImage(status)
                     + " and carried no record. The two are contradictory: a successful READ leaves the "
                     + "record area populated, which is why " + PROGRAM_NAME + ":96 DISPLAYs it."));
+            // READ ... INTO CARD-XREF-RECORD moves the whole 50-byte area, so both views of it travel
+            // together: the decoded fields for anything that branches on a value, and the row's own
+            // characters for the two DISPLAYs, which write the area including its FILLER.
+            storedImage = read.requireStoredImage();
             // :96  DISPLAY CARD-XREF-RECORD   - the FIRST of the two displays of this record.
-            sysout.display(displayImageOf(record));
+            sysout.display(storedImage);
         } else if (FileStatus.isEndOfFile(status)) {
             // :99  MOVE 16 TO APPL-RESULT
             applResult = FileStatus.APPL_EOF;
@@ -918,11 +947,11 @@ public class AccountBalanceUpdateJob {
 
         // :104  IF APPL-AOK CONTINUE
         if (applAok(applResult)) {
-            return new GetNextOutcome(NOT_AT_END_OF_FILE, record);
+            return new GetNextOutcome(NOT_AT_END_OF_FILE, record, storedImage);
         }
         // :107  IF APPL-EOF  ->  :108  MOVE 'Y' TO END-OF-FILE
         if (applEof(applResult)) {
-            return new GetNextOutcome(AT_END_OF_FILE, null);
+            return new GetNextOutcome(AT_END_OF_FILE, null, null);
         }
         // :110-112  DISPLAY 'ERROR READING XREFFILE', then 9910-DISPLAY-IO-STATUS.
         reportIoFailure(sysout, ERROR_READING_XREFFILE, status);
@@ -1183,22 +1212,28 @@ public class AccountBalanceUpdateJob {
     // =================================================================================================
 
     /**
-     * Renders a cross-reference record as the {@value CardXrefRecord#RECORD_LENGTH}-character image
-     * {@code DISPLAY CARD-XREF-RECORD} writes.
+     * Renders a cross-reference record as the {@value CardXrefRecord#RECORD_LENGTH}-character image it
+     * <em>encodes to</em>.
      *
-     * <p>The record is encoded to its stored bytes and those bytes are decoded back to text, rather
-     * than the three fields being formatted individually. That is deliberate: the encode path owns the
-     * copybook's padding rules and emits every declared span, so the line is
-     * {@value CardXrefRecord#RECORD_LENGTH} characters with the card number left justified and
-     * space-padded, both identifiers right justified and zero-filled, and the trailing
-     * {@code FILLER X(14)} present as fourteen spaces. Formatting the fields here instead would put a
-     * second, divergeable copy of those rules in this file - and the most likely divergence is dropping
-     * the {@code FILLER}, which would make every line 14 bytes short of what the program writes.
+     * <p><strong>This is not what the program's two {@code DISPLAY}s write, and the difference is the
+     * point.</strong> {@code READ XREFFILE-FILE INTO CARD-XREF-RECORD} moves the row's whole 50 bytes
+     * into the record area, and {@code DISPLAY CARD-XREF-RECORD} ({@code :78} and {@code :96}) writes
+     * that area - so the program writes the row's own bytes, which
+     * {@link ReadResult#requireStoredImage()} carries and which
+     * {@link #execute(SysoutSink, StopSignal)} displays. This method instead
+     * reconstructs an image from the three decoded fields, which agrees with the row on every declared
+     * span and emits the trailing {@code FILLER X(14)} of {@code app/cpy/CVACT03Y.cpy} as fourteen
+     * spaces whatever the row held there. The two therefore coincide for every row whose {@code FILLER}
+     * is blank - which is every row of {@code app/data/ASCII/cardxref.txt} - and diverge for any row
+     * that is not.
      *
-     * <p>Public because it is the observable output of this program: a parity harness renders the same
-     * image from a record and compares it field by field.
+     * <p>It exists for the one caller that has a record and no row: an expected image derived from a
+     * declared {@link CardXrefRecord}, which is how a parity case states what a line should be. The
+     * encode path is used rather than formatting the three fields here, so the copybook's padding rules
+     * live in exactly one place: the card number left justified and space-padded, both identifiers right
+     * justified and zero-filled, and the {@code FILLER} span present rather than dropped.
      *
-     * @param record the record the read placed in the record area; never {@code null}
+     * @param record the record to render; never {@code null}
      * @return exactly {@value CardXrefRecord#RECORD_LENGTH} characters
      * @throws NullPointerException if {@code record} is {@code null}
      */
@@ -1399,7 +1434,7 @@ public class AccountBalanceUpdateJob {
      *                  its record area untouched, exactly as a COBOL {@code READ ... INTO} does at
      *                  {@code AT END}
      */
-    private record GetNextOutcome(String endOfFile, CardXrefRecord record) {
+    private record GetNextOutcome(String endOfFile, CardXrefRecord record, String storedImage) {
     }
 
     /**

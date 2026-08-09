@@ -280,7 +280,7 @@ class AccountUpdateServiceTest {
         when(accountRepository.readForUpdate(anyString()))
                 .thenReturn(AccountRepository.ReadResult.found(storedAccount()));
         when(customerRepository.readForUpdate(anyString()))
-                .thenReturn(CustomerRepository.ReadResult.found(storedCustomer()));
+                .thenReturn(customerFound(storedCustomer()));
     }
 
     /**
@@ -1328,7 +1328,7 @@ class AccountUpdateServiceTest {
             when(accountRepository.readForUpdate(anyString()))
                     .thenReturn(AccountRepository.ReadResult.found(changed));
             when(customerRepository.readForUpdate(anyString()))
-                    .thenReturn(CustomerRepository.ReadResult.found(storedCustomer()));
+                    .thenReturn(customerFound(storedCustomer()));
 
             WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
                     matchedOldDetails(), newDetails(), null, CODEC);
@@ -1464,7 +1464,7 @@ class AccountUpdateServiceTest {
             });
             when(customerRepository.readForUpdate(anyString())).thenAnswer(invocation -> {
                 observed.add("read CUSTDAT active=" + DatasetUnitOfWork.active());
-                return CustomerRepository.ReadResult.found(storedCustomer());
+                return customerFound(storedCustomer());
             });
             when(accountRepository.rewrite(any(AccountRecord.class))).thenAnswer(invocation -> {
                 observed.add("rewrite ACCTDAT active=" + DatasetUnitOfWork.active());
@@ -2460,5 +2460,24 @@ class AccountUpdateServiceTest {
                     .isEqualTo(AccountUpdateService.NUMVAL_CONFORMS);
             Assertions.assertThat(AccountUpdateService.numvalC(image)).isEqualByComparingTo(expected);
         }
+    }
+
+    // =================================================================================================
+    // Synthesised customer read outcomes. A ReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CUSTOMER-RECORD (app/cbl/CBCUS01C.cbl:78 and :96) writes the record
+    // area and the area's trailing FILLER holds whatever the row held. A test constructing an outcome has
+    // no row, so the image it supplies is the one a row of exactly this record would carry - stated once
+    // here rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The successful arm over a synthesised row of this record.
+     *
+     * @param customer the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CustomerRepository.ReadResult customerFound(CustomerRecord customer) {
+        return CustomerRepository.ReadResult.found(customer,
+                customer.recordImage(StandardCharsets.US_ASCII));
     }
 }

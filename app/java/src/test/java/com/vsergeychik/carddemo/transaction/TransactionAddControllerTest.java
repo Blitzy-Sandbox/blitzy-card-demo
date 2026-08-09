@@ -670,8 +670,8 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName(":290 a condition with no CICS RESP leaves WS-RESP-CD at its VALUE ZEROS")
-        void anOutcomeWithNoCicsResponseLeavesTheItemAtZero() {
+        @DisplayName(":290 a condition with no CICS RESP never renders as RESP 0, which is NORMAL")
+        void anOutcomeWithNoCicsResponseIsNotRenderedAsNormal() {
             TransactionRepository repository = repositoryReturning(
                     ReadResult.other(DD_NAME, TransactionRepository.PERMANENT_ERROR_STATUS));
             TransactionAddRequest request = reentry(CicsAid.DFHENTER);
@@ -679,12 +679,43 @@ class TransactionAddControllerTest {
 
             ProgramState state = controllerOver(repository).mainPara(request);
 
+            // WS-RESP-CD's VALUE ZEROS state is indistinguishable from a reported DFHRESP(NORMAL),
+            // because zero IS NORMAL. Leaving the item there for an outcome that reported no response at
+            // all made :290 emit RESP:000000000 - a line that says the read succeeded, on the arm reached
+            // only because it did not. The sentinel cannot collide with any DFHRESP value.
             assertThat(state.respCd())
-                    .as("ifPresent, never orElse: nothing invented where CICS reported nothing")
-                    .isEqualTo(FileStatus.NORMAL);
-            assertThat(state.displays()).containsExactly("RESP:000000000REAS:000000000");
+                    .as("a reported NORMAL and an unreported response must not share one value")
+                    .isEqualTo(FileStatus.RESP_NOT_REPORTED)
+                    .isNotEqualTo(FileStatus.NORMAL);
+            assertThat(FileStatus.respReported(state.respCd())).isFalse();
+
+            // The rendered line keeps its shape - DISPLAY concatenates its operands at their declared
+            // widths - and the response operand is unmistakably not a response code.
+            assertThat(state.displays()).containsExactly("RESP:*********REAS:000000000");
+            assertThat(state.displays().get(0))
+                    .doesNotContain("RESP:000000000")
+                    .hasSameSizeAs("RESP:000000000REAS:000000000");
             assertThat(state.message().strip())
                     .isEqualTo(TransactionAddController.MSG_UNABLE_TO_LOOKUP);
+        }
+
+        @Test
+        @DisplayName(":290 a condition that DOES report a RESP still renders that exact value")
+        void aReportedResponseStillRendersAsItsNumber() {
+            // The other side of the sentinel: it must not be applied to an outcome that reported a
+            // response. ENDFILE is a real DFHRESP value and reaches WHEN OTHER on a keyed read.
+            TransactionRepository repository = repositoryReturning(ReadResult.endOfFile(DD_NAME));
+            TransactionAddRequest request = reentry(CicsAid.DFHENTER);
+            request.setTrnidin(KNOWN_TRAN_ID);
+
+            ProgramState state = controllerOver(repository).mainPara(request);
+
+            assertThat(state.respCd()).isEqualTo(FileStatus.ENDFILE);
+            assertThat(FileStatus.respReported(state.respCd())).isTrue();
+            assertThat(state.displays()).containsExactly("RESP:000000020REAS:000000000");
+            assertThat(state.displays().get(0))
+                    .as("a reported response is a nine-digit number, never the asterisk image")
+                    .matches("RESP:\\d{9}REAS:\\d{9}");
         }
 
         @Test
@@ -1482,6 +1513,31 @@ class TransactionAddControllerTest {
         }
 
         @Test
+        @DisplayName("over HTTP, an extension naming another transaction cannot make the URI read it")
+        void theUriIsTheOnlyIdentityOverHttp() throws Exception {
+            // Only reachable through the HTTP binder: /api/transactions/A with CDEMO-CT01-TRN-SELECTED
+            // naming B used to read B on the first-entry arm.
+            TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
+            TransactionRepository repository = repositoryReturning(ReadResult.found(DD_NAME, record));
+            ObjectMapper mapper = new ObjectMapper();
+            MockMvc mockMvc = MockMvcBuilders
+                    .standaloneSetup(controllerOver(repository))
+                    .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
+                    .build();
+            TransactionAddRequest arriving = firstEntry();
+            arriving.getCt01Info().setTrnSelected("0000000000000099");
+
+            mockMvc.perform(get("/api/transactions/{tranId}", KNOWN_TRAN_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(arriving)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.trnidino").value(KNOWN_TRAN_ID));
+
+            verify(repository).readForUpdateByTranId(KNOWN_TRAN_ID);
+            verify(repository, never()).readForUpdateByTranId("0000000000000099");
+        }
+
+        @Test
         @DisplayName("an absent body is EIBCALEN = 0 and is answered with the sign-on target")
         void theAdapterAnswersAColdStart() throws Exception {
             ObjectMapper mapper = new ObjectMapper();
@@ -1522,7 +1578,7 @@ class TransactionAddControllerTest {
     // =============================================================================================
 
     @Nested
-    @DisplayName("bind - the URI names the transaction, and the body may not contradict it")
+    @DisplayName("bind - the URI names the transaction, in every carrier of that identity")
     class RouteBinding {
 
         private final TransactionAddController controller = controllerOver(unusedRepository());
@@ -1534,6 +1590,16 @@ class TransactionAddControllerTest {
 
             assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID)
                     .hasSize(TransactionAddRequest.TRNIDIN_LENGTH);
+        }
+
+        @Test
+        @DisplayName("it fills CDEMO-CT01-TRN-SELECTED too, which is what first entry reads")
+        void thePathVariableAlsoFillsTheExtension() {
+            // app/cbl/COTRN01C.cbl:103-106 reads the extension, not the typed field, on first entry.
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, reentry(CicsAid.DFHENTER));
+
+            assertThat(bound.getCt01Info().getTrnSelected()).isEqualTo(KNOWN_TRAN_ID)
+                    .hasSize(TransactionAddRequest.Ct01Info.TRN_SELECTED_LENGTH);
         }
 
         @Test
@@ -1556,14 +1622,42 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName("a body naming a different transaction is refused before any read")
-        void aDisagreeingBodyIsRefused() {
+        @DisplayName("a body naming a different transaction has both carriers replaced by the URI's")
+        void aDisagreeingBodyIsProjectedOver() {
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.setTrnidin("0000000000000099");
+            stating.getCt01Info().setTrnSelected("0000000000000098");
 
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> controller.bind(KNOWN_TRAN_ID, stating))
-                    .withMessageContaining("TRNIDIN is the resource's identity");
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, stating);
+
+            assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
+            assertThat(bound.getCt01Info().getTrnSelected()).isEqualTo(KNOWN_TRAN_ID);
+        }
+
+        @Test
+        @DisplayName("an extension naming another transaction cannot make first entry read it")
+        void aDisagreeingExtensionCannotBeRead() {
+            TransactionRepository repository = repositoryReturning(ReadResult.notFound(DD_NAME));
+            TransactionAddRequest arriving = firstEntry();
+            arriving.getCt01Info().setTrnSelected("0000000000000099");
+
+            controllerOver(repository).viewTransaction(KNOWN_TRAN_ID, arriving);
+
+            verify(repository).readForUpdateByTranId(KNOWN_TRAN_ID);
+            verify(repository, never()).readForUpdateByTranId("0000000000000099");
+        }
+
+        @Test
+        @DisplayName("a blank extension no longer skips the path-driven lookup first entry asks for")
+        void aBlankExtensionStillReadsThePathsTransaction() {
+            TransactionRepository repository = repositoryReturning(ReadResult.notFound(DD_NAME));
+            TransactionAddRequest arriving = firstEntry();
+            arriving.getCt01Info()
+                    .setTrnSelected(" ".repeat(TransactionAddRequest.Ct01Info.TRN_SELECTED_LENGTH));
+
+            controllerOver(repository).viewTransaction(KNOWN_TRAN_ID, arriving);
+
+            verify(repository).readForUpdateByTranId(KNOWN_TRAN_ID);
         }
 
         @Test

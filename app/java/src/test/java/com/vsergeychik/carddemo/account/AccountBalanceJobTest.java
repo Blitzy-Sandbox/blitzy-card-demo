@@ -231,9 +231,19 @@ class AccountBalanceJobTest {
      * @return the catalogue
      */
     private static JobContracts jobContracts(StepContract step) {
+        return jobContracts(List.of(step));
+    }
+
+    /**
+     * The {@code carddemo.jobs} catalogue carrying a deliberately chosen step sequence.
+     *
+     * @param steps the sequence to declare, in order
+     * @return the catalogue
+     */
+    private static JobContracts jobContracts(List<StepContract> steps) {
         JobContracts catalogue = new JobContracts();
         catalogue.put(AccountBalanceJob.JOB_KEY, new JobContract(AccountBalanceJob.PROGRAM_ID,
-                List.of(), List.of(step), null, Map.of()));
+                List.of(), steps, null, Map.of()));
         return catalogue;
     }
 
@@ -1092,6 +1102,39 @@ class AccountBalanceJobTest {
                     .isThrownBy(() -> new AccountBalanceJob(gated, repository(seeded(List.of())),
                             new AbsentBean<>()))
                     .withMessageContaining("COND");
+        }
+
+        @Test
+        @DisplayName("a second step declared beside STEP05 is refused, because READACCT.jcl has one "
+                + "EXEC and no other")
+        void anAddedStep() {
+            // The three checks above examine STEP05 and are structurally blind to anything declared
+            // beside it: the step they resolve is found by name, so it is found whether it is the only
+            // step or the first of two. A second step would run work app/jcl/READACCT.jcl never ran, and
+            // - because this job's only effect is DISPLAY output - would silently double the SYSOUT the
+            // parity harness compares.
+            BatchConfig extra = scaffolding(jobContracts(List.of(
+                    new StepContract(AccountBalanceJob.STEP_NAME, AccountBalanceJob.PROGRAM_ID, false),
+                    new StepContract("STEP06", AccountBalanceJob.PROGRAM_ID, false))));
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> new AccountBalanceJob(extra, repository(seeded(List.of())),
+                            new AbsentBean<>()))
+                    .withMessageContaining("does not declare the step sequence of "
+                            + "app/jcl/READACCT.jcl")
+                    .withMessageContaining("configured: [STEP05/CBACT01C, STEP06/CBACT01C]")
+                    .withMessageContaining("required:   [STEP05/CBACT01C]");
+        }
+
+        @Test
+        @DisplayName("the shipped single-step sequence is accepted")
+        void theShippedSequence() {
+            assertThat(AccountBalanceJob.REQUIRED_STEPS)
+                    .containsExactly(new StepContract(AccountBalanceJob.STEP_NAME,
+                            AccountBalanceJob.PROGRAM_ID, false));
+            assertThat(new AccountBalanceJob(scaffolding(jobContracts()),
+                    repository(seeded(List.of())), new AbsentBean<>()).stepContract())
+                    .isEqualTo(AccountBalanceJob.REQUIRED_STEPS.get(0));
         }
 
         @Test

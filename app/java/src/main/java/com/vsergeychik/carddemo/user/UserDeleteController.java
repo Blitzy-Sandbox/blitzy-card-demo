@@ -496,21 +496,23 @@ public class UserDeleteController {
      *       into the map.</li>
      * </ul>
      *
-     * <h4>Why a path that disagrees with the body is refused</h4>
-     * On re-entry the source reads the id from {@code USRIDIN}, so a request whose path names
-     * {@code USERA} while its {@code USRIDIN} carries {@code USERB} would delete {@code USERB} through a
-     * URI that names {@code USERA} - a resource identity that does not identify the resource acted on. The
-     * source cannot exhibit that, because on a real terminal the two are one value: the operator sees
-     * {@code USRIDIN} and there is no second statement of identity to disagree with it. The projection
-     * introduces the second statement, so it also refuses the disagreement, before the read-for-update
-     * takes its lock and before the delete runs.
+     * <h4>The path is projected into every carrier of the key, and nothing is refused for disagreeing</h4>
+     * On a real terminal the two carriers are one value: the operator sees {@code USRIDIN}, and
+     * {@code CDEMO-CU03-USR-SELECTED} is the same id handed over by the list screen. A URI introduces a
+     * second, authoritative statement of that id, so the seam makes the URI win in <em>both</em> carriers
+     * before any source logic runs - {@code USRIDIN}, which lines 145, 160, 177 and 189 read, and the
+     * {@code CDEMO-CU03-USR-SELECTED} extension, which lines 99 to 102 read. One key, one value,
+     * whichever turn the conversation is on.
      *
-     * <p>Refusing is the faithful choice, and overriding is not. For a consistent conversation - which is
-     * every conversation a client following this contract can produce - refusal changes nothing at all,
-     * because there is nothing to refuse. Overriding the received {@code USRIDIN} with the path value, by
-     * contrast, would change what lines 145, 160, 177 and 189 read, which is observable. A blank or
-     * {@code LOW-VALUES} {@code USRIDIN} is not a disagreement: it is the empty field the source itself
-     * handles, and the path supplies the value exactly as {@code CDEMO-CU03-USR-SELECTED} would.
+     * <p>No disagreement error is raised, and that is deliberate: {@code COUSR03C} has no such condition
+     * anywhere, so inventing one would add a failure mode the legacy screen cannot produce - and it would
+     * leave the more dangerous half of the problem unsolved, because a blank {@code USRIDIN} is not a
+     * disagreement yet would still have left the read and delete key blank on re-entry. Projecting closes
+     * both: a client that echoes a painted screen agrees with the path and sees no change, and a client
+     * that names a second user in the body has that value replaced rather than acted on. Neither branch
+     * of {@code 'User ID can NOT be empty...'} becomes unreachable - a path segment of percent-encoded
+     * spaces is a blank identifier, and {@link #mainPara(UserDeleteRequest, Optional, String)} is
+     * callable directly with any buffer at all.
      *
      * <h4>The identity is refused rather than truncated</h4>
      * {@code USRIDIN} is {@code PIC X(08)}. An alphanumeric {@code MOVE} would keep the leading eight
@@ -528,12 +530,14 @@ public class UserDeleteController {
      * therefore one unit of work. {@link SecUserRepository#readForUpdate(String)} refuses to run outside
      * one, which turns a silent concurrency defect into a loud wiring failure.
      *
-     * @param userId  the user id from the path; plays {@code CDEMO-CU03-USR-SELECTED} on first entry
+     * @param userId  the user id from the path; the resource's identity, and the value both
+     *                {@code USRIDIN} and {@code CDEMO-CU03-USR-SELECTED} carry once bound
      * @param request the inbound screen, validated against the symbolic map's declared widths;
      *                {@code null} when no body was sent, which is {@code EIBCALEN = 0}
      * @return the outbound screen - the eleven map fields, the communication area and the navigation
      *         triple; never {@code null}
-     * @throws NullPointerException if {@code userId} is {@code null}
+     * @throws NullPointerException     if {@code userId} is {@code null}
+     * @throws IllegalArgumentException if {@code userId} is wider than {@code USRIDIN}
      */
     @DeleteMapping(path = USERS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Transactional
@@ -543,9 +547,10 @@ public class UserDeleteController {
         Objects.requireNonNull(userId, "A user id is required in the path: it is the record's key, and "
                 + "on first entry it is CDEMO-CU03-USR-SELECTED");
         requireIdentityFits(userId);
-        requirePathAndBodyAgree(userId, request);
-        String aidToken = request == null ? null : request.aid();
-        ProgramState state = mainPara(request, aidOfToken(aidToken), userId);
+        UserDeleteRequest received = bindPathIdentity(userId, request);
+        String aidToken = received == null ? null : received.aid();
+        String usrSelected = received == null ? userId : received.cu03Info().usrSelected();
+        ProgramState state = mainPara(received, aidOfToken(aidToken), usrSelected);
         return ScreenResponse.of(state.response(), state.screenMetadata());
     }
 
@@ -566,50 +571,52 @@ public class UserDeleteController {
     }
 
     /**
-     * Requires the body's {@code USRIDIN} to name the same user the path does, when it names one at all.
+     * Projects the path's identity into every carrier of the key this transaction reads, so that the URI
+     * is the only statement of which record is acted on.
      *
-     * <p>Three states are not a disagreement: no body, an empty one, and a {@code USRIDIN} that is spaces
-     * or {@code LOW-VALUES} - the last being the field the source itself paints blank at lines 97 and 235
-     * and fills from {@code CDEMO-CU03-USR-SELECTED} at 101-102. Compared at the eight-byte
-     * {@code PIC X} image so that a client echoing a painted screen, which sends the field space-padded
-     * to its declared width, agrees with a path value that is not.
+     * <p>{@code COUSR03C} reads the id from two places, and which one it reads depends on the turn:
+     * {@code CDEMO-CU03-USR-SELECTED} on first entry [lines 99-102], and {@code USRIDINI} on re-entry
+     * [lines 145, 160, 177 and 189]. Leaving either one as the caller sent it would leave a second,
+     * independently client-controlled statement of the resource's identity - which is how a URI naming
+     * one user could delete another, and how a blank {@code USRIDIN} could reach the read and the delete
+     * with no key at all. Both are set from the path, so neither can happen.
      *
-     * @param userId  the path variable, already known to fit
-     * @param request the bound body, or {@code null}
-     * @throws IllegalArgumentException if the body names a different user
+     * <p>The value is written at {@code USRIDIN}'s declared {@code PIC X(08)} width, because that is what
+     * the field holds on a terminal and what a client echoing the painted screen will send back; the path
+     * has already been required to fit, so the {@code MOVE} only pads. Every other member of the payload
+     * - the ten remaining map fields, the communication area, the AID token and the extension's other
+     * five items - travels exactly as the caller delivered it.
+     *
+     * @param userId  the path variable, already known to fit {@value #USR_ID_IN_LENGTH} characters
+     * @param request the bound body, or {@code null} for {@code EIBCALEN = 0}
+     * @return the request to execute, or {@code null} when there was no body at all - a body cannot be
+     *         invented here, because its absence is what line 90 branches on
      */
-    void requirePathAndBodyAgree(String userId, UserDeleteRequest request) {
+    UserDeleteRequest bindPathIdentity(String userId, UserDeleteRequest request) {
         if (request == null) {
-            return;
+            return null;
         }
-        requireAgrees(userId, request.usrIdIn(), "USRIDIN", "On re-entry app/cbl/COUSR03C.cbl reads the "
-                + "id from USRIDIN - at lines 145, 160, 177 and 189");
-        requireAgrees(userId, request.cu03Info().usrSelected(), "CDEMO-CU03-USR-SELECTED",
-                "On first entry app/cbl/COUSR03C.cbl:99-102 reads the id from CDEMO-CU03-USR-SELECTED, "
-                        + "which the path variable projects");
-    }
-
-    /**
-     * Requires one statement of identity to agree with the path, or to state nothing at all.
-     *
-     * @param userId the path variable
-     * @param stated the value the payload carried; blank, spaces or {@code LOW-VALUES} states nothing
-     * @param item   the COBOL item name, for the refusal message
-     * @param why    the sentence explaining what the source reads that item for
-     * @throws IllegalArgumentException if {@code stated} names a different user
-     */
-    private void requireAgrees(String userId, String stated, String item, String why) {
-        if (isSpacesOrLowValues(stated)) {
-            return;
-        }
-        String statedImage = codec.movePicX(stated, USR_ID_IN_LENGTH);
-        String pathImage = codec.movePicX(userId, USR_ID_IN_LENGTH);
-        if (!statedImage.equals(pathImage)) {
-            throw new IllegalArgumentException("The request body's " + item + " names a user that is not "
-                    + "the one the path addresses. " + why + ", so the two cannot disagree without the "
-                    + "URI naming a different record than the one that would be deleted. Send " + item
-                    + " as spaces to let the path supply it.");
-        }
+        String identity = codec.movePicX(userId, USR_ID_IN_LENGTH);
+        Cu03Info extension = request.cu03Info();
+        return new UserDeleteRequest(request.trnName(),
+                request.title01(),
+                request.curDate(),
+                request.pgmName(),
+                request.title02(),
+                request.curTime(),
+                identity,
+                request.fName(),
+                request.lName(),
+                request.usrType(),
+                request.errMsg(),
+                request.navigationContext(),
+                request.aid(),
+                new Cu03Info(extension.usridFirst(),
+                        extension.usridLast(),
+                        extension.pageNum(),
+                        extension.nextPageFlg(),
+                        extension.usrSelFlg(),
+                        identity));
     }
 
     // =================================================================================================

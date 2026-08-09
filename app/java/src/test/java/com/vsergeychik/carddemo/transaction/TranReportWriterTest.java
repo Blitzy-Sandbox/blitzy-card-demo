@@ -18,6 +18,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Field;
@@ -32,6 +33,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1998,6 +2000,219 @@ class TranReportWriterTest {
         void theClassIsFinal() {
             assertThat(Modifier.isFinal(TranReportWriter.class.getModifiers())).isTrue();
             assertThat(Modifier.isFinal(ReportFile.class.getModifiers())).isTrue();
+        }
+    }
+
+    // =================================================================================================
+    // The abnormal disposition - the THIRD positional of DISP=(NEW,CATLG,DELETE).
+    //
+    // app/jcl/TRANREPT.jcl:L76-L80 declares three dispositions for TRANREPT and the writer used to
+    // reproduce two. NEW is the open's clear; CATLG is what the close leaves behind; DELETE is what an
+    // abended run must leave - which is nothing. A partial report is the worst kind of wrong for this
+    // dataset: the page totals of CBTRN03C.cbl:299-321 are all present and only the account and grand
+    // totals of :322-344 are missing, so it reads as complete and is not.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The abnormal disposition deletes the generation an abended run wrote")
+    class TheAbnormalDisposition {
+
+        /**
+         * A real in-memory relation, so the count-then-delete is measured rather than mocked.
+         *
+         * <p>{@code DB_CLOSE_DELAY=-1} because {@link SimpleDriverDataSource} opens a connection per
+         * call: without it H2 would discard the database the moment the connection that created the
+         * relation was returned, and every later statement would find nothing.
+         *
+         * @return a template over a private H2 database already holding the TRANREPT relation
+         */
+        private JdbcTemplate liveTemplate() {
+            JdbcTemplate template = new JdbcTemplate(new SimpleDriverDataSource(new org.h2.Driver(),
+                    "jdbc:h2:mem:tranrept-disp-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+            template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (RECORD_IMAGE CHAR("
+                    + LRECL + "))");
+            return template;
+        }
+
+        /** @return how many records the relation holds */
+        private int held(JdbcTemplate template) {
+            Integer count = template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class);
+            return count == null ? 0 : count;
+        }
+
+        @Test
+        @DisplayName("every line this run wrote is deleted, and the close before it deleted nothing")
+        void theGenerationIsDeleted() {
+            JdbcTemplate template = liveTemplate();
+            TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
+                    RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput();
+
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+            // CATLG: the close leaves the report where it is. That is the whole distinction.
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isEqualTo(2);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a second discard neither issues anything nor contradicts the first")
+        void theDiscardIsIdempotent() {
+            // An abnormal path can reach a cleanup twice - a finally inside a finally. A second delete
+            // would find an empty relation against a non-zero count and refuse work that had succeeded.
+            JdbcTemplate template = liveTemplate();
+            TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
+                    RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput();
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a run that wrote no line deletes nothing and reports OK")
+        void anEmptyRunDeletesNothing() {
+            // On the mainframe the step still allocates and still deletes an empty dataset, so there is
+            // no observable difference - and no statement is worth issuing for it.
+            JdbcTemplate template = liveTemplate();
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(LRECL));
+            TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
+                    RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput(new Collector());
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isOne();
+        }
+
+        @Test
+        @DisplayName("a relation holding records this run did not write is left untouched")
+        void aCountMismatchIsRefused() {
+            // DISP=(NEW,CATLG,DELETE) deletes the generation this step allocated. A deployment that maps
+            // successive generations onto one relation would have this delete a published report, so the
+            // count is read first and a disagreement is reported rather than acted on.
+            JdbcTemplate template = liveTemplate();
+            TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
+                    RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput();
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(LRECL));
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(template)).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("a count the backend will not state is refused exactly as a wrong count is")
+        void anUnstatedCountIsRefused() {
+            // The other half of the guard above. A backend answering the count with SQL NULL has not said
+            // the generation holds what this run wrote - it has said nothing - and nothing is not
+            // permission to delete a report. A real COUNT(*) cannot be null, so the one call is bent and
+            // everything else, including the open's own clear, runs for real.
+            JdbcTemplate live = liveTemplate();
+            JdbcTemplate template = Mockito.spy(live);
+            TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
+                    RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput();
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            Mockito.doReturn(null).when(template)
+                    .queryForObject(Mockito.anyString(), Mockito.eq(Integer.class));
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(live))
+                    .as("refused means untouched: the line this run wrote is still there")
+                    .isOne();
+        }
+
+        @Test
+        @DisplayName("a delete that removes a different number than it counted is reported, not called OK")
+        void aDeleteRemovingADifferentCountIsReported() {
+            // The count agreed and the delete was issued, then removed a different number of rows than the
+            // count promised. This run cannot claim it deleted its own generation and nothing else, and
+            // reporting OK would tell an operator the DISP=(NEW,CATLG,DELETE) obligation was met.
+            JdbcTemplate template = Mockito.spy(liveTemplate());
+            TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
+                    RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput();
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            Mockito.doReturn(99).when(template).update(Mockito.anyString());
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
+        @DisplayName("a backend that refuses the disposition is reported, never raised")
+        void aRefusedDispositionIsReported() throws SQLException {
+            // This runs on a path that is already abending, so the reason the run failed must survive.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            PreparedStatement statement = Mockito.mock(PreparedStatement.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+            Mockito.when(plain.executeQuery(Mockito.anyString()))
+                    .thenThrow(new SQLException("dataset dropped"));
+
+            TranReportWriter subject = new TranReportWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "FB"), RecordImageForm.CHARACTER);
+            ReportFile file = subject.openOutput();
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            assertThatCode(() -> assertThat(file.discardGeneration())
+                    .isEqualTo(FileStatus.Outcome.OTHER)).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a sink that holds no catalogued generation reports OK without being asked to "
+                + "implement anything")
+        void aCollectorSinkDefaultsToOk() {
+            // The default is not a stub: an in-memory collector's lines are per-run state that ceases to
+            // exist with the run, which is precisely the outcome DELETE produces. It also has to be a
+            // default method, because RecordSink is used as a lambda.
+            RecordSink minimal = recordImage -> FileStatus.Outcome.OK;
+            ReportFile file = writer().openOutput(minimal);
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+        }
+
+        @Test
+        @DisplayName("a sink answering null from discard is read as OTHER rather than raising")
+        void aNullDiscardOutcomeIsReported() {
+            // Every other outcome on this handle refuses a null, because a caller can act on the refusal.
+            // Here the caller is already abending.
+            ReportFile file = writer().openOutput(new RecordSink() {
+                @Override
+                public FileStatus.Outcome write(byte[] recordImage) {
+                    return FileStatus.Outcome.OK;
+                }
+
+                @Override
+                public FileStatus.Outcome discard(int recordsWritten) {
+                    return null;
+                }
+            });
+            assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
+                    .isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
         }
     }
 }

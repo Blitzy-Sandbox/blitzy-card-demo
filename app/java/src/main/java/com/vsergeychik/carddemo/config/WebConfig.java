@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.config;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonMappingException;
@@ -535,16 +536,18 @@ public class WebConfig implements WebMvcConfigurer {
          * across the batch programs - onto {@code 500 Internal Server Error}.
          *
          * <p>{@code 500} is the honest status: the COBOL did not complete its unit of work, it
-         * terminated abnormally. The <em>body</em> says only that, through {@link #ABEND_CODE} and
-         * {@link #ABEND_MESSAGE}. The abending program's {@code PROGRAM-ID}, the {@code RETURN-CODE}
-         * it had placed in {@code APPL-RESULT} and the composed {@code ABENDING PROGRAM} sentence -
-         * which can carry a repository's or a dataset's own reason text, and can nest a further
-         * failure's context - are written to the server log by this method and go no further. They
-         * describe the inside of the application and belong on the server's side of the trust
-         * boundary.
+         * terminated abnormally. The <em>body</em> says that through {@link #ABEND_CODE} and
+         * {@link #ABEND_MESSAGE}, and adds one thing more when the abending paragraph produced it:
+         * the fixed-width diagnostic the source itself transmitted. The abending program's
+         * {@code PROGRAM-ID}, the {@code RETURN-CODE} it had placed in {@code APPL-RESULT} and the
+         * composed {@code ABENDING PROGRAM} sentence - which can carry a repository's or a dataset's
+         * own reason text, and can nest a further failure's context - are written to the server log
+         * by this method and go no further. They describe the inside of the application and belong
+         * on the server's side of the trust boundary.
          *
          * @param abend the abend raised by a service, job or repository
-         * @return {@code 500} with the stable abend code and its generic message
+         * @return {@code 500} with the stable abend code, its generic message, and the source's own
+         *         transmitted diagnostic where there is one
          */
         @ExceptionHandler(AbendException.class)
         public ResponseEntity<ErrorResponse> handleAbend(final AbendException abend) {
@@ -556,19 +559,35 @@ public class WebConfig implements WebMvcConfigurer {
          * Builds the abend body, and is the directly testable form of {@link
          * #handleAbend(AbendException)}.
          *
-         * <p>It reads nothing at all from the argument. That is the point: the body is a constant, so
-         * there is no path by which a program name, a return code or a reason string can reach a
-         * client, however an abend was composed. The argument is still taken, because a body builder
-         * that ignores its input is the only honest way to state that the input is deliberately
-         * unused, and because {@link #handleAbend(AbendException)} must have exactly one place to
-         * delegate to.
+         * <p>Exactly one thing is read from the argument: {@link AbendException#getSourceDiagnostic()},
+         * the fixed-width area the COBOL itself transmitted before abending. Nothing else is, and that
+         * boundary is the contract. The program name, the {@code RETURN-CODE}, the {@code ABCODE}, the
+         * {@code TIMING}, the composed {@code getMessage()} and the whole cause chain are all withheld,
+         * so there is no path by which a Java exception message, a JDBC or driver message, a SQLSTATE, a
+         * stack frame or a record image can reach a client, however an abend was composed.
+         *
+         * <p>Why the diagnostic is published rather than withheld with the rest:
+         * {@code app/cbl/COCRDSLC.cbl:865-869} issues {@code EXEC CICS SEND FROM(ABEND-DATA)} and only
+         * then {@code EXEC CICS ABEND ABCODE('9999')}, so on a terminal the operator reads those 134
+         * bytes. Replacing them with a constant would change observable behaviour. They are safe to
+         * publish because every field of {@code ABEND-DATA} is source-authored - a {@code CSMSG02Y}
+         * literal, a {@code PROGRAM-ID} literal, or spaces - which is the standard
+         * {@link AbendException#withSourceDiagnostic(String)} states and which the only producer in the
+         * estate honours.
+         *
+         * <p>Where a paragraph transmitted nothing - the nine {@code CALL 'CEE3ABD'} sites, which
+         * {@code DISPLAY} to {@code SYSOUT} and terminate - the member is {@code null} and
+         * {@link ErrorResponse}'s {@code NON_NULL} inclusion omits it, so those bodies remain exactly
+         * the two constants.
          *
          * @param abend the abend being answered; must not be {@code null}
-         * @return the response body: {@link #ABEND_CODE} and {@link #ABEND_MESSAGE}, always
+         * @return the response body: {@link #ABEND_CODE}, {@link #ABEND_MESSAGE}, and the transmitted
+         *         diagnostic when the abending paragraph transmitted one
          */
         static ErrorResponse abendResponse(final AbendException abend) {
             Objects.requireNonNull(abend, "An abend is required to answer one");
-            return new ErrorResponse(ABEND_CODE, ABEND_MESSAGE);
+            return new ErrorResponse(ABEND_CODE, ABEND_MESSAGE,
+                    abend.getSourceDiagnostic().orElse(null));
         }
 
         /**
@@ -664,72 +683,6 @@ public class WebConfig implements WebMvcConfigurer {
                                 : namedFields)
                         + "; raised as " + unreadable.getClass().getName());
             }
-        }
-
-        /**
-         * Maps a repository outcome onto the HTTP status that reports it, and is deliberately the
-         * thinnest mapping that still distinguishes the one fatal case.
-         *
-         * <p>{@link FileStatus} funnels both worlds into a single five-valued vocabulary: a batch
-         * program's two-character {@code FILE STATUS} through
-         * {@link FileStatus#outcomeOfStatus(String)}, and an online program's CICS {@code RESP}
-         * through {@link FileStatus#outcomeOfCicsResp(int)}. The five outcomes divide cleanly in two:
-         *
-         * <ul>
-         *   <li>{@code OK} ({@code '00'}, {@code NORMAL}), {@code END_OF_FILE} ({@code '10'},
-         *       {@code ENDFILE}), {@code NOT_FOUND} ({@code '23'}, {@code NOTFND}) and
-         *       {@code DUPLICATE} ({@code '22'}, {@code DUPREC} and {@code DUPKEY}) are all outcomes
-         *       the COBOL guard chains <em>handle in the program</em>. End of file terminates a
-         *       browse normally; a missing or duplicate record makes the program move its own text
-         *       into the screen's error field and re-send the map, and the transaction then completes
-         *       normally. The HTTP request has succeeded in every one of those cases, so all four map
-         *       to {@code 200 OK} and the outcome is reported in the payload.</li>
-         *   <li>{@code OTHER} is the {@code WHEN OTHER} arm, which every guard chain in the estate
-         *       treats as fatal - it displays the status and abends - so it maps to {@code 500}.</li>
-         * </ul>
-         *
-         * <p>{@code app/cbl/CBSTM03A.CBL:353-359} states the division outright:
-         * <pre>
-         * EVALUATE WS-M03B-RC
-         *     WHEN '00' CONTINUE
-         *     WHEN '10' MOVE 'Y' TO END-OF-FILE
-         *     WHEN OTHER  &lt;display then abend&gt;
-         * END-EVALUATE
-         * </pre>
-         *
-         * <p>Two mappings are therefore <strong>deliberately not</strong> used.
-         * {@code NOT_FOUND} does not become {@code 404}: a bare {@code 404} carries no body, so it
-         * would discard the very error text the COBOL painted, and that text is parity-relevant.
-         * {@code DUPLICATE} does not become {@code 409} for the same reason - the COBOL reports a
-         * rejected duplicate as a message on a normally-completing screen, not as a transport-level
-         * conflict. Choosing either would invent an HTTP semantic the legacy system never had.
-         *
-         * <p>The wording of the message that accompanies an outcome is <em>not</em> decided here. It
-         * belongs to the service or controller that knows which screen field it is filling and which
-         * COBOL literal it must reproduce; this method decides only the status.
-         *
-         * <p>It is written as an exhaustive {@code switch} over the enumeration rather than as a
-         * branch-free map lookup with a default, and that is a deliberate trade. A lookup would
-         * report no branches at all, but it would also silently give any constant later added to
-         * {@link FileStatus.Outcome} whatever the default happens to be. The {@code switch} makes the
-         * compiler refuse to build until a human has decided the new outcome's status, which is worth
-         * more on a migration judged on behavioural equivalence than the two branches it costs. Both
-         * of those branches are reachable from a plain unit test that passes each enum constant.
-         *
-         * @param outcome the outcome a repository reported; must not be {@code null}
-         * @return {@link HttpStatus#OK} for the four outcomes the COBOL handles in-program, and
-         *         {@link HttpStatus#INTERNAL_SERVER_ERROR} for {@code OTHER}
-         * @throws NullPointerException if {@code outcome} is {@code null}, because there is no
-         *                              defensible status for an absent outcome
-         */
-        public static HttpStatus statusForOutcome(final FileStatus.Outcome outcome) {
-            return switch (outcome) {
-                // Handled in-program by the COBOL: the request itself succeeded, and the outcome
-                // travels in the payload alongside the program's own message text.
-                case OK, END_OF_FILE, NOT_FOUND, DUPLICATE -> HttpStatus.OK;
-                // WHEN OTHER: the arm every guard chain in the estate displays and then abends on.
-                case OTHER -> HttpStatus.INTERNAL_SERVER_ERROR;
-            };
         }
 
         /**
@@ -1154,9 +1107,10 @@ public class WebConfig implements WebMvcConfigurer {
          *
          * <p>{@code 500} is correct and not a fallback: the unit of work did not complete. Note what
          * this handler is <em>not</em> for - a record that was simply absent or duplicate is an
-         * outcome the COBOL guard chains handle in-program, and it travels as a {@link FileStatus}
-         * outcome through {@link #statusForOutcome(FileStatus.Outcome)} on a {@code 200}, never as an
-         * exception. Reaching here means the access itself failed.
+         * outcome the COBOL guard chains handle in-program. Such an outcome reaches the controller as
+         * a {@link FileStatus} outcome, is answered by the arm the source program wrote for it, and
+         * leaves as a painted screen on a {@code 200}; it never becomes an exception and never reaches
+         * this handler. Reaching here means the access itself failed.
          *
          * @param failure the data-access failure, whose message is intentionally discarded
          * @return {@code 500} carrying {@link #DATASET_ACCESS_MESSAGE} and nothing else
@@ -1258,15 +1212,43 @@ public class WebConfig implements WebMvcConfigurer {
          * The body of a {@code 500} raised by an abend.
          *
          * <p>Used for both a {@code 500} raised by an abend and a {@code 400} raised by an unreadable
-         * request body. Two fields only, and both are constants this module authored - there is no
-         * member for a program name, a return code, an exception message, a property path or a parse
-         * position, so no such value can be added to a body by accident.
+         * request body. Three members, and the first two are constants this module authored. There is
+         * still no member for a program name, a return code, an exception message, a property path or a
+         * parse position, so no such value can be added to a body by accident.
          *
-         * @param code    the stable code a client branches on: {@link CobolErrorHandler#ABEND_CODE} or
-         *                {@link CobolErrorHandler#MALFORMED_REQUEST_CODE}
-         * @param message the generic sentence for that code, carrying no internal state
+         * <p>{@link #abendData} is the one member that carries anything from the failure, and it carries
+         * exactly one thing: the fixed-width area the <em>COBOL</em> transmitted before abending, per
+         * {@link AbendException#getSourceDiagnostic()}. It is not a general-purpose detail slot - see
+         * {@link CobolErrorHandler#abendResponse(AbendException)} for what may and may not reach it.
+         *
+         * <p>The record is annotated {@code NON_NULL} rather than relying on
+         * {@code spring.jackson.default-property-inclusion}, which this module sets to {@code always}
+         * because an all-spaces screen field is meaningful and must not be dropped. That reasoning is
+         * about payload projections; an error body is not one. Here the member's absence is meaningful
+         * instead: the nine {@code CALL 'CEE3ABD'} sites transmit no such area, and a body carrying
+         * {@code "abendData": null} would claim they transmitted an empty one. Omitted, those bodies stay
+         * exactly the two constants they were.
+         *
+         * @param code      the stable code a client branches on: {@link CobolErrorHandler#ABEND_CODE} or
+         *                  {@link CobolErrorHandler#MALFORMED_REQUEST_CODE}
+         * @param message   the generic sentence for that code, carrying no internal state
+         * @param abendData the source-authored fixed-width diagnostic the abending paragraph
+         *                  transmitted, or {@code null} when it transmitted none - in which case the
+         *                  member does not appear in the body at all
          */
-        public record ErrorResponse(String code, String message) {
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public record ErrorResponse(String code, String message, String abendData) {
+
+            /**
+             * The two-member form, for a failure that has no source-authored diagnostic to publish -
+             * every {@code CALL 'CEE3ABD'} abend, and every unreadable request body.
+             *
+             * @param code    the stable code a client branches on
+             * @param message the generic sentence for that code
+             */
+            public ErrorResponse(String code, String message) {
+                this(code, message, null);
+            }
         }
 
         /**

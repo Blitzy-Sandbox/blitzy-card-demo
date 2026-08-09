@@ -24,6 +24,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -382,8 +383,13 @@ public class UserAddController {
      * error, where {@code CicsResponse.none()} carries an empty response. Chosen so it can never be
      * mistaken for {@link FileStatus#NORMAL}, {@link FileStatus#DUPKEY} or {@link FileStatus#DUPREC},
      * which sends it down the {@code WHEN OTHER} arm exactly as an unrecognised {@code RESP} would.
+     *
+     * <p>Taken from {@link FileStatus#RESP_NOT_REPORTED} rather than declared here. This controller had
+     * the convention first and had it right; it is now the module's single convention, shared by every
+     * online program that captures a {@code RESP}, so the meaning of the value cannot differ between two
+     * screens reading the same repository.
      */
-    private static final int RESP_NOT_REPORTED = -1;
+    private static final int RESP_NOT_REPORTED = FileStatus.RESP_NOT_REPORTED;
 
     // =================================================================================================
     // Collaborators. All three are final and constructor-injected; there is no field injection and no
@@ -465,6 +471,23 @@ public class UserAddController {
      * <p>No {@code consumes} is declared, precisely so a body-less call binds rather than being
      * refused with an unsupported-media-type before the program runs.
      *
+     * <h2>Why this method is transactional and {@link #mainPara} is not annotated</h2>
+     *
+     * <p>Line 240 issues {@code EXEC CICS WRITE} against {@code USRSEC}. A CICS task always has a unit
+     * of work, and the task's syncpoint at {@code RETURN} is what makes that write durable - so the
+     * write and the task boundary are the same boundary. The module's pool runs with
+     * {@code auto-commit: false} (that is what lets {@code COUSR02C}'s {@code READ ... UPDATE} hold a
+     * row lock across its {@code REWRITE}), which means an insert issued with no transaction open is
+     * rolled back when the connection returns to the pool. The screen would still have said
+     * {@code 'User ... has been added ...'}, because the repository reported {@code NORMAL} and the
+     * repository was telling the truth about the statement it executed.
+     *
+     * <p>{@code @Transactional} here reproduces the task's unit of work, and it is placed on the HTTP
+     * boundary rather than deeper for the same reason {@code COUSR02C}'s is: a parity test drives
+     * {@link #mainPara} directly with a stubbed repository, where there is no connection to commit and
+     * no transaction to want. Annotating the entry point keeps the runtime correct without putting
+     * infrastructure in the path of the program's own tests.
+     *
      * @param request  the {@code xxxI} projection of the received map; may be {@code null}
      * @param eibAid   the raw {@code EIBAID} byte as an unsigned {@code 0}-{@code 255} value; optional
      * @param eibcalen the communication-area length; optional, derived from the payload when absent
@@ -476,6 +499,7 @@ public class UserAddController {
      *                                  the payload carried
      */
     @PostMapping(path = USERS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Transactional
     public ScreenResponse<UserAddResponse> addUser(
             @Valid @RequestBody(required = false) UserAddRequest request,
             @RequestParam(name = EIBAID_PARAM, required = false) Integer eibAid,

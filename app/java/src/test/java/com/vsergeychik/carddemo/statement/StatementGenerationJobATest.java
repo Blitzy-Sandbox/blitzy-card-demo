@@ -12,6 +12,7 @@ import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
@@ -50,11 +51,15 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.job.AbstractJob;
 import org.springframework.batch.core.job.flow.FlowExecutionStatus;
 import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.repository.JobRepository;
@@ -65,7 +70,12 @@ import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.batch.BatchAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationContext;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -80,6 +90,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -127,6 +138,14 @@ class StatementGenerationJobATest {
 
     /** The fixtures' code page, named explicitly and never defaulted. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
+
+    /**
+     * The physical-record ordinal every physical-sequential read is ordered by, as
+     * {@code application-test.yml} configures it: H2's own row-identifier pseudo-column, which increases
+     * with each insert and so hands the records back in the order they were written - which is what a
+     * {@code SORT} of an unsorted file and a {@code REPRO} of a sorted one both require.
+     */
+    private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
 
     /** {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} - the transaction master, {@code SORTIN}'s alias. */
     private static final String TRANSACT_DSNAME = "AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS";
@@ -258,13 +277,21 @@ class StatementGenerationJobATest {
      * @return the five contracts, in declaration order
      */
     private static List<StepContract> jclSteps() {
-        return List.of(
+        List<StepContract> transcribed = List.of(
                 new StepContract(StatementGenerationJobA.STEP_DELDEF01, "IDCAMS", false),
                 new StepContract(StatementGenerationJobA.STEP_010, "SORT", false),
                 new StepContract(StatementGenerationJobA.STEP_020, "IDCAMS", true),
                 new StepContract(StatementGenerationJobA.STEP_030, "IEFBR14", true),
                 new StepContract(StatementGenerationJobA.STEP_040, StatementGenerationJobA.PROGRAM_ID,
                         true));
+        // Written out from app/jcl/CREASTMT.JCL here, and required to equal what the production class
+        // requires. Two independent transcriptions of the same five step cards that must agree: if either
+        // drifts, this fails at the point of the drift rather than somewhere downstream of it.
+        assertThat(transcribed)
+                .as("this test's reading of CREASTMT.JCL and StatementGenerationJobA's reading of it "
+                        + "must be the same five steps, programs, gates and order")
+                .isEqualTo(StatementGenerationJobA.REQUIRED_STEPS);
+        return transcribed;
     }
 
     /**
@@ -548,6 +575,29 @@ class StatementGenerationJobATest {
         /** Each dataset's current contents, keyed by dataset name. */
         private final Map<String, List<String>> contents = new LinkedHashMap<>();
 
+        /** Side effects to run the first time a given {@code "<VERB> <dsname>"} operation is seen. */
+        private final Map<String, Runnable> sideEffects = new LinkedHashMap<>();
+
+        /**
+         * A dataset whose write is refused, or {@code null} to accept every write.
+         *
+         * <p>Needed to reach the abnormal-disposition path of {@value StatementGenerationJobA#SORTOUT_DD}:
+         * that path exists precisely for a write that does not finish, and the collecting port cannot
+         * reproduce one because it always succeeds.
+         */
+        private String refuseWriteTo;
+
+        /**
+         * Refuses the next write to the named dataset, part way through.
+         *
+         * @param dsname the dataset whose write must fail
+         * @return this, for chaining
+         */
+        RecordingUtilityPort refusingWriteTo(String dsname) {
+            refuseWriteTo = dsname;
+            return this;
+        }
+
         /**
          * Seeds one dataset.
          *
@@ -560,24 +610,62 @@ class StatementGenerationJobATest {
             return this;
         }
 
+        /**
+         * Runs an action the first time a given operation is performed, then forgets it.
+         *
+         * <p>The hook exists for one purpose: the {@code COND=(0,NE)} gates read the job execution's
+         * step executions as they stand at the moment each gate runs, so a test that wants the
+         * <em>second</em> or <em>third</em> gate to be the one that bypasses has to make the non-zero
+         * condition appear part-way through the flow. The utility port is the only collaborator the
+         * preparation steps call, so it is the only place a test can act from inside the running job.
+         *
+         * @param operation the {@code "<VERB> <dsname>"} entry to fire on
+         * @param action    what to do when it is next performed
+         * @return this, for chaining
+         */
+        RecordingUtilityPort onceOn(String operation, Runnable action) {
+            sideEffects.put(operation, action);
+            return this;
+        }
+
         @Override
         public int deleteAllRecords(DatasetBinding binding) {
-            operations.add("DELETE " + binding.dsname());
+            record("DELETE " + binding.dsname());
             List<String> removed = contents.remove(binding.dsname());
             return removed == null ? 0 : removed.size();
         }
 
         @Override
         public List<String> readAllRecordImages(DatasetBinding binding) {
-            operations.add("READ " + binding.dsname());
+            record("READ " + binding.dsname());
             return List.copyOf(contents.getOrDefault(binding.dsname(), List.of()));
         }
 
         @Override
         public int writeRecordImages(DatasetBinding binding, List<String> recordImages) {
-            operations.add("WRITE " + binding.dsname());
+            record("WRITE " + binding.dsname());
+            if (binding.dsname().equals(refuseWriteTo)) {
+                // Part way, not at the start: a dataset holding some of a sorted file is exactly the
+                // state DISP=(NEW,CATLG,DELETE) must not leave catalogued.
+                contents.put(binding.dsname(), List.copyOf(recordImages.subList(0,
+                        recordImages.size() / 2)));
+                throw new IllegalStateException("the destination went away part way through the write");
+            }
             contents.put(binding.dsname(), List.copyOf(recordImages));
             return recordImages.size();
+        }
+
+        /**
+         * Records an operation and fires its one-shot side effect, if a test registered one.
+         *
+         * @param operation the {@code "<VERB> <dsname>"} entry
+         */
+        private void record(String operation) {
+            operations.add(operation);
+            Runnable sideEffect = sideEffects.remove(operation);
+            if (sideEffect != null) {
+                sideEffect.run();
+            }
         }
 
         /**
@@ -829,31 +917,71 @@ class StatementGenerationJobATest {
         /** The job under test. */
         private final StatementGenerationJobA job;
 
+        /** How many times the text sink was asked to apply its abnormal disposition. */
+        private int textDiscards;
+
+        /** How many times the HTML sink was asked to apply its abnormal disposition. */
+        private int htmlDiscards;
+
         Harness(ScriptedSubroutine subroutine, TiotSource tiotSource, JobContracts contracts,
                 RecordingUtilityPort utility) {
+            this(subroutine, tiotSource, utility, scaffolding(contracts));
+        }
+
+        /**
+         * The same doubles over a caller-supplied scaffolding, so a test that needs a <em>real</em> job
+         * repository - the flow tests do, because a flow cannot run against a mock - can supply one
+         * without every other test paying for a database.
+         *
+         * @param subroutine  the scripted subroutine
+         * @param tiotSource  the TIOT source
+         * @param utility     the utility port double
+         * @param scaffolding the batch seam to build the job through
+         */
+        Harness(ScriptedSubroutine subroutine, TiotSource tiotSource, RecordingUtilityPort utility,
+                BatchConfig scaffolding) {
             this.subroutine = subroutine;
             this.utility = utility;
 
             StatementTextWriter realText = new StatementTextWriter(new JdbcTemplate(), ASCII,
                     globalBindings(), RecordImageForm.CHARACTER);
-            StatementFile textHandle = realText.openOutput(image -> {
-                textRecords.add(new String(image, ASCII));
-                return FileStatus.Outcome.OK;
-            });
+            StatementFile textHandle = realText.openOutput(
+                    new StatementTextWriter.RecordSink() {
+                        @Override
+                        public FileStatus.Outcome write(byte[] image) {
+                            textRecords.add(new String(image, ASCII));
+                            return FileStatus.Outcome.OK;
+                        }
+
+                        @Override
+                        public FileStatus.Outcome discard(int recordsWritten) {
+                            textDiscards++;
+                            return FileStatus.Outcome.OK;
+                        }
+                    });
             this.textWriter = Mockito.spy(realText);
             Mockito.doReturn(textHandle).when(this.textWriter).openOutput();
 
             StatementHtmlWriter realHtml = new StatementHtmlWriter(new JdbcTemplate(), ASCII,
                     globalBindings(), RecordImageForm.CHARACTER);
-            HtmlStatementFile htmlHandle = realHtml.open(record -> {
-                htmlRecords.add(new String(record, ASCII));
-                return FileStatus.OK;
+            HtmlStatementFile htmlHandle = realHtml.open(new StatementHtmlWriter.HtmlRecordSink() {
+                @Override
+                public String write(byte[] record) {
+                    htmlRecords.add(new String(record, ASCII));
+                    return FileStatus.OK;
+                }
+
+                @Override
+                public String discard(long recordsWritten) {
+                    htmlDiscards++;
+                    return FileStatus.OK;
+                }
             });
             this.htmlWriter = Mockito.spy(realHtml);
             Mockito.doReturn(htmlHandle).when(this.htmlWriter).open();
 
             this.job = new StatementGenerationJobA(subroutine, this.textWriter, this.htmlWriter,
-                    scaffolding(contracts), ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER,
+                    scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, ORDINAL,
                     unitOfWork(), new PresentBean<>(sysout),
                     new PresentBean<>(tiotSource), new PresentBean<>(utility));
         }
@@ -901,6 +1029,15 @@ class StatementGenerationJobATest {
         /** The two-character status the HTML sink reports from {@code close()}. */
         private final String htmlCloseStatus;
 
+        /**
+         * Whether both discard sinks report a not-OK outcome, so the caller's refusal arm is reached.
+         *
+         * <p>Mutable and read at call time rather than a constructor parameter: the two sinks are built in
+         * the constructor and close over the harness, and every existing caller of this harness wants the
+         * default. Set it before {@link #run()}.
+         */
+        private boolean discardsRefused;
+
         /** How many text records the sink was offered. */
         private int textRecordsOffered;
 
@@ -912,6 +1049,18 @@ class StatementGenerationJobATest {
 
         /** Whether the HTML sink's close was reached. */
         private boolean htmlClosed;
+
+        /** How many times the text sink was asked to apply its abnormal disposition. */
+        private int textDiscards;
+
+        /** How many times the HTML sink was asked to apply its abnormal disposition. */
+        private int htmlDiscards;
+
+        /** The record count the text sink's disposition was given. */
+        private int textDiscardCount;
+
+        /** The record count the HTML sink's disposition was given. */
+        private long htmlDiscardCount;
 
         /** The text handle, so a test can ask whether it was released. */
         private final StatementFile textHandle;
@@ -949,6 +1098,15 @@ class StatementGenerationJobATest {
                     textClosed = true;
                     return RefusingHarness.this.textCloseOutcome;
                 }
+
+                @Override
+                public FileStatus.Outcome discard(int recordsWritten) {
+                    textDiscards++;
+                    textDiscardCount = recordsWritten;
+                    return RefusingHarness.this.discardsRefused
+                            ? FileStatus.Outcome.OTHER
+                            : FileStatus.Outcome.OK;
+                }
             });
             StatementTextWriter spiedText = Mockito.spy(realText);
             Mockito.doReturn(textHandle).when(spiedText).openOutput();
@@ -974,13 +1132,22 @@ class StatementGenerationJobATest {
                     htmlClosed = true;
                     return RefusingHarness.this.htmlCloseStatus;
                 }
+
+                @Override
+                public String discard(long recordsWritten) {
+                    htmlDiscards++;
+                    htmlDiscardCount = recordsWritten;
+                    return RefusingHarness.this.discardsRefused
+                            ? HTML_REFUSED_STATUS
+                            : FileStatus.OK;
+                }
             });
             StatementHtmlWriter spiedHtml = Mockito.spy(realHtml);
             Mockito.doReturn(htmlHandle).when(spiedHtml).open();
 
             this.job = new StatementGenerationJobA(subroutine, spiedText, spiedHtml,
                     scaffolding(jobContracts()), ASCII, new JdbcTemplate(),
-                    RecordImageForm.CHARACTER, unitOfWork(), new PresentBean<>(sysout),
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork(), new PresentBean<>(sysout),
                     new PresentBean<>(defaultTiot()), new PresentBean<>(new RecordingUtilityPort()));
         }
 
@@ -1067,7 +1234,7 @@ class StatementGenerationJobATest {
      * @return the port; never {@code null}
      */
     private static JdbcDatasetUtilityPort port() {
-        return new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII, RecordImageForm.CHARACTER,
+        return new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII, RecordImageForm.CHARACTER, ORDINAL,
                 unitOfWork());
     }
 
@@ -1084,6 +1251,7 @@ class StatementGenerationJobATest {
                 new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                         RecordImageForm.CHARACTER),
                 scaffolding(jobContracts()), ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER,
+                ORDINAL,
                 unitOfWork(), new PresentBean<>(new CapturedSysout()),
                 new PresentBean<>(defaultTiot()), new PresentBean<>(utility));
     }
@@ -1221,7 +1389,7 @@ class StatementGenerationJobATest {
                     new StatementGenerationJobA.CondGate(scaffolding.precedingExitCodeZeroDecider());
             JobExecution execution = new JobExecution(2L);
             StepExecution failed = execution.createStepExecution(StatementGenerationJobA.STEP_010);
-            failed.setExitStatus(new org.springframework.batch.core.ExitStatus("8"));
+            failed.setExitStatus(new ExitStatus("8"));
 
             FlowExecutionStatus decision = gate.decide(execution, failed);
 
@@ -1246,6 +1414,235 @@ class StatementGenerationJobATest {
         void theProgramStepsDdNames() {
             assertThat(StatementGenerationJobA.STEP_040_DD_NAMES).containsExactly("TRNXFILE",
                     "XREFFILE", "ACCTFILE", "CUSTFILE", "STMTFILE", "HTMLFILE");
+        }
+    }
+
+    /**
+     * The {@code COND=(0,NE)} bypass, driven through the real job on a real job repository.
+     *
+     * <p>These are the only tests in this class that run the assembled {@link Job} rather than calling
+     * its parts. They have to: what is under test is a <em>flow terminal</em>, and a terminal only exists
+     * once the flow is built and only takes effect once the flow reaches it. A mocked job repository
+     * cannot execute a flow, so an in-memory database and Spring Batch's own schema stand behind them.
+     *
+     * <h2>How a bypass is provoked</h2>
+     * <p>{@code BatchConfig}'s gate asks whether every step execution recorded on the job so far
+     * returned zero. No tasklet in this module reports a non-zero <em>completed</em> exit status - every
+     * non-zero code in the estate comes from an {@link AbendException}, which fails its step - so the
+     * condition is created the way the gate reads it: a step execution carrying {@code 4} is recorded on
+     * the job execution, and the flow then runs normally into the gate. That is a faithful stand-in for
+     * {@code app/jcl/CREASTMT.JCL}'s real exposure, which is {@code STEP010}'s DFSORT completing with
+     * {@code RC=4} - precisely the case the JCL author put {@code COND=(0,NE)} on the following three
+     * steps to handle.
+     *
+     * <p>Placing that record at three different points exercises all three arms: before the flow starts
+     * for the first gate, and from inside the utility port for the second and third, since the port is
+     * the only collaborator {@code STEP020} and {@code STEP030} call.
+     */
+    @Nested
+    @DisplayName("COND=(0,NE) bypass - a flushed job reports the code that flushed it, never zero")
+    class TheCondBypassExitStatus {
+
+        @Test
+        @DisplayName("the first gate bypasses: STEP020, STEP030 and STEP040 never run and the job "
+                + "reports 4, not 0")
+        void theFirstGateBypasses() throws Exception {
+            withRealJobRepository("bypass_gate1", (repository, scaffolding) -> {
+                Harness harness = new Harness(new ScriptedSubroutine(), defaultTiot(),
+                        new RecordingUtilityPort(), scaffolding);
+                Job job = harness.job.statementGenerationJobA();
+                JobExecution execution = newExecution(repository);
+                recordEarlierStepReturning(repository, execution, "4");
+
+                ((AbstractJob) job).execute(execution);
+
+                // Bypassing is not failing: on the mainframe a step flushed by COND does not fail the
+                // job. Only the reported condition code changes.
+                assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+                assertThat(execution.getExitStatus().getExitCode())
+                        .as("a bare end() would say COMPLETED here, which is return code zero")
+                        .isEqualTo("4");
+                assertThat(jclReturnCodeOf(execution))
+                        .as("and this is what the launcher hands the operating system")
+                        .isEqualTo(4);
+                assertThat(stepsRun(execution))
+                        .containsExactly(EARLIER_STEP, StatementGenerationJobA.STEP_DELDEF01,
+                                StatementGenerationJobA.STEP_010);
+            });
+        }
+
+        @Test
+        @DisplayName("the second gate bypasses: STEP030 and STEP040 never run and the job reports 8")
+        void theSecondGateBypasses() throws Exception {
+            withRealJobRepository("bypass_gate2", (repository, scaffolding) -> {
+                RecordingUtilityPort utility = new RecordingUtilityPort();
+                Harness harness = new Harness(new ScriptedSubroutine(), defaultTiot(), utility,
+                        scaffolding);
+                Job job = harness.job.statementGenerationJobA();
+                JobExecution execution = newExecution(repository);
+                // STEP020's REPRO reads INFILE - the intermediate sequential file STEP010 sorted into.
+                // Recording the non-zero condition as that read happens puts it after the first gate has
+                // already let the flow through, so the gate before STEP030 is the one that sees it.
+                utility.onceOn("READ " + TRXFL_SEQ_DSNAME,
+                        () -> recordEarlierStepReturning(repository, execution, "8"));
+
+                ((AbstractJob) job).execute(execution);
+
+                assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+                assertThat(execution.getExitStatus().getExitCode()).isEqualTo("8");
+                assertThat(jclReturnCodeOf(execution)).isEqualTo(8);
+                assertThat(stepsRun(execution))
+                        .containsExactly(StatementGenerationJobA.STEP_DELDEF01,
+                                StatementGenerationJobA.STEP_010, StatementGenerationJobA.STEP_020,
+                                EARLIER_STEP);
+            });
+        }
+
+        @Test
+        @DisplayName("the third gate bypasses: STEP040 never runs, no statement is written, and the job "
+                + "reports 12")
+        void theThirdGateBypasses() throws Exception {
+            withRealJobRepository("bypass_gate3", (repository, scaffolding) -> {
+                RecordingUtilityPort utility = new RecordingUtilityPort();
+                Harness harness = new Harness(new ScriptedSubroutine(), defaultTiot(), utility,
+                        scaffolding);
+                Job job = harness.job.statementGenerationJobA();
+                JobExecution execution = newExecution(repository);
+                // STEP030 clears the two report datasets. Recording the condition on the first of those
+                // deletes lands after the second gate has let the flow through.
+                utility.onceOn("DELETE " + HTMLFILE_DSNAME,
+                        () -> recordEarlierStepReturning(repository, execution, "12"));
+
+                ((AbstractJob) job).execute(execution);
+
+                assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+                assertThat(execution.getExitStatus().getExitCode()).isEqualTo("12");
+                assertThat(jclReturnCodeOf(execution)).isEqualTo(12);
+                assertThat(stepsRun(execution))
+                        .doesNotContain(StatementGenerationJobA.STEP_040);
+                assertThat(harness.textRecords)
+                        .as("STEP040 is the program; bypassed, it writes no statement at all")
+                        .isEmpty();
+                assertThat(harness.htmlRecords).isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("no bypass: every step returns zero, all five run, and the job reports COMPLETED")
+        void noBypassLeavesTheJobCompleted() throws Exception {
+            // The control case, and it is what stops the fix over-reaching. The listener that carries a
+            // bypass code must leave an ordinary successful run reporting COMPLETED rather than the
+            // literal "0", because COMPLETED is what every other job in the estate reports on success
+            // and BatchConfig.returnCodeOf reads the two identically.
+            withRealJobRepository("bypass_none", (repository, scaffolding) -> {
+                Harness harness = new Harness(oneStatement(), defaultTiot(),
+                        new RecordingUtilityPort(), scaffolding);
+                Job job = harness.job.statementGenerationJobA();
+                JobExecution execution = newExecution(repository);
+
+                ((AbstractJob) job).execute(execution);
+
+                assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+                assertThat(execution.getExitStatus().getExitCode())
+                        .as("COMPLETED, not the literal \"0\" - and BatchConfig reads the two the same")
+                        .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+                assertThat(stepsRun(execution)).isEqualTo(StatementGenerationJobA.STEP_NAMES);
+                assertThat(harness.textRecords)
+                        .as("STEP040 ran, so the statement it prints is there")
+                        .isNotEmpty();
+            });
+        }
+
+        /** The name of the synthetic step execution that stands in for a step returning non-zero. */
+        private static final String EARLIER_STEP = "EARLIER";
+
+        /**
+         * The JCL return code a finished job reports, read the way the launcher reads it.
+         *
+         * <p>A numeric parse of the exit code, which is exactly what {@code BatchConfig.returnCodeOf}
+         * does before {@code JclJobLauncher} hands the value to the operating system. Parsed here rather
+         * than by calling that method, because it is package-private to {@code config} and widening
+         * production visibility for a test's convenience is not a trade worth making - the mapping itself
+         * is driven exhaustively by {@code BatchConfigTest}, which is in that package.
+         *
+         * @param execution the finished job execution
+         * @return the parsed return code
+         */
+        private int jclReturnCodeOf(JobExecution execution) {
+            return Integer.parseInt(execution.getExitStatus().getExitCode().trim());
+        }
+
+        /**
+         * Records a completed step execution carrying the given JCL return code on a job execution.
+         *
+         * @param repository    the repository that must persist it, so the flow sees it
+         * @param execution     the running job execution
+         * @param jclReturnCode the code the step reported
+         */
+        private void recordEarlierStepReturning(JobRepository repository, JobExecution execution,
+                String jclReturnCode) {
+            StepExecution earlier = execution.createStepExecution(EARLIER_STEP);
+            earlier.setStatus(BatchStatus.COMPLETED);
+            earlier.setExitStatus(new ExitStatus(jclReturnCode));
+            repository.add(earlier);
+        }
+
+        /**
+         * @param execution the finished job execution
+         * @return the names of the steps that actually ran, in execution order
+         */
+        private List<String> stepsRun(JobExecution execution) {
+            return execution.getStepExecutions().stream().map(StepExecution::getStepName).toList();
+        }
+
+        /**
+         * A fresh job execution for the job under test.
+         *
+         * @param repository the repository to create it in
+         * @return the execution
+         * @throws Exception if the repository refuses it
+         */
+        private JobExecution newExecution(JobRepository repository) throws Exception {
+            return repository.createJobExecution(StatementGenerationJobA.JOB_NAME,
+                    new JobParameters());
+        }
+
+        /**
+         * Runs a body against a real Spring Batch job repository over an in-memory database, and a
+         * {@link BatchConfig} bound to it.
+         *
+         * @param databaseName a name unique to the calling test, so two tests never share a schema
+         * @param body         what to run
+         * @throws Exception if the body throws
+         */
+        private void withRealJobRepository(String databaseName, RepositoryBody body) throws Exception {
+            new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class,
+                            DataSourceTransactionManagerAutoConfiguration.class,
+                            BatchAutoConfiguration.class))
+                    .withPropertyValues(
+                            "spring.datasource.url=jdbc:h2:mem:carddemo_" + databaseName,
+                            "spring.datasource.driver-class-name=org.h2.Driver",
+                            "spring.batch.jdbc.initialize-schema=always",
+                            "spring.batch.job.enabled=false")
+                    .run(context -> {
+                        JobRepository repository = context.getBean(JobRepository.class);
+                        body.accept(repository, new BatchConfig(new PresentBean<>(repository),
+                                new PresentBean<>(context.getBean(PlatformTransactionManager.class)),
+                                jobContracts(), globalBindings()));
+                    });
+        }
+
+        /** What {@link #withRealJobRepository} runs, allowed to throw. */
+        @FunctionalInterface
+        private interface RepositoryBody {
+
+            /**
+             * @param repository  the real job repository
+             * @param scaffolding a {@link BatchConfig} bound to it
+             * @throws Exception if the body fails
+             */
+            void accept(JobRepository repository, BatchConfig scaffolding) throws Exception;
         }
     }
 
@@ -1313,6 +1710,90 @@ class StatementGenerationJobATest {
         }
 
         @Test
+        @DisplayName("the two IDCAMS steps swapped are refused, even though every name, program and "
+                + "gate is individually present")
+        void theTwoUtilityStepsReordered() {
+            // The sharpest case in the estate. DELDEF01 and STEP020 both run IDCAMS
+            // (app/jcl/CREASTMT.JCL:L22 and L56) and do opposite things to the same work file: the first
+            // DELETEs and DEFINEs it, the second REPROs the sorted extract into it. Swap them and every
+            // per-step check still passes - both names are declared, both programs are IDCAMS, and the
+            // gate that belongs to STEP020 is still on STEP020 - while the job deletes and redefines the
+            // KSDS *after* loading it. STEP040 would then generate statements from an empty extract and
+            // the job would report success. Only comparing the sequence in order rejects it.
+            List<StepContract> swapped = new ArrayList<>(jclSteps());
+            Collections.swap(swapped, 0, 2);
+            JobContracts contracts = jobContracts(swapped, List.of());
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> new Harness(new ScriptedSubroutine(), defaultTiot(), contracts,
+                            new RecordingUtilityPort()))
+                    .withMessageContaining("does not declare the step sequence of "
+                            + "app/jcl/CREASTMT.JCL")
+                    .withMessageContaining("configured: [STEP020/IDCAMS [COND=(0,NE)], STEP010/SORT, "
+                            + "DELDEF01/IDCAMS, STEP030/IEFBR14 [COND=(0,NE)], "
+                            + "STEP040/CBSTM03A [COND=(0,NE)]]")
+                    .withMessageContaining("required:   [DELDEF01/IDCAMS, STEP010/SORT, "
+                            + "STEP020/IDCAMS [COND=(0,NE)], STEP030/IEFBR14 [COND=(0,NE)], "
+                            + "STEP040/CBSTM03A [COND=(0,NE)]]");
+        }
+
+        @Test
+        @DisplayName("a sixth step declared beside the five is refused - CREASTMT.JCL has five EXECs")
+        void anAddedStep() {
+            List<StepContract> six = new ArrayList<>(jclSteps());
+            six.add(new StepContract("STEP050", StatementGenerationJobA.PROGRAM_ID, true));
+            JobContracts contracts = jobContracts(six, List.of());
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> new Harness(new ScriptedSubroutine(), defaultTiot(), contracts,
+                            new RecordingUtilityPort()))
+                    .withMessageContaining("STEP050/CBSTM03A [COND=(0,NE)]")
+                    .withMessageContaining("does not declare the step sequence of "
+                            + "app/jcl/CREASTMT.JCL");
+        }
+
+        @Test
+        @DisplayName("a utility step re-pointed at another program is refused, which the STEP040 program "
+                + "check cannot see")
+        void anotherProgramOnAUtilityStep() {
+            // requireJclContract checks the program of STEP040 and of no other step, so a wrong program
+            // on any of the first four is invisible to it. IEFBR14 on STEP010 would replace the DFSORT
+            // that produces the sorted extract with a no-op, and the load step would then REPRO whatever
+            // the previous run left in SORTOUT.
+            List<StepContract> sortReplaced = new ArrayList<>(jclSteps());
+            sortReplaced.set(1, new StepContract(StatementGenerationJobA.STEP_010,
+                    StatementGenerationJobA.NOOP_PROGRAM, false));
+            JobContracts contracts = jobContracts(sortReplaced, List.of());
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> new Harness(new ScriptedSubroutine(), defaultTiot(), contracts,
+                            new RecordingUtilityPort()))
+                    .withMessageContaining("configured: [DELDEF01/IDCAMS, STEP010/IEFBR14, ")
+                    .withMessageContaining("required:   [DELDEF01/IDCAMS, STEP010/SORT, ");
+        }
+
+        @Test
+        @DisplayName("the shipped five-step sequence names the three programs CREASTMT.JCL names")
+        void theShippedSequence() {
+            assertThat(StatementGenerationJobA.REQUIRED_STEPS)
+                    .extracting(StepContract::name)
+                    .as("declaration order, DELDEF01 first")
+                    .isEqualTo(StatementGenerationJobA.STEP_NAMES);
+            assertThat(StatementGenerationJobA.REQUIRED_STEPS)
+                    .filteredOn(StepContract::requirePrecedingExitCodeZero)
+                    .extracting(StepContract::name)
+                    .as("exactly three COND=(0,NE) gates, and STEP010 is not one of them")
+                    .isEqualTo(StatementGenerationJobA.GATED_STEP_NAMES);
+            assertThat(StatementGenerationJobA.REQUIRED_STEPS)
+                    .extracting(StepContract::program)
+                    .containsExactly(StatementGenerationJobA.UTILITY_PROGRAM,
+                            StatementGenerationJobA.SORT_PROGRAM,
+                            StatementGenerationJobA.UTILITY_PROGRAM,
+                            StatementGenerationJobA.NOOP_PROGRAM,
+                            StatementGenerationJobA.PROGRAM_ID);
+        }
+
+        @Test
         @DisplayName("a declared job parameter is refused - the only PARM in the estate is INTCALC's")
         void aDeclaredJobParameter() {
             JobContracts contracts = jobContracts(jclSteps(),
@@ -1334,7 +1815,7 @@ class StatementGenerationJobATest {
         /**
          * Builds the job with one collaborator replaced by {@code null}.
          *
-         * @param absent which position to blank, 0-based over the eleven constructor arguments
+         * @param absent which position to blank, 0-based over the twelve constructor arguments
          */
         private void buildWithout(int absent) {
             ScriptedSubroutine subroutine = absent == 0 ? null : new ScriptedSubroutine();
@@ -1346,21 +1827,29 @@ class StatementGenerationJobATest {
             Charset charset = absent == 4 ? null : ASCII;
             JdbcTemplate template = absent == 5 ? null : new JdbcTemplate();
             RecordImageForm form = absent == 6 ? null : RecordImageForm.CHARACTER;
-            DatasetUnitOfWork boundary = absent == 7 ? null : unitOfWork();
+            PhysicalSequence ordinal = absent == 7 ? null : ORDINAL;
+            DatasetUnitOfWork boundary = absent == 8 ? null : unitOfWork();
             ObjectProvider<SysoutSink> sysout =
-                    absent == 8 ? null : new PresentBean<>(new CapturedSysout());
-            ObjectProvider<TiotSource> tiot = absent == 9 ? null : new PresentBean<>(defaultTiot());
+                    absent == 9 ? null : new PresentBean<>(new CapturedSysout());
+            ObjectProvider<TiotSource> tiot = absent == 10 ? null : new PresentBean<>(defaultTiot());
             ObjectProvider<DatasetUtilityPort> utility =
-                    absent == 10 ? null : new PresentBean<>(new RecordingUtilityPort());
+                    absent == 11 ? null : new PresentBean<>(new RecordingUtilityPort());
             new StatementGenerationJobA(subroutine, text, html, scaffolding, charset, template, form,
-                    boundary, sysout, tiot, utility);
+                    ordinal, boundary, sysout, tiot, utility);
         }
 
         @ParameterizedTest
-        @DisplayName("every one of the eleven collaborators is required")
-        @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+        @DisplayName("every one of the twelve collaborators is required")
+        @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
         void everyCollaboratorIsRequired(int absent) {
             assertThatNullPointerException().isThrownBy(() -> buildWithout(absent));
+        }
+
+        @Test
+        @DisplayName("the absent ordinal is refused by name: SORT and REPRO move records in order")
+        void theOrdinalIsRequiredByName() {
+            assertThatNullPointerException().isThrownBy(() -> buildWithout(7))
+                    .withMessageContaining(PhysicalSequence.EXPRESSION_PROPERTY);
         }
 
         @Test
@@ -1372,7 +1861,7 @@ class StatementGenerationJobATest {
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
                     scaffolding(jobContracts()), ASCII, new JdbcTemplate(),
-                    RecordImageForm.CHARACTER, unitOfWork(), new AbsentBean<>(),
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork(), new AbsentBean<>(),
                     new AbsentBean<>(), new AbsentBean<>());
 
             assertThat(job.sysoutSink()).isNotNull();
@@ -1424,7 +1913,7 @@ class StatementGenerationJobATest {
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
                     scaffolding(jobContracts()), ASCII, new JdbcTemplate(),
-                    RecordImageForm.CHARACTER, unitOfWork(), new AbsentBean<>(),
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork(), new AbsentBean<>(),
                     new AbsentBean<>(), new AbsentBean<>());
 
             TiotImage image = job.tiotSource().read();
@@ -1457,7 +1946,7 @@ class StatementGenerationJobATest {
                             RecordImageForm.CHARACTER),
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
-                    scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, unitOfWork(),
+                    scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, ORDINAL, unitOfWork(),
                     new AbsentBean<>(), new AbsentBean<>(), new AbsentBean<>());
 
             TiotImage image = job.tiotSource().read();
@@ -1751,7 +2240,7 @@ class StatementGenerationJobATest {
                             RecordImageForm.CHARACTER),
                     new StatementHtmlWriter(new JdbcTemplate(), ASCII, globalBindings(),
                             RecordImageForm.CHARACTER),
-                    scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, unitOfWork(),
+                    scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, ORDINAL, unitOfWork(),
                     new PresentBean<>(new CapturedSysout()),
                     new PresentBean<>(defaultTiot()), new PresentBean<>(new RecordingUtilityPort()));
         }
@@ -1933,10 +2422,10 @@ class StatementGenerationJobATest {
         void bothArgumentsAreRequired() {
             assertThatNullPointerException()
                     .isThrownBy(() -> new JdbcDatasetUtilityPort(null, ASCII,
-                            RecordImageForm.CHARACTER, unitOfWork()));
+                            RecordImageForm.CHARACTER, ORDINAL, unitOfWork()));
             assertThatNullPointerException()
                     .isThrownBy(() -> new JdbcDatasetUtilityPort(new JdbcTemplate(), null,
-                            RecordImageForm.CHARACTER, unitOfWork()));
+                            RecordImageForm.CHARACTER, ORDINAL, unitOfWork()));
         }
 
         @Test
@@ -2011,7 +2500,7 @@ class StatementGenerationJobATest {
                     List.of(trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00"),
                             trnxImage(CARD_B, "TRAN000000000002", "TWO", "2.00")));
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
-                    RecordImageForm.CHARACTER, unitOfWork());
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
             DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME,
                     StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH,
                     StatementGenerationJobA.WORK_SEQUENTIAL_BLOCK_SIZE);
@@ -2035,7 +2524,7 @@ class StatementGenerationJobATest {
         void aShortStoredRow() {
             JdbcTemplate template = seededRelation(TRXFL_SEQ_DSNAME, 350, List.of("SHORT"));
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
-                    RecordImageForm.CHARACTER, unitOfWork());
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
 
             List<String> read = port.readAllRecordImages(sequential(TRXFL_SEQ_DSNAME, 350, 3500));
 
@@ -2048,7 +2537,7 @@ class StatementGenerationJobATest {
             JdbcTemplate template = seededRelation(TRXFL_SEQ_DSNAME, 350, List.of());
             template.update("INSERT INTO \"" + TRXFL_SEQ_DSNAME + "\" VALUES (?)", (Object) null);
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
-                    RecordImageForm.CHARACTER, unitOfWork());
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
             DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME, 350, 3500);
 
             assertThatIllegalStateException()
@@ -2132,7 +2621,7 @@ class StatementGenerationJobATest {
             String dsname = "TEST.BINARY.TRXFL";
             JdbcTemplate template = binaryRelation(dsname, 80);
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, EBCDIC,
-                    RecordImageForm.BINARY, unitOfWork());
+                    RecordImageForm.BINARY, ORDINAL, unitOfWork());
             DatasetBinding binding = sequential(dsname, 80, 8000);
             String record = "abcdefghij" + " ".repeat(70);
 
@@ -2157,7 +2646,7 @@ class StatementGenerationJobATest {
             JdbcTemplate template = binaryRelation(source, 80);
             template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARBINARY(80))");
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, EBCDIC,
-                    RecordImageForm.BINARY, unitOfWork());
+                    RecordImageForm.BINARY, ORDINAL, unitOfWork());
             DatasetBinding from = sequential(source, 80, 8000);
             DatasetBinding to = sequential(target, 80, 8000);
             List<String> records = List.of("aaa" + " ".repeat(77), "zzz" + " ".repeat(77));
@@ -2252,7 +2741,7 @@ class StatementGenerationJobATest {
             template.execute("CREATE TABLE \"" + target
                     + "\" (RECORD_IMAGE VARCHAR(80) PRIMARY KEY)");
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
-                    RecordImageForm.CHARACTER, new DatasetUnitOfWork(
+                    RecordImageForm.CHARACTER, ORDINAL, new DatasetUnitOfWork(
                             new JdbcTransactionManager(template.getDataSource())));
             DatasetBinding from = sequential(source, 80, 8000);
             DatasetBinding to = sequential(target, 80, 8000);
@@ -2277,7 +2766,7 @@ class StatementGenerationJobATest {
             DatasetUnitOfWork boundary = new DatasetUnitOfWork(
                     new JdbcTransactionManager(template.getDataSource()));
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
-                    RecordImageForm.CHARACTER, boundary);
+                    RecordImageForm.CHARACTER, ORDINAL, boundary);
             DatasetBinding from = sequential(source, 80, 8000);
             DatasetBinding to = sequential(target, 80, 8000);
             port.writeRecordImages(from, List.of(record80("A"), record80("B")));
@@ -4144,6 +4633,204 @@ class StatementGenerationJobATest {
                     StatementGenerationJobA.JOB_NAME);
             assertThat(context.getEnvironment().getProperty("spring.batch.job.enabled"))
                     .isEqualTo("false");
+        }
+    }
+
+    // =============================================================================================
+    // The abnormal dispositions - the THIRD positional of DISP=(NEW,CATLG,DELETE).
+    //
+    // app/jcl/CREASTMT.JCL declares that disposition three times in this job: on SORTOUT (:48-49), on
+    // STMTFILE (:87-91) and on HTMLFILE (:92-96). Its third positional is DELETE, so a step that does not
+    // end normally leaves NO dataset at all - which is a third outcome a rollback cannot express, because
+    // every record here is durable as it is written.
+    //
+    // OUTFILE is deliberately absent from that list: :59 binds it DISP=SHR, so a REPRO that fails part way
+    // leaves what it had already loaded, and deleting it would be the wrong disposition entirely.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The abnormal dispositions leave nothing where the JCL says DELETE")
+    class TheAbnormalDispositions {
+
+        @Test
+        @DisplayName("a run that reaches GOBACK discards neither statement output: CATLG, not DELETE")
+        void aCompletedRunDiscardsNothing() {
+            Harness built = harness(oneStatement());
+
+            assertThat(built.run()).isEqualTo(1);
+
+            assertThat(built.textDiscards)
+                    .as("CATLG is the normal disposition: the statements stay catalogued")
+                    .isZero();
+            assertThat(built.htmlDiscards).isZero();
+            Mockito.verify(built.htmlWriter, Mockito.never())
+                    .discardGeneration(Mockito.any(HtmlStatementFile.class));
+        }
+
+        @Test
+        @DisplayName("an abended run discards both statement generations, each carrying its own count")
+        void anAbendedRunDiscardsBothGenerations() {
+            // The text sink refuses its second record, so the run abends with statements already written
+            // to both datasets - the exact state DISP=(NEW,CATLG,DELETE) exists to remove.
+            RefusingHarness built = refusingTextRecord(2);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+
+            assertThat(built.textDiscards)
+                    .as("STMTFILE is DISP=(NEW,CATLG,DELETE) at CREASTMT.JCL:87")
+                    .isOne();
+            assertThat(built.htmlDiscards)
+                    .as("HTMLFILE is DISP=(NEW,CATLG,DELETE) at CREASTMT.JCL:92")
+                    .isOne();
+            // Each disposition is given the count its own handle wrote, which is what lets a sink
+            // establish that the generation it deletes is the one this run allocated.
+            assertThat(built.textDiscardCount).isEqualTo(built.textRecordsOffered);
+            assertThat(built.htmlDiscardCount).isEqualTo(built.htmlRecordsOffered);
+        }
+
+        @Test
+        @DisplayName("both handles are closed before either disposition is applied")
+        void theDispositionFollowsTheClose() {
+            // z/OS closes the dataset and then applies its disposition. Reversing that would ask the HTML
+            // writer to dispose of a handle it still considers open, and would leave the text handle held.
+            RefusingHarness built = refusingTextRecord(2);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+
+            assertThat(built.textHandle.isOpen()).isFalse();
+            assertThat(built.htmlHandle.isOpen()).isFalse();
+            assertThat(built.textDiscards).isOne();
+            assertThat(built.htmlDiscards).isOne();
+        }
+
+        @Test
+        @DisplayName("a run that abends at the HTML open discards nothing, because nothing was written")
+        void anAbendBeforeTheFirstRecordDiscardsNothing() {
+            // On the mainframe the step still allocates and still deletes an empty dataset, so there is no
+            // observable difference - and a disposition that issued a delete here would be noise.
+            RefusingHarness built = new RefusingHarness(oneStatement(), 0, 0, HTML_REFUSED_STATUS,
+                    FileStatus.Outcome.OK, FileStatus.OK);
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+
+            assertThat(built.textRecordsOffered).isZero();
+            assertThat(built.htmlRecordsOffered).isZero();
+            assertThat(built.textDiscards).isZero();
+            assertThat(built.htmlDiscards).isZero();
+        }
+
+        @Test
+        @DisplayName("STEP010 discards SORTOUT when its write does not finish (CREASTMT.JCL:48-49)")
+        void aFailedSortDiscardsItsOutput() {
+            // A half-sorted intermediate file is not a subset of a sorted one - a sort places records only
+            // after seeing every key - so leaving it catalogued would leave records in an order the
+            // card-break grouping of 1000-MAINLINE is not correct for.
+            RecordingUtilityPort utility = new RecordingUtilityPort()
+                    .seed(TRANSACT_DSNAME, List.of(tranImage(CARD_B, "TRAN000000000002"),
+                            tranImage(CARD_A, "TRAN000000000001")))
+                    .refusingWriteTo(TRXFL_SEQ_DSNAME);
+            StatementGenerationJobA job = new Harness(oneStatement(), defaultTiot(), jobContracts(),
+                    utility).job;
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(job::sortAndReformatTransactions);
+
+            assertThat(utility.operations())
+                    .as("the delete follows the failed write, and names SORTOUT's own dataset")
+                    .endsWith("WRITE " + TRXFL_SEQ_DSNAME, "DELETE " + TRXFL_SEQ_DSNAME);
+            assertThat(utility.contentsOf(TRXFL_SEQ_DSNAME)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a disposition that reports it could not discard does not replace the abend reason")
+        void aRefusedDispositionDoesNotReplaceTheAbendReason() {
+            // Both output datasets are DISP=(NEW,CATLG,DELETE), and this is the case where the delete
+            // itself comes back not-OK - the generation may still be catalogued. That has to be said, and
+            // it must NOT become the reason the run failed: an operator who is told only that a cleanup
+            // failed has lost the reason the statements were never produced.
+            RefusingHarness built = refusingTextRecord(2);
+            built.discardsRefused = true;
+
+            // Still an AbendException, not whatever a failed cleanup might have raised instead.
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+
+            assertThat(built.textDiscards)
+                    .as("both dispositions were still attempted - a refusal is not a skip")
+                    .isOne();
+            assertThat(built.htmlDiscards).isOne();
+        }
+
+        @Test
+        @DisplayName("a run that abends before OPEN OUTPUT has no generation to discard")
+        void anAbendBeforeTheOpenHasNoGenerationToDiscard() {
+            // CBSTM03A opens STMTFILE and HTMLFILE together at L293. A run that fails before that line
+            // holds neither handle, and the cleanup - which runs in a finally, on every path out - must
+            // cope with that rather than dereference what was never opened. Nothing is discarded because
+            // nothing was ever allocated.
+            Harness built = harness(oneStatement());
+            Mockito.doThrow(new IllegalStateException("STMTFILE could not be allocated"))
+                    .when(built.textWriter).openOutput();
+
+            assertThatExceptionOfType(IllegalStateException.class).isThrownBy(built::run);
+
+            // The cleanup ran - it is in a finally, on every path out - and found neither handle to
+            // dispose of, so it disposed of neither rather than failing on a null.
+            assertThat(built.textDiscards).isZero();
+            assertThat(built.htmlDiscards).isZero();
+            Mockito.verify(built.htmlWriter, Mockito.never())
+                    .discardGeneration(Mockito.any(HtmlStatementFile.class));
+        }
+
+        @Test
+        @DisplayName("a sort that fails before writing anything still issues its delete, and removes none")
+        void aSortFailingBeforeItsFirstRecordDiscardsNothing() {
+            // The other side of aFailedSortDiscardsItsOutput. There the write got half way, so the delete
+            // had records to remove; here it got nowhere, so the delete is still issued - the disposition
+            // is unconditional - and correctly removes nothing. Issuing it either way is the point: the
+            // step cannot know how far the write got.
+            RecordingUtilityPort utility = new RecordingUtilityPort()
+                    .seed(TRANSACT_DSNAME, List.of(tranImage(CARD_A, "TRAN000000000001")))
+                    .refusingWriteTo(TRXFL_SEQ_DSNAME);
+            StatementGenerationJobA job = new Harness(oneStatement(), defaultTiot(), jobContracts(),
+                    utility).job;
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(job::sortAndReformatTransactions);
+
+            assertThat(utility.operations())
+                    .as("the delete follows the failed write whether or not there was anything to delete")
+                    .endsWith("WRITE " + TRXFL_SEQ_DSNAME, "DELETE " + TRXFL_SEQ_DSNAME);
+            assertThat(utility.contentsOf(TRXFL_SEQ_DSNAME)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("STEP010 leaves its output catalogued when the sort completes")
+        void aCompletedSortKeepsItsOutput() {
+            RecordingUtilityPort utility = new RecordingUtilityPort()
+                    .seed(TRANSACT_DSNAME, List.of(tranImage(CARD_B, "TRAN000000000002"),
+                            tranImage(CARD_A, "TRAN000000000001")));
+            StatementGenerationJobA job = new Harness(oneStatement(), defaultTiot(), jobContracts(),
+                    utility).job;
+
+            assertThat(job.sortAndReformatTransactions()).isEqualTo(2);
+
+            assertThat(utility.operations()).doesNotContain("DELETE " + TRXFL_SEQ_DSNAME);
+            assertThat(utility.contentsOf(TRXFL_SEQ_DSNAME)).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("STEP020 never discards OUTFILE: CREASTMT.JCL:59 binds it DISP=SHR")
+        void theReproTargetIsNeverDiscarded() {
+            // The one dataset in this job that must survive a failure part way through. DISP=SHR carries no
+            // deletion at all, and an IDCAMS REPRO that stops leaves what it had already loaded.
+            RecordingUtilityPort utility = new RecordingUtilityPort()
+                    .seed(TRXFL_SEQ_DSNAME, List.of(trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00")));
+            StatementGenerationJobA job = new Harness(oneStatement(), defaultTiot(), jobContracts(),
+                    utility).job;
+
+            job.reproSortedFileIntoWorkDataset();
+
+            assertThat(utility.operations()).doesNotContain("DELETE " + TRNXFILE_DSNAME);
         }
     }
 }

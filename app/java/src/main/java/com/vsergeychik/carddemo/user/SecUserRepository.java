@@ -1020,24 +1020,30 @@ public class SecUserRepository {
                     + "' to read a record by key");
         }
 
-        Row row;
+        KeyedMatch match;
         try {
-            row = rowMatching(forUpdate ? sql.selectByKeyForUpdate() : sql.selectByKey(),
+            match = rowMatching(forUpdate ? sql.selectByKeyForUpdate() : sql.selectByKey(),
                     KEY_SPAN.pattern(keyImage));
         } catch (DataAccessException refused) {
             return reportRead(refused, "read a record by key from the security-user dataset '"
                     + datasetName + "'");
         }
 
-        if (!row.present()) {
+        if (match.matched() == 0) {
             // The INVALID KEY condition: RESP 13, DFHRESP(NOTFND). Reported, never thrown - COSGN00C's
             // WHEN 13 arm and COUSR02C's and COUSR03C's WHEN DFHRESP(NOTFND) arms all paint a message.
             return ReadResult.notFound();
         }
-        if (row.image() == null) {
+        if (match.matched() > SINGLE_ROW) {
+            // Fan-out on a unique primary key. Refused rather than resolved, for the reason the write
+            // paths refuse it: a caller handed an arbitrary one of several records has no way to know a
+            // choice was made, and COSGN00C would authenticate against it.
+            return fanOutReadRefused();
+        }
+        if (match.firstImage() == null) {
             return unreadableRow("a record read by key");
         }
-        return decoded(row.image(), "a record read by key", forUpdate);
+        return decoded(match.firstImage(), "a record read by key", forUpdate);
     }
 
     /**
@@ -1256,39 +1262,44 @@ public class SecUserRepository {
     // =================================================================================================
 
     /**
-     * Issues a one-row statement whose single parameter is a keyed {@code LIKE} pattern.
+     * Issues a keyed statement whose single parameter is a keyed {@code LIKE} pattern, and reports both
+     * how many rows the key selected and the first row's image.
+     *
+     * <p>Bounded at {@value #FAN_OUT_PROBE_LIMIT} rather than at one row, and the extra row is the point.
+     * {@code SEC-USR-ID} is the unique primary key of a KSDS ({@code app/cpy/CSUSR01Y.cpy}), so a second
+     * matching row cannot arise in the legacy system - but a limit of one made that undetectable, and the
+     * read would have returned whichever row the backend ordered first as though it were the record. The
+     * write paths already probe with this same bound before they issue anything; the read now agrees with
+     * them, so one integrity condition has one outcome across all of this class.
      *
      * @param statement the composed statement
      * @param pattern   the escaped pattern from {@link KeySpan#pattern(String)}
-     * @return whether a row arrived and the image it carried; never {@code null}
+     * @return how many rows matched, capped at {@value #FAN_OUT_PROBE_LIMIT}, and the first row's image;
+     *         never {@code null}
      * @throws DataAccessException if the backend refused the read
      */
-    private Row rowMatching(String statement, String pattern) {
-        return firstRow(connection -> {
-            PreparedStatement prepared = limited(connection.prepareStatement(statement));
+    private KeyedMatch rowMatching(String statement, String pattern) {
+        PreparedStatementCreator creator = connection -> {
+            PreparedStatement prepared = bounded(connection.prepareStatement(statement));
             recordImageForm.bindOperand(prepared, 1, pattern, codec.charset());
             return prepared;
-        });
-    }
-
-    /**
-     * Issues a prepared statement and reduces its result to the first row.
-     *
-     * <p>The extractor never returns {@code null}, and the guard on the template's answer keeps a driver
-     * that somehow produced one from becoming a {@link NullPointerException} at the call site instead of a
-     * diagnosable outcome here.
-     *
-     * @param creator the prepared, limited and bound statement
-     * @return whether a row arrived and the image it carried; never {@code null}
-     * @throws DataAccessException if the backend refused the read
-     */
-    private Row firstRow(PreparedStatementCreator creator) {
-        ResultSetExtractor<Row> extractor = resultSet -> resultSet.next()
-                ? new Row(true, recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX,
-                        codec.charset()))
-                : Row.none();
-        Row row = jdbcTemplate.query(creator, extractor);
-        return row == null ? Row.none() : row;
+        };
+        ResultSetExtractor<KeyedMatch> extractor = resultSet -> {
+            if (!resultSet.next()) {
+                return KeyedMatch.none();
+            }
+            byte[] first = recordImageForm.readImage(resultSet, RECORD_IMAGE_COLUMN_INDEX,
+                    codec.charset());
+            // One more probe and no further: "more than one" is the whole question, and the second row's
+            // image is never needed because no answer built from it would be a faithful one.
+            int matched = resultSet.next() ? FAN_OUT_PROBE_LIMIT : SINGLE_ROW;
+            return new KeyedMatch(matched, first);
+        };
+        KeyedMatch match = jdbcTemplate.query(creator, extractor);
+        // A driver that somehow produced no result object at all has told us nothing, and nothing is not
+        // an absent record - but it is also not a fan-out, so it becomes the no-row answer here and the
+        // caller's not-found arm, exactly as it did before this method reported a count.
+        return match == null ? KeyedMatch.none() : match;
     }
 
     /**
@@ -1354,16 +1365,26 @@ public class SecUserRepository {
         return counted == null ? 0 : counted;
     }
 
-    /** Caps a prepared statement at one row, so no more than one can ever matter. */
-    private static PreparedStatement limited(PreparedStatement statement) throws SQLException {
-        statement.setMaxRows(SINGLE_ROW);
-        statement.setFetchSize(SINGLE_ROW);
-        return statement;
-    }
-
-    /** Caps a probe at {@value #FAN_OUT_PROBE_LIMIT} rows: enough to tell "one" from "more than one". */
+    /**
+     * Caps a statement at {@value #FAN_OUT_PROBE_LIMIT} rows: enough to tell "one" from "more than one".
+     *
+     * <p>Every keyed statement this class issues goes through here - the read, the locking read, and the
+     * probes the rewrite and the delete take before they change anything - so all four bound the backend
+     * identically and all four can tell a unique key from a violated one. There is deliberately no
+     * one-row variant: a statement capped at one row cannot distinguish those two, and that was the
+     * blind spot on the read path.
+     *
+     * <p>The fetch size is set as well as the row cap. {@code setMaxRows} bounds what the driver returns;
+     * {@code setFetchSize} bounds what it buffers to get there, and the JDBC contract makes it a hint, so
+     * it can only reduce buffering and never change which row arrives.
+     *
+     * @param statement the freshly prepared statement
+     * @return the same statement, bounded
+     * @throws SQLException if the driver refuses either bound
+     */
     private static PreparedStatement bounded(PreparedStatement statement) throws SQLException {
         statement.setMaxRows(FAN_OUT_PROBE_LIMIT);
+        statement.setFetchSize(FAN_OUT_PROBE_LIMIT);
         return statement;
     }
 
@@ -1475,6 +1496,30 @@ public class SecUserRepository {
                 + " with no record image at column position " + RECORD_IMAGE_COLUMN_INDEX
                 + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
                 + " to the caller");
+        return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
+    }
+
+    /**
+     * Refuses a keyed read whose key selects more than one row.
+     *
+     * <p>The same outcome {@link #fanOutRefused(String)} gives a write, and deliberately so: one integrity
+     * violation, one status, whichever operation met it. Not-found would be a lie - the records exist -
+     * and the duplicate-key response would be worse, because CICS reports {@code DUPKEY} for a read
+     * through a <em>path</em> on a non-unique alternate key, an expected condition with a defined
+     * meaning, and this is a non-unique <em>primary</em> key, which VSAM cannot present at all. So it
+     * lands on the caller's {@code WHEN OTHER} arm.
+     *
+     * <p>Neither the key nor any record content is logged: this dataset holds user identifiers and, per
+     * {@code app/cpy/CSUSR01Y.cpy}, plaintext passwords.
+     *
+     * @return the permanent-error outcome
+     */
+    private ReadResult fanOutReadRefused() {
+        LOG.error("A keyed read of the security-user dataset '" + datasetName + "' matched more than one "
+                + "row; SEC-USR-ID is the unique primary key of a KSDS, so the read is being refused and "
+                + "file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " reported to the "
+                + "caller rather than returning an arbitrary one of them as though it were the record. "
+                + "The backing relation needs a unique constraint on its key span.");
         return ReadResult.of(PERMANENT_ERROR_STATUS, CicsResponse.of(FileStatus.INVREQ));
     }
 
@@ -1747,6 +1792,42 @@ public class SecUserRepository {
          */
         static Row none() {
             return NONE;
+        }
+    }
+
+    /**
+     * How many rows a keyed read's key selected, and the first row's image.
+     *
+     * <p>Separate from {@link Row} because the count is a keyed read's question and no other read's: a
+     * browse step returns one record at a time by construction, so "how many share this key" has no
+     * meaning there. Keeping the two apart is what stops the browse from carrying a count no caller can
+     * interpret.
+     *
+     * @param matched how many rows the key selected, capped at {@value #FAN_OUT_PROBE_LIMIT}; a value of
+     *                {@value #FAN_OUT_PROBE_LIMIT} means "at least that many" rather than "exactly"
+     * @param image   the first row's record image, which may be {@code null} even when a row arrived
+     */
+    private record KeyedMatch(int matched, byte[] image) {
+
+        /** The shared no-row answer. Immutable, so sharing it introduces no mutable static state. */
+        private static final KeyedMatch NONE = new KeyedMatch(0, null);
+
+        /**
+         * The answer for a keyed read whose key selected nothing.
+         *
+         * @return the no-row answer
+         */
+        static KeyedMatch none() {
+            return NONE;
+        }
+
+        /**
+         * The first row's image, named to read at the call site as what it is.
+         *
+         * @return the image, or {@code null} when no row arrived or the row carried none
+         */
+        byte[] firstImage() {
+            return image;
         }
     }
 

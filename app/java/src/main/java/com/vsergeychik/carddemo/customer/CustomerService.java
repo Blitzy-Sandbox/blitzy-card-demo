@@ -900,15 +900,22 @@ public class CustomerService {
     // =================================================================================================
 
     /**
-     * The 500-character group image of the record a successful read carried.
+     * The 500-character group image of the record a successful read carried - <strong>the row's own
+     * bytes</strong>.
      *
-     * <p>{@code DISPLAY CUSTOMER-RECORD} names the {@code 01} group item, so it writes the record's
-     * <strong>whole stored image</strong> and not a rendering of its fields: nine digits of
-     * {@code CUST-ID}, then each {@code PIC X} field at its declared width, then the 168 spaces of the
-     * trailing {@code FILLER}. Rendering it from {@link CustomerRecord#recordImage(FixedWidthCodec)}
-     * rather than from a {@code toString} is what guarantees that - a diagnostic rendering could trim,
-     * reorder or mask, and any of those would break the field-for-field diff. Nothing here is trimmed,
-     * nothing is JSON, and the {@code FILLER} is present (gate <strong>G21</strong>).
+     * <p>{@code DISPLAY CUSTOMER-RECORD} names the {@code 01} group item, so it writes the record area
+     * as {@code READ ... INTO} left it: nine digits of {@code CUST-ID}, then each {@code PIC X} field at
+     * its declared width, then the trailing {@code FILLER} - and the {@code FILLER} holds whatever the
+     * row held, because this program never writes it and a read fills it from storage.
+     *
+     * <p>So the image comes from {@link ReadResult#requireStoredImage()} and <strong>not</strong> from
+     * {@link CustomerRecord#recordImage(FixedWidthCodec)}. That method allocates a fresh record area and
+     * writes the eighteen declared fields into it, which leaves the {@code FILLER} at its
+     * initialisation value - 168 spaces - whatever the row actually carried there. The two therefore
+     * coincide for every row whose {@code FILLER} is blank, which is every row of
+     * {@code app/data/ASCII/custdata.txt}, and diverge for any row that is not: the line this program
+     * writes would be a line the COBOL never wrote. Nothing here is trimmed, nothing is JSON, and the
+     * {@code FILLER} is present as stored (gate <strong>G21</strong>).
      *
      * @param result         the read outcome, which must be the successful arm
      * @param workingStorage this run's flag and register, for the diagnostic if it is not
@@ -917,13 +924,15 @@ public class CustomerService {
      *                               can produce
      */
     private String recordImageOf(ReadResult result, WorkingStorage workingStorage) {
-        CustomerRecord customer = result.customer().orElseThrow(() -> new IllegalStateException(
-                "A read of the customer master reported file status '" + result.status() + "' and left "
-                        + "END-OF-FILE = '" + workingStorage.endOfFileFlag() + "', so DISPLAY "
-                        + "CUSTOMER-RECORD was reached with no record to display. Only the '"
-                        + FileStatus.OK + "' arm displays, and that arm always carries the decoded "
-                        + "record."));
-        return customer.recordImage(codec);
+        if (result.customer().isEmpty()) {
+            throw new IllegalStateException(
+                    "A read of the customer master reported file status '" + result.status() + "' and left "
+                            + "END-OF-FILE = '" + workingStorage.endOfFileFlag() + "', so DISPLAY "
+                            + "CUSTOMER-RECORD was reached with no record to display. Only the '"
+                            + FileStatus.OK + "' arm displays, and that arm always carries the decoded "
+                            + "record and the bytes it was decoded from.");
+        }
+        return result.requireStoredImage();
     }
 
     // =================================================================================================

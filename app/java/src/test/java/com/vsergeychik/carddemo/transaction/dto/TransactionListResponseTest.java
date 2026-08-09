@@ -957,15 +957,38 @@ class TransactionListResponseTest {
         }
 
         @Test
-        @DisplayName("echoTransferTarget takes CDEMO-TO-PROGRAM out of the commarea")
+        @DisplayName("echoTransferTarget names the program only, and blanks the map and mapset")
         void echoTransferTarget() {
             TransactionListResponse response = new TransactionListResponse();
             NavigationContext context = NavigationContext.empty().withToProgram("COMEN01C");
+
             response.echoTransferTarget(context);
+
             assertThat(response.getNextProgram()).isEqualTo("COMEN01C");
-            assertThat(response.getNextMapset()).isEqualTo("COTRN00");
-            assertThat(response.getNextMap()).isEqualTo("COTRN0A");
+            // COTRN00C:188-195 and :512-521 state PROGRAM and COMMAREA and nothing else, and the program
+            // never writes CDEMO-LAST-MAP or CDEMO-LAST-MAPSET - so the target is handed no map or mapset
+            // and picks its own. Publishing THIS screen's COTRN00 / COTRN0A as the NEXT screen's told a
+            // client to paint the map it is leaving.
+            assertThat(response.getNextMapset())
+                    .isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(response.getNextMap())
+                    .isBlank()
+                    .hasSize(NavigationContext.LAST_MAP_LENGTH);
+            assertThat(response.getNextMapset()).isNotEqualTo(TransactionListResponse.MAPSET_NAME);
+            assertThat(response.getNextMap()).isNotEqualTo(TransactionListResponse.MAP_NAME);
             assertThatNullPointerException().isThrownBy(() -> response.echoTransferTarget(null));
+        }
+
+        @Test
+        @DisplayName("a screen that is painted rather than transferred still names its own map and mapset")
+        void aPaintedScreenKeepsItsOwnNames() {
+            // The default state is this screen's own triple, which is what a SEND publishes; only the
+            // XCTL projection blanks them, so the two outcomes stay distinguishable to a client.
+            TransactionListResponse painted = new TransactionListResponse();
+
+            assertThat(painted.getNextMapset()).isEqualTo(TransactionListResponse.MAPSET_NAME);
+            assertThat(painted.getNextMap()).isEqualTo(TransactionListResponse.MAP_NAME);
         }
 
         @Test

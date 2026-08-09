@@ -405,19 +405,55 @@ public final class DatasetRelation {
     }
 
     /**
-     * The whole relation in the order the backend presents it - the sequential read of a
-     * physical-sequential dataset.
+     * The whole relation with <strong>no order contract at all</strong>.
      *
-     * <p>Deliberately unordered, and only for a PS dataset. A physical-sequential file has no key: its
-     * records are in the order they were written, {@code READ} returns them in that order, and imposing
-     * an {@code ORDER BY} would <em>reorder</em> the file rather than make the read deterministic. A
-     * keyed dataset is the opposite case and uses {@link #selectAllAscending(String)}, where the explicit
-     * ordering is exactly what a browse depends on.
+     * <p>Reserved for a read whose outcome does not depend on the order rows arrive in, and there is
+     * exactly one of those in this module: the security-user browse, which scans the whole relation and
+     * selects the least or greatest admissible key <em>in Java</em>, by unsigned byte comparison in the
+     * dataset code page, because {@code SEC-USR-ID} is the estate's only alphanumeric key and a backend
+     * collation would not agree with the code page's byte order there.
+     *
+     * <p>It is <strong>not</strong> the sequential read of a physical-sequential dataset. SQL guarantees
+     * no row order without an {@code ORDER BY}, so a physical-sequential read composed from this would
+     * arrive in whatever order the backend scanned, and every consumer of {@code DALYTRAN}, of the sorted
+     * daily file and of the sorted statement file depends on the order the records were written in. Those
+     * reads use {@link #selectAllInPhysicalSequence(PhysicalSequence)}, and a keyed browse - the opposite
+     * case, ordered by key - uses {@link #selectAllAscending(String)}.
      *
      * @return the unordered select over the whole relation
      */
     public String selectAll() {
         return "SELECT * FROM " + identifier;
+    }
+
+    /**
+     * The whole relation in <strong>physical-record order</strong> - the sequential read of a
+     * physical-sequential dataset.
+     *
+     * <p>A physical-sequential file has no key: its records are in the order they were written and a
+     * COBOL {@code READ} returns them in that order. What stands for that order over JDBC is the ordinal
+     * the deployment's driver presents for a record's position, which is what {@link PhysicalSequence}
+     * carries - and it is deliberately not the record image, because ordering by the image orders by the
+     * record's leading bytes and those are a different order from the file's. {@code app/jcl/TRANREPT.jcl:46}
+     * sorts the daily file {@code SORT FIELDS=(TRAN-CARD-NUM,A)} while its record image begins with
+     * {@code TRAN-ID}, and {@code CBTRN03C} subtotals by account as the records arrive
+     * ({@code app/cbl/CBTRN03C.cbl:168-207}), so an image ordering would produce a report with the right
+     * rows and the wrong totals.
+     *
+     * <p>The ordinal is rendered as {@link PhysicalSequence} validated it - a bare identifier, unquoted -
+     * because a pseudo-column cannot be delimited. See that type for why the grammar rather than the
+     * quoting is what makes it safe.
+     *
+     * @param sequence the deployment's physical-record ordinal; must not be {@code null}
+     * @return the ordered select over the whole relation
+     * @throws NullPointerException if {@code sequence} is {@code null}
+     */
+    public String selectAllInPhysicalSequence(PhysicalSequence sequence) {
+        Objects.requireNonNull(sequence, "A physical-record ordinal is required to read a "
+                + "physical-sequential dataset: SQL guarantees no row order without an ORDER BY, and the "
+                + "order records were written in is what a sequential READ returns. It is configured by "
+                + PhysicalSequence.EXPRESSION_PROPERTY + ".");
+        return "SELECT * FROM " + identifier + sequence.orderByClause();
     }
 
     /**

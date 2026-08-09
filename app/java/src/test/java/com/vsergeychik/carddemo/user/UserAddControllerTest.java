@@ -6,8 +6,11 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
+import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
+import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.SecUserRepository.WriteResult;
 import com.vsergeychik.carddemo.user.UserAddController.ProgramState;
@@ -22,6 +25,10 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
+import com.zaxxer.hikari.HikariDataSource;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -29,6 +36,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.JdbcTransactionManager;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -1060,6 +1075,191 @@ class UserAddControllerTest {
             ProgramState succeeded = enter(populatedRequest());
 
             assertThat(succeeded.requireSecUserData().secUsrId()).isEqualTo("USR1    ");
+        }
+    }
+
+    // =================================================================================================
+    // The transaction boundary. COUSR01C:240 is EXEC CICS WRITE, and a CICS task's syncpoint at RETURN
+    // is what makes it durable. Every other test in this class drives the program with a stubbed
+    // repository, which is right for parity and is exactly why none of them can see whether the insert
+    // survives the connection going back to the pool.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The transaction boundary - the USRSEC insert must survive the connection's return")
+    class TheTransactionBoundary {
+
+        /** The dataset the binding names, quoted as a delimited identifier by the repository. */
+        private static final String DSNAME = "TEST.USRSEC.VSAM.KSDS";
+
+        @Test
+        @DisplayName("the inserted user is still there after the request, on a pool that does not "
+                + "auto-commit")
+        void theInsertIsCommitted() {
+            // The pool is configured exactly as application.yml:146 configures production - auto-commit
+            // false - because that setting is what makes this observable. Under it, a statement issued
+            // with no transaction open is rolled back when Hikari takes the connection back, and the
+            // screen still says 'User USR1 has been added ...' because the repository reported NORMAL
+            // and was telling the truth about the statement it executed.
+            withTransactionalContext(true, (controller, verifier) -> {
+                ScreenResponse<UserAddResponse> response = controller.addUser(populatedRequest(),
+                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH);
+
+                assertThat(response.screen().errMsg())
+                        .as("the screen the operator is shown")
+                        .startsWith("User USR1 has been added");
+                assertThat(recordsIn(verifier))
+                        .as("and the record the screen promised, read back on another connection")
+                        .hasSize(1)
+                        .allSatisfy(image -> assertThat(image).hasSize(80).startsWith("USR1    "));
+            });
+        }
+
+        @Test
+        @DisplayName("without the boundary the same call reports success and leaves nothing behind, "
+                + "which is the defect this closes")
+        void withoutTheBoundaryTheInsertIsLost() {
+            // The control, and it is what makes the case above evidence rather than assertion. The only
+            // difference is that transaction management is not enabled, so @Transactional advises
+            // nothing - which is the same runtime the annotation's absence produced. The screen is
+            // identical; the dataset is empty.
+            withTransactionalContext(false, (controller, verifier) -> {
+                ScreenResponse<UserAddResponse> response = controller.addUser(populatedRequest(),
+                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH);
+
+                assertThat(response.screen().errMsg())
+                        .as("the operator is told the same thing either way")
+                        .startsWith("User USR1 has been added");
+                assertThat(recordsIn(verifier))
+                        .as("but nothing was committed")
+                        .isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("the insert enlists in the unit of work, so a task that never commits leaves "
+                + "nothing behind")
+        void theInsertIsRolledBackWithTheUnitOfWork() {
+            // The other half of a boundary. Committing is only meaningful if not committing is equally
+            // possible: this drives the same request inside a unit of work the test then abandons, which
+            // is the CICS task that abends before its syncpoint. The insert has to be enlisted in that
+            // unit rather than standing outside it, or the record would survive an abend the mainframe
+            // would have backed out.
+            withTransactionalContext(true, (controller, verifier) -> {
+                TransactionTemplate abandoned = new TransactionTemplate(new JdbcTransactionManager(
+                        Objects.requireNonNull(verifier.getDataSource())));
+
+                ScreenResponse<UserAddResponse> response = abandoned.execute(status -> {
+                    ScreenResponse<UserAddResponse> answer = controller.addUser(populatedRequest(),
+                            (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH);
+                    status.setRollbackOnly();
+                    return answer;
+                });
+
+                assertThat(response).isNotNull();
+                assertThat(response.screen().errMsg())
+                        .as("the program is unchanged - it still reports what it did")
+                        .startsWith("User USR1 has been added");
+                assertThat(recordsIn(verifier))
+                        .as("but the unit of work was abandoned, so the insert went with it")
+                        .isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("the boundary is on the HTTP entry point, and mainPara stays free of it")
+        void theBoundaryIsOnTheEntryPoint() throws Exception {
+            // Placement is the whole of it. On the entry point the annotation is advised by the proxy
+            // Spring creates; on mainPara it would be reached by self-invocation from within the same
+            // instance and advise nothing at all - and it would also put a transaction in the path of
+            // every parity test, which drive mainPara directly against a stubbed repository.
+            assertThat(UserAddController.class
+                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class)
+                    .isAnnotationPresent(Transactional.class))
+                    .isTrue();
+            assertThat(UserAddController.class
+                    .getMethod("mainPara", UserAddRequest.class, byte.class, int.class)
+                    .isAnnotationPresent(Transactional.class))
+                    .isFalse();
+            assertThat(Modifier.isFinal(UserAddController.class.getModifiers()))
+                    .as("a final class cannot be proxied by CGLIB, so the annotation would be inert")
+                    .isFalse();
+            assertThat(Modifier.isFinal(UserAddController.class
+                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class)
+                    .getModifiers()))
+                    .as("nor can a final method be overridden by the proxy")
+                    .isFalse();
+        }
+
+        /**
+         * Runs a body against a real controller over a real repository, a real non-auto-commit pool and a
+         * private in-memory database.
+         *
+         * @param transactionManagementEnabled whether {@code @Transactional} is advised at all
+         * @param body                         given the controller as the context exposes it - proxied
+         *                                     when management is enabled - and a template for reading the
+         *                                     dataset back
+         */
+        private void withTransactionalContext(boolean transactionManagementEnabled,
+                java.util.function.BiConsumer<UserAddController, JdbcTemplate> body) {
+            // A fresh name per test rather than a shared counter, which is how TransactionRepositoryTest
+            // isolates its relations and which keeps this class free of mutable static state (gate G53).
+            String url = "jdbc:h2:mem:useradd_tx" + UUID.randomUUID()
+                    + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+            HikariDataSource pool = new HikariDataSource();
+            pool.setJdbcUrl(url);
+            pool.setDriverClassName("org.h2.Driver");
+            pool.setUsername("sa");
+            pool.setPassword("");
+            // The two settings that matter, and both mirror production: no auto-commit, and a pool small
+            // enough that the connection a request used is the one the next request gets back.
+            pool.setAutoCommit(false);
+            pool.setMaximumPoolSize(2);
+
+            try (HikariDataSource opened = pool) {
+                JdbcTemplate schema = new JdbcTemplate(opened);
+                new TransactionTemplate(new JdbcTransactionManager(opened)).executeWithoutResult(
+                        status -> schema.execute("CREATE TABLE \"" + DSNAME + "\" (RECORD_IMAGE "
+                                + "VARCHAR(80))"));
+
+                AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+                context.registerBean(DataSource.class, () -> opened);
+                context.registerBean(PlatformTransactionManager.class,
+                        () -> new JdbcTransactionManager(opened));
+                context.registerBean(UserAddController.class, () -> new UserAddController(
+                        new SecUserRepository(new JdbcTemplate(opened), bindings(),
+                                StandardCharsets.US_ASCII, RecordImageForm.CHARACTER),
+                        FIXED_CLOCK, StandardCharsets.US_ASCII));
+                if (transactionManagementEnabled) {
+                    context.register(TransactionManagementEnabled.class);
+                }
+                try (AnnotationConfigApplicationContext running = context) {
+                    running.refresh();
+                    body.accept(running.getBean(UserAddController.class), new JdbcTemplate(opened));
+                }
+            }
+        }
+
+        /**
+         * @param template a template over the dataset's database
+         * @return every record image the dataset holds, read outside any transaction the body opened
+         */
+        private List<String> recordsIn(JdbcTemplate template) {
+            return template.queryForList("SELECT RECORD_IMAGE FROM \"" + DSNAME + "\"", String.class);
+        }
+
+        /** The catalogue naming {@link #DSNAME} at {@code CSUSR01Y}'s geometry. */
+        private DatasetBindings bindings() {
+            DatasetBindings catalogue = new DatasetBindings();
+            catalogue.put(SecUserRepository.CICS_FILE_NAME, new DatasetBinding(DSNAME, "ksds", false,
+                    "FB", null, SecUserRecord.RECORD_LENGTH, "CSUSR01Y", 8, null, null, null));
+            return catalogue;
+        }
+
+        /** Turns on the proxying that makes {@code @Transactional} mean anything. */
+        @Configuration
+        @EnableTransactionManagement
+        static class TransactionManagementEnabled {
         }
     }
 

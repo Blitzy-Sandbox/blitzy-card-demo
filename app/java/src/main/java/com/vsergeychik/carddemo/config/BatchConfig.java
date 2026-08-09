@@ -20,6 +20,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionException;
 import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
@@ -28,6 +29,7 @@ import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
+import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.DefaultJobParametersValidator;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.job.flow.FlowExecutionStatus;
@@ -43,15 +45,18 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.builder.TaskletStepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.ExitCodeExceptionMapper;
 import org.springframework.boot.ExitCodeGenerator;
+import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.support.JdbcTransactionManager;
@@ -342,12 +347,44 @@ public class BatchConfig {
      * The decider outcome meaning "a preceding step returned non-zero, so the gated step is
      * bypassed".
      *
-     * <p>Wire it as {@code .from(decider).on(BatchConfig.SKIP.getName()).end()}. Bypassing is
-     * deliberately <em>not</em> a failure: on the mainframe a step flushed by {@code COND} does not
-     * itself fail the job, and the non-zero code that caused the bypass is already recorded on the
-     * step that produced it.
+     * <p>Wire it as {@code .from(decider).on(BatchConfig.SKIP.getName())
+     * .end(BatchConfig.COND_BYPASSED_EXIT_CODE)} - never as a bare {@code .end()}, which would end the
+     * flow at {@code COMPLETED} and report the bypass as return code zero. See
+     * {@link #COND_BYPASSED_EXIT_CODE}.
+     *
+     * <p>Bypassing is deliberately <em>not</em> a failure: on the mainframe a step flushed by
+     * {@code COND} does not itself fail the job. It does, however, leave the job reporting the
+     * condition code its executed steps reached, which is what
+     * {@link #condBypassExitStatusJobListener()} restores.
      */
     public static final FlowExecutionStatus SKIP = new FlowExecutionStatus("SKIP");
+
+    /**
+     * The exit code a {@link #SKIP} terminal must end a flow with: {@value}.
+     *
+     * <p><strong>Why a named exit code rather than a bare {@code end()}.</strong>
+     * {@code FlowBuilder.end()} with no argument terminates the flow at {@code COMPLETED}, and
+     * {@link #returnCodeOf(ExitStatus)} reads {@code COMPLETED} as return code zero. A bypass reached
+     * that terminal would therefore report success: the whole reason the flow arrived there is that a
+     * preceding step did <em>not</em> return zero, and ending at {@code COMPLETED} discards exactly that
+     * fact. On z/OS a job whose later steps are flushed by {@code COND} reports the highest condition
+     * code its executed steps produced, not zero, and a caller reading the process exit status is
+     * entitled to see it.
+     *
+     * <p>Ending at this code instead keeps the bypass distinguishable, and
+     * {@link #condBypassExitStatusJobListener()} then replaces it with that highest code. Two moving
+     * parts, deliberately: the terminal is the only place a bypass can be recognised, and the highest
+     * code is only knowable once the job's steps have all run.
+     *
+     * <p>Note that this code is <em>not</em> numeric and is not one of
+     * {@link #RETURN_CODE_ZERO_EXIT_CODES}, so if it ever survived to a caller unmapped it would read
+     * as {@link #NO_JCL_RETURN_CODE} - non-zero, and therefore still not a false success. The failure
+     * mode of the mapping is a code that is visibly wrong rather than one that is silently zero.
+     *
+     * <p>Wire it as {@code .from(decider).on(BatchConfig.SKIP.getName())
+     * .end(BatchConfig.COND_BYPASSED_EXIT_CODE)}.
+     */
+    public static final String COND_BYPASSED_EXIT_CODE = "COND BYPASSED";
 
     /**
      * The JCL return code that {@code COND=(0,NE)} tests for: zero, and nothing else.
@@ -509,14 +546,22 @@ public class BatchConfig {
     }
 
     /**
-     * A job builder already bound to the auto-configured job repository, carrying the shared abend
-     * listener, and carrying this module's <strong>run-identity and restart policy</strong>.
+     * A job builder already bound to the auto-configured job repository, carrying the two shared
+     * return-code listeners, and carrying this module's <strong>run-identity and restart
+     * policy</strong>.
      *
      * <p>This is the seam that keeps Spring Batch plumbing out of the job classes: a job class
      * calls {@code batchConfig.job("...")} and continues with the flow it needs. Because the
-     * listener and the policy are attached here, the return-code contract of gate G35 and the
+     * listeners and the policy are attached here, the return-code contract of gate G35 and the
      * lifecycle contract below hold for every job by construction rather than by each author
      * remembering to opt in.
+     *
+     * <p>Two listeners, and each covers a path the other cannot see.
+     * {@link #abendExitStatusJobListener()} carries a {@code CALL 'CEE3ABD'} return code onto a job
+     * that failed; {@link #condBypassExitStatusJobListener()} carries the highest executed step's
+     * return code onto a job that <em>completed</em> having flushed its remaining steps under
+     * {@code COND=(0,NE)}. Without the second, a bypass would report zero - which is the one thing a
+     * bypass definitively is not.
      *
      * <h2>Every launch is a whole fresh run, because that is what submitting JCL is</h2>
      * <p>A Spring Batch job's identity is its name plus its <em>identifying</em> job parameters, and
@@ -562,16 +607,74 @@ public class BatchConfig {
      *
      * @param jobName the job name, which is also its identity in the batch metadata; must be
      *                non-null and non-blank
-     * @return a new job builder bound to the shared repository, the shared listener, the run-identity
-     *         incrementer and the non-restartable policy
+     * @return a new job builder bound to the shared repository, both shared return-code listeners, the
+     *         run-identity incrementer and the non-restartable policy
      * @throws IllegalArgumentException if {@code jobName} is {@code null}, empty or blank
      */
     public JobBuilder job(String jobName) {
         Assert.hasText(jobName, "A job name is required to build a job");
         return new JobBuilder(jobName, jobRepositoryProvider.getObject())
                 .listener(abendExitStatusJobListener())
+                .listener(condBypassExitStatusJobListener())
                 .incrementer(jclRunIdentityIncrementer())
+                .validator(jclParametersValidator(jobName))
                 .preventRestart();
+    }
+
+    /**
+     * The parameter allow-list every job carries: exactly the business parameters its
+     * {@code carddemo.jobs} contract declares, plus the internal execution identity, and nothing else.
+     *
+     * <p><strong>Why an allow-list rather than tolerance.</strong> Eight of the nine JCL steps in this
+     * estate carry no {@code PARM} at all, so a value arriving at one of them is an input the COBOL
+     * program never receives - it cannot change what the program does, but it does change the job
+     * instance the submission resolves to, which means a mistyped key produces a silently different
+     * run rather than an error. The ninth, {@code app/jcl/INTCALC.jcl:22}, carries exactly one, and a
+     * second value beside it would be equally invisible. So every key is checked in both directions:
+     * an undeclared one is refused, and a declared one that was not supplied is refused too.
+     *
+     * <p><strong>{@value #RUN_IDENTITY_PARAMETER} is exempt, because it is not a business parameter.</strong>
+     * It is this module's internal Batch execution identity - see
+     * {@link #jclRunIdentityIncrementer()} - and it exists only because Spring Batch identifies an
+     * instance by its parameters while JCL identifies a submission by the act of submitting. Keeping it
+     * out of the allow-list comparison is what lets the contract in {@code carddemo.jobs} continue to
+     * describe exactly what the COBOL program receives and nothing more.
+     *
+     * <p>Attached by {@link #job(String)}, so no job author can forget it, and resolved <em>at
+     * validation time</em> rather than at build time: the contract is consulted when a submission is
+     * actually validated, which keeps a job buildable by a unit test that has no catalogue while still
+     * refusing a real submission that does not match one.
+     *
+     * @param jobName the job's bean name, which is also the name its contract key derives to
+     * @return a new validator; never shared, so it can be attached to a job builder freely
+     */
+    public JobParametersValidator jclParametersValidator(String jobName) {
+        return new JclJobParametersValidator(this, jobName);
+    }
+
+    /**
+     * The {@code carddemo.jobs} key whose contract belongs to a job bean name.
+     *
+     * <p>Resolved by matching the name against each declared contract's job-name form rather than by a
+     * second lookup table, so a job renamed in one place cannot silently pick up another's parameters.
+     *
+     * @param jobName the job bean's name; must be non-null
+     * @return the contract key
+     * @throws NullPointerException  if {@code jobName} is {@code null}
+     * @throws IllegalStateException if no declared contract names this job
+     */
+    String contractKeyOf(String jobName) {
+        Objects.requireNonNull(jobName, "A job name is required to find its carddemo.jobs contract");
+        return jobContracts.keySet().stream()
+                .filter(key -> jobName.equals(jobBeanNameOf(key)))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("The job '" + jobName + "' is not "
+                        + "declared: no entry under carddemo.jobs declares it. A job's parameters, its "
+                        + "step sequence and its COND gating are its contract, so a job with no "
+                        + "contract has none to submit - correct " + JclJobLauncher.JOB_NAME_PROPERTY
+                        + ", or declare the job. Declared jobs: "
+                        + jobContracts.keySet().stream().map(BatchConfig::jobBeanNameOf).sorted()
+                                .toList() + "."));
     }
 
     /**
@@ -699,9 +802,16 @@ public class BatchConfig {
      *         .next(precedingExitCodeZeroDecider())
      *             .on(BatchConfig.PROCEED.getName()).to(step020)
      *         .from(precedingExitCodeZeroDecider())
-     *             .on(BatchConfig.SKIP.getName()).end()
+     *             .on(BatchConfig.SKIP.getName()).end(BatchConfig.COND_BYPASSED_EXIT_CODE)
      *         .build().build();
      * </pre>
+     *
+     * <p>The bypass arm ends at {@link #COND_BYPASSED_EXIT_CODE} and never at a bare {@code end()}. A
+     * bare {@code end()} terminates at {@code COMPLETED}, which is return code zero, so the job would
+     * report success for the one outcome that cannot be one - the arm is reached precisely because a
+     * preceding step did not return zero. {@link #condBypassExitStatusJobListener()} then substitutes the
+     * highest code the executed steps produced, which is what z/OS reports for a job whose later steps
+     * were flushed.
      *
      * <p>It applies to the three gated steps of {@code app/jcl/CREASTMT.JCL} listed in this class's
      * documentation and to nothing else. {@code STEP010} of that job is ungated, and
@@ -842,6 +952,51 @@ public class BatchConfig {
     }
 
     /**
+     * The shared job listener that turns a {@link #COND_BYPASSED_EXIT_CODE} terminal into the highest
+     * JCL return code the job's executed steps produced.
+     *
+     * <p>Attached automatically by {@link #job(String)}, alongside
+     * {@link #abendExitStatusJobListener()}. Attaching it to every job rather than only to the one job
+     * that carries {@code COND} gating is deliberate on two counts: a job author adding a gated step
+     * later cannot forget it, and a job with no gate can never produce the exit code it acts on, so it
+     * costs those jobs nothing.
+     *
+     * @return the shared job listener
+     */
+    @Bean
+    public JobExecutionListener condBypassExitStatusJobListener() {
+        return new CondBypassExitStatusJobListener();
+    }
+
+    /**
+     * The highest JCL return code among a job's executed steps, or {@link #NO_JCL_RETURN_CODE} when
+     * none of them reported a positive one.
+     *
+     * <p>Highest, because that is what z/OS reports for a job: the maximum condition code of the steps
+     * that ran. {@link #returnCodeOf(ExitStatus)} supplies each step's code, so a step that completed
+     * normally contributes zero and a step that reported {@code 4}, {@code 8} or {@code 12} contributes
+     * that number.
+     *
+     * <p>A result that is not positive is reported as {@link #NO_JCL_RETURN_CODE} rather than as itself.
+     * That covers two states, and neither may be allowed to read as success: every step contributing
+     * zero, which the {@code COND} gate's own decision contradicts, and every step contributing the
+     * non-numeric sentinel, which the flow's {@code COMPLETED} transitions contradict. Both mean the
+     * code cannot be determined, and "cannot be determined" is not zero.
+     *
+     * @param jobExecution the finished job; must not be {@code null}
+     * @return the highest positive step return code, or {@link #NO_JCL_RETURN_CODE}
+     */
+    static int highestStepReturnCode(JobExecution jobExecution) {
+        Assert.notNull(jobExecution, "A job execution is required to derive its highest return code");
+        return jobExecution.getStepExecutions().stream()
+                .map(StepExecution::getExitStatus)
+                .mapToInt(BatchConfig::returnCodeOf)
+                .filter(returnCode -> returnCode > JCL_RETURN_CODE_ZERO)
+                .max()
+                .orElse(NO_JCL_RETURN_CODE);
+    }
+
+    /**
      * Maps an {@link AbendException} escaping the application onto the process exit code, so that
      * {@code 0}, {@code 4}, {@code 8} and {@code 12} reach the operating system exactly as the COBOL
      * set them.
@@ -885,19 +1040,86 @@ public class BatchConfig {
      * property is the equivalent of submitting one {@code EXEC PGM=} step:
      * {@code java -jar carddemo.jar --carddemo.batch.job-name=accountBalanceJob}.
      *
-     * @param jobRegistryProvider  resolves the requested {@link Job} bean by name, lazily, so a job
-     *                             whose own configuration is broken fails when it is asked for rather
-     *                             than making this bean impossible to create
-     * @param jobLauncherProvider  the auto-configured launcher, resolved lazily for the same reason
+     * <p><strong>The job is resolved by name, never by type.</strong> This module publishes one
+     * {@link Job} bean per translated program, so a by-type lookup - {@code ObjectProvider<Job>} and
+     * {@code getObject()} - cannot succeed at all once a second job exists: it fails as ambiguous
+     * before the configured contract is ever consulted. The bean factory is injected instead and the
+     * configured name is looked up in it exactly, which is both unambiguous and lazy, because listing
+     * bean names instantiates nothing.
+     *
+     * @param beanFactory          the factory the configured job name is looked up in, by name
+     * @param jobLauncherProvider  the auto-configured launcher, resolved lazily so a broken launcher
+     *                             fails when a submission needs it rather than making this bean
+     *                             impossible to create
+     * @param jobExplorerProvider  the auto-configured explorer, resolved lazily for the same reason;
+     *                             it supplies the previous submission's execution identity
+     * @param applicationContext   the running context, closed on a successful submission so a one-shot
+     *                             process ends instead of idling
      * @param jobName              the requested job's bean name
      * @return the launcher
      */
     @Bean
     @ConditionalOnProperty(name = JclJobLauncher.JOB_NAME_PROPERTY)
-    public JclJobLauncher jclJobLauncher(ObjectProvider<Job> jobRegistryProvider,
+    public JclJobLauncher jclJobLauncher(ListableBeanFactory beanFactory,
             ObjectProvider<JobLauncher> jobLauncherProvider,
+            ObjectProvider<JobExplorer> jobExplorerProvider,
+            ConfigurableApplicationContext applicationContext,
             @Value("${" + JclJobLauncher.JOB_NAME_PROPERTY + "}") String jobName) {
-        return new JclJobLauncher(jobRegistryProvider, jobLauncherProvider, this, jobName);
+        return new JclJobLauncher(beanFactory, jobLauncherProvider, jobExplorerProvider, this, jobName,
+                new SpringApplicationExitTerminator(applicationContext));
+    }
+
+    /**
+     * How a one-shot JCL submission ends the operating-system process it was invoked as.
+     *
+     * <p>A seam rather than a direct call, for one reason: the production implementation ends the JVM,
+     * and a test that drove the launcher through it would end the build. The launcher therefore states
+     * what it wants - "this run is over, and its return code is this" - and what that means is supplied
+     * from outside.
+     */
+    public interface ProcessTerminator {
+
+        /**
+         * Ends the process, reporting the submission's {@code RETURN-CODE}.
+         *
+         * @param returnCode the code the finished submission reported: {@code 0}, {@code 4}, {@code 8}
+         *                   or {@code 12}
+         */
+        void terminate(int returnCode);
+    }
+
+    /**
+     * The production terminator: close the context through Spring Boot's own exit path, then end the
+     * JVM with the code it computed.
+     *
+     * <p>{@link SpringApplication#exit(org.springframework.context.ConfigurableApplicationContext,
+     * ExitCodeGenerator...)} is used rather than a bare {@code System.exit} because it runs the
+     * context's shutdown - the pool is drained, the {@code JobRepository}'s connection is returned and
+     * every {@code @PreDestroy} runs - before the process ends, and because it is the framework's own
+     * way of turning an {@link ExitCodeGenerator} into a process code, which is exactly the seam
+     * {@link #abendExitCodeMapper()} relies on for an abend. Ending the JVM explicitly is what a
+     * submission needs: a servlet container's non-daemon threads would otherwise keep a completed batch
+     * process alive with no work left to do and no code delivered to the shell.
+     */
+    static final class SpringApplicationExitTerminator implements ProcessTerminator {
+
+        /** The context to close before the process ends. */
+        private final ConfigurableApplicationContext applicationContext;
+
+        /**
+         * @param applicationContext the running context; must not be {@code null}
+         * @throws NullPointerException if {@code applicationContext} is {@code null}
+         */
+        SpringApplicationExitTerminator(ConfigurableApplicationContext applicationContext) {
+            this.applicationContext = Objects.requireNonNull(applicationContext, "The application "
+                    + "context is required: a one-shot submission closes it before the process ends, so "
+                    + "that the pool is drained and every shutdown callback has run");
+        }
+
+        @Override
+        public void terminate(int returnCode) {
+            System.exit(SpringApplication.exit(applicationContext, () -> returnCode));
+        }
     }
 
     /**
@@ -906,20 +1128,37 @@ public class BatchConfig {
      * <p>Two halves, and both are needed:
      * <ul>
      *   <li>as an {@link ApplicationRunner} it launches the named job once, after the context has
-     *       refreshed, with the parameters that job's contract declares plus the run identity
-     *       {@link #jclRunIdentityIncrementer()} supplies;</li>
+     *       refreshed, with the parameters that job's contract declares plus the execution identity
+     *       derived from the job's own persisted history;</li>
      *   <li>as an {@link ExitCodeGenerator} it reports {@link #returnCodeOf(ExitStatus)} of the
      *       execution that finished, so a caller using {@code SpringApplication.exit(..)} reads the
      *       same value.</li>
      * </ul>
      *
-     * <p><strong>How the code actually reaches the shell.</strong> A non-zero return code is also
-     * raised as a {@link JclReturnCodeException}, which is itself an {@link ExitCodeGenerator}. Spring
-     * Boot registers that code as the application's exit code while the exception propagates out of
-     * {@code SpringApplication.run}, which is the same framework seam
-     * {@link #abendExitCodeMapper()} relies on for an abend. Zero is <em>not</em> raised - a job that
-     * returned zero completed, and terminating the JVM through an exception would be reporting a
-     * failure that did not happen.
+     * <h2>How the code actually reaches the shell, in both directions</h2>
+     * <p>A <strong>non-zero</strong> return code is raised as a {@link JclReturnCodeException}, which
+     * is itself an {@link ExitCodeGenerator}. Spring Boot registers that code as the application's exit
+     * code while the exception propagates out of {@code SpringApplication.run} and its main-thread
+     * handler ends the JVM with it - the same framework seam {@link #abendExitCodeMapper()} relies on
+     * for an abend, and the reason the failure is also reported through Boot's own diagnostics.
+     *
+     * <p>A <strong>zero</strong> return code is not raised, because nothing failed - but it does not
+     * deliver itself either. Returning from the runner leaves the context open, and with the servlet
+     * container on the classpath its non-daemon threads keep a finished batch process alive with no
+     * work left to do and no code delivered. So a successful submission ends the process explicitly,
+     * through {@link ProcessTerminator}: the context is closed and the JVM ends with the mapped code.
+     * {@code CardDemoApplication} additionally starts a submission in a non-web mode, so the two halves
+     * agree - a JCL submission is a one-shot process from the moment it is launched, not a web
+     * application that happens to run a job.
+     *
+     * <h2>Every submission is a new instance, derived from what actually ran before</h2>
+     * <p>A Spring Batch job instance is its name plus its identifying parameters, and an instance may
+     * complete only once, while JCL submits the same deck again whenever the work needs doing again.
+     * The bridge is {@value #RUN_IDENTITY_PARAMETER}, and the value it takes is read from the job's
+     * <em>persisted history</em> through {@link JobExplorer} - the previous execution's identity plus
+     * one. Deriving it from the parameters the contract rebuilds instead would produce {@code 1} on
+     * every invocation, which is the same instance every time: the first submission would complete and
+     * the second would be refused as already complete.
      *
      * <p>Every piece of state is per-instance and written once, on the single runner callback; nothing
      * is static (practice B9).
@@ -932,17 +1171,23 @@ public class BatchConfig {
          */
         public static final String JOB_NAME_PROPERTY = "carddemo.batch.job-name";
 
-        /** Resolves the requested {@link Job} bean, lazily. */
-        private final ObjectProvider<Job> jobProvider;
+        /** The factory the configured job name is looked up in, by name. */
+        private final ListableBeanFactory beanFactory;
 
         /** The auto-configured launcher, resolved lazily. */
         private final ObjectProvider<JobLauncher> jobLauncherProvider;
 
-        /** Supplies the requested job's declared parameter contract and the run identity. */
+        /** The auto-configured explorer, resolved lazily; the source of the previous run identity. */
+        private final ObjectProvider<JobExplorer> jobExplorerProvider;
+
+        /** Supplies the requested job's declared parameter contract and the identity increment rule. */
         private final BatchConfig batchConfig;
 
         /** The requested job's bean name, exactly as configured. */
         private final String jobName;
+
+        /** How the process ends once a submission has completed with return code zero. */
+        private final ProcessTerminator processTerminator;
 
         /**
          * The return code of the execution that finished, or {@link #NO_MAPPED_EXIT_CODE} until one
@@ -952,27 +1197,39 @@ public class BatchConfig {
         private int returnCode = NO_MAPPED_EXIT_CODE;
 
         /**
-         * @param jobProvider         resolves the requested {@link Job} bean
+         * @param beanFactory         the factory the configured job name is resolved in
          * @param jobLauncherProvider resolves the auto-configured {@link JobLauncher}
-         * @param batchConfig         supplies the parameter contract and the run identity
+         * @param jobExplorerProvider resolves the auto-configured {@link JobExplorer}
+         * @param batchConfig         supplies the parameter contract and the identity increment rule
          * @param jobName             the requested job's bean name; must hold text
+         * @param processTerminator   how a successful submission ends the process
+         * @throws NullPointerException     if any collaborator is {@code null}
          * @throws IllegalArgumentException if {@code jobName} holds no text
          */
-        JclJobLauncher(ObjectProvider<Job> jobProvider, ObjectProvider<JobLauncher> jobLauncherProvider,
-                BatchConfig batchConfig, String jobName) {
-            this.jobProvider = Objects.requireNonNull(jobProvider, "A Job provider is required to "
-                    + "resolve the job named by " + JOB_NAME_PROPERTY);
+        JclJobLauncher(ListableBeanFactory beanFactory,
+                ObjectProvider<JobLauncher> jobLauncherProvider,
+                ObjectProvider<JobExplorer> jobExplorerProvider,
+                BatchConfig batchConfig, String jobName, ProcessTerminator processTerminator) {
+            this.beanFactory = Objects.requireNonNull(beanFactory, "A bean factory is required to "
+                    + "resolve the job named by " + JOB_NAME_PROPERTY + ": this module publishes one "
+                    + "Job per translated program, so the name is the only unambiguous selector");
             this.jobLauncherProvider = Objects.requireNonNull(jobLauncherProvider, "A JobLauncher "
                     + "provider is required; Spring Boot's batch auto-configuration declares the "
                     + "single instance this module uses");
+            this.jobExplorerProvider = Objects.requireNonNull(jobExplorerProvider, "A JobExplorer "
+                    + "provider is required: the execution identity of a resubmission is read from the "
+                    + "job's persisted history, never invented");
             this.batchConfig = Objects.requireNonNull(batchConfig, "The batch configuration is "
                     + "required to read the requested job's declared parameter contract");
             Assert.hasText(jobName, JOB_NAME_PROPERTY + " must name the job to submit");
             this.jobName = jobName;
+            this.processTerminator = Objects.requireNonNull(processTerminator, "A process terminator "
+                    + "is required: a submission that returned zero has to end the process, or a "
+                    + "finished batch run idles with its return code undelivered");
         }
 
         /**
-         * Submits the job, once, and records its return code.
+         * Submits the job, once, and delivers its return code to the operating system.
          *
          * @param arguments the process arguments, which are deliberately not read: a job's parameters
          *                  are its contract in {@code carddemo.jobs}, not free text from a command line
@@ -985,15 +1242,93 @@ public class BatchConfig {
          */
         @Override
         public void run(ApplicationArguments arguments) throws JobExecutionException {
-            Job job = jobProvider.getObject();
-            JobParameters parameters = batchConfig.contract(contractKeyOf(job)).jobParameters();
-            JobParameters submitted = batchConfig.jclRunIdentityIncrementer().getNext(parameters);
-            JobExecution execution = jobLauncherProvider.getObject().run(job, submitted);
+            Job job = resolveJob();
+            JobExecution execution =
+                    jobLauncherProvider.getObject().run(job, submissionParameters(job.getName()));
             this.returnCode = returnCodeOf(execution.getExitStatus());
             if (returnCode != JCL_RETURN_CODE_ZERO) {
                 throw new JclReturnCodeException(job.getName(), returnCode,
                         execution.getExitStatus().getExitCode());
             }
+            // Nothing failed, so nothing is thrown - and therefore nothing else would end the process.
+            processTerminator.terminate(returnCode);
+        }
+
+        /**
+         * The {@link Job} bean published under the configured name.
+         *
+         * <p>By name, exactly, and never by type: this module publishes one job per translated program,
+         * so a by-type lookup is ambiguous the moment a second one exists. Listing the names first
+         * instantiates nothing and is what lets the diagnostic name every job that <em>is</em>
+         * available, which is the one thing an operator who mistyped a submission needs to see.
+         *
+         * @return the requested job
+         * @throws IllegalStateException if no job bean is published under the configured name
+         */
+        private Job resolveJob() {
+            List<String> published =
+                    Stream.of(beanFactory.getBeanNamesForType(Job.class)).sorted().toList();
+            if (!published.contains(jobName)) {
+                throw new IllegalStateException(JOB_NAME_PROPERTY + " names '" + jobName + "', but no "
+                        + "Job bean is published under that name, so there is nothing to submit. A "
+                        + "submission is resolved by bean name because this module publishes one job "
+                        + "per translated program and a by-type lookup would be ambiguous. Published "
+                        + "jobs: " + published + ".");
+            }
+            return beanFactory.getBean(jobName, Job.class);
+        }
+
+        /**
+         * The parameters one submission carries: the job's declared business contract, plus the
+         * execution identity that makes this submission a new instance.
+         *
+         * @param resolvedJobName the launched job's own name, which is what its history is keyed by
+         * @return the parameters to submit
+         * @throws IllegalStateException if no declared contract names this job
+         */
+        private JobParameters submissionParameters(String resolvedJobName) {
+            JobParameters declared =
+                    batchConfig.contract(batchConfig.contractKeyOf(resolvedJobName)).jobParameters();
+            return batchConfig.jclRunIdentityIncrementer()
+                    .getNext(withPreviousRunIdentity(declared, resolvedJobName));
+        }
+
+        /**
+         * The declared parameters, carrying the previous submission's execution identity when there was
+         * one.
+         *
+         * <p>This is the whole of the resubmission fix, and the reason it has to consult the repository:
+         * {@link RunIdIncrementer} derives the next identity from the parameters it is handed, so
+         * handing it a freshly rebuilt contract - which never carries one - makes it answer {@code 1}
+         * forever. Reading the last execution's identity first is what makes the answer {@code 2} on the
+         * second submission, {@code 3} on the third, and a genuinely new instance every time.
+         *
+         * <p>Three ways there is no previous identity, all of them ordinary rather than exceptional:
+         * the job has never been submitted, it has an instance but no execution, or its last execution
+         * carried no identity. Each yields the declared parameters unchanged, which the incrementer
+         * then numbers {@code 1}.
+         *
+         * @param declared        the job's declared business parameters
+         * @param resolvedJobName the launched job's own name
+         * @return the declared parameters, plus the previous execution identity where one exists
+         */
+        private JobParameters withPreviousRunIdentity(JobParameters declared, String resolvedJobName) {
+            JobExplorer history = jobExplorerProvider.getObject();
+            JobInstance lastInstance = history.getLastJobInstance(resolvedJobName);
+            if (lastInstance == null) {
+                return declared;
+            }
+            JobExecution lastExecution = history.getLastJobExecution(lastInstance);
+            if (lastExecution == null) {
+                return declared;
+            }
+            Long previousIdentity = lastExecution.getJobParameters().getLong(RUN_IDENTITY_PARAMETER);
+            if (previousIdentity == null) {
+                return declared;
+            }
+            return new JobParametersBuilder(declared)
+                    .addLong(RUN_IDENTITY_PARAMETER, previousIdentity)
+                    .toJobParameters();
         }
 
         /**
@@ -1015,28 +1350,97 @@ public class BatchConfig {
         public String jobName() {
             return jobName;
         }
+    }
+
+    /**
+     * The per-job parameter allow-list: exactly the business parameters {@code carddemo.jobs} declares,
+     * plus {@value #RUN_IDENTITY_PARAMETER}, and nothing else.
+     *
+     * <p>Attached to every job by {@link #job(String)} and therefore impossible for a job author to
+     * omit. It consults the catalogue when a submission is <em>validated</em> rather than when the job
+     * is built, which keeps the plumbing seam usable by a unit test holding no catalogue while still
+     * refusing a real submission whose parameters do not match its contract.
+     *
+     * <p>Both directions are refused, and the diagnostics say which is which:
+     * <ul>
+     *   <li>an <strong>undeclared</strong> key, because a value the COBOL program never receives cannot
+     *       change what the program does but does change which instance the submission resolves to -
+     *       so a typo produces a silently different run rather than an error;</li>
+     *   <li>a <strong>missing</strong> declared key, because {@code app/jcl/INTCALC.jcl:22} always
+     *       supplies its {@code PARM} and a submission without it is not that JCL step.</li>
+     * </ul>
+     *
+     * <p>{@value #RUN_IDENTITY_PARAMETER} is removed before the comparison, deliberately: it is this
+     * module's internal Batch execution identity, not a business input, and including it would put a
+     * fabricated key into the contract that {@link JobContracts} exists to keep honest.
+     *
+     * <p>For the one parameterised job the width rules of {@link ParmDateJobParametersValidator} apply
+     * on top, so {@value #PARM_DATE_PARAMETER} is checked for presence, text and its exact
+     * {@value #PARM_DATE_WIDTH}-character width as well as for being allowed.
+     */
+    static final class JclJobParametersValidator implements JobParametersValidator {
+
+        /** Supplies the contract the submitted parameters are checked against. */
+        private final BatchConfig batchConfig;
+
+        /** The job whose contract applies, by bean name. */
+        private final String jobName;
+
+        /** The additional width rules that apply to the one parameterised job. */
+        private final JobParametersValidator parmDateRules = new ParmDateJobParametersValidator();
 
         /**
-         * The {@code carddemo.jobs} key whose contract belongs to a job bean.
-         *
-         * <p>Resolved by matching the job's own name against each declared contract's job-name form
-         * rather than by a second lookup table, so a job renamed in one place cannot silently pick up
-         * another's parameters.
-         *
-         * @param job the job about to be launched
-         * @return the contract key
-         * @throws IllegalStateException if no declared contract names this job
+         * @param batchConfig supplies the {@code carddemo.jobs} catalogue; must not be {@code null}
+         * @param jobName     the job's bean name; must hold text
+         * @throws NullPointerException     if {@code batchConfig} is {@code null}
+         * @throws IllegalArgumentException if {@code jobName} holds no text
          */
-        private String contractKeyOf(Job job) {
-            String name = job.getName();
-            return batchConfig.jobContracts.keySet().stream()
-                    .filter(key -> name.equals(jobBeanNameOf(key)))
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(JOB_NAME_PROPERTY + " named '"
-                            + jobName + "', which resolved to the job '" + name + "', but no entry "
-                            + "under carddemo.jobs declares it. A job's parameters are its contract, "
-                            + "so a job with no contract has none to submit - correct "
-                            + JOB_NAME_PROPERTY + ", or declare the job."));
+        JclJobParametersValidator(BatchConfig batchConfig, String jobName) {
+            this.batchConfig = Objects.requireNonNull(batchConfig, "The batch configuration is "
+                    + "required: a job's allowed parameters are the ones its carddemo.jobs contract "
+                    + "declares");
+            Assert.hasText(jobName, "A job name is required to find the contract whose parameters are "
+                    + "allowed");
+            this.jobName = jobName;
+        }
+
+        /**
+         * Requires the submitted parameters to be exactly the declared business contract, plus at most
+         * the internal execution identity.
+         *
+         * @param parameters the submitted parameters; {@code null} is read as none
+         * @throws JobParametersInvalidException if an undeclared parameter is present, a declared one is
+         *                                       absent, or the parameterised job's {@code parmDate}
+         *                                       breaks its width contract
+         * @throws IllegalStateException         if no {@code carddemo.jobs} entry declares this job
+         */
+        @Override
+        public void validate(JobParameters parameters) throws JobParametersInvalidException {
+            JobParameters submitted = Objects.requireNonNullElseGet(parameters, JobParameters::new);
+            String jobKey = batchConfig.contractKeyOf(jobName);
+            Set<String> allowed = new LinkedHashSet<>(batchConfig.contract(jobKey).parameters().stream()
+                    .map(JobParameterContract::name).toList());
+
+            Set<String> business = new LinkedHashSet<>(submitted.getParameters().keySet());
+            business.remove(RUN_IDENTITY_PARAMETER);
+
+            Set<String> undeclared = new LinkedHashSet<>(business);
+            undeclared.removeAll(allowed);
+            Set<String> absent = new LinkedHashSet<>(allowed);
+            absent.removeAll(business);
+            if (!undeclared.isEmpty() || !absent.isEmpty()) {
+                throw new JobParametersInvalidException("The submission of '" + jobName + "' does not "
+                        + "match the parameter contract carddemo.jobs." + jobKey + " declares. "
+                        + "Undeclared: " + undeclared + ". Missing: " + absent + ". Allowed: " + allowed
+                        + " plus the internal execution identity " + RUN_IDENTITY_PARAMETER + ". A "
+                        + "parameter the COBOL program never receives cannot change what it does, but "
+                        + "it does change which job instance the submission resolves to, so a value "
+                        + "that is not in the contract is refused rather than silently producing a "
+                        + "different run.");
+            }
+            if (JobContracts.PARAMETERISED_JOB.equals(jobKey)) {
+                parmDateRules.validate(submitted);
+            }
         }
     }
 
@@ -1541,6 +1945,56 @@ public class BatchConfig {
     }
 
     /**
+     * Requires that a job's configured step sequence is <strong>exactly</strong> the one the calling
+     * job class needs - same steps, same programs, same {@code COND=(0,NE)} gates, same order, no
+     * extras and none missing - and returns it.
+     *
+     * <h2>Why a job class checks this for itself, when {@code JobContracts} already does</h2>
+     * <p>Two reasons, and they are independent.
+     *
+     * <p>The first is ordering. {@link JobContractValidator} runs the central check at context refresh,
+     * but it is a bean like any other and nothing sequences it ahead of the job beans. A job class is
+     * routinely constructed first, so if it read a sequence it had not checked it would have resolved
+     * datasets, built steps and wired a flow from a contract the central check was about to reject -
+     * and the failure would surface from whichever of those happened to break first, describing a
+     * symptom rather than the wrong step sequence.
+     *
+     * <p>The second is agreement. The sequence a caller passes here is assembled from the constants
+     * that job class already publishes - its step names, its {@code EXEC PGM=} program, which of its
+     * steps the JCL gates - so this comparison establishes that the class's own account of its JCL and
+     * {@link JobContracts#REQUIRED_STEPS}'s account of the same JCL say the same thing. Neither is
+     * derived from the other, so a transcription slip in either one is caught rather than propagated.
+     *
+     * <p>What this deliberately does <em>not</em> do is check a single step in isolation. A sequence has
+     * five independent ways of being wrong - a step missing, a step added, two steps swapped, a step
+     * pointing at the wrong program, a gate present or absent where the JCL says otherwise - and
+     * confirming one named step says nothing about the other four. Because {@link StepContract} is a
+     * record and compares by value, one list equality settles all five at once.
+     *
+     * @param jobKey       the kebab-case job key whose contract is being checked
+     * @param required     the sequence this job class requires, in execution order
+     * @param jclReference the JCL or cataloged procedure the required sequence is transcribed from,
+     *                     quoted in the diagnostic so a reader can go and look at it
+     * @return the configured sequence, which equals {@code required}; never {@code null}
+     * @throws IllegalStateException if the configured sequence differs in any respect
+     */
+    public List<StepContract> requireSteps(String jobKey, List<StepContract> required,
+            String jclReference) {
+        List<StepContract> declared = contract(jobKey).steps();
+        if (!required.equals(declared)) {
+            throw new IllegalStateException("The carddemo.jobs contract for '" + jobKey + "' does not "
+                    + "declare the step sequence of " + jclReference + ".\n  configured: "
+                    + JobContracts.describe(declared) + "\n  required:   "
+                    + JobContracts.describe(required)
+                    + "\nStep names, their EXEC PGM= programs, their COND=(0,NE) gates and their order "
+                    + "are all transcribed from " + jclReference + ". Any of those five differing gives "
+                    + "a job that starts cleanly and runs different work against the same datasets, so "
+                    + "this refuses to build the job rather than run it.");
+        }
+        return declared;
+    }
+
+    /**
      * Carries an abend's {@code RETURN-CODE} onto a step's exit status.
      *
      * <p>A named type rather than a lambda, because both methods of the listener interface have
@@ -1591,6 +2045,52 @@ public class BatchConfig {
         public void afterJob(JobExecution jobExecution) {
             jobExecution.setExitStatus(withAbendExitCode(jobExecution.getExitStatus(),
                     jobExecution.getAllFailureExceptions()));
+        }
+    }
+
+    /**
+     * Replaces a {@link #COND_BYPASSED_EXIT_CODE} job exit code with the highest JCL return code the
+     * job's executed steps produced.
+     *
+     * <p>This is the second half of the {@code COND=(0,NE)} bypass contract. The first half is the
+     * terminal: a flow that bypasses its remaining steps ends at {@link #COND_BYPASSED_EXIT_CODE}
+     * instead of at {@code COMPLETED}, which keeps the bypass distinguishable but says nothing about
+     * <em>which</em> code caused it. This listener answers that, once, after every step has run - which
+     * is the earliest point the answer exists.
+     *
+     * <p><strong>Bypassing is still not failing.</strong> Only the exit <em>code</em> is rewritten. The
+     * {@link org.springframework.batch.core.BatchStatus} the flow set stays as it is, because on the
+     * mainframe a step flushed by {@code COND} does not fail the job - the job completes, and reports
+     * the condition code its executed steps reached.
+     *
+     * <p><strong>Composes with {@link AbendExitStatusJobListener} in either order.</strong> The two are
+     * mutually exclusive by construction rather than by sequencing: an abend fails its step, a failed
+     * step never satisfies the flow's {@code COMPLETED} transition into a gate, and so a job that
+     * abended can never reach a bypass terminal. Whichever listener the framework calls first, the
+     * other finds nothing to do - the abend listener because there is no abend on this path, and this
+     * one because the exit code is not the bypass code on that one.
+     *
+     * <p>Stateless, and therefore safe to share across every job the module publishes.
+     */
+    static final class CondBypassExitStatusJobListener implements JobExecutionListener {
+
+        /**
+         * Rewrites the exit code when, and only when, it is exactly
+         * {@link #COND_BYPASSED_EXIT_CODE}.
+         *
+         * <p>The exit description is preserved by {@link ExitStatus#replaceExitCode(String)}, so a
+         * diagnostic the flow recorded is not lost to the rewrite.
+         *
+         * @param jobExecution the finished job; never {@code null} when called by the framework
+         */
+        @Override
+        public void afterJob(JobExecution jobExecution) {
+            ExitStatus reported = Objects.requireNonNullElse(jobExecution.getExitStatus(),
+                    ExitStatus.UNKNOWN);
+            if (COND_BYPASSED_EXIT_CODE.equals(reported.getExitCode())) {
+                jobExecution.setExitStatus(reported.replaceExitCode(
+                        Integer.toString(highestStepReturnCode(jobExecution))));
+            }
         }
     }
 
@@ -1749,6 +2249,76 @@ public class BatchConfig {
                 "transaction-report-job", "CBTRN03C",
                 "statement-generation-job-a", "CBSTM03A",
                 "transaction-posting-job", "CBTRN01C");
+
+        /**
+         * The <strong>exact ordered step sequence</strong> of every job, transcribed from the JCL and
+         * the cataloged procedures: for each step its name, the program its {@code EXEC PGM=} names, and
+         * whether it carries {@code COND=(0,NE)}.
+         *
+         * <h2>Why the whole tuple, in order, rather than a per-step spot check</h2>
+         * <p>A step sequence has five independent ways of being wrong - a step missing, a step added, two
+         * steps swapped, a step pointing at the wrong program, a gate present or absent where the JCL
+         * says otherwise - and each one produces a job that starts cleanly and does the wrong work.
+         * Reordering {@code CREASTMT}'s sort and its REPRO would load the previous run's data; dropping
+         * {@code TRANREPT}'s unload would report over a stale extract; ungating {@code STEP040} would
+         * generate statements from a work file the load never populated. Comparing the declared list
+         * against this one, element for element and in order, rejects all five in a single comparison,
+         * which is why it is expressed as a list equality rather than as a set of individual checks.
+         *
+         * <p>Each job class additionally validates its own contract before it builds anything, so a
+         * mismatch is reported both centrally at context refresh and locally at the point of use. That
+         * duplication is deliberate: this table is what stops a divergence being possible at all, and the
+         * local check is what makes a job class's diagnostic name the JCL line the reader needs.
+         *
+         * <h2>Provenance, line by line</h2>
+         * <ul>
+         *   <li>{@code app/jcl/READACCT.jcl:22}, {@code READCARD.jcl:22}, {@code READXREF.jcl:22} and
+         *       {@code READCUST.jcl:6} - one bare {@code STEP05} each, no {@code PARM}, no
+         *       {@code COND}.</li>
+         *   <li>{@code app/jcl/INTCALC.jcl:22} - {@code STEP15}, the estate's only {@code PARM}, ungated.</li>
+         *   <li>{@code app/jcl/POSTTRAN.jcl:23} - {@code STEP15}, no {@code PARM}, ungated.</li>
+         *   <li>{@code app/proc/TRANREPT.prc} - {@code STEP01R} (line 21, {@code EXEC PROC=REPROC}, whose
+         *       own {@code PRC001} step is {@code EXEC PGM=IDCAMS} in {@code app/proc/REPROC.prc}),
+         *       {@code STEP05R} (line 35, {@code SORT}) and {@code STEP10R} (line 57,
+         *       {@code CBTRN03C}), none gated. The procedure form supplies the names because
+         *       {@code app/jcl/TRANREPT.jcl} itself labels two different steps {@code STEP05R}, at L23
+         *       and L37, and a duplicate name cannot address a step. Note that the only {@code COND=} in
+         *       that JCL is the DFSORT {@code INCLUDE COND=} record filter at L47 - a sort control
+         *       statement, not step gating, and deliberately not modelled as one.</li>
+         *   <li>{@code app/jcl/CREASTMT.JCL} - {@code DELDEF01} (L22, {@code IDCAMS}), {@code STEP010}
+         *       (L44, {@code SORT}), then {@code STEP020} (L56, {@code IDCAMS}), {@code STEP030} (L66,
+         *       {@code IEFBR14}) and {@code STEP040} (L79, {@code CBSTM03A}) each carrying
+         *       {@code COND=(0,NE)}. Exactly three gates, and {@code STEP010} is not one of them.</li>
+         *   <li>{@code CBTRN01C} has no JCL anywhere, so its single step is named {@code STEP01} by this
+         *       migration. It is the one entry here whose name is not transcribed, and it is recorded
+         *       rather than left free precisely so the orphan cannot drift.</li>
+         * </ul>
+         */
+        static final Map<String, List<StepContract>> REQUIRED_STEPS = Map.of(
+                "account-balance-job",
+                List.of(new StepContract("STEP05", "CBACT01C", false)),
+                "account-balance-reader-job",
+                List.of(new StepContract("STEP05", "CBACT02C", false)),
+                "account-balance-update-job",
+                List.of(new StepContract("STEP05", "CBACT03C", false)),
+                "customer-file-reader-job",
+                List.of(new StepContract("STEP05", "CBCUS01C", false)),
+                "account-interest-calc-job",
+                List.of(new StepContract("STEP15", "CBACT04C", false)),
+                "transaction-validation-job",
+                List.of(new StepContract("STEP15", "CBTRN02C", false)),
+                "transaction-report-job",
+                List.of(new StepContract("STEP01R", "IDCAMS", false),
+                        new StepContract("STEP05R", "SORT", false),
+                        new StepContract("STEP10R", "CBTRN03C", false)),
+                "statement-generation-job-a",
+                List.of(new StepContract("DELDEF01", "IDCAMS", false),
+                        new StepContract("STEP010", "SORT", false),
+                        new StepContract("STEP020", "IDCAMS", true),
+                        new StepContract("STEP030", "IEFBR14", true),
+                        new StepContract("STEP040", "CBSTM03A", true)),
+                "transaction-posting-job",
+                List.of(new StepContract("STEP01", "CBTRN01C", false)));
 
         /**
          * The only job that may declare a parameter, because it is the only JCL step carrying a
@@ -1920,6 +2490,55 @@ public class BatchConfig {
                             + "app/jcl/CREASTMT.JCL, never on a job's first step.");
                 }
             }
+            requireExactSequence(jobKey, steps);
+        }
+
+        /**
+         * Requires the declared sequence to be <strong>exactly</strong> the one {@link #REQUIRED_STEPS}
+         * transcribes from the JCL - same steps, same programs, same gates, same order, no extras and
+         * none missing.
+         *
+         * <p>One list comparison, deliberately, because {@link StepContract} is a record and therefore
+         * compares by value: a single {@code equals} settles all five ways a sequence can be wrong at
+         * once. What the comparison cannot do is explain itself, so when it fails the diagnostic prints
+         * both sequences in order and names the JCL the expected one came from - the first thing anyone
+         * reading the failure needs is which of the five went wrong, and seeing the two lists side by
+         * side answers that immediately.
+         *
+         * @param jobKey the configuration key, quoted in the diagnostic
+         * @param steps  the declared steps, in declaration order
+         * @throws IllegalStateException if the declared sequence differs from the transcribed one in any
+         *                               respect
+         */
+        private void requireExactSequence(String jobKey, List<StepContract> steps) {
+            List<StepContract> transcribed = REQUIRED_STEPS.get(jobKey);
+            if (!transcribed.equals(steps)) {
+                throw new IllegalStateException(invalidJob(jobKey) + " its step sequence is not the one "
+                        + "its JCL declares.\n  configured: " + describe(steps)
+                        + "\n  required:   " + describe(transcribed)
+                        + "\nEvery step name, its EXEC PGM= program and its COND=(0,NE) gate are "
+                        + "transcribed from app/jcl and app/proc, and so is their order. A step added, "
+                        + "removed, reordered, re-pointed at another program or gated differently "
+                        + "produces a job that starts cleanly and does different work: reordering "
+                        + "CREASTMT's sort and its REPRO loads the previous run's data, dropping "
+                        + "TRANREPT's unload reports over a stale extract, and ungating STEP040 "
+                        + "generates statements from a work file the load never populated.");
+            }
+        }
+
+        /**
+         * A step sequence rendered for a diagnostic: {@code NAME/PROGRAM} per step, with a gated step
+         * marked, in order.
+         *
+         * @param steps the steps to render, in order
+         * @return the rendering
+         */
+        static String describe(List<StepContract> steps) {
+            return steps.stream()
+                    .map(step -> step.name() + "/" + step.program()
+                            + (step.requirePrecedingExitCodeZero() ? " [COND=(0,NE)]" : ""))
+                    .toList()
+                    .toString();
         }
 
         /**

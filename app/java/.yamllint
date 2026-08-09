@@ -1,0 +1,79 @@
+# =============================================================================================
+#  AWS CardDemo - Java 21 / Spring Boot 3.5.16 migration module
+#  YAML LINT POLICY
+#
+#  This file is the module's declared YAML style, so that "does application.yml lint cleanly?"
+#  has one answer instead of depending on whose defaults happened to be loaded. It governs the
+#  three YAML documents this module owns and nothing else:
+#
+#    src/main/resources/application.yml               the default profile
+#    src/main/resources/application-test.yml          the test profile
+#    src/test/resources/carddemo-test-fixtures.yml    the test profile's fixture seed data
+#
+#  HOW TO RUN IT. yamllint reads .yamllint from the CURRENT WORKING DIRECTORY; it does not
+#  search parent directories of the file being linted. So either run it from this directory:
+#
+#    cd app/java && yamllint src/main/resources/application.yml \
+#                            src/main/resources/application-test.yml \
+#                            src/test/resources/carddemo-test-fixtures.yml
+#
+#  or name this file explicitly from anywhere in the checkout:
+#
+#    yamllint -c app/java/.yamllint app/java/src/main/resources/application.yml
+#
+#  WHY IT LIVES HERE AND NOT AT THE REPOSITORY ROOT. AAP 0.9.1 gate G5 requires that this
+#  migration change nothing outside app/java/, README.md, docs/project-guide.md and mkdocs.yml,
+#  and the repository root additionally carries catalog-info.yaml and mkdocs.yml, which are
+#  outside the migration surface (AAP 0.2.6) and are not this module's to lint. A policy scoped
+#  to the module it describes is also simply the truthful scope: nothing here has an opinion
+#  about a document another owner maintains.
+#
+#  WHY IT IS A POLICY RATHER THAN A SET OF SUPPRESSIONS. Only ONE rule is retuned below, and it
+#  is retuned to a number rather than switched off, so every other default - indentation,
+#  trailing spaces, key duplication, truthy values, empty values, document end - still applies
+#  and still fails the two documents if it is ever broken. Nothing is disabled.
+# =============================================================================================
+
+---
+extends: default
+
+rules:
+
+  # ---------------------------------------------------------------------------------------------
+  # THE ONE RETUNED RULE: the column budget is 120, not yamllint's default 80.
+  #
+  # These documents are the deployment contract for a migration whose whole method is that every
+  # value traces to a verifiable fact about the legacy system - a CSD DSNAME, a JCL LRECL, a
+  # copybook PICTURE clause, a COND gate. That provenance is carried in comments beside the value
+  # it justifies, because a value whose reason lives in another file is a value the next reader
+  # will "correct". Eighty columns cannot hold a sentence naming a copybook field and its offset,
+  # and reflowing the prose to fit would double the comment line count and put each explanation
+  # further from the key it belongs to.
+  #
+  # 120 is sized to the widest line the documents actually contain: a key-length / key-offset
+  # transcription at the third level of dataset nesting, which reaches exactly 120 columns
+  # (application.yml, the DISCGRP binding, transcribing CVTRA02Y's DIS-ACCT-GROUP-ID X(10) +
+  # DIS-TRAN-TYPE-CD X(02) + DIS-TRAN-CAT-CD 9(04)). It is a budget, not an invitation: the
+  # documents' own prose wraps near 100, and only two lines in the whole module exceed 104.
+  #
+  # level: error rather than warning, deliberately. A warning that nothing fails on is a rule
+  # nobody obeys, and a budget the module declares should hold the module to it.
+  # ---------------------------------------------------------------------------------------------
+  line-length:
+    max: 120
+    level: error
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: false
+
+  # ---------------------------------------------------------------------------------------------
+  # document-start stays at the default - REQUIRED, and satisfied rather than suppressed. All
+  # three documents open with '---'. Spring Boot needs no marker to load a document, so the
+  # reason to require one is a human one: these files use '---' nowhere else, so its presence at
+  # the top and its absence everywhere below together say "this is ONE document", which is
+  # exactly the fact a reader of a Spring profile document needs, because a stray '---' further
+  # down would silently split it into two and the second would win on every key it repeated.
+  # Stated explicitly here so a future editor sees it is a decision and not an oversight.
+  # ---------------------------------------------------------------------------------------------
+  document-start:
+    present: true
+    level: error

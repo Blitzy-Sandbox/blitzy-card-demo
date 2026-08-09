@@ -2,7 +2,6 @@ package com.vsergeychik.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -43,7 +42,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.BeanDefinitionOverrideException;
@@ -769,114 +767,6 @@ class WebConfigTest {
                     AbendException.RETURN_CODE_END_OF_FILE))
                     .containsExactly(0, 4, 8, 12, 16);
             assertThat(OBSERVED_RETURN_CODES).isEqualTo("0, 4, 8, 12, 16");
-        }
-    }
-
-    /**
-     * Every repository outcome reaches a status decision, from both vocabularies (gate G47).
-     *
-     * <p>{@link FileStatus} funnels a batch program's two-character {@code FILE STATUS} and an online
-     * program's CICS {@code RESP} into one five-valued vocabulary, and
-     * {@link CobolErrorHandler#statusForOutcome(FileStatus.Outcome)} turns that into a status. The
-     * four outcomes the COBOL guard chains handle in-program answer {@code 200}, because the request
-     * did succeed and the program's own text travels in the payload; only {@code WHEN OTHER} - the arm
-     * every chain displays and then abends on - answers {@code 500}.
-     *
-     * <p>{@code app/cbl/CBSTM03A.CBL:353-359} states the division outright: {@code WHEN '00'
-     * CONTINUE}, {@code WHEN '10' MOVE 'Y' TO END-OF-FILE}, {@code WHEN OTHER} display then abend.
-     */
-    @Nested
-    @DisplayName("Both status vocabularies reach the same status decision, WHEN OTHER included")
-    class FileStatusOutcomesReachAStatusDecision {
-
-        @ParameterizedTest(name = "batch FILE STATUS ''{0}'' answers HTTP {1}")
-        @CsvSource({
-            "00, 200",
-            "10, 200",
-            "22, 200",
-            "23, 200",
-            "35, 500",
-            "37, 500",
-            "92, 500",
-            "99, 500"
-        })
-        @DisplayName("a batch two-character status resolves to its HTTP status")
-        void aBatchStatusResolvesToItsHttpStatus(final String status, final int expected) {
-            final HttpStatus resolved =
-                    CobolErrorHandler.statusForOutcome(FileStatus.outcomeOfStatus(status));
-
-            assertThat(resolved.value()).isEqualTo(expected);
-        }
-
-        @ParameterizedTest(name = "CICS RESP {0} answers HTTP {1}")
-        @CsvSource({
-            "0, 200",
-            "20, 200",
-            "13, 200",
-            "14, 200",
-            "15, 200",
-            "16, 500",
-            "19, 500",
-            "22, 500",
-            "99, 500"
-        })
-        @DisplayName("an online CICS RESP resolves to the same HTTP status as its batch equivalent")
-        void aCicsResponseResolvesToItsHttpStatus(final int cicsResp, final int expected) {
-            final HttpStatus resolved =
-                    CobolErrorHandler.statusForOutcome(FileStatus.outcomeOfCicsResp(cicsResp));
-
-            assertThat(resolved.value()).isEqualTo(expected);
-        }
-
-        @Test
-        @DisplayName("the two vocabularies agree, so a batch and an online repository are indistinguishable")
-        void theTwoVocabulariesAgree() {
-            // The point of the shared Outcome vocabulary: whichever side reported the outcome, the
-            // caller's branch structure is the same, which is what keeps a migrated guard chain
-            // identical to the COBOL one.
-            assertThat(CobolErrorHandler.statusForOutcome(
-                    FileStatus.outcomeOfCicsResp(FileStatus.NORMAL)))
-                    .isEqualTo(CobolErrorHandler.statusForOutcome(
-                            FileStatus.outcomeOfStatus(FileStatus.OK)));
-            assertThat(CobolErrorHandler.statusForOutcome(
-                    FileStatus.outcomeOfCicsResp(FileStatus.ENDFILE)))
-                    .isEqualTo(CobolErrorHandler.statusForOutcome(
-                            FileStatus.outcomeOfStatus(FileStatus.END_OF_FILE)));
-            assertThat(CobolErrorHandler.statusForOutcome(
-                    FileStatus.outcomeOfCicsResp(FileStatus.NOTFND)))
-                    .isEqualTo(CobolErrorHandler.statusForOutcome(
-                            FileStatus.outcomeOfStatus(FileStatus.NOT_FOUND)));
-            assertThat(CobolErrorHandler.statusForOutcome(
-                    FileStatus.outcomeOfCicsResp(FileStatus.DUPREC)))
-                    .isEqualTo(CobolErrorHandler.statusForOutcome(
-                            FileStatus.outcomeOfStatus(FileStatus.DUPLICATE)));
-            assertThat(CobolErrorHandler.statusForOutcome(
-                    FileStatus.outcomeOfCicsResp(FileStatus.DUPKEY)))
-                    .isEqualTo(CobolErrorHandler.statusForOutcome(
-                            FileStatus.outcomeOfStatus(FileStatus.DUPLICATE)));
-        }
-
-        @ParameterizedTest(name = "{0} is never mapped to 404 or 409")
-        @EnumSource(value = FileStatus.Outcome.class,
-                names = {"NOT_FOUND", "DUPLICATE"})
-        @DisplayName("a missing or duplicate record is not turned into a transport-level status")
-        void aHandledOutcomeIsNotATransportError(final FileStatus.Outcome outcome) {
-            // Deliberately not 404 and not 409. A bare 404 carries no body, so it would discard the
-            // error text the COBOL painted into the screen's ERRMSG field - and that text is
-            // parity-relevant. A 409 would invent an HTTP semantic the legacy system never had.
-            assertThat(CobolErrorHandler.statusForOutcome(outcome))
-                    .isEqualTo(HttpStatus.OK)
-                    .isNotEqualTo(HttpStatus.NOT_FOUND)
-                    .isNotEqualTo(HttpStatus.CONFLICT);
-        }
-
-        @Test
-        @DisplayName("an absent outcome is refused rather than defaulted")
-        void anAbsentOutcomeIsRefused() {
-            // There is no defensible status for an absent outcome, and a default would silently give
-            // any constant added to the enumeration later whatever the default happened to be.
-            assertThatNullPointerException()
-                    .isThrownBy(() -> CobolErrorHandler.statusForOutcome(null));
         }
     }
 

@@ -41,6 +41,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -803,6 +804,27 @@ public class TransactionViewController {
      * {@code @Digits}. The program performs its own extensive editing at L193-437, and any additional
      * Java rejection would refuse an input the COBOL accepts, which is a parity break.
      *
+     * <h2>Why this method is transactional and {@link #mainPara} is not annotated</h2>
+     *
+     * <p>The add path is two commands against one file, and they belong together. L644-650 browses
+     * {@code TRANSACT} backwards to take the highest existing identifier - the source's own comment
+     * calls it a high-water mark - and L713-721 writes the record built from the next one. The module's
+     * pool runs with {@code auto-commit: false}, so an insert issued with no transaction open is rolled
+     * back when the connection returns to the pool, while the screen still says
+     * {@code 'Transaction added successfully...'} and names the identifier: the repository reported
+     * {@code NORMAL} and it was telling the truth about the statement it executed. Splitting the two
+     * commands across two connections is the second problem - the probe would read a snapshot the write
+     * never sees.
+     *
+     * <p>{@code @Transactional} on the entry point reproduces the CICS task's unit of work, which is
+     * what spans the probe and the write on the mainframe and what the task's syncpoint at
+     * {@code RETURN} commits. It sits here rather than deeper for the same reason
+     * {@code COUSR02C}'s does: a parity test drives {@link #mainPara} directly with a stubbed
+     * repository, where there is no connection to commit. Note that the duplicate arm at L740-741
+     * remains reachable and is not made redundant by the boundary - two operators adding at once can
+     * still compute the same next key, because the probe takes no lock, exactly as the COBOL takes
+     * none.
+     *
      * @param request the inbound screen, the communication area and the {@code EIBAID}; must not be
      *                {@code null}
      * @return the painted screen, the next program, the communication area to carry forward and the
@@ -814,6 +836,7 @@ public class TransactionViewController {
     @PostMapping(path = TRANSACTIONS_PATH,
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
+    @Transactional
     public ScreenResponse<TransactionViewResponse> addTransaction(
             @Valid @RequestBody TransactionViewRequest request) {
         ProgramState state = mainPara(request);
@@ -1923,7 +1946,9 @@ public class TransactionViewController {
         requireState(state);
 
         TransactionRepository.ReadResult result = state.requireBrowse().readPrev();            // L675-683
-        state.setRespCd(result.cicsResp().orElse(FileStatus.NORMAL));
+        // RESP_NOT_REPORTED, never NORMAL: an outcome that carries no CICS response is not a reported
+        // DFHRESP(NORMAL), and storing zero would make the two indistinguishable on the DISPLAY at L698.
+        state.setRespCd(result.cicsResp().orElse(FileStatus.RESP_NOT_REPORTED));
         state.setReasCd(result.cicsResp2());
 
         // L685-L697 EVALUATE WS-RESP-CD.
@@ -2033,7 +2058,9 @@ public class TransactionViewController {
         TransactionRepository.WriteResult result =
                 transactionRepository.write(state.tranRecord());                                // L713-721
         state.recordWritten(state.tranRecord());
-        state.setRespCd(result.cicsResp().orElse(FileStatus.NORMAL));
+        // RESP_NOT_REPORTED, never NORMAL - see readprevTransactFile. A write that reported no CICS
+        // response reaches WHEN OTHER, and its DISPLAY must not render RESP: 000000000.
+        state.setRespCd(result.cicsResp().orElse(FileStatus.RESP_NOT_REPORTED));
         state.setReasCd(result.cicsResp2());
 
         // L723-L749 EVALUATE WS-RESP-CD.
@@ -2185,10 +2212,33 @@ public class TransactionViewController {
     public void displayRespAndReas(ProgramState state) {
         requireState(state);
 
-        String line = DISPLAY_RESP_PREFIX + codec.movePic9(state.respCd(), WS_RESP_CD_DIGITS)
-                + DISPLAY_REAS_PREFIX + codec.movePic9(state.reasCd(), WS_RESP_CD_DIGITS);
+        String line = DISPLAY_RESP_PREFIX + respImage(state.respCd())
+                + DISPLAY_REAS_PREFIX + respImage(state.reasCd());
         state.recordDisplay(line);
         LOG.info(line);
+    }
+
+    /**
+     * A {@code PIC S9(09) COMP} response or reason code as {@code DISPLAY} renders it - or, where none
+     * was reported, as {@link FileStatus#RESP_NOT_REPORTED}'s width-preserving image.
+     *
+     * <p>Both branches are exactly {@value #WS_RESP_CD_DIGITS} characters, so the composed line keeps the
+     * shape {@code DISPLAY} gives it: its operands are concatenated at their declared widths, and a
+     * substitute of any other length would shift every character after it.
+     *
+     * <p>The unreported case cannot go through {@link FixedWidthCodec#movePic9(long, int)}:
+     * {@link FileStatus#RESP_NOT_REPORTED} is negative and a {@code PIC 9} receiver has no image for a
+     * negative value, so the codec refuses it. Storing zero instead would be worse than refusing -
+     * zero <em>is</em> {@link FileStatus#NORMAL}, so a command that reported nothing would be rendered
+     * as one that succeeded.
+     *
+     * @param code the value held in {@code WS-RESP-CD} or {@code WS-REAS-CD}
+     * @return exactly {@value #WS_RESP_CD_DIGITS} characters
+     */
+    private String respImage(int code) {
+        return FileStatus.respReported(code)
+                ? codec.movePic9(code, WS_RESP_CD_DIGITS)
+                : FileStatus.respNotReportedImage(WS_RESP_CD_DIGITS);
     }
 
 

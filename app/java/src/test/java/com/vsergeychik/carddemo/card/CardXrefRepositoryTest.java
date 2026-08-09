@@ -1572,6 +1572,83 @@ class CardXrefRepositoryTest {
     }
 
     // =================================================================================================
+    // Raw record image fidelity. DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96) writes the
+    // whole 50-byte FD record area, and CVACT03Y ends in FILLER X(14) that no field of the record
+    // covers. Every record-bearing arm therefore carries the row's own bytes, because reconstructing an
+    // image from the decoded fields allocates a fresh area and writes spaces across that span whatever
+    // the row held. Gates G19 and G21, and AAP R5.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Raw record image fidelity - the FILLER X(14) of CVACT03Y")
+    class RawRecordImageFidelity {
+
+        /** A fifty-byte row whose trailing FILLER X(14) carries a value no field can hold. */
+        private static final String DIRTY_ROW =
+                image(CARD_1, 50, 50L).substring(0, CardXrefRecord.FILLER_OFFSET)
+                        + "*".repeat(CardXrefRecord.FILLER_LENGTH);
+
+        @Test
+        @DisplayName("a browse step hands back the row's own bytes, FILLER included")
+        void aBrowseStepRetainsTheRowsBytes() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(DIRTY_ROW));
+
+            try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
+                ReadResult next = cursor.readNext();
+
+                assertThat(next.isFound()).isTrue();
+                assertThat(next.requireStoredImage())
+                        .as("the record area DISPLAY writes at :78 and again at :96 is the row's own")
+                        .hasSize(CardXrefRecord.RECORD_LENGTH)
+                        .isEqualTo(DIRTY_ROW);
+            }
+        }
+
+        @Test
+        @DisplayName("a base keyed read hands back the row's own bytes, FILLER included")
+        void aBaseKeyedReadRetainsTheRowsBytes() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(DIRTY_ROW));
+
+            ReadResult read = repository(jdbc).readByCardNumber(CARD_1);
+
+            assertThat(read.isFound()).isTrue();
+            assertThat(read.requireStoredImage()).isEqualTo(DIRTY_ROW);
+        }
+
+        @Test
+        @DisplayName("an alternate-index read hands back the row's own bytes, FILLER included")
+        void anAlternateIndexReadRetainsTheRowsBytes() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, ALT_DS, List.of(DIRTY_ROW));
+
+            ReadResult read = repository(jdbc).readByAccountIdViaAltIndex(50L);
+
+            assertThat(read.isFound()).isTrue();
+            assertThat(read.requireStoredImage()).isEqualTo(DIRTY_ROW);
+        }
+
+        @Test
+        @DisplayName("re-encoding the decoded record would have lost the FILLER, which is the finding")
+        void reEncodingTheDecodedRecordWouldHaveLostIt() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            stubRows(jdbc, BASE_DS, List.of(DIRTY_ROW));
+
+            ReadResult read = repository(jdbc).readByCardNumber(CARD_1);
+            CardXrefRecord decoded = read.record().orElseThrow();
+
+            // Every field round trips. Only the span no field covers does not - and DISPLAY writes it.
+            assertThat(decoded).isEqualTo(new CardXrefRecord(CARD_1, 50, 50L));
+            assertThat(xrefImageOf(decoded))
+                    .as("a fresh record area blanks FILLER X(14), so this is not what CBACT03C writes")
+                    .hasSize(CardXrefRecord.RECORD_LENGTH)
+                    .isNotEqualTo(DIRTY_ROW)
+                    .endsWith(" ".repeat(CardXrefRecord.FILLER_LENGTH));
+        }
+    }
+
+    // =================================================================================================
     // Gates G19, G21 and G16: the record is fifty bytes, the FILLER is fourteen spaces, and the
     // real 36-byte fixture is normalised UP by the harness rather than absorbed by production code.
     // =================================================================================================
@@ -1911,10 +1988,10 @@ class CardXrefRepositoryTest {
         @Test
         @DisplayName("Each factory produces the status, outcome, RESP and record presence it stands for")
         void eachFactoryIsInternallyConsistent() {
-            ReadResult found = ReadResult.found(CardXrefRepository.BASE_DD_NAME, RECORD);
+            ReadResult found = xrefFound(CardXrefRepository.BASE_DD_NAME, RECORD);
             ReadResult notFound = ReadResult.notFound(CardXrefRepository.BASE_DD_NAME);
             ReadResult endOfFile = ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME);
-            ReadResult duplicate = ReadResult.duplicate(CardXrefRepository.ALTERNATE_INDEX_DD_NAME,
+            ReadResult duplicate = xrefDuplicate(CardXrefRepository.ALTERNATE_INDEX_DD_NAME,
                     RECORD, FileStatus.DUPKEY);
             ReadResult other = ReadResult.other(CardXrefRepository.BASE_DD_NAME,
                     CardXrefRepository.PERMANENT_ERROR_STATUS);
@@ -1935,9 +2012,9 @@ class CardXrefRepositoryTest {
         @DisplayName("Gate G47: all four enumerated statuses are reachable and mutually exclusive")
         void allFourEnumeratedStatusesAreReachable() {
             List<ReadResult> results = List.of(
-                    ReadResult.found(CardXrefRepository.BASE_DD_NAME, RECORD),
+                    xrefFound(CardXrefRepository.BASE_DD_NAME, RECORD),
                     ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME),
-                    ReadResult.duplicate(CardXrefRepository.BASE_DD_NAME, RECORD, FileStatus.DUPREC),
+                    xrefDuplicate(CardXrefRepository.BASE_DD_NAME, RECORD, FileStatus.DUPREC),
                     ReadResult.notFound(CardXrefRepository.BASE_DD_NAME));
 
             assertThat(results).extracting(ReadResult::status)
@@ -1954,13 +2031,13 @@ class CardXrefRepositoryTest {
         @Test
         @DisplayName("APPL-RESULT is 0 for '00', 16 for '10' and 12 for everything else")
         void applResultFollowsTheCbact03cEvaluate() {
-            assertThat(ReadResult.found(CardXrefRepository.BASE_DD_NAME, RECORD).applResult())
+            assertThat(xrefFound(CardXrefRepository.BASE_DD_NAME, RECORD).applResult())
                     .isEqualTo(FileStatus.APPL_AOK);
             assertThat(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME).applResult())
                     .isEqualTo(FileStatus.APPL_EOF);
             assertThat(ReadResult.notFound(CardXrefRepository.BASE_DD_NAME).applResult())
                     .isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
-            assertThat(ReadResult.duplicate(CardXrefRepository.BASE_DD_NAME, RECORD, FileStatus.DUPREC)
+            assertThat(xrefDuplicate(CardXrefRepository.BASE_DD_NAME, RECORD, FileStatus.DUPREC)
                     .applResult()).isEqualTo(CardXrefRepository.APPL_RESULT_FATAL);
             assertThat(ReadResult.other(CardXrefRepository.BASE_DD_NAME,
                     CardXrefRepository.PERMANENT_ERROR_STATUS).applResult())
@@ -1972,7 +2049,7 @@ class CardXrefRepositoryTest {
         void aStatusOfTheWrongLengthIsRejected() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, "000",
-                            Outcome.OK, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()))
+                            Outcome.OK, java.util.Optional.of(RECORD), java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NORMAL, 0, java.util.Optional.empty()))
                     .withMessageContaining("exactly");
         }
 
@@ -1981,7 +2058,7 @@ class CardXrefRepositoryTest {
         void aStatusAndOutcomeThatDisagreeAreRejected() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            Outcome.NOT_FOUND, java.util.Optional.empty(), FileStatus.NOTFND, 0, java.util.Optional.empty()))
+                            Outcome.NOT_FOUND, java.util.Optional.empty(), java.util.Optional.empty(), FileStatus.NOTFND, 0, java.util.Optional.empty()))
                     .withMessageContaining("does not classify");
         }
 
@@ -1991,12 +2068,12 @@ class CardXrefRepositoryTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME,
                             FileStatus.NOT_FOUND, Outcome.NOT_FOUND, java.util.Optional.of(RECORD),
-                            FileStatus.NOTFND, 0, java.util.Optional.empty()))
+                            java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NOTFND, 0, java.util.Optional.empty()))
                     .withMessageContaining("carries no record");
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            Outcome.OK, java.util.Optional.empty(), FileStatus.NORMAL, 0, java.util.Optional.empty()))
+                            Outcome.OK, java.util.Optional.empty(), java.util.Optional.empty(), FileStatus.NORMAL, 0, java.util.Optional.empty()))
                     .withMessageContaining("but none was supplied");
         }
 
@@ -2005,28 +2082,68 @@ class CardXrefRepositoryTest {
         void everyComponentIsRequired() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(null, FileStatus.OK, Outcome.OK,
-                            java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()));
+                            java.util.Optional.of(RECORD), java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NORMAL, 0, java.util.Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, null, Outcome.OK,
-                            java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()));
+                            java.util.Optional.of(RECORD), java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NORMAL, 0, java.util.Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            null, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()));
+                            null, java.util.Optional.of(RECORD), java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NORMAL, 0, java.util.Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            Outcome.OK, null, FileStatus.NORMAL, 0, java.util.Optional.empty()));
+                            Outcome.OK, null, java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NORMAL, 0, java.util.Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            Outcome.OK, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, null));
+                            Outcome.OK, java.util.Optional.of(RECORD), java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NORMAL, 0, null));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .as("the stored image is an Optional too: empty rather than null")
+                    .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
+                            Outcome.OK, java.util.Optional.of(RECORD), null, FileStatus.NORMAL, 0,
+                            java.util.Optional.empty()));
+        }
+
+        @Test
+        @DisplayName("The stored image travels with the record and never without it, at its exact width")
+        void enforcesTheStoredImageInvariant() {
+            // This is what makes DISPLAY CARD-XREF-RECORD reproducible. A caller on a record-bearing arm
+            // must always be able to reach the row's own bytes, because re-encoding the decoded fields
+            // would emit FILLER X(14) as spaces whatever the row actually held. Two halves to that: the
+            // image is present exactly when the record is, and it is the whole 50-byte record.
+            //
+            // The same invariant is asserted on CustomerRepository.ReadResult; both sides carry it, so
+            // neither can drift into being the one that hands back a record with no bytes behind it.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a record with no image to display would leave the caller re-encoding")
+                    .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
+                            Outcome.OK, java.util.Optional.of(RECORD), java.util.Optional.empty(),
+                            FileStatus.NORMAL, 0, java.util.Optional.empty()))
+                    .withMessageContaining("must carry the stored image");
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("and an image with no record to belong to has no meaning")
+                    .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME,
+                            FileStatus.NOT_FOUND, Outcome.NOT_FOUND, java.util.Optional.empty(),
+                            java.util.Optional.of(xrefImageOf(RECORD)), FileStatus.NOTFND, 0,
+                            java.util.Optional.empty()))
+                    .withMessageContaining("carries no record");
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a row that omitted CVACT03Y's trailing FILLER would render a line the program "
+                            + "cannot produce, so a short image is refused rather than padded")
+                    .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
+                            Outcome.OK, java.util.Optional.of(RECORD),
+                            java.util.Optional.of(" ".repeat(CardXrefRecord.RECORD_LENGTH - 1)),
+                            FileStatus.NORMAL, 0, java.util.Optional.empty()))
+                    .withMessageContaining(String.valueOf(CardXrefRecord.RECORD_LENGTH));
         }
 
         @Test
         @DisplayName("A found or duplicate outcome must actually carry its record")
         void aCarryingOutcomeMustCarryItsRecord() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> ReadResult.found(CardXrefRepository.BASE_DD_NAME, null));
+                    .isThrownBy(() -> xrefFound(CardXrefRepository.BASE_DD_NAME, null));
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> ReadResult.duplicate(CardXrefRepository.BASE_DD_NAME, null,
+                    .isThrownBy(() -> xrefDuplicate(CardXrefRepository.BASE_DD_NAME, null,
                             FileStatus.DUPREC));
         }
 
@@ -2034,7 +2151,7 @@ class CardXrefRepositoryTest {
         @DisplayName("A duplicate must name WHICH key duplicated - DUPREC or DUPKEY, nothing else")
         void aDuplicateMustNameWhichKeyDuplicated() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> ReadResult.duplicate(CardXrefRepository.BASE_DD_NAME, RECORD,
+                    .isThrownBy(() -> xrefDuplicate(CardXrefRepository.BASE_DD_NAME, RECORD,
                             FileStatus.NORMAL))
                     .withMessageContaining("DUPREC")
                     .withMessageContaining("DUPKEY");
@@ -2051,7 +2168,7 @@ class CardXrefRepositoryTest {
         @Test
         @DisplayName("The status renders as the four-character image 9910-DISPLAY-IO-STATUS produces")
         void theStatusRendersAsItsDisplayImage() {
-            assertThat(ReadResult.found(CardXrefRepository.BASE_DD_NAME, RECORD).statusImage())
+            assertThat(xrefFound(CardXrefRepository.BASE_DD_NAME, RECORD).statusImage())
                     .isEqualTo(FileStatus.toStatusImage(FileStatus.OK))
                     .hasSize(FileStatus.STATUS_IMAGE_LENGTH);
         }
@@ -2619,5 +2736,47 @@ class CardXrefRepositoryTest {
                     .isThrownBy(() -> subject.addressing(null, "XREFFILE", null, "XREFFIL1"))
                     .withMessageContaining("XREFFILE");
         }
+    }
+
+    // =================================================================================================
+    // Synthesised cross-reference read outcomes. A ReadResult carries the decoded record AND the bytes it
+    // was decoded from, because DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96) writes the
+    // record area and the area's FILLER X(14) holds whatever the row held. A test constructing an outcome
+    // has no row, so the image it supplies is the one a row of exactly this record would carry - stated
+    // once here rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The found arm over a synthesised row of this record.
+     *
+     * @param ddName the access path
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefFound(String ddName, CardXrefRecord record) {
+        return CardXrefRepository.ReadResult.found(ddName, record, xrefImageOf(record));
+    }
+
+    /**
+     * The duplicate arm over a synthesised row of this record.
+     *
+     * @param ddName   the access path
+     * @param first    the first of the matching records
+     * @param cicsResp DUPREC for the base key or DUPKEY for an alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardXrefRepository.ReadResult xrefDuplicate(String ddName, CardXrefRecord first,
+            int cicsResp) {
+        return CardXrefRepository.ReadResult.duplicate(ddName, first, xrefImageOf(first), cicsResp);
+    }
+
+    /**
+     * The 50-character image a row of this record would hold.
+     *
+     * @param record the record
+     * @return its encoded image
+     */
+    private static String xrefImageOf(CardXrefRecord record) {
+        return new String(record.encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
     }
 }

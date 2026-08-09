@@ -1697,6 +1697,89 @@ class CustomerRepositoryTest {
     }
 
     // =============================================================================================
+    // Raw record image fidelity. DISPLAY CUSTOMER-RECORD (app/cbl/CBCUS01C.cbl:78 and :96) writes the
+    // whole 500-byte FD record area, and CVCUS01Y ends in FILLER X(168) that no field of the record
+    // covers. Every record-bearing arm therefore carries the row's own bytes, because reconstructing an
+    // image from the eighteen decoded fields allocates a fresh area and writes spaces across that span
+    // whatever the row held. Gates G19 and G21, and AAP R5.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("Raw record image fidelity - the FILLER X(168) of CVCUS01Y")
+    class RawRecordImageFidelityTests {
+
+        @Test
+        @DisplayName("a browse step hands back the row's own bytes, FILLER included")
+        void aBrowseStepRetainsTheRowsBytes() {
+            String dirty = dirtyRow();
+
+            try (CustomerFile file = repository(seeded(List.of(dirty))).openInput()) {
+                ReadResult result = file.readNext();
+
+                assertThat(result.isFound()).isTrue();
+                assertThat(result.requireStoredImage())
+                        .as("the record area DISPLAY writes at :96 and again at :78 is the row's own")
+                        .hasSize(FIVE_HUNDRED)
+                        .isEqualTo(dirty);
+            }
+        }
+
+        @Test
+        @DisplayName("a keyed read hands back the row's own bytes, FILLER included")
+        void aKeyedReadRetainsTheRowsBytes() {
+            String dirty = dirtyRow();
+
+            ReadResult result = repository(seeded(List.of(dirty))).readByKey(keyImageOf(dirty));
+
+            assertThat(result.isFound()).isTrue();
+            assertThat(result.requireStoredImage()).isEqualTo(dirty);
+        }
+
+        @Test
+        @DisplayName("re-encoding the decoded record would have lost the FILLER, which is the finding")
+        void reEncodingTheDecodedRecordWouldHaveLostIt() {
+            String dirty = dirtyRow();
+
+            ReadResult result = repository(seeded(List.of(dirty))).readByKey(keyImageOf(dirty));
+            CustomerRecord decoded = result.customer().orElseThrow();
+
+            // All eighteen named fields round trip. Only the span no field covers does not - and
+            // DISPLAY writes it.
+            assertThat(decoded.recordImage(ASCII))
+                    .as("a fresh record area blanks FILLER X(168), so this is not what CBCUS01C writes")
+                    .hasSize(FIVE_HUNDRED)
+                    .isNotEqualTo(dirty)
+                    .endsWith(" ".repeat(FILLER_WIDTH));
+            assertThat(decoded.recordImage(ASCII).substring(0, FIVE_HUNDRED - FILLER_WIDTH))
+                    .as("every declared span is unaffected; the divergence is confined to FILLER")
+                    .isEqualTo(dirty.substring(0, FIVE_HUNDRED - FILLER_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the update path still starts from a fresh, space-filled area")
+        void theUpdatePathStillStartsFromSpaces() {
+            // The other half of the finding. INITIALIZE CUSTOMER-RECORD, which is what an update
+            // composes from, does blank the area - so a record built field by field must still render
+            // FILLER as spaces. Only the DISPLAY of a record just READ must not.
+            assertThat(new CustomerRecord().recordImage(ASCII))
+                    .hasSize(FIVE_HUNDRED)
+                    .endsWith(" ".repeat(FILLER_WIDTH));
+        }
+
+        /**
+         * The first fixture row with its trailing {@code FILLER X(168)} overwritten.
+         *
+         * @return a 500-character image every declared span of which decodes, whose FILLER is not spaces
+         */
+        private String dirtyRow() {
+            String clean = fixtureRows().stream().sorted().findFirst().orElseThrow();
+            String dirty = clean.substring(0, FIVE_HUNDRED - FILLER_WIDTH) + "*".repeat(FILLER_WIDTH);
+            assertThat(dirty).hasSize(FIVE_HUNDRED).isNotEqualTo(clean);
+            return dirty;
+        }
+    }
+
+    // =============================================================================================
     // The discriminated outcomes - the COBOL guard chain's vocabulary, and every arm of it.
     // =============================================================================================
 
@@ -1708,7 +1791,7 @@ class CustomerRepositoryTest {
         @Test
         @DisplayName("a read reports '00' with a record, and the APPL-RESULT the COBOL moves")
         void aSuccessfulReadCarriesTheRecord() {
-            ReadResult result = ReadResult.found(new CustomerRecord());
+            ReadResult result = customerFound(new CustomerRecord());
 
             assertThat(result.status()).isEqualTo(FileStatus.OK);
             assertThat(result.outcome()).isEqualTo(Outcome.OK);
@@ -1807,23 +1890,46 @@ class CustomerRepositoryTest {
         @Test
         @DisplayName("a successful read cannot be built without a record, nor a failure with one")
         void enforcesTheRecordInvariant() {
-            assertThatNullPointerException().isThrownBy(() -> ReadResult.found(null));
+            assertThatNullPointerException().isThrownBy(() -> customerFound(null));
 
             assertThatIllegalArgumentException().isThrownBy(() -> new ReadResult(FileStatus.OK, Outcome.OK,
-                    Optional.empty(), Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.OK)))
+                    Optional.empty(), Optional.empty(), Optional.empty(),
+                    CicsResponse.ofBatchStatus(FileStatus.OK)))
                     .withMessageContaining("carries the decoded record");
 
             assertThatIllegalArgumentException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
                     Outcome.NOT_FOUND, Optional.of(new CustomerRecord()), Optional.empty(),
-                    CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)))
+                    Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)))
                     .withMessageContaining("carries no record");
+        }
+
+        @Test
+        @DisplayName("the stored image travels with the record and never without it")
+        void enforcesTheStoredImageInvariant() {
+            CustomerRecord record = new CustomerRecord();
+            String image = " ".repeat(CustomerRecord.RECORD_LENGTH);
+
+            assertThatIllegalArgumentException().isThrownBy(() -> new ReadResult(FileStatus.OK, Outcome.OK,
+                    Optional.of(record), Optional.empty(), Optional.empty(),
+                    CicsResponse.ofBatchStatus(FileStatus.OK)))
+                    .withMessageContaining("carries the stored image");
+
+            assertThatIllegalArgumentException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
+                    Outcome.NOT_FOUND, Optional.empty(), Optional.of(image), Optional.empty(),
+                    CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)))
+                    .withMessageContaining("carries no stored image");
+
+            assertThatIllegalArgumentException().isThrownBy(() -> new ReadResult(FileStatus.OK, Outcome.OK,
+                    Optional.of(record), Optional.of(image.substring(1)), Optional.empty(),
+                    CicsResponse.ofBatchStatus(FileStatus.OK)))
+                    .withMessageContaining("is 499");
         }
 
         @Test
         @DisplayName("a status and its classification must agree")
         void enforcesTheClassificationInvariant() {
             assertThatIllegalArgumentException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
-                    Outcome.OK, Optional.of(new CustomerRecord()), Optional.empty(),
+                    Outcome.OK, Optional.of(new CustomerRecord()), Optional.empty(), Optional.empty(),
                     CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)))
                     .withMessageContaining("classifies as");
 
@@ -1843,21 +1949,25 @@ class CustomerRepositoryTest {
         }
 
         @Test
-        @DisplayName("an absent status, outcome, record, diagnostic or response is refused")
+        @DisplayName("an absent status, outcome, record, stored image, diagnostic or response is refused")
         void refusesAbsentComponents() {
             assertThatNullPointerException().isThrownBy(() -> ReadResult.of(null));
             assertThatNullPointerException().isThrownBy(() -> WriteResult.of(null));
 
             assertThatNullPointerException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND, null,
-                    Optional.empty(), Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)));
-            assertThatNullPointerException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
-                    Outcome.NOT_FOUND, null, Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty(),
                     CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)));
             assertThatNullPointerException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
-                    Outcome.NOT_FOUND, Optional.empty(), null,
+                    Outcome.NOT_FOUND, null, Optional.empty(), Optional.empty(),
                     CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)));
             assertThatNullPointerException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
-                    Outcome.NOT_FOUND, Optional.empty(), Optional.empty(), null));
+                    Outcome.NOT_FOUND, Optional.empty(), null, Optional.empty(),
+                    CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)));
+            assertThatNullPointerException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
+                    Outcome.NOT_FOUND, Optional.empty(), Optional.empty(), null,
+                    CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)));
+            assertThatNullPointerException().isThrownBy(() -> new ReadResult(FileStatus.NOT_FOUND,
+                    Outcome.NOT_FOUND, Optional.empty(), Optional.empty(), Optional.empty(), null));
 
             assertThatNullPointerException().isThrownBy(() -> new WriteResult(FileStatus.NOT_FOUND, null,
                     Optional.empty(), CicsResponse.ofBatchStatus(FileStatus.NOT_FOUND)));
@@ -2640,7 +2750,7 @@ class CustomerRepositoryTest {
             // other status is built by of(), which carries none. That asymmetry is the COBOL's: only the
             // '00' arm reaches CUSTOMER-RECORD.
             ReadResult result = FileStatus.OK.equals(status)
-                    ? ReadResult.found(new CustomerRecord())
+                    ? customerFound(new CustomerRecord())
                     : ReadResult.of(status);
 
             assertThat(result.status()).isEqualTo(status);
@@ -2896,10 +3006,29 @@ class CustomerRepositoryTest {
 
             assertThat(ReadResult.notFound().cicsResp()).hasValue(FileStatus.NOTFND);
             assertThat(ReadResult.endOfFile().cicsResp()).hasValue(FileStatus.ENDFILE);
-            assertThat(ReadResult.found(new CustomerRecord()).cicsResp())
+            assertThat(customerFound(new CustomerRecord()).cicsResp())
                     .hasValue(FileStatus.NORMAL);
             assertThat(WriteResult.written().cicsResp()).hasValue(FileStatus.NORMAL);
             assertThat(WriteResult.notFound().cicsResp()).hasValue(FileStatus.NOTFND);
         }
+    }
+
+    // =================================================================================================
+    // Synthesised customer read outcomes. A ReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CUSTOMER-RECORD (app/cbl/CBCUS01C.cbl:78 and :96) writes the record
+    // area and the area's trailing FILLER holds whatever the row held. A test constructing an outcome has
+    // no row, so the image it supplies is the one a row of exactly this record would carry - stated once
+    // here rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The successful arm over a synthesised row of this record.
+     *
+     * @param customer the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CustomerRepository.ReadResult customerFound(CustomerRecord customer) {
+        return CustomerRepository.ReadResult.found(customer,
+                customer.recordImage(StandardCharsets.US_ASCII));
     }
 }

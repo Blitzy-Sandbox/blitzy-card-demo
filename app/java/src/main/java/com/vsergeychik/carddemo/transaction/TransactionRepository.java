@@ -9,6 +9,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -466,6 +467,18 @@ public class TransactionRepository {
      */
     private final RecordImageForm recordImageForm;
 
+    /**
+     * The physical-record ordinal a <strong>physical-sequential</strong> input is read in: the
+     * deployment's answer to how a stored record's position is recovered, injected rather than decided
+     * here.
+     *
+     * <p>Consulted by {@link #composeInputStatements(DatasetRelation, boolean)} on the non-keyed branch
+     * and nowhere else. A keyed input is browsed in ascending <em>key</em> order, which the record image
+     * already expresses; a physical-sequential one has no key, so its order is its records' position and
+     * nothing in their content can recover it. See {@link PhysicalSequence}.
+     */
+    private final PhysicalSequence physicalSequence;
+
     /** The resolved {@value #CICS_FILE_NAME} master, addressed by every keyed operation. */
     private final DatasetRelation masterRelation;
 
@@ -566,6 +579,10 @@ public class TransactionRepository {
      *                        rather than taken from the platform (practice B8)
      * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
      *                        {@value RecordImageForm#FORM_PROPERTY}
+     * @param physicalSequence the physical-record ordinal a <em>physical-sequential</em> input is read in,
+     *                        from {@value PhysicalSequence#EXPRESSION_PROPERTY}. Unused when the
+     *                        {@value #INPUT_DD_NAME} binding declares an indexed organization, whose
+     *                        browse is ordered by key instead
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if any binding is absent, declares a record length other than
      *                               {@link #RECORD_LENGTH}, declares key geometry that contradicts its
@@ -575,7 +592,8 @@ public class TransactionRepository {
             JdbcTemplate jdbcTemplate,
             DatasetBindings datasetBindings,
             @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
-            RecordImageForm recordImageForm) {
+            RecordImageForm recordImageForm,
+            PhysicalSequence physicalSequence) {
 
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required: the "
                 + "transaction master is reached through the module's shared template over the "
@@ -589,6 +607,11 @@ public class TransactionRepository {
                 + "is required: whether this deployment's driver presents a record image as characters "
                 + "or as bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never "
                 + "decided per repository");
+        this.physicalSequence = Objects.requireNonNull(physicalSequence, "A physical-record ordinal is "
+                + "required: " + INPUT_DD_NAME + " is read sequentially, and where its binding declares a "
+                + "physical-sequential organization the order its records were written in is what a "
+                + "READ returns - which SQL will not give without an ORDER BY. It is stated once, by "
+                + PhysicalSequence.EXPRESSION_PROPERTY + ", and never decided per repository");
         RecordImageForm.requireSingleByteCodePage(datasetCharset);
 
         DatasetBinding master = requireRecordWidth(CICS_FILE_NAME,
@@ -1017,14 +1040,17 @@ public class TransactionRepository {
      *       dataset is never materialised and a failure on the four thousandth row is reported by the
      *       read that reached it.</li>
      *   <li>A <strong>physical-sequential</strong> dataset is read in <em>the order its records were
-     *       written</em>, which is what {@link DatasetRelation#selectAll()} expresses by deliberately
-     *       naming no {@code ORDER BY}. Imposing one would <em>reorder</em> the file, and for this
-     *       dataset that is not hypothetical: {@code app/jcl/TRANREPT.jcl:46} sorts the daily file
-     *       {@code SORT FIELDS=(TRAN-CARD-NUM,A)}, so its physical order is card-number order while an
-     *       ordering by record image would be {@code TRAN-ID} order - and {@code CBTRN03C} groups and
-     *       subtotals its report by account as the records arrive ({@code :168-207}). Reordering the
-     *       input would produce a report with the right rows and the wrong totals, which is the worst
-     *       kind of wrong.</li>
+     *       written</em>, which {@link DatasetRelation#selectAllInPhysicalSequence(PhysicalSequence)}
+     *       expresses by ordering on the deployment's physical-record ordinal - a record's position, and
+     *       nothing derived from its content. Ordering by the record image instead would <em>reorder</em>
+     *       the file, and for this dataset that is not hypothetical: {@code app/jcl/TRANREPT.jcl:46}
+     *       sorts the daily file {@code SORT FIELDS=(TRAN-CARD-NUM,A)}, so its physical order is
+     *       card-number order while an ordering by record image would be {@code TRAN-ID} order - and
+     *       {@code CBTRN03C} groups and subtotals its report by account as the records arrive
+     *       ({@code :168-207}). Reordering the input would produce a report with the right rows and the
+     *       wrong totals, which is the worst kind of wrong. Naming <em>no</em> ordering at all was the
+     *       defect this replaced: it did not preserve the written order, it left the order to whatever
+     *       the backend scanned, which SQL is entitled to change between two runs.</li>
      * </ul>
      *
      * <p>A physical-sequential dataset therefore has no stable per-row position to re-anchor on, so its
@@ -1045,9 +1071,12 @@ public class TransactionRepository {
         String described = jdbcTemplate.query(relation.describeStatement(),
                 TransactionRepository::extractRecordImageColumn);
         if (!keyed) {
-            // No column name is needed, and none is required: a physical-sequential read names no
-            // column at all, so demanding one here would fail an open that COBOL performs happily.
-            return new InputStatements(relation.selectAll(), Optional.empty());
+            // No record-image column name is needed, and none is required: a physical-sequential read
+            // names no record-image column at all, so demanding one here would fail an open that COBOL
+            // performs happily. What it does name is the physical-record ordinal, which is a property of
+            // the deployment's driver rather than of the described relation and so needs no metadata.
+            return new InputStatements(relation.selectAllInPhysicalSequence(physicalSequence),
+                    Optional.empty());
         }
         String column = relation.rememberRecordImageColumn(described);
         return new InputStatements(relation.selectAllAscending(column),
@@ -1142,11 +1171,14 @@ public class TransactionRepository {
                 + "': a job writes through the DD its JCL declares, not through the name this repository "
                 + "resolved at construction");
         DatasetBinding checked = requireRecordWidth(ddName, binding);
-        DatasetRelation relation = DatasetRelation.of(
-                requireUsableDatasetName(ddName, checked.dsname()), RECORD_LENGTH);
-        return relation.dsname().equals(outputRelation.dsname())
-                ? openOutput(outputRelation, SEQUENTIAL_OUTPUT_DD_NAME)
-                : openOutput(relation, ddName);
+        // The caller's own relation and the caller's own DD name, always. This used to substitute the
+        // repository's configured relation whenever the two dataset names agreed, which read as a
+        // harmless normalisation and was not: the handle then carried a relation the caller had not
+        // named, so its counts, its diagnostics and - decisively - its abnormal disposition addressed
+        // whatever this repository resolved at construction rather than what the step opened. The two
+        // agreeing is a property of the shipped configuration, not of the code.
+        return openOutput(DatasetRelation.of(
+                requireUsableDatasetName(ddName, checked.dsname()), RECORD_LENGTH), ddName);
     }
 
     /**
@@ -1157,16 +1189,15 @@ public class TransactionRepository {
      * @return the handle, carrying whatever status the open reported; never {@code null}
      */
     private OutputFile openOutput(DatasetRelation relation, String ddName) {
-        String describeStatement = relation.describeStatement();
         String openStatus;
         try {
-            jdbcTemplate.execute(describeStatement);
+            jdbcTemplate.execute(relation.describeStatement());
             jdbcTemplate.update(relation.deleteAll());
             openStatus = FileStatus.OK;
         } catch (DataAccessException refused) {
             openStatus = reportRefusal(OPEN_OPERATION_NAME, ddName, "for output", refused);
         }
-        return new OutputFile(this, relation.insertRecordImage(), describeStatement, openStatus);
+        return new OutputFile(this, relation, ddName, openStatus);
     }
 
     // =================================================================================================
@@ -1812,8 +1843,8 @@ public class TransactionRepository {
      * Opens a forward-only cursor over one pass of a physical-sequential dataset, positioned before its
      * first record.
      *
-     * <p>One statement, because a physical-sequential dataset has no key to re-anchor on and no
-     * {@code ORDER BY} may be imposed on it - see
+     * <p>One statement, because a physical-sequential dataset has no key to re-anchor on: it is ordered
+     * by the deployment's physical-record ordinal rather than by anything a read could position on - see
      * {@link #composeInputStatements(DatasetRelation, boolean)}. What this method does <em>not</em> do is
      * drain that statement. It used to: the first {@code READ} fetched every row of the pass into a list
      * and later reads handed rows out of it, which made a {@code READ} of the first record cost the whole
@@ -1824,7 +1855,8 @@ public class TransactionRepository {
      * {@link InputFile#readNext()} through one cursor.
      *
      * <p><strong>Nothing about the pass's contents changes.</strong> The statement is the same
-     * unordered select, so rows still arrive in the dataset's own order; the cursor is forward-only and
+     * physical-sequence select, so rows still arrive in the dataset's own order; the cursor is
+     * forward-only and
      * read-only, because no consumer repositions and none writes; and one row is read per call. The
      * fetch size is a stated positive bound rather than the driver's default, for the reason
      * {@link DalyTranRepository} states at its own cursor: left unset, several drivers materialise the
@@ -1839,7 +1871,7 @@ public class TransactionRepository {
      * <p>The cursor holds a connection of its own, so it must be released - {@link InputFile#closeInput()}
      * does that, and reports whether the release was clean.
      *
-     * @param statement the unordered select over the whole relation
+     * @param statement the physical-sequence select over the whole relation
      * @param ddName    the configuration key of the dataset, for diagnostics only
      * @return the open cursor, positioned before the first row; never {@code null}
      * @throws DataAccessException if the backend refused the read, or the template carries no data source
@@ -2165,8 +2197,8 @@ public class TransactionRepository {
      * hand one job's statements to another (practice B9, gate G53).
      *
      * @param firstRead    the first read of the pass. For an indexed dataset it is the whole relation in
-     *                     ascending key order; for a physical-sequential one it is the whole relation
-     *                     unordered, which is its written order
+     *                     ascending key order; for a physical-sequential one it is the whole relation in
+     *                     physical-record-ordinal order, which is its written order
      * @param advanceAfter the statement that advances one record past a stored image, present only for
      *                     an indexed dataset. Empty for a physical-sequential one, which has no key to
      *                     re-anchor on - see {@link #composeInputStatements(DatasetRelation, boolean)}
@@ -3325,12 +3357,21 @@ public class TransactionRepository {
     }
 
     /**
-     * One opened sequential output run over the {@value TransactionRepository#SEQUENTIAL_OUTPUT_DD_NAME}
-     * generation.
+     * One opened sequential output run over the generation a step allocated.
      *
-     * <p>Obtained from {@link TransactionRepository#openOutput()} and discarded at the end of the run. It
-     * reproduces the {@code OPEN OUTPUT} / {@code WRITE} / {@code CLOSE} triple of
+     * <p>Obtained from {@link TransactionRepository#openOutput()} - which addresses the
+     * {@value TransactionRepository#SEQUENTIAL_OUTPUT_DD_NAME} generation this repository resolved at
+     * construction - or from {@link TransactionRepository#openOutput(DatasetBinding, String)}, which
+     * addresses whatever generation the caller's own binding names. It reproduces the
+     * {@code OPEN OUTPUT} / {@code WRITE} / {@code CLOSE} triple of
      * {@code app/cbl/CBACT04C.cbl:307-323}, {@code :500-514} and {@code :595-611}.
+     *
+     * <p>A handle carries the {@link #relation} and the {@link #ddName} it was opened for, and every
+     * statement it issues addresses those rather than anything the repository holds. That is what makes
+     * the second factory safe: the DD name {@code app/jcl/INTCALC.jcl:37-41} declares for the generated
+     * transactions collides with {@value TransactionRepository#CICS_FILE_NAME}, so the dataset a step
+     * writes need not be the dataset this repository resolved, and a handle that confused the two would
+     * count, diagnose and - under {@code DISP=(NEW,CATLG,DELETE)} - <em>delete</em> the wrong one.
      *
      * <p>This type exists so the repository bean can stay a stateless singleton. A record count is
      * per-run state; making it a field on a singleton would let two concurrent interest runs corrupt each
@@ -3343,8 +3384,34 @@ public class TransactionRepository {
         private final TransactionRepository repository;
 
         /**
+         * <strong>The relation this run actually opened</strong>, and the one every statement it issues
+         * addresses: the insert, the close-time probe, the record count and the abnormal disposition.
+         *
+         * <p>Held on the handle rather than taken from the repository, and that distinction is the whole
+         * point. {@link TransactionRepository#openOutput(DatasetBinding, String)} exists because the DD
+         * name {@code app/jcl/INTCALC.jcl:37-41} declares for the generated-transaction output is
+         * {@value TransactionRepository#CICS_FILE_NAME} - the same eight characters as the CICS
+         * transaction master, addressing a completely different dataset - so a job resolves its own
+         * binding and opens through it. A handle that then reached back to the repository's
+         * construction-time relation would write to one dataset and count, diagnose and
+         * <em>delete</em> another. That is not hypothetical for the disposition: the third positional of
+         * {@code DISP=(NEW,CATLG,DELETE)} deletes a generation, and deleting the wrong one is
+         * unrecoverable.
+         */
+        private final DatasetRelation relation;
+
+        /**
+         * The DD name this run was opened for, carried into every diagnostic this handle emits.
+         *
+         * <p>So an operator reading a refusal sees the name their JCL declared rather than the name this
+         * repository resolved from the global catalogue at construction. Those are the same string in the
+         * shipped configuration and are not the same thing.
+         */
+        private final String ddName;
+
+        /**
          * The parameterised insert this run issues for each record, composed once by
-         * {@link DatasetRelation#insertRecordImage()}.
+         * {@link DatasetRelation#insertRecordImage()} over {@link #relation}.
          *
          * <p>No column list, and that is not an omission. Naming a column here would be declaring a
          * schema, which this migration does not do (gate G44). The record is one fixed-width image and
@@ -3352,13 +3419,6 @@ public class TransactionRepository {
          * position {@link TransactionRepository#RECORD_IMAGE_COLUMN_INDEX}.
          */
         private final String insertStatement;
-
-        /**
-         * The read-only probe {@link TransactionRepository#openOutput()} used to establish the
-         * destination, retained so {@link #closeOutput()} can establish that it is still there without
-         * composing a second statement.
-         */
-        private final String describeStatement;
 
         /**
          * The status the {@code OPEN OUTPUT} reported - {@link FileStatus#OK} or
@@ -3385,19 +3445,41 @@ public class TransactionRepository {
         private String closeStatus;
 
         /**
-         * Constructed only by {@link TransactionRepository#openOutput()}.
+         * Constructed only by {@link TransactionRepository#openOutput()} and its DD-scoped sibling.
          *
-         * @param repository        the opening repository
-         * @param insertStatement   the parameterised insert
-         * @param describeStatement the read-only probe over the destination
-         * @param openStatus        the status the open reported
+         * @param repository the opening repository, for its codec and its template
+         * @param relation   the relation actually opened; every statement this handle issues addresses it
+         * @param ddName     the DD name it was opened for, for the diagnostics
+         * @param openStatus the status the open reported
          */
-        private OutputFile(TransactionRepository repository, String insertStatement,
-                           String describeStatement, String openStatus) {
+        private OutputFile(TransactionRepository repository, DatasetRelation relation, String ddName,
+                           String openStatus) {
             this.repository = repository;
-            this.insertStatement = insertStatement;
-            this.describeStatement = describeStatement;
+            this.relation = relation;
+            this.ddName = ddName;
+            this.insertStatement = relation.insertRecordImage();
             this.openStatus = openStatus;
+        }
+
+        /**
+         * The dataset this run writes to, exactly as configuration named it.
+         *
+         * <p>Exposed so a caller or a test can establish <em>which</em> generation a handle addresses -
+         * which is the property SD-03 turned on - without reaching around the class.
+         *
+         * @return the resolved dataset name; never {@code null}
+         */
+        public String datasetName() {
+            return relation.dsname();
+        }
+
+        /**
+         * The DD name this run was opened for.
+         *
+         * @return the DD name; never {@code null}
+         */
+        public String ddName() {
+            return ddName;
         }
 
         /**
@@ -3494,7 +3576,7 @@ public class TransactionRepository {
         public WriteResult writeSequential(TranRecord record) {
             Objects.requireNonNull(record, "A transaction record is required to write one");
             if (closed) {
-                throw new IllegalStateException("This run over the " + SEQUENTIAL_OUTPUT_DD_NAME
+                throw new IllegalStateException("This run over the " + ddName
                         + " dataset has been closed, so it can write nothing more. "
                         + "app/cbl/CBACT04C.cbl closes once, at :597, after its last write - writing "
                         + "afterwards is a defect in the caller and not a file status. Open another run "
@@ -3505,10 +3587,10 @@ public class TransactionRepository {
                 // Unreachable through TranRecord, and asserted anyway: a short record in a fixed-length
                 // generation shifts every subsequent record for whatever reads it next.
                 LOG.error("A transaction record encoded to " + image.length + " bytes where "
-                        + SEQUENTIAL_OUTPUT_DD_NAME + " holds " + RECORD_LENGTH
+                        + ddName + " holds " + RECORD_LENGTH
                         + " (app/jcl/INTCALC.jcl:39 declares LRECL=" + RECORD_LENGTH
                         + "); refusing the write rather than emitting a record of the wrong width");
-                return WriteResult.other(SEQUENTIAL_OUTPUT_DD_NAME, PERMANENT_ERROR_STATUS,
+                return WriteResult.other(ddName, PERMANENT_ERROR_STATUS,
                         CicsResponse.of(FileStatus.LENGERR),
                         DatasetObservation.recordWidth(image.length));
             }
@@ -3516,21 +3598,20 @@ public class TransactionRepository {
             try {
                 added = repository.insert(insertStatement, image);
             } catch (DataAccessException rejected) {
-                return WriteResult.other(SEQUENTIAL_OUTPUT_DD_NAME,
-                        reportRefusal(WRITE_OPERATION_NAME, SEQUENTIAL_OUTPUT_DD_NAME,
-                                "sequentially", rejected),
+                return WriteResult.other(ddName,
+                        reportRefusal(WRITE_OPERATION_NAME, ddName, "sequentially", rejected),
                         CicsResponse.ofBatchStatus(PERMANENT_ERROR_STATUS),
                         BackendDiagnostic.of(rejected));
             }
             if (added == SINGLE_ROW) {
                 recordsWritten++;
-                return WriteResult.written(SEQUENTIAL_OUTPUT_DD_NAME);
+                return WriteResult.written(ddName);
             }
-            LOG.error("A sequential write to " + SEQUENTIAL_OUTPUT_DD_NAME + " reported " + added
+            LOG.error("A sequential write to " + ddName + " reported " + added
                     + " affected row(s) where exactly " + SINGLE_ROW + " was expected; reporting file "
                     + "status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
                     + " rather than reporting a record as written");
-            return WriteResult.other(SEQUENTIAL_OUTPUT_DD_NAME, PERMANENT_ERROR_STATUS,
+            return WriteResult.other(ddName, PERMANENT_ERROR_STATUS,
                     CicsResponse.of(FileStatus.INVREQ), DatasetObservation.matchingRows(added));
         }
 
@@ -3563,7 +3644,7 @@ public class TransactionRepository {
             }
             closed = true;
             if (!FileStatus.OK.equals(openStatus)) {
-                LOG.error("This run over " + SEQUENTIAL_OUTPUT_DD_NAME + " was closed although it never "
+                LOG.error("This run over " + ddName + " was closed although it never "
                         + "opened - its open reported file status "
                         + FileStatus.toStatusImage(openStatus) + "; reporting file status "
                         + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " from the close as well, "
@@ -3572,10 +3653,10 @@ public class TransactionRepository {
                 return closeStatus;
             }
             try {
-                repository.jdbcTemplate.execute(describeStatement);
+                repository.jdbcTemplate.execute(relation.describeStatement());
                 closeStatus = FileStatus.OK;
             } catch (DataAccessException refused) {
-                closeStatus = reportRefusal(CLOSE_OPERATION_NAME, SEQUENTIAL_OUTPUT_DD_NAME,
+                closeStatus = reportRefusal(CLOSE_OPERATION_NAME, ddName,
                         "after writing " + recordsWritten + " record(s)", refused);
             }
             return closeStatus;
@@ -3634,19 +3715,18 @@ public class TransactionRepository {
                 discarded = true;
                 return FileStatus.OK;
             }
-            DatasetRelation relation = repository.outputRelation;
             try {
                 Integer held = repository.jdbcTemplate.queryForObject(
                         relation.countAllStatement(), Integer.class);
                 if (held == null || held != recordsWritten) {
-                    LOG.error("Refusing to apply the " + SEQUENTIAL_OUTPUT_DD_NAME
+                    LOG.error("Refusing to apply the " + ddName
                             + " abnormal disposition of app/jcl/INTCALC.jcl:37: this run wrote "
                             + recordsWritten + " record(s) but the dataset holds " + held
                             + ". DISP=(NEW,CATLG,DELETE) deletes the generation this step allocated, so a "
                             + "dataset holding records this step did not write is not that generation. "
                             + "Leaving it untouched and reporting file status "
                             + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                            + "; bind " + SEQUENTIAL_OUTPUT_DD_NAME
+                            + "; bind " + ddName
                             + " to a relation of its own so each run allocates its own generation");
                     discarded = true;
                     return PERMANENT_ERROR_STATUS;
@@ -3656,18 +3736,17 @@ public class TransactionRepository {
                 if (removed == recordsWritten) {
                     return FileStatus.OK;
                 }
-                LOG.error("The " + SEQUENTIAL_OUTPUT_DD_NAME + " abnormal disposition removed " + removed
+                LOG.error("The " + ddName + " abnormal disposition removed " + removed
                         + " record(s) where this run wrote " + recordsWritten
                         + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
                         + " rather than reporting the generation as discarded");
                 return PERMANENT_ERROR_STATUS;
             } catch (DataAccessException refused) {
                 discarded = true;
-                return reportRefusal(DISPOSITION_OPERATION_NAME, SEQUENTIAL_OUTPUT_DD_NAME,
+                return reportRefusal(DISPOSITION_OPERATION_NAME, ddName,
                         "for its abnormal disposition", refused);
             }
         }
-
 
         /**
          * {@link AutoCloseable} form of {@link #closeOutput()}. Declared to throw nothing, because

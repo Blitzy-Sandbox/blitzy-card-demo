@@ -566,6 +566,15 @@ public class UserUpdateController {
      * echo of the same screen field from the previous turn; where both are present they name the same
      * user, and the path variable wins.
      *
+     * <p><strong>It lands in {@code CDEMO-CU02-USR-SELECTED} too, and that is not optional.</strong>
+     * Lines 99 to 102 are the other half of this program's identity: on first entry the extension's
+     * selected id is copied <em>over</em> {@code USRIDINI} and {@code PROCESS-ENTER-KEY} then reads that
+     * record and paints its {@code SEC-USR-PWD} onto the screen. An extension left as the caller sent it
+     * is therefore a second, independently client-controlled resource identity that outranks the URI on
+     * exactly the arm that discloses a password - {@code PUT /api/users/A} with a selected {@code B}
+     * would paint B's plaintext password, and a later save would write B's values over A. Both carriers
+     * are set from the path here, before {@link #handle} runs, so the two cannot differ.
+     *
      * <p><strong>No mismatch error is raised</strong>, and that is deliberate: {@code COUSR02C} has no
      * such condition, so inventing one would add a failure mode the legacy screen cannot produce. Nor is
      * either branch of {@code 'User ID can NOT be empty...'} made unreachable by this rule - a path
@@ -631,20 +640,28 @@ public class UserUpdateController {
                 + "input area, and an absent one is spaces rather than nothing");
         requireIdentityFits(userId);
 
-        Cu02Info cu02Info = request.cu02Info();
         int commareaLength = resolveEibcalen(eibcalen, request);
 
         // The binding rule, applied in exactly one place: the path variable is the identity, so it is
-        // what occupies the USRIDIN slot of the terminal input area. It has already been required to fit,
-        // so the MOVE below only pads; the other eleven items travel exactly as the payload delivered
-        // them.
+        // what occupies the USRIDIN slot of the terminal input area AND what the extension's selected id
+        // carries, because lines 99-102 read the extension rather than the screen field on first entry.
+        // The path has already been required to fit, so both MOVEs below only pad.
+        String identity = PICTURE_RULES.movePicX(userId, UserUpdateRequest.USRIDIN_LENGTH);
+        Cu02Info arrived = request.cu02Info();
+        Cu02Info cu02Info = new Cu02Info(arrived.usridFirst(),
+                arrived.usridLast(),
+                arrived.pageNum(),
+                arrived.nextPageFlg(),
+                arrived.usrSelFlg(),
+                identity);
+
         UserUpdateRequest received = new UserUpdateRequest(request.trnName(),
                 request.title01(),
                 request.curDate(),
                 request.pgmName(),
                 request.title02(),
                 request.curTime(),
-                PICTURE_RULES.movePicX(userId, UserUpdateRequest.USRIDIN_LENGTH),
+                identity,
                 request.fName(),
                 request.lName(),
                 request.passwd(),
@@ -1157,7 +1174,10 @@ public class UserUpdateController {
     void readUserSecFile(ProgramState state) {
         SecUserRepository.ReadResult result =
                 secUserRepository.readForUpdate(state.secUserData().secUsrId());   // :322-331
-        state.recordFileResponse(result.cicsResp().orElse(FileStatus.NORMAL), result.cicsResp2());
+        // RESP_NOT_REPORTED, never NORMAL: an outcome carrying no CICS response is not a reported
+        // DFHRESP(NORMAL), and storing zero would make the two indistinguishable on the DISPLAY at :347.
+        state.recordFileResponse(result.cicsResp().orElse(FileStatus.RESP_NOT_REPORTED),
+                result.cicsResp2());
 
         if (result.isFound()) {                                           // :334 DFHRESP(NORMAL)
             // :335 CONTINUE - a no-op in the source, left as one here.
@@ -1224,7 +1244,10 @@ public class UserUpdateController {
      */
     void updateUserSecFile(ProgramState state) {
         SecUserRepository.WriteResult result = secUserRepository.rewrite(state.secUserData()); // :360-366
-        state.recordFileResponse(result.cicsResp().orElse(FileStatus.NORMAL), result.cicsResp2());
+        // RESP_NOT_REPORTED, never NORMAL - see readUserSecFile. The DISPLAY at :384 must not render
+        // RESP: 000000000 for a rewrite that reported no CICS response at all.
+        state.recordFileResponse(result.cicsResp().orElse(FileStatus.RESP_NOT_REPORTED),
+                result.cicsResp2());
 
         if (result.isWritten()) {                                         // :369 DFHRESP(NORMAL)
             state.setWsMessage(spaces(WS_MESSAGE_LENGTH));                // :370
@@ -1582,12 +1605,22 @@ public class UserUpdateController {
     }
 
     /**
-     * A {@code PIC S9(09)} value as {@code DISPLAY} shows it: nine digits, zero-padded, minus-signed.
+     * A {@code PIC S9(09)} value as {@code DISPLAY} shows it: nine digits, zero-padded - or, where the
+     * value is {@link FileStatus#RESP_NOT_REPORTED}, nine asterisks.
+     *
+     * <p>The two branches are the same width, so the composed line keeps the shape {@code DISPLAY} gives
+     * it. The asterisk branch exists because a command that reported no CICS response has no response
+     * code to show, and every available number would misrepresent that: zero <em>is</em>
+     * {@link FileStatus#NORMAL} and would report a failed command as a successful one, while
+     * {@code -000000001} would read as a response code CICS never defines.
      *
      * @param value the value
-     * @return the nine-digit image, prefixed with {@code -} when {@code value} is negative
+     * @return exactly {@value #WS_RESP_CD_DIGITS} characters
      */
     private static String nineDigitImage(int value) {
+        if (!FileStatus.respReported(value)) {
+            return FileStatus.respNotReportedImage(WS_RESP_CD_DIGITS);
+        }
         String digits = Long.toString(Math.abs((long) value));
         String padded = "0".repeat(Math.max(0, WS_RESP_CD_DIGITS - digits.length())) + digits;
         return value < 0 ? "-" + padded : padded;

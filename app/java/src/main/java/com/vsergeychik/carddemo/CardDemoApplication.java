@@ -1,7 +1,15 @@
 package com.vsergeychik.carddemo;
 
+import java.util.Locale;
+import java.util.Objects;
+import java.util.function.UnaryOperator;
+
+import com.vsergeychik.carddemo.config.BatchConfig;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.core.env.SimpleCommandLinePropertySource;
+import org.springframework.util.StringUtils;
 
 /**
  * Spring Boot entry point for the CardDemo COBOL-to-Java migration, and the composition root of
@@ -47,6 +55,26 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * unsatisfied. Batch support arrives through auto-configuration and is configured in
  * {@code config/BatchConfig}, which is where it belongs.
  *
+ * <h2>Two launch modes, and which one is chosen is decided before the context exists</h2>
+ * <p>The same jar is both the online application and the batch submission utility, and those two are
+ * different kinds of process. Serving the seventeen translated CICS transactions means a servlet
+ * container that stays up until it is stopped. Submitting one JCL job means the opposite: a one-shot
+ * process that does exactly one thing and ends, returning the job's {@code RETURN-CODE} so the next
+ * job's {@code COND} test can read it (gate G35).
+ *
+ * <p>So when {@code carddemo.batch.job-name} is supplied - the property that also brings
+ * {@code BatchConfig}'s launcher into existence - the application is started with
+ * {@link WebApplicationType#NONE}. No container is started, nothing binds a port, and the process
+ * holds no non-daemon thread that would keep it alive after the submission finishes. Without the
+ * property nothing changes: the web application starts exactly as before.
+ *
+ * <p>The decision has to be taken <em>here</em>, because the web application type is chosen while the
+ * environment is being prepared and cannot be changed afterwards. It reads the property from the three
+ * places an operator can supply it - the command line, a system property, and the relaxed environment
+ * variable form {@code CARDDEMO_BATCH_JOB_NAME} - and an explicit
+ * {@code spring.main.web-application-type} still overrides it, because Spring Boot binds
+ * {@code spring.main.*} onto the application after this setter has run.
+ *
  * <p>Everything else this class might plausibly have grown is deliberately absent - no additional
  * {@code @ComponentScan} beside {@code scanBasePackages}, no scheduling or async enablement, no
  * persistence-mapping annotations, no security, cloud, or observability wiring, no banner or
@@ -72,12 +100,117 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class CardDemoApplication {
 
     /**
-     * Boots the application context.
+     * The relaxed environment-variable spelling of {@value BatchConfig.JclJobLauncher#JOB_NAME_PROPERTY},
+     * which is how the property is most often supplied to a container: {@value}.
+     *
+     * <p>Derived rather than transcribed - {@link #environmentVariableFor(String)} produces it from the
+     * property name - so the two cannot drift apart.
+     */
+    static final String JOB_NAME_ENVIRONMENT_VARIABLE =
+            environmentVariableFor(BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY);
+
+    /**
+     * Boots the application context, in the mode the invocation asks for.
      *
      * @param args the command-line arguments, passed through to Spring Boot unchanged so that the
      *     standard property, profile and job-parameter arguments behave as documented
      */
     public static void main(String[] args) {
-        SpringApplication.run(CardDemoApplication.class, args);
+        springApplicationFor(args, CardDemoApplication::processValueOf).run(args);
+    }
+
+    /**
+     * The application to run: this class as the source, in the launch mode the invocation asks for.
+     *
+     * <p>Separate from {@link #main(String[])} and taking its outside world as an argument, so that the
+     * mode decision is assertable without starting anything.
+     *
+     * @param args           the command-line arguments
+     * @param processValues  resolves a property name against the process's own environment - system
+     *                       properties and environment variables
+     * @return the configured application, not yet run
+     */
+    static SpringApplication springApplicationFor(String[] args, UnaryOperator<String> processValues) {
+        SpringApplication application = new SpringApplication(CardDemoApplication.class);
+        application.setWebApplicationType(webApplicationTypeFor(args, processValues));
+        return application;
+    }
+
+    /**
+     * {@link WebApplicationType#NONE} for a JCL submission, {@link WebApplicationType#SERVLET}
+     * otherwise.
+     *
+     * <p>{@code SERVLET} is stated rather than deduced. Deduction would reach the same answer, because
+     * the servlet starter is a fixed dependency of this module, but stating it makes the pair of modes
+     * visible in one expression instead of one mode being explicit and the other implicit.
+     *
+     * @param args          the command-line arguments
+     * @param processValues resolves a property name against the process's own environment
+     * @return the launch mode
+     */
+    static WebApplicationType webApplicationTypeFor(String[] args, UnaryOperator<String> processValues) {
+        return isJclSubmission(args, processValues)
+                ? WebApplicationType.NONE
+                : WebApplicationType.SERVLET;
+    }
+
+    /**
+     * Whether this invocation is a JCL submission rather than a request to serve the online screens.
+     *
+     * <p>It is a submission when {@value BatchConfig.JclJobLauncher#JOB_NAME_PROPERTY} is supplied, and
+     * that is exactly the condition that brings {@code BatchConfig}'s launcher into existence, so the
+     * two halves cannot disagree about what kind of process this is.
+     *
+     * @param args          the command-line arguments; must not be {@code null}
+     * @param processValues resolves a property name against the process's own environment; must not be
+     *                      {@code null}
+     * @return {@code true} when a job name was supplied
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    static boolean isJclSubmission(String[] args, UnaryOperator<String> processValues) {
+        Objects.requireNonNull(args, "The command-line arguments are required to decide the launch mode");
+        Objects.requireNonNull(processValues, "A process-value lookup is required to decide the launch "
+                + "mode: the job name may arrive as a system property or an environment variable rather "
+                + "than on the command line");
+        if (new SimpleCommandLinePropertySource(args)
+                .containsProperty(BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY)) {
+            return true;
+        }
+        return StringUtils.hasText(
+                processValues.apply(BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY));
+    }
+
+    /**
+     * A property's value as this process was given it: the system property if there is one, otherwise
+     * the relaxed environment variable.
+     *
+     * <p>The system property wins, which is the same precedence Spring's own environment applies, so a
+     * {@code -D} override behaves here as it does everywhere else.
+     *
+     * @param propertyName the property name, in dotted form
+     * @return the value, or {@code null} when the process supplies neither form
+     */
+    static String processValueOf(String propertyName) {
+        String fromSystemProperties = System.getProperty(propertyName);
+        return StringUtils.hasText(fromSystemProperties)
+                ? fromSystemProperties
+                : System.getenv(environmentVariableFor(propertyName));
+    }
+
+    /**
+     * The relaxed environment-variable spelling of a dotted property name: upper case, with every
+     * separator replaced by an underscore.
+     *
+     * <p>This is Spring Boot's own relaxed-binding rule for environment variables, reproduced here
+     * because the decision is taken before any {@code Environment} exists to apply it.
+     *
+     * @param propertyName the property name, in dotted form; must not be {@code null}
+     * @return the environment-variable spelling
+     * @throws NullPointerException if {@code propertyName} is {@code null}
+     */
+    static String environmentVariableFor(String propertyName) {
+        Objects.requireNonNull(propertyName, "A property name is required to derive its environment "
+                + "variable spelling");
+        return propertyName.toUpperCase(Locale.ROOT).replace('.', '_').replace('-', '_');
     }
 }

@@ -13,7 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.AbendException;
-import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.ErrorResponse;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.FieldMessage;
@@ -27,7 +27,6 @@ import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
 import jakarta.validation.metadata.ConstraintDescriptor;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -88,6 +87,23 @@ class WebConfigErrorContractTest {
 
     /** A reason string that must never appear in a response body. */
     private static final String REASON = "ACCTFILE VSAM open failed, dataset AWS.M2.ACCTDATA";
+
+    /**
+     * {@code ABEND-DATA} as {@code EXEC CICS SEND FROM(ABEND-DATA) LENGTH(LENGTH OF ABEND-DATA)} puts it
+     * on the wire: the four {@code CSMSG02Y} fields at their declared widths, joined with no separator,
+     * {@value SystemMessages#ABEND_DATA_LENGTH} characters in total.
+     *
+     * <p>Composed here rather than borrowed from the producing controller, so this test states the wire
+     * shape it expects instead of agreeing with whatever the producer happens to build.
+     *
+     * @param area the area to render
+     * @return the transmitted image
+     */
+    private static String abendDataImage(final SystemMessages.AbendData area) {
+        final SystemMessages.AbendData atWidth = area.toDeclaredWidths();
+        return atWidth.abendCode() + atWidth.abendCulprit() + atWidth.abendReason()
+                + atWidth.abendMsg();
+    }
 
     @Nested
     @DisplayName("an abend answers 500 and withholds every internal value")
@@ -157,6 +173,103 @@ class WebConfigErrorContractTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> CobolErrorHandler.abendResponse(null));
             assertThatNullPointerException().isThrownBy(() -> CobolErrorHandler.logAbend(null));
+        }
+
+        @Test
+        @DisplayName("a CEE3ABD abend carries no source diagnostic, so the member is absent entirely")
+        void aCee3abdAbendCarriesNoDiagnostic() {
+            // The nine CALL 'CEE3ABD' sites DISPLAY to SYSOUT and terminate; none transmits an area to
+            // a terminal, so there is nothing source-authored to publish and the body stays the two
+            // constants. Absent, not empty: an empty one would claim they transmitted a blank area.
+            ErrorResponse body =
+                    CobolErrorHandler.abendResponse(AbendException.standard(PROGRAM, 12, REASON));
+
+            assertThat(body.abendData()).isNull();
+        }
+
+        @Test
+        @DisplayName("the diagnostic the COBOL transmitted is published, because the operator read it")
+        void aTransmittedDiagnosticIsPublished() {
+            // app/cbl/COCRDSLC.cbl:865-869 issues EXEC CICS SEND FROM(ABEND-DATA) before ABEND
+            // ABCODE('9999'), so those 134 bytes are observable behaviour. Replacing them with a
+            // constant changed what a caller sees.
+            String transmitted = abendDataImage(SystemMessages.AbendData.spaces()
+                    .withAbendCode("9999")
+                    .withAbendCulprit("COCRDSLC")
+                    .withAbendMsg("UNEXPECTED ABEND OCCURRED."));
+            AbendException abend = AbendException
+                    .withoutAbendParameters("COCRDSLC", 12, REASON)
+                    .withSourceDiagnostic(transmitted);
+
+            ErrorResponse body = CobolErrorHandler.abendResponse(abend);
+
+            assertThat(body.abendData())
+                    .isEqualTo(transmitted)
+                    .hasSize(SystemMessages.ABEND_DATA_LENGTH)
+                    .contains("UNEXPECTED ABEND OCCURRED.")
+                    .contains("COCRDSLC")
+                    .startsWith("9999");
+            // And the status and the other two members are unchanged by its presence.
+            assertThat(body.code()).isEqualTo(CobolErrorHandler.ABEND_CODE);
+            assertThat(body.message()).isEqualTo(CobolErrorHandler.ABEND_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("publishing the diagnostic leaks no Java, JDBC or dataset text with it")
+        void publishingTheDiagnosticLeaksNothingElse() {
+            // The triggering failure travels as the cause and is never rendered. This is the assertion
+            // that keeps the new member a source-authored projection rather than a detail slot.
+            AbendException abend = AbendException
+                    .withoutAbendParameters("COCRDSLC", 12, REASON,
+                            new IllegalStateException("ORA-00942: table or view does not exist"))
+                    .withSourceDiagnostic(
+                            abendDataImage(SystemMessages.AbendData.spaces()
+                                    .withAbendCulprit("COCRDSLC")));
+
+            ErrorResponse body = CobolErrorHandler.abendResponse(abend);
+            String rendered = body.code() + '|' + body.message() + '|' + body.abendData();
+
+            assertThat(rendered)
+                    .doesNotContain(REASON)
+                    .doesNotContain("ORA-00942")
+                    .doesNotContain("IllegalStateException")
+                    .doesNotContain("AWS.M2")
+                    .doesNotContain(AbendException.ABEND_DISPLAY_TEXT)
+                    .doesNotContain("RETURN-CODE");
+        }
+
+        @Test
+        @DisplayName("a blank diagnostic states nothing, so it is treated as none at all")
+        void aBlankDiagnosticIsTreatedAsAbsent() {
+            assertThat(AbendException.standard(PROGRAM, 12).withSourceDiagnostic("   ")
+                    .hasSourceDiagnostic()).isFalse();
+            assertThat(CobolErrorHandler.abendResponse(
+                    AbendException.standard(PROGRAM, 12).withSourceDiagnostic(null)).abendData())
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("withSourceDiagnostic keeps the CEE3ABD/CICS shape distinction and the cause")
+        void withSourceDiagnosticPreservesEverythingElse() {
+            RuntimeException cause = new IllegalStateException("held back");
+            AbendException standard =
+                    AbendException.standard(PROGRAM, 8, REASON, cause).withSourceDiagnostic("DATA");
+            AbendException bare = AbendException
+                    .withoutAbendParameters("CBSTM03A", 12, REASON, cause)
+                    .withSourceDiagnostic("DATA");
+
+            assertThat(standard.getProgram()).isEqualTo(PROGRAM);
+            assertThat(standard.getReturnCode()).isEqualTo(8);
+            assertThat(standard.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
+            assertThat(standard.getTiming()).hasValue(AbendException.STANDARD_TIMING);
+            assertThat(standard.getReason()).contains(REASON);
+            assertThat(standard.getCause()).isSameAs(cause);
+            assertThat(standard.getSourceDiagnostic()).contains("DATA");
+
+            assertThat(bare.hasAbendCode()).isFalse();
+            assertThat(bare.hasTiming()).isFalse();
+            assertThat(bare.getCause()).isSameAs(cause);
+            assertThat(bare.getSourceDiagnostic()).contains("DATA");
         }
     }
 
@@ -546,27 +659,4 @@ class WebConfigErrorContractTest {
         }
     }
 
-    @Nested
-    @DisplayName("a repository outcome maps to the status that reports it")
-    class OutcomeMapping {
-
-        @Test
-        @DisplayName("the four outcomes the COBOL handles in-program are 200")
-        void handledOutcomesAreOk() {
-            assertThat(List.of(FileStatus.Outcome.OK,
-                            FileStatus.Outcome.END_OF_FILE,
-                            FileStatus.Outcome.NOT_FOUND,
-                            FileStatus.Outcome.DUPLICATE)
-                    .stream()
-                    .map(CobolErrorHandler::statusForOutcome))
-                    .containsOnly(HttpStatus.OK);
-        }
-
-        @Test
-        @DisplayName("WHEN OTHER - the arm every guard chain abends on - is 500")
-        void otherIsInternalServerError() {
-            assertThat(CobolErrorHandler.statusForOutcome(FileStatus.Outcome.OTHER))
-                    .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-    }
 }

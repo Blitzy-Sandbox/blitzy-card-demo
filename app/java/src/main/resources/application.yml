@@ -1,3 +1,4 @@
+---
 # =============================================================================================
 #  AWS CardDemo - Java 21 / Spring Boot 3.5.16 migration module
 #  DEFAULT PROFILE CONFIGURATION
@@ -307,46 +308,105 @@ carddemo:
   # site-supplied gateway driver that presents them as character columns in the configured code page.
   # A deployment whose driver presents them as binary sets BINARY on this one line and changes nothing
   # else; no Java source names a JDBC type.
-  # -------------------------------------------------------------------------------------------
+  #
+  # ===========================================================================================
+  # DEPLOYMENT CONTRACT FOR CHARACTER - THE COLLATION THIS MODULE REQUIRES OF THE BACKEND
+  #
+  # A record image is addressed by ABSOLUTE BYTE OFFSET, and two of this module's operations are
+  # therefore not merely reads of that column but ORDERED and MATCHED comparisons of it:
+  #
+  #   * a keyed read composes a POSITIONAL LIKE over the image column - one '_' single-character
+  #     wildcard for each byte before the key, then the key's bytes with LIKE's metacharacters escaped,
+  #     then a trailing '%' - so the backend must match those characters POSITION FOR POSITION, one
+  #     character to one character, with no case folding, no accent folding, no trailing-blank
+  #     equivalence and no width equivalence. A collation in which one character can stand for two, or
+  #     two for one, breaks the offset arithmetic the '_' run encodes;
+  #   * a browse composes ORDER BY <image column>, and a COBOL KSDS browse returns records in ascending
+  #     order of the key's BYTES - so the backend's ordering of that column must be the ordering of
+  #     those bytes.
+  #
+  # SO A DEPLOYMENT CHOOSING CHARACTER MUST GUARANTEE, AND DOCUMENT, THAT THE RECORD-IMAGE COLUMN'S
+  # COLLATION IS BYTEWISE (BINARY / CODE-POINT) IN THE CODE PAGE NAMED BY charset.dataset ABOVE.
+  #
+  # What goes wrong without that guarantee is not a failure - it is a wrong answer that looks right. A
+  # case-insensitive collation makes card number 'A1' and 'a1' one key. A collation with trailing-blank
+  # equivalence makes an eight-character user id match a shorter one. A linguistic collation orders
+  # 'a' before 'B', so a browse over USRSEC returns the ten seeded users in an order COUSR00C's paging
+  # never produces and the page boundaries move. None of those raises an error anywhere.
+  #
+  # A DEPLOYMENT THAT CANNOT GUARANTEE IT SETS form: BINARY INSTEAD. A binary column has no collation
+  # to get wrong - its ordering and its equality are its bytes' - which is why BINARY is the stricter of
+  # the two and the correct choice for any byte-addressed dataset whose backend collation is unknown or
+  # not under the deployment's control. Nothing else changes: no Java source names a JDBC type, and
+  # common/RecordImageForm carries this same requirement on the CHARACTER constant itself.
+  # ===========================================================================================
   record-image:
     form: CHARACTER
 
   # -------------------------------------------------------------------------------------------
-  # carddemo.jdbc.query-timeout-seconds - THE PER-STATEMENT BOUND. Consumed by
-  # config/DataSourceConfig.java.
+  # PHYSICAL-RECORD ORDINAL - how a PHYSICAL-SEQUENTIAL dataset's record order is recovered.
+  # Consumed by config/DataSourceConfig.java, published as common/PhysicalSequence.
   #
-  # WHAT IT BOUNDS: one statement, not one job. A batch job may legitimately run for hours while
-  # every individual read, write and browse it issues completes in seconds, so this value is not a
-  # job duration and must never be tuned as though it were.
+  # WHAT IT IS FOR: a physical-sequential dataset has no key. Its records are in the order they were
+  # written, a COBOL READ returns them in that order, and SQL returns rows in NO order unless a
+  # statement says which. So every PS read in this module is ORDER BY this ordinal, and the ordinal
+  # stands for the record's POSITION - never for anything derived from its content.
   #
-  # WHY IT EXISTS AND WHY IT IS REQUIRED. Left unset, JdbcTemplate passes -1 to the driver, which
-  # means "leave your own default alone" - and for a site whose driver has no default that is
-  # unbounded: one hung read then holds its pool connection, its enclosing transaction and its
-  # batch step for as long as the process lives, with no diagnostic and no way to end the job short
-  # of killing the JVM. The pool's spring.datasource.hikari.connection-timeout above does NOT cover
-  # this; it bounds only how long a caller waits to BORROW a connection, and says nothing about how
-  # long a statement may then run on one.
+  # WHY NOT ORDER BY THE RECORD IMAGE: because that is a different order. app/jcl/TRANREPT.jcl:46
+  # sorts the daily file SORT FIELDS=(TRAN-CARD-NUM,A) while the record image begins with TRAN-ID, and
+  # app/cbl/CBTRN03C.cbl:168-207 subtotals by account AS THE RECORDS ARRIVE. Ordering by the image
+  # would produce a report with the right rows and the wrong totals, successfully and silently.
+  # (A KEYED dataset is the opposite case: its browse IS ordered by the record image, because the key
+  # is a prefix of it. This key has nothing to do with keyed reads.)
   #
-  # ZERO AND NEGATIVE VALUES ARE REFUSED at startup rather than read as "no limit", because
-  # java.sql.Statement treats a query timeout of 0 as unlimited and JdbcTemplate treats -1 as "use
-  # the driver default" - either would reinstate by configuration exactly the unbounded behaviour
-  # this key exists to remove. DataSourceConfig binds it with a bare placeholder and no Java-side
-  # default, so removing this key fails the context at startup naming it.
+  # WHICH DATASETS IT ORDERS: DALYTRAN, the transaction master read as a sequential job input
+  # (TRANFILE under app/jcl/TRANREPT.jcl), DATEPARM, and the SORTIN / SORTOUT / INFILE work datasets
+  # of app/jcl/CREASTMT.JCL.
   #
-  # THE SHIPPED VALUE is deliberately generous rather than tight: it has to exceed the slowest
-  # single statement in the estate, which is the utility unload's select-all over the transaction
-  # master, not the fastest. It is a safety bound, not a service-level objective - this migration
-  # has no performance objective (AAP 0.8.6) and this key must not become one. Raise it per site
-  # through CARDDEMO_JDBC_QUERY_TIMEOUT_SECONDS if the site's gateway is slower.
+  # THE VALUE IS A SITE INPUT AND MUST BE REVIEWED PER DEPLOYMENT. It names whatever ordinal the
+  # deployment's gateway driver presents for a stored record's physical position - a relative record
+  # number, a row identifier, or a generated sequence. RECORD_ORDINAL below is the name this document's
+  # bindings assume; a deployment whose gateway spells it differently changes this one line and nothing
+  # else, because no Java source names it.
   #
-  # SOCKET-LEVEL BOUNDS BELOW THIS ONE are driver-specific - login timeout, connect timeout, socket
-  # read timeout are all spelled differently by every driver - and this module pins no JDBC driver
-  # coordinate (residual risk R-E). Supply them at deployment time under
-  # spring.datasource.hikari.data-source-properties.*, which reaches the driver untouched. No Java
-  # source names any of them, exactly as no Java source names a dataset (gate G46).
+  # IT IS RENDERED INTO THE ORDER BY CLAUSE UNQUOTED, and that is deliberate: a pseudo-column cannot be
+  # delimited. Measured against H2 2.3.232, ORDER BY _ROWID_ ASC resolves while ORDER BY "_ROWID_" ASC
+  # fails with 'Column "_ROWID_" not found'. What keeps an unquoted value safe is the grammar
+  # common/PhysicalSequence enforces: a single bare SQL identifier, one leading letter, underscore or
+  # national character (# @ $) followed by at most 127 of the same plus digits. No whitespace, quote,
+  # comma, parenthesis, semicolon, comment marker or operator can pass it, so there is no lexical route
+  # from this value to a second clause or a second statement. Being unquoted, the backend applies its
+  # own identifier folding: an ordinal whose real name is case-sensitive and lower-case must be exposed
+  # under a name expressible as a bare identifier.
+  #
+  # THIS KEY IS REQUIRED AND CARRIES NO DEFAULT, for the same reason record-image.form carries none. A
+  # default would let a deployment that never named its ordinal start anyway and read every
+  # physical-sequential dataset in whatever order its backend happened to scan.
+  # config/DataSourceConfig binds it with a bare placeholder, so removing it fails the context at
+  # startup naming this exact key.
   # -------------------------------------------------------------------------------------------
-  jdbc:
-    query-timeout-seconds: ${CARDDEMO_JDBC_QUERY_TIMEOUT_SECONDS:300}
+  physical-sequence:
+    expression: RECORD_ORDINAL
+
+  # -------------------------------------------------------------------------------------------
+  # THERE IS NO carddemo.jdbc SECTION, AND NO PER-STATEMENT BOUND, DELIBERATELY.
+  #
+  # AAP 0.8.6 states that no connection tuning is introduced by this migration - it is explicitly
+  # not a performance refactoring - and AAP 0.4.2 specifies config/DataSourceConfig.java as a plain
+  # JdbcTemplate over HikariCP. So the template is constructed untuned: no query timeout, no fetch
+  # size, no maximum row count. A cancelled statement is a data-access failure the COBOL has no arm
+  # for, and a capped row count would turn a full browse into a short file, which is a different
+  # report. Neither is a behaviour this migration may introduce.
+  #
+  # WHERE A SITE PUTS ITS BOUNDS INSTEAD. Every bound worth setting below a statement is
+  # driver-specific - login timeout, connect timeout and socket read timeout are spelled
+  # differently by every driver, and this module pins no JDBC driver coordinate at all (residual
+  # risk R-E). Supply them at deployment time under
+  # spring.datasource.hikari.data-source-properties.*, which reaches the driver untouched. Note
+  # that the pool's spring.datasource.hikari.connection-timeout above is a different bound again:
+  # it limits how long a caller waits to BORROW a connection, not how long a statement may then run
+  # on one. No Java source names any of them, exactly as no Java source names a dataset (gate G46).
+  # -------------------------------------------------------------------------------------------
 
   # -------------------------------------------------------------------------------------------
   # DATASET BINDINGS - 27 entries: the 8 CICS FILE definitions plus the 19 batch-only DD names.

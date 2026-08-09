@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -109,6 +110,13 @@ class DateParmReaderTest {
     /** The code page, always named. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
+    /**
+     * The physical-record ordinal a physical-sequential read is ordered by, as
+     * {@code application-test.yml} configures it: H2's own row-identifier pseudo-column, which increases
+     * with each insert and so returns records in the order they were written.
+     */
+    private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
+
     /** A stand-in dataset name: this suite proves the name comes from configuration. */
     private static final String DSNAME = "TEST.CARDDEMO.DATEPARM";
 
@@ -119,7 +127,8 @@ class DateParmReaderTest {
     private static final String DESCRIBE_SQL = "SELECT * FROM \"" + DSNAME + "\" WHERE 1 = 0";
 
     /** The read the reader issues: unordered, because a physical-sequential dataset has no key. */
-    private static final String SELECT_SQL = "SELECT * FROM \"" + DSNAME + "\"";
+    private static final String SELECT_SQL =
+            "SELECT * FROM \"" + DSNAME + "\" ORDER BY _ROWID_ ASC";
 
     /** The first shipped date-range record, padded to its declared eighty bytes. */
     private static final String RECORD = "2022-01-01 2022-12-31" + " ".repeat(59);
@@ -245,7 +254,7 @@ class DateParmReaderTest {
      */
     private static DateParmReader reader(JdbcTemplate jdbcTemplate) {
         stubDescribe(jdbcTemplate);
-        return new DateParmReader(jdbcTemplate, validBindings(), ASCII, RecordImageForm.CHARACTER);
+        return new DateParmReader(jdbcTemplate, validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
     }
 
     /**
@@ -377,7 +386,7 @@ class DateParmReaderTest {
          * @return the reader
          */
         private DateParmReader reader() {
-            return new DateParmReader(template, validBindings(), ASCII, RecordImageForm.CHARACTER);
+            return new DateParmReader(template, validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
         }
     }
 
@@ -401,13 +410,26 @@ class DateParmReaderTest {
         }
 
         @Test
-        @DisplayName("the read is deliberately unordered: a physical-sequential dataset has no key")
-        void thePsReadIsUnordered() {
-            // A PS file's records are in the order they were written and READ returns them in that
-            // order, so an ORDER BY would reorder the file rather than make the read deterministic. A
-            // keyed dataset is the opposite case, and its browse states its ordering explicitly.
+        @DisplayName("the read is ordered by the physical-record ordinal, because 0550-DATEPARM-READ "
+                + "takes the FIRST record")
+        void thePsReadIsOrderedByThePhysicalOrdinal() {
+            // A PS file's records are in the order they were written and READ returns the first of them.
+            // "First" is only meaningful against an order and SQL supplies none unless a statement says
+            // which, so the read names the deployment's ordinal - which stands for position, not for
+            // anything in the record. Ordering by the record image would be a different order entirely.
             assertThat(reader(mock(JdbcTemplate.class)).selectRecordSql())
-                    .doesNotContain("ORDER BY");
+                    .endsWith(" ORDER BY _ROWID_ ASC")
+                    .doesNotContain("ORDER BY \"");
+        }
+
+        @Test
+        @DisplayName("a deployment that renames its ordinal changes the statement and nothing else")
+        void theOrdinalComesFromConfiguration() {
+            DateParmReader reader = new DateParmReader(mock(JdbcTemplate.class), validBindings(), ASCII,
+                    RecordImageForm.CHARACTER, PhysicalSequence.of("RRN"));
+
+            assertThat(reader.selectRecordSql())
+                    .isEqualTo("SELECT * FROM \"" + DSNAME + "\" ORDER BY RRN ASC");
         }
 
         @Test
@@ -416,14 +438,18 @@ class DateParmReaderTest {
             DatasetBindings catalogue = validBindings();
 
             assertThatNullPointerException()
-                    .isThrownBy(() -> new DateParmReader(null, catalogue, ASCII, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new DateParmReader(null, catalogue, ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("JdbcTemplate is required");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), null, ASCII, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), null, ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("carddemo.datasets");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), catalogue, null, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), catalogue, null, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("code page is stated explicitly");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), catalogue, ASCII,
+                            RecordImageForm.CHARACTER, null))
+                    .withMessageContaining(PhysicalSequence.EXPRESSION_PROPERTY);
         }
 
         @Test
@@ -432,7 +458,7 @@ class DateParmReaderTest {
             DatasetBindings wrong = bindings(DSNAME, 79);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), wrong, ASCII, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), wrong, ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("record length of 79");
         }
 
@@ -443,7 +469,7 @@ class DateParmReaderTest {
             DatasetBindings absent = bindings(dsname, DateParmReader.RECORD_LENGTH);
 
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), absent, ASCII, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), absent, ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("carddemo.datasets." + DateParmReader.DD_NAME);
         }
 
@@ -454,7 +480,7 @@ class DateParmReaderTest {
             DatasetBindings malformed = bindings(dsname, DateParmReader.RECORD_LENGTH);
 
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), malformed, ASCII, RecordImageForm.CHARACTER))
+                    .isThrownBy(() -> new DateParmReader(new JdbcTemplate(), malformed, ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("well-formed z/OS dataset name");
         }
 
@@ -736,7 +762,7 @@ class DateParmReaderTest {
             // would then hand the job an end of file it should have seen as a failed open. This probe
             // names the dataset, so an absent one fails here - which is what an OPEN INPUT reports.
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
             ResultSetMetaData metaData = mock(ResultSetMetaData.class);
             when(metaData.getColumnCount()).thenReturn(1);
             when(metaData.getColumnName(1)).thenReturn(COLUMN);
@@ -754,7 +780,7 @@ class DateParmReaderTest {
         @DisplayName("a relation with no record-image column is unusable, not a successful open")
         void aRelationWithNoImageColumnIsUnusable() throws SQLException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
             ResultSetMetaData metaData = mock(ResultSetMetaData.class);
             when(metaData.getColumnCount()).thenReturn(0);
             ResultSet described = mock(ResultSet.class);
@@ -773,7 +799,7 @@ class DateParmReaderTest {
         @DisplayName("a driver that supplies no metadata at all is unusable rather than successful")
         void noMetadataIsUnusable() throws SQLException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
             ResultSet described = mock(ResultSet.class);
             when(described.getMetaData()).thenReturn(null);
             when(jdbc.query(eq(DESCRIBE_SQL), ArgumentMatchers.<ResultSetExtractor<String>>any()))
@@ -790,7 +816,7 @@ class DateParmReaderTest {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
                     .thenReturn(null);
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
 
             assertThat(reader.open()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
             assertThat(reader.close()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
@@ -803,7 +829,7 @@ class DateParmReaderTest {
             when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
                     .thenThrow(new DataAccessResourceFailureException("gone",
                             new SQLException("gone", "08006", 17_002)));
-            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER);
+            DateParmReader reader = new DateParmReader(jdbc, validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL);
 
             assertThat(reader.open()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
             assertThat(reader.close()).isEqualTo(DateParmReader.PERMANENT_ERROR_STATUS);
@@ -1009,11 +1035,14 @@ class DateParmReaderTest {
         }
 
         @Test
-        @DisplayName("the statement adds no ORDER BY: ordering a PS dataset would change which record")
-        void theBoundedStatementImposesNoOrder() {
+        @DisplayName("bounding the read does not change which record it returns - the ordinal decides "
+                + "that, and it is the only ORDER BY in the statement")
+        void theBoundedStatementKeepsThePhysicalOrder() {
             // DATEPARM is physical-sequential - app/proc/TRANREPT.prc:65-66 binds it with no key - so its
-            // records are in the order they were written and READ returns the first of them. Limiting the
-            // statement does not change which record that is; ordering it would.
+            // records are in the order they were written and READ returns the first of them. Which record
+            // that is comes from the physical-record ordinal; the row limit only bounds how many are
+            // transferred, and the two must not be confused. Ordering by the record image instead would
+            // return the lowest image rather than the first record.
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             DateParmReader reader = reader(jdbc);
             List<BoundedStatement> sent = new ArrayList<>();
@@ -1021,7 +1050,11 @@ class DateParmReaderTest {
 
             reader.read();
 
-            assertThat(sent.get(0).sql()).doesNotContainIgnoringCase("order by");
+            assertThat(sent.get(0).sql())
+                    .isEqualTo(SELECT_SQL)
+                    .endsWith(" ORDER BY _ROWID_ ASC")
+                    .doesNotContain("ORDER BY \"");
+            assertThat(sent.get(0).sql().split(" ORDER BY ", -1)).hasSize(2);
         }
 
         @Test

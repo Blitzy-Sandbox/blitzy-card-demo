@@ -568,6 +568,16 @@ public final class CustomerRecord {
     /**
      * Returns this record's whole 500-character group image using an existing codec.
      *
+     * <p><strong>This renders the record; it does not reproduce a row.</strong> The area is allocated
+     * fresh and only the eighteen declared fields are written into it, so the trailing {@code FILLER}
+     * comes out at its initialisation value - spaces - whatever the row this record was decoded from
+     * actually held there. That is exactly right for the writing paths, which is what
+     * {@code INITIALIZE CUSTOMER-RECORD} followed by field moves produces, and it is
+     * <strong>wrong</strong> for reproducing {@code DISPLAY CUSTOMER-RECORD}
+     * ({@code app/cbl/CBCUS01C.cbl:78} and {@code :96}), which writes the record area as
+     * {@code READ ... INTO} left it. A raw display must use the stored image the read carried -
+     * {@code CustomerRepository.ReadResult.requireStoredImage()} - and not this.
+     *
      * @param codec the codec bound to the target code page
      * @return exactly {@link #RECORD_LENGTH} characters
      * @throws NullPointerException if {@code codec} is {@code null}
@@ -583,8 +593,14 @@ public final class CustomerRecord {
      * <p>The area is allocated through the codec, which initialises it from the layout first: that is
      * what leaves the trailing {@code FILLER} holding its 168 spaces without this method having to
      * write it. {@code FILLER} is deliberately never written here - it carries no value to write - yet
-     * it is always correct in the result, which is the whole point of declaring it as a first-class
-     * span.
+     * it is always present at the right width in the result, which is the whole point of declaring it as
+     * a first-class span.
+     *
+     * <p>The fresh allocation is what makes this the <em>update</em> path and not the display path.
+     * A record built field by field, or read and then modified, has no row of its own to preserve, and
+     * spaces are what {@code INITIALIZE} leaves in a span nothing writes. A record that came from a row
+     * does have one, and reproducing that row's {@code DISPLAY} needs the row's own bytes rather than
+     * this reconstruction - see {@link #recordImage(FixedWidthCodec)}.
      *
      * @param codec the codec bound to the target code page
      * @return a record area holding this record's 500 bytes

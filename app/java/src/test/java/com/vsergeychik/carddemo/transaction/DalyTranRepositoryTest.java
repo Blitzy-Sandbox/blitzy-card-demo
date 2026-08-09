@@ -16,6 +16,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -90,11 +91,21 @@ class DalyTranRepositoryTest {
     /** The code page, always named. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
+    /**
+     * The physical-record ordinal the tests read this physical-sequential dataset in.
+     *
+     * <p>{@code _ROWID_} is what {@code application-test.yml} configures, and it is H2's own
+     * row-identifier pseudo-column: it increases with each insert, so it returns the records in the order
+     * they were written - which is what a sequential COBOL {@code READ} of a PS dataset returns.
+     */
+    private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
+
     /** A stand-in dataset name: this suite proves the name comes from configuration. */
     private static final String DSNAME = "TEST.CARDDEMO.DALYTRAN";
 
     /** The unordered select the repository must compose - no {@code ORDER BY} and no predicate. */
-    private static final String SELECT_SQL = "SELECT * FROM \"" + DSNAME + "\"";
+    private static final String SELECT_SQL =
+            "SELECT * FROM \"" + DSNAME + "\" ORDER BY _ROWID_ ASC";
 
     /** The repository-root-relative path of the class under test, for the source-level guards. */
     private static final String SOURCE_PATH =
@@ -145,7 +156,8 @@ class DalyTranRepositoryTest {
         DataSource source = backend == null ? null : backend.dataSource();
         JdbcTemplate template = mock(JdbcTemplate.class);
         when(template.getDataSource()).thenReturn(source);
-        return new DalyTranRepository(template, validBindings(), ASCII, RecordImageForm.CHARACTER);
+        return new DalyTranRepository(template, validBindings(), ASCII, RecordImageForm.CHARACTER,
+                ORDINAL);
     }
 
     /**
@@ -514,7 +526,7 @@ class DalyTranRepositoryTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new DalyTranRepository(template, wrong, ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("record length of 349")
                     .withMessageContaining("CVTRA06Y");
         }
@@ -527,7 +539,7 @@ class DalyTranRepositoryTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new DalyTranRepository(template, empty, ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining(DalyTranRepository.DD_NAME);
         }
 
@@ -540,7 +552,7 @@ class DalyTranRepositoryTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new DalyTranRepository(template, catalogue, ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("declares no dataset name");
         }
 
@@ -552,7 +564,7 @@ class DalyTranRepositoryTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new DalyTranRepository(template, catalogue, ASCII,
-                            RecordImageForm.CHARACTER))
+                            RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("carddemo.datasets." + DalyTranRepository.DD_NAME);
         }
 
@@ -565,7 +577,7 @@ class DalyTranRepositoryTest {
 
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new DalyTranRepository(template, catalogue, ASCII,
-                            RecordImageForm.CHARACTER));
+                            RecordImageForm.CHARACTER, ORDINAL));
         }
 
         @Test
@@ -575,7 +587,7 @@ class DalyTranRepositoryTest {
 
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new DalyTranRepository(template, validBindings(),
-                            StandardCharsets.UTF_16, RecordImageForm.CHARACTER));
+                            StandardCharsets.UTF_16, RecordImageForm.CHARACTER, ORDINAL));
         }
 
         @Test
@@ -584,17 +596,20 @@ class DalyTranRepositoryTest {
             JdbcTemplate template = mock(JdbcTemplate.class);
 
             assertThatNullPointerException().isThrownBy(() -> new DalyTranRepository(null,
-                    validBindings(), ASCII, RecordImageForm.CHARACTER))
+                    validBindings(), ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("JdbcTemplate");
             assertThatNullPointerException().isThrownBy(() -> new DalyTranRepository(template, null,
-                    ASCII, RecordImageForm.CHARACTER))
+                    ASCII, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("carddemo.datasets");
             assertThatNullPointerException().isThrownBy(() -> new DalyTranRepository(template,
-                    validBindings(), null, RecordImageForm.CHARACTER))
+                    validBindings(), null, RecordImageForm.CHARACTER, ORDINAL))
                     .withMessageContaining("code page");
             assertThatNullPointerException().isThrownBy(() -> new DalyTranRepository(template,
-                    validBindings(), ASCII, null))
+                    validBindings(), ASCII, null, ORDINAL))
                     .withMessageContaining(RecordImageForm.FORM_PROPERTY);
+            assertThatNullPointerException().isThrownBy(() -> new DalyTranRepository(template,
+                    validBindings(), ASCII, RecordImageForm.CHARACTER, null))
+                    .withMessageContaining(PhysicalSequence.EXPRESSION_PROPERTY);
         }
 
         @Test
@@ -609,20 +624,46 @@ class DalyTranRepositoryTest {
     // =============================================================================================
 
     @Nested
-    @DisplayName("The statement and the layout - gates G19, G21 and the ordering prohibition")
+    @DisplayName("The statement and the layout - gates G19, G21 and the physical-sequence contract")
     class StatementAndLayout {
 
         @Test
-        @DisplayName("the read statement carries no ORDER BY: a PS dataset has no key to order by")
-        void theStatementIsUnordered() {
+        @DisplayName("the read statement orders by the configured physical-record ordinal")
+        void theStatementOrdersByThePhysicalOrdinal() {
             DalyTranRepository repository = repositoryWithoutBackend();
 
             assertThat(repository.selectRecordSql())
                     .isEqualTo(SELECT_SQL)
-                    .doesNotContain("ORDER BY")
+                    .endsWith(" ORDER BY _ROWID_ ASC")
                     .doesNotContain("WHERE")
                     .doesNotContain("FETCH")
                     .doesNotContain("OFFSET");
+        }
+
+        @Test
+        @DisplayName("it orders by the ordinal and never by the record image, which is a different order")
+        void theStatementNeverOrdersByTheRecordImage() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+
+            // app/jcl/TRANREPT.jcl:46 sorts this file by TRAN-CARD-NUM while the record image begins
+            // with DALYTRAN-ID, so an ordering over the image would be a DIFFERENT order from the file's -
+            // and CBTRN03C subtotals by account as the records arrive. There is exactly one ORDER BY and
+            // its operand is the ordinal.
+            assertThat(repository.selectRecordSql().split(" ORDER BY ", -1)).hasSize(2);
+            assertThat(repository.selectRecordSql())
+                    .doesNotContain("ORDER BY \"")
+                    .contains("ORDER BY _ROWID_ ASC");
+        }
+
+        @Test
+        @DisplayName("a deployment that renames its ordinal changes the statement and nothing else")
+        void theOrdinalComesFromConfiguration() {
+            DalyTranRepository repository = new DalyTranRepository(mock(JdbcTemplate.class),
+                    validBindings(), ASCII, RecordImageForm.CHARACTER,
+                    PhysicalSequence.of("RECORD_ORDINAL"));
+
+            assertThat(repository.selectRecordSql())
+                    .isEqualTo("SELECT * FROM \"" + DSNAME + "\" ORDER BY RECORD_ORDINAL ASC");
         }
 
         @Test

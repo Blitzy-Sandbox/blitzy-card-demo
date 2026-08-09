@@ -545,9 +545,10 @@ public class StatementGenerationJobB {
      * Rows transferred by one keyed read: {@code 2}.
      *
      * <p>One more than a unique primary key can produce, so a violation of that uniqueness in the backing
-     * relation is <em>detected</em> and logged rather than passing unnoticed. Two is the cap because
-     * knowing "more than one" is all the diagnosis needs; counting them all would transfer the duplicates
-     * to no purpose.
+     * relation is <em>detected</em> rather than passing unnoticed, and is then reported as
+     * {@link #PERMANENT_ERROR_STATUS} rather than resolved by returning whichever row the backend ordered
+     * first. Two is the cap because knowing "more than one" is all the decision needs; counting them all
+     * would transfer the duplicates to no purpose.
      */
     private static final int KEYED_READ_ROW_LIMIT = 2;
 
@@ -2111,19 +2112,27 @@ public class StatementGenerationJobB {
          * {@code READ ... INTO LK-M03B-FLDT} - the group move of a record into the
          * {@value #FLDT_LENGTH}-byte receiver.
          *
-         * <p>The receiver is wider than every record, so the record lands left-justified and the
-         * remainder is spaces. That is reproduced exactly through
-         * {@link FixedWidthCodec#padToDeclaredWidth(String, int)}, so the returned area is always
+         * <p>{@code LK-M03B-FLDT} is {@code PIC X(1000)}
+         * ({@code app/cbl/CBSTM03B.CBL:111}), so {@code READ INTO} performs an implicit alphanumeric
+         * {@code MOVE} and the receiver's own rule applies: left justified, space-padded when the record
+         * is shorter and <strong>truncated on the right</strong> when it is longer. That is
+         * {@link FixedWidthCodec#movePicX(String, int)} exactly, and the returned area is always
          * {@value #FLDT_LENGTH} characters regardless of which of the four datasets produced it.
          *
-         * @param image the stored record image, which must be exactly {@link #recordLength} bytes
+         * <p>{@code movePicX} rather than {@code padToDeclaredWidth} because the latter refuses a row
+         * wider than the receiver, and refusing is not what {@code MOVE} does. For every conforming row
+         * the two are indistinguishable - each of the four records is far narrower than
+         * {@value #FLDT_LENGTH} - and they differ only on a row that is over-wide, which is a
+         * record-length conflict and reports {@link FileStatus#RECORD_LENGTH_CONFLICT} rather than
+         * throwing.
+         *
+         * @param image the stored record image; a length other than {@link #recordLength} is a
+         *              record-length conflict, which this method transfers rather than refuses
          * @return the {@value #FLDT_LENGTH}-character record area
-         * @throws IllegalStateException    if a stored byte is not valid in the dataset code page
-         * @throws IllegalArgumentException if the image is wider than {@value #FLDT_LENGTH}
+         * @throws IllegalStateException if a stored byte is not valid in the dataset code page
          */
         private String intoRecordArea(byte[] image) {
-            return codec.padToDeclaredWidth(
-                    codec.decodeImage(image, "a " + ddName + " row image"), FLDT_LENGTH);
+            return codec.movePicX(codec.decodeImage(image, "a " + ddName + " row image"), FLDT_LENGTH);
         }
 
         /**
@@ -2578,7 +2587,9 @@ public class StatementGenerationJobB {
             // Advance by the bytes the backend gave, not by a re-encoding of them.
             position = row.image().clone();
             returned++;
-            status = FileStatus.OK;
+            // The status is accept's to set, not this method's: a record whose length does not conform to
+            // the file's fixed attributes was still read, and reports '04' rather than '00'. Assigning
+            // FileStatus.OK here would erase that distinction on the very path CBSTM03A:L748 depends on.
             return area;
         }
 
@@ -2648,24 +2659,39 @@ public class StatementGenerationJobB {
                 return currentFldt;
             }
             if (rows.size() > 1) {
-                // A base KSDS primary key is unique, so this cannot arise in the legacy system and is a
-                // defect in the backing relation. VSAM would have returned the one record, so the first
-                // match is returned with '00' - inventing a status the COBOL READ path never produces
-                // would be worse - but the integrity violation is reported loudly. The key itself is not
-                // logged: these datasets carry customer and account identifiers.
-                LOG.error("More than one row of " + access.ddName + " matches a single primary key, but "
-                        + "its RECORD KEY (app/cbl/CBSTM03B.CBL:46, :52) is unique. Returning the first "
-                        + "match with file status " + FileStatus.toStatusImage(FileStatus.OK)
-                        + ", which is what VSAM would have returned, and reporting the integrity "
-                        + "violation here: the backing relation needs a unique constraint on its key "
-                        + "span");
+                // A base KSDS primary key is unique - RECORD KEY IS FD-CUST-ID (app/cbl/CBSTM03B.CBL:46)
+                // and RECORD KEY IS FD-ACCT-ID (:52) - so more than one match cannot arise in the legacy
+                // system and is an integrity defect in the backing relation.
+                //
+                // It is REPORTED, not absorbed. Returning row 0 with '00' would hand the caller one of
+                // several records with no indication that a choice was made, and the choice would be
+                // whichever row the backend happened to order first: CBSTM03A would then compose a
+                // statement from an arbitrary customer or account and every downstream field would be
+                // plausible and possibly wrong. There is no faithful answer to give, because the
+                // condition the COBOL contract rules out has occurred; the honest outcome is the
+                // permanent-error status, which the caller's WHEN OTHER arm already handles by abending
+                // (app/cbl/CBSTM03A.CBL:L379-L386 and :L403-L410 distinguish only '00' from OTHER).
+                //
+                // The key itself is not logged: these datasets carry customer and account identifiers.
+                status = PERMANENT_ERROR_STATUS;
+                LOG.error("Could not read " + access.ddName + " by key: " + rows.size() + " rows match a "
+                        + "single primary key, but its RECORD KEY (app/cbl/CBSTM03B.CBL:46, :52) is "
+                        + "unique. Reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " rather than returning an arbitrary one of them as though it were the record: "
+                        + "the caller composes a customer statement from whatever it is handed, so an "
+                        + "arbitrary choice here would surface as plausible and wrong output. The backing "
+                        + "relation needs a unique constraint on its key span");
+                return currentFldt;
             }
             byte[] image = rows.get(0);
             String area = accept(image, "a keyed record of");
             if (area == null) {
                 return currentFldt;
             }
-            status = FileStatus.OK;
+            // As on the sequential path, the status belongs to accept: a keyed read of a record whose
+            // length does not conform reports '04', and CBSTM03A's two keyed-read guards accept only
+            // '00', so this is the status that decides whether the caller abends.
             return area;
         }
 
@@ -2701,12 +2727,41 @@ public class StatementGenerationJobB {
         }
 
         /**
-         * Validates a stored row and turns it into the {@value StatementGenerationJobB#FLDT_LENGTH}-byte
-         * record area, or sets the permanent-error status and answers {@code null}.
+         * Validates a stored row, turns it into the {@value StatementGenerationJobB#FLDT_LENGTH}-byte
+         * record area and <strong>sets the status the read reports</strong>, or answers {@code null}
+         * having set a rejecting status.
          *
-         * <p>Two rejections, and each is an I/O-level defect rather than an end of file: a row present but
-         * carrying no record image, and a row whose width disagrees with its copybook. Both are reported
-         * as a status because that is the only outcome this subroutine's interface can express.
+         * <p>Three outcomes, and the middle one is the whole reason this method owns the status rather
+         * than leaving its caller to assign {@code '00'}:
+         * <ul>
+         *   <li><strong>{@code '00'}</strong> - the row is present and exactly its copybook's declared
+         *       width. The record area is returned.</li>
+         *   <li><strong>{@code '04'}</strong>, {@link FileStatus#RECORD_LENGTH_CONFLICT} - the row is
+         *       present but its length does not conform to the file's fixed attributes. In COBOL that is
+         *       a <em>successful</em> {@code READ} whose record was transferred anyway, so the record
+         *       area <strong>is</strong> returned, filled under the {@code PIC X(1000)} receiver's own
+         *       {@code MOVE} rule: left justified, space-padded when the row is short and truncated on
+         *       the right when it is long. Reporting the conflict without the record, or collapsing it
+         *       into a permanent error, would both make {@code '04'} unproducible - and
+         *       {@code app/cbl/CBSTM03A.CBL} has ten distinct sites whose behaviour depends on it, nine
+         *       accepting it ({@code IF WS-M03B-RC = '00' OR '04'}, including the first {@code TRNXFILE}
+         *       read at {@code L748}) and three rejecting it (the loop read's {@code EVALUATE} at
+         *       {@code L836-L847} and the two keyed reads). Every one of those arms is dead if this
+         *       method cannot produce the status.</li>
+         *   <li><strong>the permanent-error status</strong> - the row is present but carries no record
+         *       image at all, or its stored bytes are not data in the configured dataset code page. In
+         *       both cases the record exists and <em>cannot be read</em>, which is an I/O-level defect
+         *       and not an end of file, and no record area is returned.</li>
+         * </ul>
+         *
+         * <p><strong>Why a length conflict is no longer a refusal.</strong> It used to be, on the
+         * reasoning that this subroutine hands raw bytes to a caller that decodes them by absolute offset
+         * and a mis-sized record would displace every field. That reasoning describes a real hazard but
+         * prescribes the wrong remedy: {@code '04'} is precisely COBOL's way of saying "here is the
+         * record, and its length is not what the file declares", and the decision about what to do next
+         * belongs to the caller - which is exactly where {@code CBSTM03A} puts it, accepting the status
+         * at nine sites and abending at three. Gate G19 is still enforced, and more faithfully: the
+         * conflict is reported rather than hidden, on the same path the COBOL reports it.
          *
          * @param image   the stored bytes, possibly {@code null}
          * @param attempt what was being read, phrased to complete "Could not read ..."
@@ -2721,17 +2776,9 @@ public class StatementGenerationJobB {
                         + " rather than reporting a record that is present as absent");
                 return null;
             }
-            if (image.length != access.recordLength) {
-                status = PERMANENT_ERROR_STATUS;
-                LOG.error("Could not read " + attempt + " " + access.ddName + ": the row is "
-                        + image.length + " byte(s) where its copybook declares " + access.recordLength
-                        + ". This subroutine hands raw bytes to a caller that decodes them by absolute "
-                        + "offset, so a mis-sized record would displace every field it reads (gate G19). "
-                        + "Reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS));
-                return null;
-            }
+            String area;
             try {
-                return access.intoRecordArea(image);
+                area = access.intoRecordArea(image);
             } catch (IllegalStateException undecodable) {
                 // A stored byte that is not a character in the configured code page. The record exists and
                 // cannot be read, which is the same class of defect as an absent image.
@@ -2741,6 +2788,22 @@ public class StatementGenerationJobB {
                         + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS));
                 return null;
             }
+            if (image.length != access.recordLength) {
+                // FILE STATUS '04'. The READ succeeded and the record was transferred; only its length
+                // disagrees with the file's fixed attributes. The caller is told, and is given the record.
+                status = FileStatus.RECORD_LENGTH_CONFLICT;
+                LOG.warn("Read " + attempt + " " + access.ddName + " with a record-length conflict: the "
+                        + "row is " + image.length + " byte(s) where its copybook declares "
+                        + access.recordLength + ". Reporting file status "
+                        + FileStatus.toStatusImage(FileStatus.RECORD_LENGTH_CONFLICT)
+                        + " and returning the record area, which is what a COBOL READ does. A caller that "
+                        + "decodes by absolute offset must treat this as fatal (gate G19); the nine "
+                        + "app/cbl/CBSTM03A.CBL guards that accept '04' do not decode the area they "
+                        + "accept it on, and the loop read that does decode it abends");
+                return area;
+            }
+            status = FileStatus.OK;
+            return area;
         }
     }
 }

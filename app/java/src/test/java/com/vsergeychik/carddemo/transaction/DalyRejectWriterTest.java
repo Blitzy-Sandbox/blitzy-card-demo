@@ -23,6 +23,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.test.context.ActiveProfiles;
 
 import javax.sql.DataSource;
@@ -38,6 +39,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1205,6 +1207,203 @@ class DalyRejectWriterTest {
                             .isTrue();
                 }
             }
+        }
+    }
+
+    // =================================================================================================
+    // The abnormal disposition - the THIRD positional of DISP=(NEW,CATLG,DELETE).
+    //
+    // app/jcl/POSTTRAN.jcl:L34-L38 declares three dispositions for DALYREJS and the writer used to
+    // reproduce two. NEW is the open's clear; CATLG is what the close leaves behind; DELETE is what an
+    // abended run must leave - which is nothing at all. Not a rollback: every reject is durable as it is
+    // written, so this removes them afterwards, in the order z/OS uses.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The abnormal disposition deletes the generation an abended run wrote")
+    class TheAbnormalDisposition {
+
+        /**
+         * A real in-memory relation, so the count-then-delete is measured rather than mocked.
+         *
+         * <p>{@code DB_CLOSE_DELAY=-1} because {@link SimpleDriverDataSource} opens a connection per
+         * call: without it H2 would discard the database the moment the connection that created the
+         * relation was returned.
+         *
+         * @return a template over a private H2 database already holding the DALYREJS relation
+         */
+        private JdbcTemplate liveTemplate() {
+            JdbcTemplate template = new JdbcTemplate(new SimpleDriverDataSource(new org.h2.Driver(),
+                    "jdbc:h2:mem:dalyrejs-disp-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+            template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (RECORD_IMAGE CHAR("
+                    + LRECL + "))");
+            return template;
+        }
+
+        /** @return how many records the relation holds */
+        private int held(JdbcTemplate template) {
+            Integer count = template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class);
+            return count == null ? 0 : count;
+        }
+
+        @Test
+        @DisplayName("every reject this run wrote is deleted, and the close before it deleted nothing")
+        void theGenerationIsDeleted() {
+            JdbcTemplate template = liveTemplate();
+            DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
+                    RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.writeRejectRec(image('B'), 100)).isEqualTo(FileStatus.Outcome.OK);
+            // CATLG: the close leaves the rejects where they are. That is the whole distinction.
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isEqualTo(2);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a second discard neither issues anything nor contradicts the first")
+        void theDiscardIsIdempotent() {
+            JdbcTemplate template = liveTemplate();
+            DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
+                    RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isZero();
+        }
+
+        @Test
+        @DisplayName("a run whose input was entirely clean deletes nothing and reports OK")
+        void anEmptyRunDeletesNothing() {
+            // The common case for this dataset: a posting run that rejected nothing wrote nothing, so
+            // there is no generation to delete and nothing to say about it.
+            JdbcTemplate template = liveTemplate();
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(LRECL));
+            DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
+                    RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput(new Collector());
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(held(template)).isOne();
+        }
+
+        @Test
+        @DisplayName("a relation holding rejects this run did not write is left untouched")
+        void aCountMismatchIsRefused() {
+            // Deliberately loud. These are rejected customer transactions, so silently deleting records
+            // this run did not write would be far worse than an operator seeing an outcome.
+            JdbcTemplate template = liveTemplate();
+            DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
+                    RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(LRECL));
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(template)).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("a count the backend will not state is refused exactly as a wrong count is")
+        void anUnstatedCountIsRefused() {
+            // The other half of the guard aCountMismatchIsRefused drives. A backend that answers the
+            // count query with SQL NULL has not said the generation holds what this run wrote - it has
+            // said nothing - and "nothing" is not permission to delete rejected customer transactions.
+            // A real COUNT(*) cannot be null, so the one call is bent and everything else runs for real.
+            JdbcTemplate live = liveTemplate();
+            JdbcTemplate template = Mockito.spy(live);
+            DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
+                    RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+
+            // Stubbed after the open, so the open's own clear and probe are the real ones.
+            Mockito.doReturn(null).when(template)
+                    .queryForObject(Mockito.anyString(), Mockito.eq(Integer.class));
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(held(live))
+                    .as("and the reject this run wrote is still there: refused means untouched")
+                    .isOne();
+        }
+
+        @Test
+        @DisplayName("a delete that removes a different number than it counted is reported, not called OK")
+        void aDeleteRemovingADifferentCountIsReported() {
+            // The count agreed, so the delete was issued - and then removed a different number of rows
+            // than the count promised. Something changed the destination between the two statements, so
+            // this run cannot claim it deleted its own generation and nothing else. Reporting OK here
+            // would tell the operator the DISP=(NEW,CATLG,DELETE) obligation was met when it may not be.
+            JdbcTemplate live = liveTemplate();
+            JdbcTemplate template = Mockito.spy(live);
+            DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
+                    RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+
+            // The count still runs for real and agrees; only the delete's answer is bent.
+            Mockito.doReturn(99).when(template).update(Mockito.anyString());
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
+        @DisplayName("a backend that refuses the disposition is reported, never raised")
+        void aRefusedDispositionIsReported() throws SQLException {
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            PreparedStatement statement = Mockito.mock(PreparedStatement.class);
+            Statement plain = Mockito.mock(Statement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(plain);
+            Mockito.when(plain.executeQuery(Mockito.anyString()))
+                    .thenThrow(new SQLException("dataset dropped"));
+
+            DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "F"), RecordImageForm.CHARACTER);
+            RejectsFile file = subject.openOutput();
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThatCode(() -> assertThat(file.discardGeneration())
+                    .isEqualTo(FileStatus.Outcome.OTHER)).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a collector sink reports OK without implementing anything, and the method is a "
+                + "default so a lambda still compiles")
+        void aCollectorSinkDefaultsToOk() {
+            RecordSink minimal = recordImage -> FileStatus.Outcome.OK;
+            RejectsFile file = writer().openOutput(minimal);
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
+        }
+
+        @Test
+        @DisplayName("a sink answering null from discard is read as OTHER rather than raising")
+        void aNullDiscardOutcomeIsReported() {
+            RejectsFile file = writer().openOutput(new RecordSink() {
+                @Override
+                public FileStatus.Outcome write(byte[] recordImage) {
+                    return FileStatus.Outcome.OK;
+                }
+
+                @Override
+                public FileStatus.Outcome discard(int recordsWritten) {
+                    return null;
+                }
+            });
+            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+
+            assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
         }
     }
 }

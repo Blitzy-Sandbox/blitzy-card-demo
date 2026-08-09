@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assumptions.assumeThat;
 import static org.junit.jupiter.api.Assumptions.abort;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -30,17 +31,23 @@ import com.vsergeychik.carddemo.util.DateUtilityJob.DateValidationResult;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.NonReadableChannelException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystemException;
 import java.nio.file.FileSystems;
+import java.nio.file.LinkOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.LinkedHashMap;
@@ -50,7 +57,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
@@ -60,6 +70,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
@@ -891,6 +904,218 @@ class ReportRequestControllerTest {
             assertThat(WriteQueueOutcome.notOpen().fileStatus()).isEqualTo(FileStatus.Outcome.OTHER);
         }
 
+        // -----------------------------------------------------------------------------------------
+        // Inter-process record integrity. The instance monitor orders this JVM's threads and nothing
+        // else, and an internal reader is a queue because several writers feed it. A write that landed
+        // in two pieces with another writer's bytes between them is not one damaged record of a
+        // RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) queue - it is two, and every record after them
+        // shifted. So the drain loop is held under an exclusive FileLock over the destination.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("the append takes an exclusive lock on the destination and releases it after")
+        void theAppendIsHeldUnderAnExclusiveFileLock(@TempDir Path root) throws IOException {
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+
+            // Released: a second, independent channel can take the same exclusive lock afterwards. A lock
+            // left held would make the next writer - this application's next request included - block or
+            // fail for ever, so releasing it is as much of the contract as taking it. Within one JVM an
+            // overlapping request raises OverlappingFileLockException rather than blocking, so this
+            // succeeding is precisely the evidence that nothing is still held.
+            try (FileChannel probe = FileChannel.open(destination, StandardOpenOption.WRITE);
+                    FileLock taken = probe.lock()) {
+                assertThat(taken.isValid())
+                        .as("the port released its lock, so an overlapping one can now be taken")
+                        .isTrue();
+            }
+
+            // And exclusive rather than shared - proved structurally rather than by inspecting the port's
+            // own lock, which is not observable from out here. The port opens the destination for WRITE and
+            // APPEND and never for READ, and a shared lock over a channel that cannot be read is refused by
+            // the platform. So the only lock the port is able to take over that channel is an exclusive
+            // one: a downgrade to lock(0, Long.MAX_VALUE, true) would not weaken the guarantee quietly, it
+            // would fail every append outright.
+            try (FileChannel asThePortOpensIt = FileChannel.open(destination,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.APPEND,
+                    LinkOption.NOFOLLOW_LINKS)) {
+                assertThatExceptionOfType(NonReadableChannelException.class)
+                        .as("a shared lock is not available over the channel the port opens")
+                        .isThrownBy(() -> asThePortOpensIt.lock(0L, Long.MAX_VALUE, true));
+                try (FileLock exclusive = asThePortOpensIt.lock()) {
+                    assertThat(exclusive.isShared())
+                            .as("whereas the exclusive lock the port takes is available, and is exclusive")
+                            .isFalse();
+                }
+            }
+
+            assertThat(Files.readAllBytes(destination))
+                    .as("and the record itself is one whole eighty-byte record")
+                    .hasSize(80);
+        }
+
+        @Test
+        @DisplayName("two ports over one destination never tear a record: each write lands whole or is "
+                + "refused whole")
+        void twoPortInstancesContendingNeverTearARecord(@TempDir Path root) throws Exception {
+            // The monitor orders one port's threads. Two ports have two monitors, so the monitor orders
+            // nothing between them - which is the configuration the finding is about, and the one the file
+            // lock is here for. Under it every write must be all-or-nothing: the queue may end up short of
+            // records, and the refusals say so, but it must never contain a fragment of one, because a
+            // RECORDFORMAT(FIXED) reader takes eighty bytes at a time and a fragment shifts every record
+            // after it.
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            JobSubmissionProperties properties = properties(root, destination);
+            InternalReaderJobSubmissionPort first =
+                    new InternalReaderJobSubmissionPort(properties, DATASET_CHARSET);
+            InternalReaderJobSubmissionPort second =
+                    new InternalReaderJobSubmissionPort(properties, DATASET_CHARSET);
+
+            int perPort = 40;
+            AtomicInteger accepted = new AtomicInteger();
+            AtomicInteger refused = new AtomicInteger();
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<?>> submitted = new ArrayList<>();
+            for (InternalReaderJobSubmissionPort port : List.of(first, second)) {
+                String record = pad("//P" + (port == first ? 0 : 1));
+                submitted.add(pool.submit(() -> {
+                    start.await();
+                    for (int written = 0; written < perPort; written++) {
+                        if (port.writeQueueTd(record).normal()) {
+                            accepted.incrementAndGet();
+                        } else {
+                            refused.incrementAndGet();
+                        }
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> future : submitted) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+            pool.shutdown();
+            assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(accepted.get() + refused.get()).isEqualTo(2 * perPort);
+            byte[] queue = Files.readAllBytes(destination);
+            assertThat(queue)
+                    .as("exactly the accepted writes are on the queue - a refusal wrote nothing at all")
+                    .hasSize(accepted.get() * 80);
+            // Decoded in the configured code page, which is the one these ports were given - the records on
+            // the queue are EBCDIC bytes, not ASCII ones.
+            for (int offset = 0; offset < queue.length; offset += 80) {
+                assertThat(new String(queue, offset, 80, DATASET_CHARSET))
+                        .as("every eighty-byte slot is one port's whole record, never a splice of two")
+                        .matches("//P[01] {76}");
+            }
+        }
+
+        @Test
+        @DisplayName("a destination another process holds locked is refused as NOTOPEN, unwritten")
+        void aLockedDestinationIsRefusedRatherThanTorn(@TempDir Path root) throws IOException {
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
+            // Seed one record so the file exists and holds a known, whole record before the contention.
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+
+            // A lock this JVM already holds. FileLock is owned by the JVM rather than by a thread, so an
+            // overlapping request raises OverlappingFileLockException - which stands in here for the
+            // condition a genuinely separate process produces, and is the one the port must not let
+            // escape as an unchecked exception out of a WRITEQ TD.
+            try (FileChannel holder = FileChannel.open(destination, StandardOpenOption.WRITE);
+                    FileLock held = holder.lock()) {
+                assertThat(held.isValid()).isTrue();
+
+                WriteQueueOutcome refused = submitter.writeQueueTd(ReportRequestController.JOB_LINE_17);
+
+                assertThat(refused.normal()).isFalse();
+                assertThat(refused.fileStatus()).isEqualTo(FileStatus.Outcome.OTHER);
+                assertThat(refused).isEqualTo(WriteQueueOutcome.notOpen());
+            }
+
+            assertThat(Files.readAllBytes(destination))
+                    .as("the refused record was NOT written: one whole record, not one and a fragment")
+                    .hasSize(80);
+        }
+
+        @Test
+        @DisplayName("a lock that is no longer held refuses the write rather than running it unprotected")
+        void aReleasedLockRefusesTheWrite(@TempDir Path root) throws Exception {
+            // assertHeld is what makes the lock a named participant in the drain loop rather than an
+            // object created and forgotten. Its failure arm cannot be reached from outside - nothing can
+            // invalidate this JVM's lock mid-loop - so it is reached directly here. An assertion that has
+            // never once executed is indistinguishable from a broken one.
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            Files.createDirectories(destination.getParent());
+            Files.createFile(destination);
+
+            FileLock released;
+            try (FileChannel channel = FileChannel.open(destination, StandardOpenOption.WRITE)) {
+                released = channel.lock();
+                released.release();
+            }
+            assertThat(released.isValid())
+                    .as("a released lock is exactly the state the guard exists to detect")
+                    .isFalse();
+
+            Method assertHeld = InternalReaderJobSubmissionPort.class
+                    .getDeclaredMethod("assertHeld", FileLock.class);
+            assertHeld.setAccessible(true);
+
+            assertThatExceptionOfType(InvocationTargetException.class)
+                    .isThrownBy(() -> assertHeld.invoke(null, released))
+                    .withCauseInstanceOf(IOException.class)
+                    .satisfies(raised -> assertThat(raised.getCause())
+                            .as("and says the record was not written, because an IOException from here "
+                                    + "is reported to the caller as RESP NOTOPEN")
+                            .hasMessageContaining("NOT written"));
+        }
+
+        @Test
+        @DisplayName("a lock that is held lets the write proceed, so the guard is not simply always on")
+        void aHeldLockPermitsTheWrite(@TempDir Path root) throws Exception {
+            // The other arm. A guard that refused everything would pass the test above and break every
+            // append, so the arm the port actually takes is exercised too.
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            Files.createDirectories(destination.getParent());
+            Files.createFile(destination);
+
+            Method assertHeld = InternalReaderJobSubmissionPort.class
+                    .getDeclaredMethod("assertHeld", FileLock.class);
+            assertHeld.setAccessible(true);
+
+            try (FileChannel channel = FileChannel.open(destination, StandardOpenOption.WRITE);
+                    FileLock held = channel.lock()) {
+                assertThatCode(() -> assertHeld.invoke(null, held)).doesNotThrowAnyException();
+            }
+        }
+
+        @Test
+        @DisplayName("many appends in sequence leave whole records only, never a partial one")
+        void everyAppendLeavesAWholeRecord(@TempDir Path root) throws IOException {
+            Path destination = root.resolve("inreader").resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
+
+            for (int written = 0; written < 25; written++) {
+                assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
+            }
+
+            byte[] queue = Files.readAllBytes(destination);
+            assertThat(queue).hasSize(25 * 80);
+            assertThat(queue.length % 80)
+                    .as("a reader takes this destination eighty bytes at a time, so the total must divide")
+                    .isZero();
+        }
+
         @Test
         @DisplayName("a record of the wrong width, or one the code page cannot carry, is refused")
         void theRefusals(@TempDir Path root) throws IOException {
@@ -1265,24 +1490,37 @@ class ReportRequestControllerTest {
         }
 
         @Test
-        @DisplayName("Spring injects the dataset code page, not a hard-wired US-ASCII")
+        @DisplayName("Spring selects the constructor that reads carddemo.job-submission.charset, and no "
+                + "code page arrives on this port by qualifier")
         void theInjectedConstructorIsTheOneSpringSelects() throws Exception {
-            // The defect this closes was a wiring one: @Autowired sat on the constructor that hard-wires
-            // US-ASCII, so a production region configured for IBM037 submitted ASCII bytes and nothing
-            // said so. The annotation belongs on the constructor that takes the code page.
-            Constructor<?> injected = InternalReaderJobSubmissionPort.class.getConstructor(
-                    JobSubmissionProperties.class, Charset.class);
-            Constructor<?> defaulted = InternalReaderJobSubmissionPort.class.getConstructor(
+            // The queue's code page and the datasets' code page are two independent settings, and under
+            // the shipped configuration they disagree: carddemo.job-submission.charset defaults to IBM037
+            // because an internal reader consumes EBCDIC, carddemo.charset.dataset to US-ASCII in the test
+            // profile because the fixtures are ASCII. @Autowired sat on the two-argument constructor with
+            // @Qualifier(DATASET_CHARSET_BEAN_NAME), so Spring built the port with the DATASET code page
+            // and the configured queue code page reached nothing at all. The annotation belongs on the
+            // constructor that reads the property, and the explicit overload must carry no qualifier -
+            // otherwise the same mistake is one annotation away from returning.
+            Constructor<?> fromProperties = InternalReaderJobSubmissionPort.class.getConstructor(
                     JobSubmissionProperties.class);
+            Constructor<?> explicit = InternalReaderJobSubmissionPort.class.getConstructor(
+                    JobSubmissionProperties.class, Charset.class);
 
-            assertThat(injected.isAnnotationPresent(Autowired.class))
-                    .as("the code page must be injected")
+            assertThat(fromProperties.isAnnotationPresent(Autowired.class))
+                    .as("the configured queue code page must be the injection point")
                     .isTrue();
-            assertThat(defaulted.isAnnotationPresent(Autowired.class))
-                    .as("the US-ASCII default must not be the injection point")
+            assertThat(explicit.isAnnotationPresent(Autowired.class))
+                    .as("the caller-supplied code page must not be")
                     .isFalse();
-            assertThat(injected.getParameters()[1].getAnnotation(Qualifier.class).value())
-                    .isEqualTo(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME);
+            assertThat(explicit.getParameters()[1].getAnnotation(Qualifier.class))
+                    .as("no code page reaches this port by qualifier - that is what sent the dataset's "
+                            + "page to the queue")
+                    .isNull();
+            assertThat(Arrays.stream(InternalReaderJobSubmissionPort.class.getConstructors())
+                    .filter(constructor -> constructor.isAnnotationPresent(Autowired.class))
+                    .count())
+                    .as("exactly one injection point, so which constructor Spring picks is not a guess")
+                    .isEqualTo(1);
 
             // Same wiring on the controller, whose working-storage images are rendered the same way.
             Constructor<?> controller = ReportRequestController.class.getConstructor(
@@ -1300,6 +1538,65 @@ class ReportRequestControllerTest {
             assertThat(ReportRequestController.class.getConstructors()[0].getParameterTypes())
                     .containsExactly(DateUtilityJob.class, JobSubmissionPort.class, Clock.class,
                             Charset.class);
+        }
+
+        @Test
+        @DisplayName("in a context where the two code pages differ, the queue's records are written in "
+                + "the QUEUE's code page")
+        void theQueueCodePageWinsOverTheDatasetCodePage(@TempDir Path root) throws IOException {
+            // The wiring assertion above says which constructor Spring picks. This says what that means
+            // in bytes, in a real context, with the two settings deliberately set to different values -
+            // which is the only arrangement in which the defect was visible at all. The dataset page is
+            // US-ASCII and the queue page is IBM037, so a '/' is 0x2F if the port took the dataset bean
+            // and 0x61 if it took the configured queue page.
+            Path destination = root.resolve("inreader").resolve("JOBS");
+
+            new ApplicationContextRunner()
+                    .withUserConfiguration(CobolCharsetConfig.class, BoundJobSubmission.class)
+                    .withBean(InternalReaderJobSubmissionPort.class)
+                    .withPropertyValues(
+                            CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=IBM037",
+                            CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=US-ASCII",
+                            CobolCharsetConfig.DATASET_CHARSET_PROPERTY + "=US-ASCII",
+                            "carddemo.job-submission.queue-name=JOBS",
+                            "carddemo.job-submission.dd-name=INREADER",
+                            "carddemo.job-submission.charset=IBM037",
+                            "carddemo.job-submission.record-length=80",
+                            "carddemo.job-submission.record-format=FIXED",
+                            "carddemo.job-submission.block-format=UNBLOCKED",
+                            "carddemo.job-submission.disposition=MOD",
+                            "carddemo.job-submission.approved-root=" + root,
+                            "carddemo.job-submission.destination=" + destination)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        InternalReaderJobSubmissionPort submitter =
+                                context.getBean(InternalReaderJobSubmissionPort.class);
+                        Charset queue = Charset.forName("IBM037");
+
+                        assertThat(submitter.queueCharset())
+                                .as("the configured queue page, not the dataset bean")
+                                .isEqualTo(queue)
+                                .isNotEqualTo(context.getBean(
+                                        CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class));
+                        assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal())
+                                .isTrue();
+
+                        byte[] written = Files.readAllBytes(destination);
+                        assertThat(written).hasSize(80)
+                                .isEqualTo(ReportRequestController.JOB_LINE_01.getBytes(queue));
+                        assertThat(written[0])
+                                .as("EBCDIC '/' is 0x61; US-ASCII would have written 0x2F")
+                                .isEqualTo((byte) 0x61);
+                    });
+        }
+
+        /**
+         * Binds {@code carddemo.job-submission} so the port can be constructed the way Spring constructs
+         * it - from the property record rather than from a hand-built instance.
+         */
+        @Configuration
+        @EnableConfigurationProperties(JobSubmissionProperties.class)
+        static class BoundJobSubmission {
         }
 
         // --------------------------------------------------- one complete record per write, in order

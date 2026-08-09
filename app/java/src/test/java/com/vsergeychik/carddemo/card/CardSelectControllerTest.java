@@ -754,7 +754,7 @@ class CardSelectControllerTest {
         @DisplayName("ENTER from the CARD LIST reads the record straight away - the qualified arm")
         void enterFromCardListReadsTheRecord() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
             CardSelectResponse response = new CardSelectResponse();
 
             Conversation task = runMain(request("", "", fromCardList()),
@@ -777,7 +777,7 @@ class CardSelectControllerTest {
         @DisplayName("the numeric REDEFINES zero-fills on the LEFT, so a short account id still keys")
         void theNumericRedefinesZeroFillsOnTheLeft() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
             NavigationContext commarea = NavigationContext.empty()
                     .withFromProgram(CardSelectControllerAccess.CCLIST_PGM)
                     .withPgmEnter()
@@ -819,7 +819,7 @@ class CardSelectControllerTest {
         @DisplayName("the ordering proof: the SAME state differs only by FROM-PROGRAM = COCRDLIC")
         void branchOrderingIsWhatDistinguishesTheTwoEnterArms() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             NavigationContext withList = NavigationContext.empty()
                     .withFromProgram(CardSelectControllerAccess.CCLIST_PGM)
@@ -842,7 +842,7 @@ class CardSelectControllerTest {
         @DisplayName("REENTER with valid input edits, then reads")
         void reenterWithValidInputReads() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
             CardSelectResponse response = new CardSelectResponse();
             NavigationContext commarea = NavigationContext.empty()
                     .withFromProgram("COBIL00C").withPgmReenter();
@@ -1126,7 +1126,7 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("the key is the CARD NUMBER alone - the account MOVE is commented out at :739")
         void theKeyIsTheCardNumberOnly() {
-            Conversation task = readWith(CardReadResult.normal(card()),
+            Conversation task = readWith(cardRead(card()),
                     CardSelectController.WS_RETURN_MSG_OFF);
 
             assertThat(task.wsCardRidCardnum).isEqualTo(CARD_NUMBER);
@@ -1138,7 +1138,7 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("NORMAL sets FOUND-CARDS-FOR-ACCOUNT, which is a message doubling as a flag")
         void normal() {
-            Conversation task = readWith(CardReadResult.normal(card()),
+            Conversation task = readWith(cardRead(card()),
                     CardSelectController.WS_RETURN_MSG_OFF);
 
             assertThat(task.foundCardsForAccount()).isTrue();
@@ -1207,7 +1207,7 @@ class CardSelectControllerTest {
                     .isEqualTo(FileStatus.Outcome.END_OF_FILE);
 
             setUp();
-            Conversation duplicate = readWith(CardReadResult.duplicateKey(card()),
+            Conversation duplicate = readWith(cardReadDuplicate(card()),
                     CardSelectController.WS_RETURN_MSG_OFF);
             assertThat(duplicate.wsReturnMsg).startsWith("File Error: READ");
             assertThat(FileStatus.outcomeOfCicsResp(duplicate.wsRespCd))
@@ -1258,7 +1258,7 @@ class CardSelectControllerTest {
         @DisplayName("9000-READ-DATA does NOT call it: the source performs 9100 only")
         void readDataDoesNotReachIt() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
             Conversation task = initialisedTask(NavigationContext.empty());
             task.ccWorkArea.setCcCardNum(CARD_NUMBER);
 
@@ -1272,7 +1272,7 @@ class CardSelectControllerTest {
         @DisplayName("NORMAL sets FOUND-CARDS-FOR-ACCOUNT, as in 9100")
         void normal() {
             when(repository.readByAccountIdViaAltIndex(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
             Conversation task = initialisedTask(NavigationContext.empty());
 
             controller.getCardByAcct9150(task);
@@ -1777,6 +1777,60 @@ class CardSelectControllerTest {
         }
 
         @Test
+        @DisplayName("the abend carries the 134 bytes :865-869 transmits, so the SEND is not lost")
+        void theAbendCarriesTheTransmittedArea() {
+            // EXEC CICS SEND FROM(ABEND-DATA) LENGTH(LENGTH OF ABEND-DATA) runs before the ABEND, so on
+            // a terminal the operator reads those bytes. They travel with the exception and the error
+            // handler publishes them; discarding them changed observable behaviour.
+            Conversation task = initialisedTask(NavigationContext.empty());
+            task.abendData = SystemMessages.AbendData.spaces().withAbendMsg("SPECIFIC DIAGNOSIS");
+
+            AbendException abend =
+                    controller.abendRoutine(task, new CardSelectResponse(), new IllegalStateException());
+
+            assertThat(abend.hasSourceDiagnostic()).isTrue();
+            assertThat(abend.getSourceDiagnostic().orElseThrow())
+                    .hasSize(SystemMessages.ABEND_DATA_LENGTH)
+                    .contains("SPECIFIC DIAGNOSIS")
+                    .contains("COCRDSLC");
+        }
+
+        @Test
+        @DisplayName("the transmitted area is the four fields at their declared widths, unseparated")
+        void theTransmittedAreaIsTheGroupAtItsDeclaredWidths() {
+            String image = CardSelectController.abendDataImage(SystemMessages.AbendData.spaces()
+                    .withAbendCode("0001")
+                    .withAbendCulprit("COCRDSLC")
+                    .withAbendReason("R")
+                    .withAbendMsg("M"));
+
+            assertThat(image).hasSize(SystemMessages.ABEND_DATA_LENGTH);
+            assertThat(image.substring(0, SystemMessages.ABEND_CODE_LENGTH)).isEqualTo("0001");
+            assertThat(image.substring(SystemMessages.ABEND_CODE_LENGTH,
+                    SystemMessages.ABEND_CODE_LENGTH + SystemMessages.ABEND_CULPRIT_LENGTH))
+                    .isEqualTo("COCRDSLC");
+            // Short values are padded on the right by the PIC X move, not trimmed away, so the group is
+            // the same number of bytes the terminal received however little was written into it.
+            assertThat(image.charAt(SystemMessages.ABEND_CODE_LENGTH
+                    + SystemMessages.ABEND_CULPRIT_LENGTH)).isEqualTo('R');
+            assertThat(image).endsWith(" ".repeat(SystemMessages.ABEND_MSG_LENGTH - 1));
+        }
+
+        @Test
+        @DisplayName("the transmitted area names no Java, driver or dataset text - only source literals")
+        void theTransmittedAreaCarriesOnlySourceText() {
+            Conversation task = initialisedTask(NavigationContext.empty());
+
+            AbendException abend = controller.abendRoutine(task, new CardSelectResponse(),
+                    new IllegalStateException("ORA-00942: table or view does not exist"));
+
+            assertThat(abend.getSourceDiagnostic().orElseThrow())
+                    .doesNotContain("ORA-00942")
+                    .doesNotContain("IllegalStateException")
+                    .doesNotContain("AWS.M2");
+        }
+
+        @Test
         @DisplayName("an existing ABEND-MSG survives, so a caller's diagnosis is not overwritten")
         void anExistingMessageSurvives() {
             Conversation task = initialisedTask(NavigationContext.empty());
@@ -1822,7 +1876,7 @@ class CardSelectControllerTest {
         @DisplayName("a body carrying the commarea is a continuing conversation, so the criteria are shown")
         void aBodyCarryingTheCommareaContinuesTheConversation() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             CardSelectRequest sent = request(CARD_NUMBER, ACCOUNT_ID, fromCardList()
                     .withUserId("USER0001")
@@ -1898,14 +1952,57 @@ class CardSelectControllerTest {
         }
 
         @Test
-        @DisplayName("a body naming a DIFFERENT card contradicts the URI and is refused")
-        void aContradictingCardNumberIsRefused() {
-            CardSelectRequest sent = request("4000000000000002", ACCOUNT_ID, null);
+        @DisplayName("a body naming a DIFFERENT card has that value replaced by the URI's")
+        void aContradictingCardNumberIsProjectedOver() {
+            // CARDSID is the typed criterion the re-entry arm edits. The URI is the resource identity, so
+            // the body's second statement of it is replaced rather than acted on.
+            CardSelectRequest bound =
+                    controller.bind(CARD_NUMBER, request("4000000000000002", ACCOUNT_ID, null));
 
-            assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, sent, null, null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("path");
+            assertThat(bound.getCardsid()).isEqualTo(CARD_NUMBER);
             verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("a commarea naming a DIFFERENT card cannot make the first-entry arm read it")
+        void aContradictingCarriedCardNumberCannotBeRead() {
+            // app/cbl/COCRDSLC.cbl:339-348 - the arrival-from-the-card-list arm reads CDEMO-CARD-NUM and
+            // never the typed field, so an unprojected commarea would be the identity that wins here.
+            // 9100-GETCARD-BYACCTCARD keys the read on the card number alone.
+            when(repository.readByCardNumber(anyString())).thenReturn(cardRead(card()));
+            NavigationContext otherCard = fromCardList().withCardNum(4_000_000_000_000_002L);
+
+            ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
+                    CARD_NUMBER, request("  ", ACCOUNT_ID, otherCard), null, null);
+
+            verify(repository).readByCardNumber(CARD_NUMBER);
+            verify(repository, never()).readByCardNumber("4000000000000002");
+            assertThat(screenOf(answer).getNavigationContext().cardNum())
+                    .isEqualTo(Long.parseLong(CARD_NUMBER));
+        }
+
+        @Test
+        @DisplayName("an absent commarea stays absent: fabricating one would change the EIBCALEN=0 arm")
+        void anAbsentCommareaIsNotFabricated() {
+            assertThat(controller.bind(CARD_NUMBER, request("  ", ACCOUNT_ID, null))
+                    .hasNavigationContext()).isFalse();
+        }
+
+        @ParameterizedTest(name = "a path of \"{0}\" carries {1} in CDEMO-CARD-NUM")
+        @CsvSource({
+            "4111111111111111, 4111111111111111",
+            "0000000000000001, 1",
+            "  4111111111111111  , 4111111111111111",
+            "'', 0",
+            "'   ', 0",
+            "*, 0",
+            "41111111111111X1, 0"
+        })
+        @DisplayName("the PIC X(16) path crosses into PIC 9(16) as the number it spells, or zero")
+        void thePathCrossesIntoTheNumericCarrier(String path, long expected) {
+            // CARDSID is PIC X(16) and CDEMO-CARD-NUM is PIC 9(16). Anything the numeric item cannot hold
+            // becomes its unset value, which cannot name a card the URI does not.
+            assertThat(CardSelectController.carriedCardNumber(path)).isEqualTo(expected);
         }
 
         @ParameterizedTest(name = "a body stating CARDSID as \"{0}\" lets the path supply it")
@@ -1913,7 +2010,7 @@ class CardSelectControllerTest {
         @DisplayName("the no-criterion states and the path value itself all agree with the URI")
         void aNonContradictingCardsidIsAccepted(String stated) {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             // A continuing conversation, because a cold start paints an initialised map and echoes no
             // filter at all - :268's EIBCALEN = 0 arm discards what was typed.
@@ -1927,7 +2024,7 @@ class CardSelectControllerTest {
         @DisplayName("a body that names no field at all binds: an absent PIC X field is spaces, not null")
         void aBodyWithNoFieldsNamedStillBinds() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             // A client that sends {} leaves every member null, because Jackson sets only what the JSON
             // names. A COBOL alphanumeric field has no null state, so binding fills them at their
@@ -1941,9 +2038,13 @@ class CardSelectControllerTest {
         }
 
         @Test
-        @DisplayName("a null CARDSID does not contradict the URI - there is nothing to contradict with")
-        void anAbsentCardsidNamesNoOtherCard() {
-            assertThat(CardSelectController.statesADifferentCard(CARD_NUMBER, null)).isFalse();
+        @DisplayName("a null CARDSID is filled from the URI rather than left absent")
+        void anAbsentCardsidIsFilledFromTheUri() {
+            CardSelectRequest sent = new CardSelectRequest();
+            sent.initializeMapArea();
+            sent.setCardsid(null);
+
+            assertThat(controller.bind(CARD_NUMBER, sent).getCardsid()).isEqualTo(CARD_NUMBER);
         }
 
         @Test
@@ -2038,7 +2139,7 @@ class CardSelectControllerTest {
         @DisplayName("two calls on one instance cannot see each other's state (gate G37)")
         void thereIsNoServerSideState() {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             CardSelectResponse first = controller.handle(request("", "", fromCardList()),
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER);
@@ -2111,7 +2212,7 @@ class CardSelectControllerTest {
         @DisplayName("GET /api/cards/{cardNum} routes, binds the path variable and the body, and answers 200 JSON")
         void theMappingRoutesAndBindsTheWholeRequest() throws Exception {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             CardSelectRequest sent = request("", ACCOUNT_ID, fromCardList());
 
@@ -2136,10 +2237,34 @@ class CardSelectControllerTest {
         }
 
         @Test
+        @DisplayName("over HTTP, a commarea naming another card cannot make the URI answer with it")
+        void theUriIsTheOnlyIdentityOverHttp() throws Exception {
+            // The defect this pins is only reachable through the HTTP binder, because the source-level
+            // seam is driven with an already-bound request: /api/cards/A with a context naming card B
+            // used to read and paint B.
+            when(repository.readByCardNumber(anyString()))
+                    .thenReturn(cardRead(card()));
+            CardSelectRequest sent =
+                    request("  ", ACCOUNT_ID, fromCardList().withCardNum(4_000_000_000_000_002L));
+
+            mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param("eibAid", String.valueOf((int) CicsAid.DFHENTER))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(sent)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cardsido").value(CARD_NUMBER))
+                    .andExpect(jsonPath("$.navigationContext.cardNum")
+                            .value(Long.parseLong(CARD_NUMBER)));
+
+            verify(repository).readByCardNumber(CARD_NUMBER);
+            verify(repository, never()).readByCardNumber("4000000000000002");
+        }
+
+        @Test
         @DisplayName("the presentation metadata travels under screenMetadata, beside the unwrapped screen")
         void theMetadataIsPublishedBesideTheScreen() throws Exception {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -2168,7 +2293,7 @@ class CardSelectControllerTest {
         @DisplayName("the body carries all fifteen symbolic-map fields and no metadata item")
         void theJsonShapeIsTheSymbolicMap() throws Exception {
             when(repository.readByCardNumber(anyString()))
-                    .thenReturn(CardReadResult.normal(card()));
+                    .thenReturn(cardRead(card()));
 
             // The fifteen named DFHMDF fields of app/bms/COCRDSL.bms, each at the width its xxxO item
             // declares in app/cpy-bms/COCRDSL.CPY (gate G9).
@@ -2240,5 +2365,60 @@ class CardSelectControllerTest {
                     .andExpect(status().isBadRequest());
             verifyNoInteractions(repository);
         }
+
+        @Test
+        @DisplayName("an abend answers 500 carrying the area :865-869 sent, and no backend text with it")
+        void anAbendPublishesTheTransmittedAreaAndNothingElse() throws Exception {
+            // The whole chain: the repository fails, ABEND-ROUTINE composes ABEND-DATA and sends it,
+            // AbendException carries those bytes, and CobolErrorHandler publishes them beside the 500.
+            // Before this, the area was composed and then thrown away and replaced by a constant.
+            when(repository.readByCardNumber(anyString()))
+                    .thenThrow(new IllegalStateException("ORA-00942: table or view does not exist"));
+
+            String body = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param("eibAid", String.valueOf((int) CicsAid.DFHENTER))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("", "", fromCardList()))))
+                    .andExpect(status().isInternalServerError())
+                    .andExpect(jsonPath("$.code").value("ABEND"))
+                    .andExpect(jsonPath("$.abendData").exists())
+                    .andReturn().getResponse().getContentAsString();
+
+            assertThat(body)
+                    .contains(CardSelectControllerAccess.THIS_PGM)
+                    .doesNotContain("ORA-00942")
+                    .doesNotContain("IllegalStateException")
+                    .doesNotContain("RETURN-CODE")
+                    .doesNotContain("ABENDING PROGRAM")
+                    .doesNotContain("java.");
+        }
+    }
+
+    // =================================================================================================
+    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
+    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
+    // image it supplies is the one a row of exactly this record would carry - which is what these two
+    // helpers state, once, rather than at every call site.
+    // =================================================================================================
+
+    /**
+     * The normal arm over a synthesised row of this record.
+     *
+     * @param record the record the row would carry
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardRead(CardRecord record) {
+        return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * The duplicate-key arm over a synthesised row of this record.
+     *
+     * @param record the first record sharing the alternate key
+     * @return the outcome, carrying the record and the image a row of it would hold
+     */
+    private static CardReadResult cardReadDuplicate(CardRecord record) {
+        return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 }

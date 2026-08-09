@@ -23,6 +23,7 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import javax.sql.DataSource;
@@ -40,7 +41,10 @@ import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParametersIncrementer;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
@@ -61,7 +65,9 @@ import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.batch.support.transaction.ResourcelessTransactionManager;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.boot.ApplicationRunner;
@@ -580,6 +586,137 @@ class BatchConfigTest {
 
             assertThat(decider.decide(clean, null)).isEqualTo(BatchConfig.PROCEED);
             assertThat(decider.decide(dirty, null)).isEqualTo(BatchConfig.SKIP);
+        }
+
+        @Test
+        @DisplayName("the bypass exit code is not zero and not numeric, so an unmapped bypass can never "
+                + "read as success")
+        void theBypassExitCodeIsNeverASuccess() {
+            // The failure mode of the mapping matters as much as the mapping. If the listener below ever
+            // failed to run, the code left on the job would be this literal - which returnCodeOf reads as
+            // the non-numeric sentinel, not as zero. A bare end() would have left COMPLETED there
+            // instead, and COMPLETED IS zero: that is exactly the defect this pair of parts removes.
+            assertThat(BatchConfig.COND_BYPASSED_EXIT_CODE).isEqualTo("COND BYPASSED");
+            assertThat(BatchConfig.COND_BYPASSED_EXIT_CODE)
+                    .isNotEqualTo(ExitStatus.COMPLETED.getExitCode())
+                    .isNotEqualTo(ExitStatus.NOOP.getExitCode());
+            assertThat(BatchConfig.returnCodeOf(new ExitStatus(BatchConfig.COND_BYPASSED_EXIT_CODE)))
+                    .isEqualTo(BatchConfig.NO_JCL_RETURN_CODE)
+                    .isNotEqualTo(BatchConfig.JCL_RETURN_CODE_ZERO);
+        }
+
+        @Test
+        @DisplayName("the highest executed step's return code is what a bypassed job reports, because "
+                + "that is what z/OS reports")
+        void theHighestStepReturnCodeIsReported() {
+            assertThat(BatchConfig.highestStepReturnCode(
+                    jobExecutionWithStepExitCodes("COMPLETED", "4")))
+                    .isEqualTo(4);
+            assertThat(BatchConfig.highestStepReturnCode(
+                    jobExecutionWithStepExitCodes("4", "8", "COMPLETED")))
+                    .as("highest, not last")
+                    .isEqualTo(8);
+            assertThat(BatchConfig.highestStepReturnCode(
+                    jobExecutionWithStepExitCodes("8", "4", "COMPLETED")))
+                    .as("and highest, not first - the order the steps ran in does not matter")
+                    .isEqualTo(8);
+            assertThat(BatchConfig.highestStepReturnCode(
+                    jobExecutionWithStepExitCodes("COMPLETED", "12", "4", "8")))
+                    .isEqualTo(12);
+        }
+
+        @Test
+        @DisplayName("a history with no positive code reports the sentinel, never zero")
+        void anIndeterminateHistoryIsNotZero() {
+            // Two states, and both are ones the gate's own decision contradicts - it only returns SKIP
+            // when some step did not return zero. Reporting zero for either would put the defect straight
+            // back: a job that bypassed its remaining steps would tell its caller everything was fine.
+            for (JobExecution indeterminate : List.of(
+                    jobExecutionWithStepExitCodes(),
+                    jobExecutionWithStepExitCodes("COMPLETED", "NOOP"),
+                    jobExecutionWithStepExitCodes("FAILED", "STOPPED"))) {
+                assertThat(BatchConfig.highestStepReturnCode(indeterminate))
+                        .isEqualTo(BatchConfig.NO_JCL_RETURN_CODE);
+            }
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> BatchConfig.highestStepReturnCode(null))
+                    .withMessageContaining("highest return code");
+        }
+
+        @Test
+        @DisplayName("the listener rewrites the bypass code and leaves every other exit code alone")
+        void theListenerRewritesOnlyTheBypassCode() {
+            JobExecutionListener listener = resourcelessConfig().condBypassExitStatusJobListener();
+
+            JobExecution bypassed = jobExecutionWithStepExitCodes("COMPLETED", "4");
+            bypassed.setExitStatus(new ExitStatus(BatchConfig.COND_BYPASSED_EXIT_CODE,
+                    "STEP010 returned 4"));
+            listener.afterJob(bypassed);
+            assertThat(bypassed.getExitStatus().getExitCode()).isEqualTo("4");
+            assertThat(bypassed.getExitStatus().getExitDescription())
+                    .as("the description says which step caused it; the rewrite must not discard it")
+                    .isEqualTo("STEP010 returned 4");
+            assertThat(bypassed.getStatus())
+                    .as("bypassing is not failing - only the code changes")
+                    .isNotEqualTo(BatchStatus.FAILED);
+
+            // Everything else is left exactly as it arrived: a clean completion stays COMPLETED rather
+            // than becoming the literal "0", a failure stays FAILED, and a code the abend listener
+            // already wrote is not overwritten.
+            for (ExitStatus untouched : List.of(ExitStatus.COMPLETED, ExitStatus.FAILED,
+                    ExitStatus.NOOP, new ExitStatus("8"), ExitStatus.UNKNOWN)) {
+                JobExecution execution = jobExecutionWithStepExitCodes("COMPLETED", "4");
+                execution.setExitStatus(untouched);
+                listener.afterJob(execution);
+                assertThat(execution.getExitStatus()).isEqualTo(untouched);
+            }
+        }
+
+        @Test
+        @DisplayName("a null exit status is read as UNKNOWN rather than dereferenced, and is left as it "
+                + "was found")
+        void aNullExitStatusIsTolerated() {
+            // A job's exit status is framework-owned and a listener has no business inventing one. Reading
+            // null as UNKNOWN keeps the comparison from throwing; not writing it back keeps this listener
+            // to the one thing it is for. The assertion is therefore that nothing happened - no exception,
+            // and no status manufactured on the way past.
+            JobExecutionListener listener = resourcelessConfig().condBypassExitStatusJobListener();
+            JobExecution execution = jobExecutionWithStepExitCodes("4");
+            execution.setExitStatus(null);
+
+            assertThatNoException().isThrownBy(() -> listener.afterJob(execution));
+
+            assertThat(execution.getExitStatus()).isNull();
+        }
+
+        @Test
+        @DisplayName("the bypass listener and the abend listener compose in either order")
+        void theTwoListenersCompose() {
+            // They are mutually exclusive by construction, not by sequencing: an abend fails its step, a
+            // failed step never satisfies the flow's COMPLETED transition into a gate, so a job that
+            // abended cannot have reached a bypass terminal. Driving both orders over both cases is what
+            // proves neither listener depends on running first.
+            BatchConfig config = resourcelessConfig();
+            List<List<JobExecutionListener>> orders = List.of(
+                    List.of(config.abendExitStatusJobListener(),
+                            config.condBypassExitStatusJobListener()),
+                    List.of(config.condBypassExitStatusJobListener(),
+                            config.abendExitStatusJobListener()));
+
+            for (List<JobExecutionListener> order : orders) {
+                JobExecution bypassed = jobExecutionWithStepExitCodes("COMPLETED", "4");
+                bypassed.setExitStatus(new ExitStatus(BatchConfig.COND_BYPASSED_EXIT_CODE));
+                order.forEach(listener -> listener.afterJob(bypassed));
+                assertThat(bypassed.getExitStatus().getExitCode()).isEqualTo("4");
+
+                JobExecution abended = jobExecutionWithStepExitCodes("COMPLETED", "FAILED");
+                abended.setExitStatus(ExitStatus.FAILED);
+                abended.addFailureException(AbendException.withoutAbendParameters("CBSTM03A",
+                        AbendException.RETURN_CODE_ASSUMED_FAILURE, "ERROR READING TRNXFILE"));
+                order.forEach(listener -> listener.afterJob(abended));
+                assertThat(abended.getExitStatus().getExitCode())
+                        .isEqualTo(Integer.toString(AbendException.RETURN_CODE_ASSUMED_FAILURE));
+            }
         }
 
         @Test
@@ -1473,24 +1610,29 @@ class BatchConfigTest {
     class TheContractItRefusesToDeclare {
 
         @Test
-        @DisplayName("eight bean methods, and these exactly - so nothing else can have crept in")
-        void exactlyEightBeansAndTheseExactly() {
+        @DisplayName("nine bean methods, and these exactly - so nothing else can have crept in")
+        void exactlyNineBeansAndTheseExactly() {
             // Read from the class rather than from a list kept by hand, so a bean added later shows
             // up here whether or not anyone remembered to record it. Stating the whole set is what
             // makes this a total assertion: no initialisation script, no script populator, no
             // database initializer, no table-prefix arrangement, no task executor and no job or step
             // bean can be present without failing this.
             //
-            // Two of the eight carry the lifecycle contract that a JCL submission implies. The
+            // Two of the nine carry the lifecycle contract that a JCL submission implies. The
             // incrementer supplies a per-launch run identity, without which the eight parameterless
             // jobs would each have exactly one instance for all time; and the launcher is the only
             // thing that submits a job at all, which is why it is conditional on being asked for.
+            // Two more are JobExecutionListener, which is why that type appears twice: one carries an
+            // abend's RETURN-CODE onto a FAILED job, the other carries the highest executed step's
+            // return code onto a job that COMPLETED having flushed the rest under COND=(0,NE). Neither
+            // can see the other's path, so neither subsumes it.
             // parmDateValidator() is deliberately NOT a bean - a validator is attached to one job
             // builder, and a shared instance would invite a second job to pick up INTCALC's contract.
             assertThat(declaredBeanTypes()).containsExactlyInAnyOrder(
                     PlatformTransactionManager.class,
                     JobExecutionDecider.class,
                     StepExecutionListener.class,
+                    JobExecutionListener.class,
                     JobExecutionListener.class,
                     JobParametersIncrementer.class,
                     ExitCodeExceptionMapper.class,
@@ -1691,11 +1833,14 @@ class BatchConfigTest {
      * The launcher that turns one process invocation into one JCL submission, and its
      * {@code RETURN-CODE} into the process exit code.
      *
-     * <p>Driven by direct call against a stub launcher, with no application context and no database:
-     * what has to be proved is the mapping from a job's exit status to the process exit code, and that
-     * is a pure function of the execution the launcher was handed. Spring Boot's own batch runner
-     * reports {@code BatchStatus.ordinal()} - {@code 5} for a failure - and the whole point of this
-     * launcher is that {@code 0}, {@code 4}, {@code 8} and {@code 12} survive instead (gate G35).
+     * <p>Two kinds of assertion, because the launcher has two kinds of obligation. The return-code
+     * mapping is a pure function of the execution it was handed, so it is driven by direct call against
+     * a stub launcher with no context and no database - Spring Boot's own batch runner reports
+     * {@code BatchStatus.ordinal()}, {@code 5} for a failure, and the whole point of this launcher is
+     * that {@code 0}, {@code 4}, {@code 8} and {@code 12} survive instead (gate G35). Resolution and
+     * resubmission are <em>not</em> pure functions: they depend on how many jobs the context publishes
+     * and on what the job repository already holds, so those are driven through a real context over a
+     * real H2-backed repository, which is the only place they can be wrong.
      */
     @Nested
     @DisplayName("The JCL job launcher - a submission in, a RETURN-CODE out")
@@ -1703,6 +1848,15 @@ class BatchConfigTest {
 
         /** The bean name of a job whose contract exists, and the key that contract is declared under. */
         private static final String JOB_BEAN_NAME = "accountBalanceJob";
+
+        /** A second job's bean name, so "resolve by name" has something to be wrong about. */
+        private static final String SECOND_JOB_BEAN_NAME = "customerFileReaderJob";
+
+        /** Every return code the terminator was asked to end the process with, in order. */
+        private final List<Integer> terminatedWith = new ArrayList<>();
+
+        /** The terminator the tests inject in place of the one that would end the build's JVM. */
+        private final BatchConfig.ProcessTerminator recordingTerminator = terminatedWith::add;
 
         /**
          * A launcher over a job whose run reports the given exit status.
@@ -1722,19 +1876,66 @@ class BatchConfigTest {
          * @return the launcher, ready to run
          */
         private BatchConfig.JclJobLauncher launcherReporting(ExitStatus exitStatus, String jobName) {
-            BatchConfig config = configWithContracts();
-            Job job = mock(Job.class);
-            when(job.getName()).thenReturn(jobName);
             JobLauncher launcher = (submitted, parameters) -> {
                 JobExecution execution = new JobExecution(1L, parameters);
                 execution.setExitStatus(exitStatus);
                 return execution;
             };
-            return new BatchConfig.JclJobLauncher(providerOf(Job.class, job),
-                    providerOf(JobLauncher.class, launcher), config, jobName);
+            return launcherOver(configWithContracts(), factoryPublishing(jobName), launcher,
+                    noHistory(), jobName);
         }
 
-        /** A {@link BatchConfig} whose contract catalogue is the shipped one. */
+        /**
+         * A launcher over the supplied collaborators, with the recording terminator in place of the one
+         * that ends the JVM.
+         *
+         * @param config      the configuration supplying the contracts
+         * @param beanFactory the factory the job name is resolved in
+         * @param launcher    the launcher the submission is handed to
+         * @param history     the persisted history the execution identity is derived from
+         * @param jobName     the requested job's bean name
+         * @return the launcher
+         */
+        private BatchConfig.JclJobLauncher launcherOver(BatchConfig config,
+                ListableBeanFactory beanFactory, JobLauncher launcher, JobExplorer history,
+                String jobName) {
+            return new BatchConfig.JclJobLauncher(beanFactory,
+                    providerOf(JobLauncher.class, launcher), providerOf(JobExplorer.class, history),
+                    config, jobName, recordingTerminator);
+        }
+
+        /**
+         * A bean factory publishing one {@link Job} under each supplied name.
+         *
+         * <p>Real singletons in a real factory rather than a stubbed lookup, because what has to be
+         * proved is that a name selects one of several beans of the same type - which is precisely what
+         * a stub would paper over.
+         *
+         * @param jobNames the bean names to publish a job under
+         * @return the factory
+         */
+        private ListableBeanFactory factoryPublishing(String... jobNames) {
+            DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
+            for (String jobName : jobNames) {
+                Job job = mock(Job.class);
+                when(job.getName()).thenReturn(jobName);
+                factory.registerSingleton(jobName, job);
+            }
+            return factory;
+        }
+
+        /**
+         * A {@link JobExplorer} over a job that has never been submitted.
+         *
+         * @return the explorer
+         */
+        private JobExplorer noHistory() {
+            JobExplorer explorer = mock(JobExplorer.class);
+            when(explorer.getLastJobInstance(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
+            return explorer;
+        }
+
+        /** A {@link BatchConfig} whose contract catalogue holds the two jobs these tests submit. */
         private BatchConfig configWithContracts() {
             DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
             factory.registerSingleton("jobRepository", new ResourcelessJobRepository());
@@ -1742,6 +1943,8 @@ class BatchConfigTest {
             JobContracts contracts = new JobContracts();
             contracts.put("account-balance-job", new JobContract("CBACT01C", List.of(),
                     List.of(new StepContract("STEP05", "CBACT01C", false)), null, Map.of()));
+            contracts.put("customer-file-reader-job", new JobContract("CBCUS01C", List.of(),
+                    List.of(new StepContract("STEP05", "CBCUS01C", false)), null, Map.of()));
             return new BatchConfig(factory.getBeanProvider(JobRepository.class),
                     factory.getBeanProvider(PlatformTransactionManager.class), contracts,
                     new DatasetBindings());
@@ -1764,8 +1967,8 @@ class BatchConfigTest {
 
         @ParameterizedTest(name = "an exit status of {0} leaves the process exit code 0")
         @ValueSource(strings = { "COMPLETED", "NOOP", "0" })
-        @DisplayName("a job that returned zero completes quietly - nothing is thrown and the exit code "
-                + "stays zero")
+        @DisplayName("a job that returned zero completes quietly - nothing is thrown, the exit code "
+                + "stays zero, and the process is ended with it")
         void aZeroReturnCodeThrowsNothing(final String exitCode) throws Exception {
             BatchConfig.JclJobLauncher launcher = launcherReporting(new ExitStatus(exitCode));
 
@@ -1773,6 +1976,10 @@ class BatchConfigTest {
 
             assertThat(launcher.getExitCode()).isZero();
             assertThat(launcher.jobName()).isEqualTo(JOB_BEAN_NAME);
+            // A zero return code is not thrown, so nothing else would end the process: returning from
+            // the runner would leave the servlet container's non-daemon threads holding a finished batch
+            // process open with its return code undelivered.
+            assertThat(terminatedWith).containsExactly(0);
         }
 
         @ParameterizedTest(name = "RETURN-CODE {0} reaches the process as {0}")
@@ -1792,6 +1999,9 @@ class BatchConfigTest {
                     .satisfies(raised -> assertThat(raised.getExitCode())
                             .isEqualTo(Integer.parseInt(exitCode)));
             assertThat(launcher.getExitCode()).isEqualTo(Integer.parseInt(exitCode));
+            // The failure path deliberately does NOT terminate here: the exception carries the code out
+            // through Boot, which reports the failure and ends the process with it.
+            assertThat(terminatedWith).isEmpty();
         }
 
         @Test
@@ -1803,15 +2013,63 @@ class BatchConfigTest {
             assertThatExceptionOfType(BatchConfig.JclReturnCodeException.class)
                     .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
                     .withMessageContaining("exit status 'FAILED'");
+            assertThat(terminatedWith).isEmpty();
         }
 
         @Test
-        @DisplayName("the submitted parameters are the job's declared contract plus the run identity, "
-                + "and nothing else")
+        @DisplayName("the configured name selects one job out of several published under the same type")
+        void theConfiguredNameSelectsOneJobOutOfSeveral() throws Exception {
+            List<Job> submitted = new ArrayList<>();
+            ListableBeanFactory published = factoryPublishing(JOB_BEAN_NAME, SECOND_JOB_BEAN_NAME);
+            JobLauncher recording = (job, parameters) -> {
+                submitted.add(job);
+                JobExecution execution = new JobExecution(1L, parameters);
+                execution.setExitStatus(ExitStatus.COMPLETED);
+                return execution;
+            };
+
+            launcherOver(configWithContracts(), published, recording, noHistory(), SECOND_JOB_BEAN_NAME)
+                    .run(new DefaultApplicationArguments());
+
+            // This is the whole of it: with two jobs of the same type in the factory, a by-type lookup
+            // cannot answer at all, and the configured name has to be the selector.
+            assertThat(submitted).hasSize(1);
+            assertThat(submitted.get(0).getName()).isEqualTo(SECOND_JOB_BEAN_NAME);
+        }
+
+        @Test
+        @DisplayName("resolving by type is what would fail, which is why the name is used - asserted "
+                + "rather than assumed")
+        void resolvingByTypeIsWhatWouldFail() {
+            DefaultListableBeanFactory published =
+                    (DefaultListableBeanFactory) factoryPublishing(JOB_BEAN_NAME, SECOND_JOB_BEAN_NAME);
+
+            // The counter-assertion for the test above. Without it, "the name selects the job" could be
+            // true for some unrelated reason and the fix would rest on a coincidence.
+            assertThatExceptionOfType(NoUniqueBeanDefinitionException.class)
+                    .isThrownBy(() -> published.getBeanProvider(Job.class).getObject());
+        }
+
+        @Test
+        @DisplayName("a name no job is published under is refused, and the diagnostic lists the jobs "
+                + "that are")
+        void anUnpublishedJobNameIsRefused() {
+            BatchConfig.JclJobLauncher launcher = launcherOver(configWithContracts(),
+                    factoryPublishing(JOB_BEAN_NAME, SECOND_JOB_BEAN_NAME),
+                    (job, parameters) -> new JobExecution(1L), noHistory(), "accountBalanceJobs");
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
+                    .withMessageContaining("no Job bean is published under that name")
+                    .withMessageContaining(JOB_BEAN_NAME)
+                    .withMessageContaining(SECOND_JOB_BEAN_NAME);
+            assertThat(terminatedWith).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the submitted parameters are the job's declared contract plus the execution "
+                + "identity, and nothing else")
         void theSubmittedParametersAreTheContractPlusTheRunIdentity() throws Exception {
-            BatchConfig config = configWithContracts();
-            Job job = mock(Job.class);
-            when(job.getName()).thenReturn(JOB_BEAN_NAME);
             List<JobParameters> submitted = new ArrayList<>();
             JobLauncher recording = (requested, parameters) -> {
                 submitted.add(parameters);
@@ -1820,24 +2078,26 @@ class BatchConfigTest {
                 return execution;
             };
 
-            new BatchConfig.JclJobLauncher(providerOf(Job.class, job),
-                    providerOf(JobLauncher.class, recording), config, JOB_BEAN_NAME)
+            launcherOver(configWithContracts(), factoryPublishing(JOB_BEAN_NAME), recording,
+                    noHistory(), JOB_BEAN_NAME)
                     .run(new DefaultApplicationArguments("--ignored=value"));
 
-            // READACCT.jcl passes no PARM, so the only parameter is the run identity. Process arguments
-            // are deliberately not read: a job's parameters are its contract in carddemo.jobs, never
-            // free text from a command line.
+            // READACCT.jcl passes no PARM, so the only parameter is the execution identity. Process
+            // arguments are deliberately not read: a job's parameters are its contract in
+            // carddemo.jobs, never free text from a command line.
             assertThat(submitted).hasSize(1);
             assertThat(submitted.get(0).getParameters().keySet())
                     .containsExactly(BatchConfig.RUN_IDENTITY_PARAMETER);
+            assertThat(submitted.get(0).getLong(BatchConfig.RUN_IDENTITY_PARAMETER)).isEqualTo(1L);
         }
 
         @Test
         @DisplayName("a job with no declared contract is refused, because a job's parameters ARE its "
                 + "contract")
         void aJobWithNoContractIsRefused() {
-            BatchConfig.JclJobLauncher launcher =
-                    launcherReporting(ExitStatus.COMPLETED, "someUndeclaredJob");
+            BatchConfig.JclJobLauncher launcher = launcherOver(configWithContracts(),
+                    factoryPublishing("someUndeclaredJob"),
+                    (job, parameters) -> new JobExecution(1L), noHistory(), "someUndeclaredJob");
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
@@ -1845,22 +2105,34 @@ class BatchConfigTest {
         }
 
         @Test
-        @DisplayName("the launcher needs a job name, a Job provider, a launcher provider and the "
-                + "configuration")
-        void theLauncherNeedsAllFourCollaborators() {
+        @DisplayName("the launcher needs every collaborator, because each one is load-bearing")
+        void theLauncherNeedsAllItsCollaborators() {
             BatchConfig config = configWithContracts();
-            ObjectProvider<Job> jobs = providerOf(Job.class, mock(Job.class));
+            ListableBeanFactory jobs = factoryPublishing(JOB_BEAN_NAME);
             ObjectProvider<JobLauncher> launchers =
                     providerOf(JobLauncher.class, (job, parameters) -> new JobExecution(1L));
+            ObjectProvider<JobExplorer> explorers = providerOf(JobExplorer.class, noHistory());
 
-            assertThatNullPointerException().isThrownBy(() ->
-                    new BatchConfig.JclJobLauncher(null, launchers, config, JOB_BEAN_NAME));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new BatchConfig.JclJobLauncher(jobs, null, config, JOB_BEAN_NAME));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new BatchConfig.JclJobLauncher(jobs, launchers, null, JOB_BEAN_NAME));
-            assertThatIllegalArgumentException().isThrownBy(() ->
-                    new BatchConfig.JclJobLauncher(jobs, launchers, config, " "));
+            assertThatNullPointerException().isThrownBy(() -> new BatchConfig.JclJobLauncher(
+                    null, launchers, explorers, config, JOB_BEAN_NAME, recordingTerminator));
+            assertThatNullPointerException().isThrownBy(() -> new BatchConfig.JclJobLauncher(
+                    jobs, null, explorers, config, JOB_BEAN_NAME, recordingTerminator));
+            assertThatNullPointerException().isThrownBy(() -> new BatchConfig.JclJobLauncher(
+                    jobs, launchers, null, config, JOB_BEAN_NAME, recordingTerminator));
+            assertThatNullPointerException().isThrownBy(() -> new BatchConfig.JclJobLauncher(
+                    jobs, launchers, explorers, null, JOB_BEAN_NAME, recordingTerminator));
+            assertThatIllegalArgumentException().isThrownBy(() -> new BatchConfig.JclJobLauncher(
+                    jobs, launchers, explorers, config, " ", recordingTerminator));
+            assertThatNullPointerException().isThrownBy(() -> new BatchConfig.JclJobLauncher(
+                    jobs, launchers, explorers, config, JOB_BEAN_NAME, null));
+        }
+
+        @Test
+        @DisplayName("the production terminator needs a context to close before it ends the process")
+        void theProductionTerminatorNeedsAContext() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new BatchConfig.SpringApplicationExitTerminator(null))
+                    .withMessageContaining("application context is required");
         }
 
         @Test
@@ -1888,6 +2160,263 @@ class BatchConfigTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> BatchConfig.jobBeanNameOf(null))
                     .withMessageContaining("job key is required");
+        }
+
+        @Test
+        @DisplayName("finding a job's contract needs a name")
+        void findingAContractNeedsAJobName() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> configWithContracts().contractKeyOf(null))
+                    .withMessageContaining("job name is required");
+        }
+    }
+
+    /**
+     * Resubmission: the same JCL deck, submitted again, is a new job instance.
+     *
+     * <p>This is the one behaviour in the launcher that cannot be established without a real
+     * repository. A Spring Batch instance is its name plus its identifying parameters and may complete
+     * only once, so "submit it again" is not a property of the launcher's code in isolation - it is a
+     * property of what the repository already holds. These run through Spring Boot's own batch
+     * auto-configuration over the H2 database the test profile provides, which is a genuine JDBC
+     * {@code JobRepository} with the framework's own metadata tables, and they launch the same job twice
+     * in one context.
+     */
+    @Nested
+    @DisplayName("Resubmission - the same deck submitted twice is two instances, not a refusal")
+    class Resubmission {
+
+        /** Every return code the terminator was asked to end the process with, in order. */
+        private final List<Integer> terminatedWith = new ArrayList<>();
+
+        /**
+         * Two published jobs over the shipped contracts, so name resolution has to choose and the
+         * repository has something real to record.
+         */
+        @Configuration(proxyBeanMethods = false)
+        static class TwoPublishedJobs {
+
+            /**
+             * @param batchConfig the scaffolding under test
+             * @return the account reader job, one no-op step
+             */
+            @Bean
+            Job accountBalanceJob(BatchConfig batchConfig) {
+                return batchConfig.job("accountBalanceJob")
+                        .start(batchConfig.taskletStep("STEP05", NO_OP_TASKLET).build())
+                        .build();
+            }
+
+            /**
+             * @param batchConfig the scaffolding under test
+             * @return the customer reader job, one no-op step
+             */
+            @Bean
+            Job customerFileReaderJob(BatchConfig batchConfig) {
+                return batchConfig.job("customerFileReaderJob")
+                        .start(batchConfig.taskletStep("STEP05", NO_OP_TASKLET).build())
+                        .build();
+            }
+        }
+
+        @Test
+        @DisplayName("two sequential submissions of the same job are two instances, numbered 1 then 2")
+        void twoSequentialSubmissionsAreTwoInstances() {
+            runnerWithBatchAutoConfiguration()
+                    .withUserConfiguration(TwoPublishedJobs.class)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBeanNamesForType(Job.class)).hasSize(2);
+
+                        JobExplorer history = context.getBean(JobExplorer.class);
+                        BatchConfig.JclJobLauncher launcher = new BatchConfig.JclJobLauncher(
+                                context.getBeanFactory(),
+                                context.getBeanProvider(JobLauncher.class),
+                                context.getBeanProvider(JobExplorer.class),
+                                context.getBean(BatchConfig.class),
+                                "accountBalanceJob",
+                                terminatedWith::add);
+
+                        launcher.run(new DefaultApplicationArguments());
+                        launcher.run(new DefaultApplicationArguments());
+
+                        // Two completed submissions, two return codes delivered, and - the point of the
+                        // fix - two distinct instances. Deriving the identity from the parameters the
+                        // contract rebuilds would answer 1 both times, and the second submission would
+                        // be refused as an instance that had already completed.
+                        assertThat(terminatedWith).containsExactly(0, 0);
+                        List<JobInstance> instances =
+                                history.getJobInstances("accountBalanceJob", 0, 10);
+                        assertThat(instances).hasSize(2);
+                        assertThat(instances.stream()
+                                .map(instance -> history.getLastJobExecution(instance))
+                                .map(execution -> execution.getJobParameters()
+                                        .getLong(BatchConfig.RUN_IDENTITY_PARAMETER))
+                                .toList())
+                                .containsExactlyInAnyOrder(1L, 2L);
+                        assertThat(instances.stream().map(JobInstance::getId).distinct().toList())
+                                .hasSize(2);
+                    });
+        }
+
+        @Test
+        @DisplayName("each job's identity is its own: submitting one does not number the other")
+        void eachJobCarriesItsOwnIdentity() {
+            runnerWithBatchAutoConfiguration()
+                    .withUserConfiguration(TwoPublishedJobs.class)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+
+                        for (String jobName : List.of("accountBalanceJob", "accountBalanceJob",
+                                "customerFileReaderJob")) {
+                            new BatchConfig.JclJobLauncher(context.getBeanFactory(),
+                                    context.getBeanProvider(JobLauncher.class),
+                                    context.getBeanProvider(JobExplorer.class),
+                                    context.getBean(BatchConfig.class), jobName, terminatedWith::add)
+                                    .run(new DefaultApplicationArguments());
+                        }
+
+                        // History is keyed by job name, so the customer reader's first submission is its
+                        // own first, not the third of some shared counter.
+                        JobExplorer history = context.getBean(JobExplorer.class);
+                        assertThat(history.getJobInstances("accountBalanceJob", 0, 10)).hasSize(2);
+                        assertThat(history.getLastJobExecution(
+                                history.getLastJobInstance("customerFileReaderJob"))
+                                .getJobParameters().getLong(BatchConfig.RUN_IDENTITY_PARAMETER))
+                                .isEqualTo(1L);
+                        assertThat(terminatedWith).containsExactly(0, 0, 0);
+                    });
+        }
+    }
+
+    /**
+     * The parameter allow-list: exactly the business contract, plus the internal execution identity.
+     *
+     * <p>Eight of the nine JCL steps carry no {@code PARM} at all and the ninth carries exactly one, so
+     * a key outside the contract is a value the COBOL program never receives. It cannot change what the
+     * program does - but it does change which instance the submission resolves to, which is why it is
+     * refused rather than tolerated.
+     */
+    @Nested
+    @DisplayName("The parameter allow-list - the contract, the execution identity, and nothing else")
+    class TheParameterAllowList {
+
+        /** A configuration over the shipped contracts, so the allow-list is the real one. */
+        private BatchConfig shippedContracts() {
+            DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
+            factory.registerSingleton("jobRepository", new ResourcelessJobRepository());
+            factory.registerSingleton("transactionManager", new ResourcelessTransactionManager());
+            JobContracts contracts = new JobContracts();
+            contracts.put("account-balance-job", new JobContract("CBACT01C", List.of(),
+                    List.of(new StepContract("STEP05", "CBACT01C", false)), null, Map.of()));
+            contracts.put("account-interest-calc-job", new JobContract("CBACT04C",
+                    List.of(new JobParameterContract(BatchConfig.PARM_DATE_PARAMETER, "string",
+                            "2022071800")),
+                    List.of(new StepContract("STEP15", "CBACT04C", false)), null, Map.of()));
+            return new BatchConfig(factory.getBeanProvider(JobRepository.class),
+                    factory.getBeanProvider(PlatformTransactionManager.class), contracts,
+                    new DatasetBindings());
+        }
+
+        @Test
+        @DisplayName("a parameterless job accepts the execution identity alone")
+        void aParameterlessJobAcceptsTheIdentityAlone() {
+            JobParametersValidator validator =
+                    shippedContracts().jclParametersValidator("accountBalanceJob");
+
+            assertThatNoException().isThrownBy(() -> validator.validate(new JobParametersBuilder()
+                    .addLong(BatchConfig.RUN_IDENTITY_PARAMETER, 7L).toJobParameters()));
+            assertThatNoException().isThrownBy(() -> validator.validate(new JobParameters()));
+            assertThatNoException().isThrownBy(() -> validator.validate(null));
+        }
+
+        @Test
+        @DisplayName("a parameterless job refuses an undeclared parameter, naming it")
+        void aParameterlessJobRefusesAnUndeclaredParameter() {
+            JobParametersValidator validator =
+                    shippedContracts().jclParametersValidator("accountBalanceJob");
+
+            assertThatExceptionOfType(JobParametersInvalidException.class)
+                    .isThrownBy(() -> validator.validate(new JobParametersBuilder()
+                            .addLong(BatchConfig.RUN_IDENTITY_PARAMETER, 1L)
+                            .addString("parmDate", "2022071800")
+                            .toJobParameters()))
+                    .withMessageContaining("Undeclared: [parmDate]")
+                    .withMessageContaining("account-balance-job");
+        }
+
+        @Test
+        @DisplayName("the parameterised job accepts its declared parmDate beside the identity")
+        void theParameterisedJobAcceptsItsDeclaredParameter() {
+            JobParametersValidator validator =
+                    shippedContracts().jclParametersValidator("accountInterestCalcJob");
+
+            assertThatNoException().isThrownBy(() -> validator.validate(new JobParametersBuilder()
+                    .addLong(BatchConfig.RUN_IDENTITY_PARAMETER, 3L)
+                    .addString(BatchConfig.PARM_DATE_PARAMETER, "2022071800")
+                    .toJobParameters()));
+        }
+
+        @Test
+        @DisplayName("the parameterised job refuses a submission that omits its parmDate")
+        void theParameterisedJobRefusesAnOmittedParameter() {
+            JobParametersValidator validator =
+                    shippedContracts().jclParametersValidator("accountInterestCalcJob");
+
+            assertThatExceptionOfType(JobParametersInvalidException.class)
+                    .isThrownBy(() -> validator.validate(new JobParametersBuilder()
+                            .addLong(BatchConfig.RUN_IDENTITY_PARAMETER, 1L).toJobParameters()))
+                    .withMessageContaining("Missing: [" + BatchConfig.PARM_DATE_PARAMETER + "]");
+        }
+
+        @Test
+        @DisplayName("the parameterised job still applies the parmDate width rules on top of the "
+                + "allow-list")
+        void theParameterisedJobStillAppliesTheWidthRules() {
+            JobParametersValidator validator =
+                    shippedContracts().jclParametersValidator("accountInterestCalcJob");
+
+            // Allowed and present, but nine characters where app/cbl/CBACT04C.cbl:178 declares
+            // PARM-DATE PIC X(10) - which would shift the generated suffix one byte left in every
+            // transaction identifier the job writes.
+            assertThatExceptionOfType(JobParametersInvalidException.class)
+                    .isThrownBy(() -> validator.validate(new JobParametersBuilder()
+                            .addLong(BatchConfig.RUN_IDENTITY_PARAMETER, 1L)
+                            .addString(BatchConfig.PARM_DATE_PARAMETER, "202207180")
+                            .toJobParameters()));
+        }
+
+        @Test
+        @DisplayName("an undeclared job is refused rather than allowed everything")
+        void anUndeclaredJobIsRefused() {
+            JobParametersValidator validator =
+                    shippedContracts().jclParametersValidator("someUndeclaredJob");
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> validator.validate(new JobParameters()))
+                    .withMessageContaining("no entry under carddemo.jobs declares it");
+        }
+
+        @Test
+        @DisplayName("the validator needs a configuration and a job name")
+        void theValidatorNeedsItsCollaborators() {
+            assertThatNullPointerException().isThrownBy(() ->
+                    new BatchConfig.JclJobParametersValidator(null, "accountBalanceJob"));
+            assertThatIllegalArgumentException().isThrownBy(() ->
+                    new BatchConfig.JclJobParametersValidator(shippedContracts(), " "));
+        }
+
+        @Test
+        @DisplayName("every job the seam builds carries the allow-list, so no job author can forget it")
+        void everyJobBuiltThroughTheSeamCarriesTheAllowList() {
+            BatchConfig config = shippedContracts();
+
+            Job job = config.job("accountBalanceJob")
+                    .start(config.taskletStep("STEP05", NO_OP_TASKLET).build())
+                    .build();
+
+            assertThat(job.getJobParametersValidator())
+                    .isInstanceOf(BatchConfig.JclJobParametersValidator.class);
         }
     }
 
@@ -2039,6 +2568,50 @@ class BatchConfigTest {
                 assertThat(config.requireSameDataset(REPORT_JOB, "CARDXREF", "CCXREF")).isNotBlank();
                 assertThat(config.requireSameDataset(REPORT_JOB, "TRANTYPE", "TRANTYPE")).isNotBlank();
                 assertThat(config.requireSameDataset(REPORT_JOB, "TRANCATG", "TRANCATG")).isNotBlank();
+            });
+        }
+
+        @Test
+        @DisplayName("requireSteps accepts the shipped sequence of every job and refuses any deviation "
+                + "from it")
+        void requireStepsGuardsTheWholeTuple() {
+            // The seam every job class uses to prove its own reading of its JCL against the configured
+            // contract, before it resolves a dataset or builds a step. Driven here across all nine jobs
+            // at once, on the configuration as shipped, so the accepting arm is the real catalogue rather
+            // than a hand-built one.
+            documentBackedRunner().run(context -> {
+                BatchConfig config = context.getBean(BatchConfig.class);
+
+                JobContracts.REQUIRED_STEPS.forEach((jobKey, steps) ->
+                        assertThat(config.requireSteps(jobKey, steps, "the JCL"))
+                                .as("%s ships the sequence it requires", jobKey)
+                                .isEqualTo(steps));
+
+                // Each of the five deviation classes, against the five-step job where each one bites
+                // hardest. The required sequence is the argument here, so these mutate what the caller
+                // asks for rather than what configuration declares - which is the same comparison read
+                // from the other side, and the direction a transcription slip in a job class would take.
+                List<StepContract> shipped = JobContracts.REQUIRED_STEPS.get(STATEMENT_JOB);
+                List<StepContract> dropped = shipped.subList(0, 4);
+                List<StepContract> added = new ArrayList<>(shipped);
+                added.add(new StepContract("STEP050", "CBSTM03A", true));
+                List<StepContract> reordered = new ArrayList<>(shipped);
+                Collections.swap(reordered, 0, 2);
+                List<StepContract> rePointed = new ArrayList<>(shipped);
+                rePointed.set(1, new StepContract("STEP010", "IEFBR14", false));
+                List<StepContract> misgated = new ArrayList<>(shipped);
+                misgated.set(4, new StepContract("STEP040", "CBSTM03A", false));
+
+                for (List<StepContract> deviation
+                        : List.of(dropped, added, reordered, rePointed, misgated)) {
+                    assertThatIllegalStateException()
+                            .isThrownBy(() -> config.requireSteps(STATEMENT_JOB, deviation,
+                                    "app/jcl/CREASTMT.JCL"))
+                            .withMessageContaining("does not declare the step sequence of "
+                                    + "app/jcl/CREASTMT.JCL")
+                            .withMessageContaining("configured: [DELDEF01/IDCAMS")
+                            .withMessageContaining("refuses to build the job rather than run it");
+                }
             });
         }
 

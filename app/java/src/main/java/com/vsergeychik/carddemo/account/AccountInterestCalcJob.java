@@ -276,6 +276,18 @@ public class AccountInterestCalcJob {
     public static final String STEP_NAME = "STEP15";
 
     /**
+     * The whole step sequence of {@code app/jcl/INTCALC.jcl}: one step, {@value #STEP_NAME}, running
+     * {@value #PROGRAM_ID}, ungated.
+     *
+     * <p>Stated as a sequence because the step's own fields, checked one at a time, cannot express
+     * "and nothing else". This job writes a new {@code SYSTRAN} generation and rewrites account
+     * balances, so an extra step declared beside {@value #STEP_NAME} would do that work twice against
+     * the same generation.
+     */
+    public static final List<StepContract> REQUIRED_STEPS =
+            List.of(new StepContract(STEP_NAME, PROGRAM_ID, false));
+
+    /**
      * The commit interval, in items: {@value}.
      *
      * <p>Not a performance setting. One record per chunk is the granularity of the COBOL loop, so the
@@ -731,6 +743,14 @@ public class AccountInterestCalcJob {
      *
      * <p>Injected rather than read from the system, so a parity case can pin the two timestamps every
      * generated transaction carries and assert them byte for byte.
+     *
+     * <p><strong>Required, with no fallback.</strong> {@code WebConfig} declares exactly one
+     * {@link Clock} bean unconditionally, so there is no context in which this job runs and no clock is
+     * available - which means an optional parameter with a {@link Clock#systemDefaultZone()} default
+     * could only ever take effect where the clock had been mis-wired, and then it would hide that fact
+     * behind timestamps that look plausible and cannot be reproduced. Every one of the other thirteen
+     * {@link Clock} consumers in this module takes it as a required constructor argument; this one does
+     * too.
      */
     private final Clock clock;
 
@@ -747,7 +767,7 @@ public class AccountInterestCalcJob {
     private final String declaredParmDate;
 
     /**
-     * Wires the job from its five datasets, the batch scaffolding and the two optional seams.
+     * Wires the job from its five datasets, the batch scaffolding and one optional seam.
      *
      * @param batchConfig           the batch scaffolding; required
      * @param tranCatBalRepository  {@code TCATBALF}; required
@@ -759,9 +779,7 @@ public class AccountInterestCalcJob {
      *                              through, one verb at a time; required
      * @param sysoutSinkProvider    the {@code SYSOUT} destination; may resolve to no bean, in which case
      *                              the process's standard output is used in the dataset code page
-     * @param clockProvider         the clock behind {@code FUNCTION CURRENT-DATE}; may resolve to no
-     *                              bean, in which case the system clock in the default zone is used,
-     *                              because {@code CURRENT-DATE} reports local time
+     * @param clock                 the clock behind {@code FUNCTION CURRENT-DATE}; required
      * @throws NullPointerException  if any required collaborator or provider is {@code null}
      * @throws IllegalStateException if this job's {@code carddemo.jobs} contract names another program,
      *                               gates its only step, or declares no {@code parmDate}
@@ -774,7 +792,7 @@ public class AccountInterestCalcJob {
             DisclosureGroupAccess disclosureGroupAccess,
             DatasetUnitOfWork unitOfWork,
             ObjectProvider<SysoutSink> sysoutSinkProvider,
-            ObjectProvider<Clock> clockProvider) {
+            Clock clock) {
 
         this.batchConfig = Objects.requireNonNull(batchConfig, "The batch scaffolding is required: the "
                 + "job and step builders, the job repository and the transaction manager all arrive "
@@ -800,13 +818,14 @@ public class AccountInterestCalcJob {
                 + "chunk transaction a later abend would roll back");
         Objects.requireNonNull(sysoutSinkProvider, "A SYSOUT sink provider is required; it may resolve "
                 + "to no bean, in which case the standard output stream is used");
-        Objects.requireNonNull(clockProvider, "A clock provider is required; it may resolve to no bean, "
-                + "in which case the system clock is used");
+        this.clock = Objects.requireNonNull(clock, "A Clock is required: FUNCTION CURRENT-DATE at "
+                + "app/cbl/CBACT04C.cbl:L212 supplies the two timestamps every generated transaction "
+                + "carries, so the clock is injected rather than defaulted - a job that silently fell "
+                + "back to the system clock would write timestamps no parity case could pin");
 
         this.datasetCharset = accountRepository.datasetCharset();
         this.codec = new FixedWidthCodec(this.datasetCharset);
         this.sysoutSink = sysoutSinkProvider.getIfAvailable(() -> standardOutput(this.datasetCharset));
-        this.clock = clockProvider.getIfAvailable(Clock::systemDefaultZone);
         this.stepContract = requireUngatedStep(batchConfig);
         this.declaredParmDate = requireDeclaredParmDate(batchConfig);
         requireStepDatasets(batchConfig);
@@ -850,14 +869,17 @@ public class AccountInterestCalcJob {
     }
 
     /**
-     * Validates this job's step contract: it must name {@link #PROGRAM_ID} and must not be gated.
+     * Validates this job's step contract: it must be exactly {@link #REQUIRED_STEPS}.
      *
      * <p>{@code app/jcl/INTCALC.jcl} declares one step and carries no {@code COND}, so gating the only
-     * step of a single-step job would bypass all of its work.
+     * step of a single-step job would bypass all of its work. The two guards here name that case and
+     * the re-pointed-program case specifically; the sequence comparison behind them is what rejects an
+     * added, omitted or reordered step, which no per-step check can see.
      *
      * @param scaffolding the batch scaffolding holding the parsed contracts
      * @return the validated step contract
-     * @throws IllegalStateException if the contract names another program or gates the step
+     * @throws IllegalStateException if the contract names another program, gates the step, or declares
+     *                               any sequence other than {@link #REQUIRED_STEPS}
      */
     private static StepContract requireUngatedStep(BatchConfig scaffolding) {
         StepContract contract = scaffolding.contract(JOB_KEY).step(STEP_NAME);
@@ -873,6 +895,7 @@ public class AccountInterestCalcJob {
                     + "COND and declares only this step. Gating the only step of a single-step job "
                     + "would bypass all of its work.");
         }
+        scaffolding.requireSteps(JOB_KEY, REQUIRED_STEPS, "app/jcl/INTCALC.jcl:22");
         return contract;
     }
 
@@ -958,20 +981,27 @@ public class AccountInterestCalcJob {
      * bean does not run it. It runs when something deliberately launches it, exactly as it ran only when
      * JCL submitted {@code STEP15}.
      *
-     * <h2>Why the parameter validator is attached here, and only here</h2>
+     * <h2>How this job's one parameter is validated, and why not from here</h2>
      * <p>This is the one job in the estate that takes a {@code PARM}
      * ({@code app/jcl/INTCALC.jcl:L22}, {@code PARM='2022071800'}), and that {@code PARM} is character
      * data which {@code app/cbl/CBACT04C.cbl:L476-L480} concatenates <em>verbatim</em> into every
      * transaction identifier the job generates. A launcher-supplied value of the wrong width is
      * therefore not a cosmetic problem: nine characters shift the generated suffix left in every
      * identifier written, eleven push it off the end of the {@code PIC X(16)} field, and neither would
-     * fail at run time. {@link BatchConfig#parmDateValidator()} rejects any width but
-     * {@link BatchConfig#PARM_DATE_WIDTH} <em>before the job starts</em>, so a bad launch produces no
-     * records at all rather than a full generation of subtly wrong ones.
+     * fail at run time. The width is rejected <em>before the job starts</em>, so a bad launch produces
+     * no records at all rather than a full generation of subtly wrong ones.
      *
-     * <p>The validator checks the width and nothing else. It does not parse the value as a date,
-     * reformat it, or default it - all three would corrupt the identifiers just as surely (rule R1,
-     * gate G29).
+     * <p>No validator is attached here, deliberately, and that is a correction rather than an omission.
+     * {@link BatchConfig#job(String)} attaches {@link BatchConfig#jclParametersValidator(String)} to
+     * every job, and for this job that validator applies the same
+     * {@link BatchConfig#PARM_DATE_WIDTH} rule <em>and</em> the allow-list that refuses an undeclared
+     * parameter beside {@code parmDate}. A second {@code .validator(...)} call on the builder would
+     * replace it rather than add to it - {@code JobBuilder} keeps one validator - which would have
+     * narrowed this job's checking to the width alone and let an undeclared key through, resolving the
+     * submission to a silently different job instance.
+     *
+     * <p>What is checked is the width and nothing else. The value is not parsed as a date, reformatted
+     * or defaulted - all three would corrupt the identifiers just as surely (rule R1, gate G29).
      *
      * @return the job; never {@code null}
      */
@@ -988,7 +1018,6 @@ public class AccountInterestCalcJob {
                 // stayed rewritten. Every account before the failure point would have its interest posted
                 // a second time. Refusing the restart is what keeps that from being reachable at all.
                 .preventRestart()
-                .validator(batchConfig.parmDateValidator())
                 .start(accountInterestCalcStep())
                 .build();
     }

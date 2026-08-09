@@ -1092,7 +1092,7 @@ public class CardXrefRepository {
                     + " rather than treating it as a dataset with no matching record");
             return ReadResult.other(ddName, PERMANENT_ERROR_STATUS);
         }
-        List<CardXrefRecord> matches = new ArrayList<>(rows.size());
+        List<DecodedRow> matches = new ArrayList<>(rows.size());
         for (String rowImage : rows) {
             if (rowImage == null) {
                 // A row whose record image is absent is not a readable 50-byte record. There IS a
@@ -1119,10 +1119,11 @@ public class CardXrefRepository {
         if (matches.size() > 1) {
             // DUPKEY on a path over a non-unique alternate index, or a base key that has lost its
             // uniqueness. The first match is returned alongside the condition, as CICS does.
-            return ReadResult.duplicate(ddName, matches.get(0), duplicateCicsResp);
+            return ReadResult.duplicate(ddName, matches.get(0).record(),
+                    matches.get(0).storedImage(), duplicateCicsResp);
         }
         // WHEN DFHRESP(NORMAL).
-        return ReadResult.found(ddName, matches.get(0));
+        return ReadResult.found(ddName, matches.get(0).record(), matches.get(0).storedImage());
     }
 
     /**
@@ -1377,8 +1378,8 @@ public class CardXrefRepository {
      * @throws IllegalArgumentException if the image is not exactly {@value #RECORD_LENGTH} bytes, or if
      *                                  either numeric span holds a non-digit
      */
-    private CardXrefRecord decodeRow(String rowImage) {
-        return CardXrefRecord.decodeSpan(wrapRow(rowImage), codec);
+    private DecodedRow decodeRow(String rowImage) {
+        return decodeArea(wrapRow(rowImage));
     }
 
     /**
@@ -1400,8 +1401,40 @@ public class CardXrefRepository {
      * @throws IllegalArgumentException if the image is not exactly {@value #RECORD_LENGTH} bytes, or
      *                                  holds a non-digit in a numeric span
      */
-    private CardXrefRecord decodeRow(byte[] rowImage) {
-        return CardXrefRecord.decodeSpan(codec.wrap(rowImage, CardXrefRecord.LAYOUT), codec);
+    private DecodedRow decodeRow(byte[] rowImage) {
+        return decodeArea(codec.wrap(rowImage, CardXrefRecord.LAYOUT));
+    }
+
+    /**
+     * Decodes one record area into both views of it a caller can need: its fields, and its bytes.
+     *
+     * <p>They come from the <strong>same</strong> area, in one place, which is what makes it impossible
+     * for them to disagree. The second view exists because
+     * {@code DISPLAY CARD-XREF-RECORD} ({@code app/cbl/CBACT03C.cbl:78} and {@code :96}) names the
+     * {@code 01} group item and therefore writes the whole area - including the trailing
+     * {@code FILLER X(14)} of {@code app/cpy/CVACT03Y.cpy}, a span that holds no field, that no program
+     * writes, and that {@code READ ... INTO} fills from the row. Re-encoding the decoded record would
+     * agree on all three declared fields and emit fourteen spaces there whatever the row held, so the
+     * row's own image is retained rather than reconstructed.
+     *
+     * @param area the record area, already held to {@link CardXrefRecord#RECORD_LENGTH}
+     * @return the decoded fields and the area's own characters
+     */
+    private DecodedRow decodeArea(FixedWidthRecord area) {
+        return new DecodedRow(CardXrefRecord.decodeSpan(area, codec),
+                area.readString(0, CardXrefRecord.RECORD_LENGTH));
+    }
+
+    /**
+     * One decoded row: the record's fields and the bytes they were decoded from.
+     *
+     * <p>Private, and deliberately not exposed: a caller receives them through {@link ReadResult}, which
+     * enforces that they travel together.
+     *
+     * @param record      the decoded record
+     * @param storedImage the area's own characters, exactly {@link CardXrefRecord#RECORD_LENGTH} of them
+     */
+    private record DecodedRow(CardXrefRecord record, String storedImage) {
     }
 
     // =================================================================================================
@@ -1567,6 +1600,7 @@ public class CardXrefRepository {
             String status,
             Outcome outcome,
             Optional<CardXrefRecord> record,
+            Optional<String> storedImage,
             int cicsResp,
             int cicsResp2,
             Optional<BackendDiagnostic> diagnostic) {
@@ -1588,6 +1622,8 @@ public class CardXrefRepository {
             Objects.requireNonNull(outcome, "An outcome classification is required on a read outcome");
             Objects.requireNonNull(record, "An Optional is required, empty rather than null, so no "
                     + "null escapes this type");
+            Objects.requireNonNull(storedImage, "An Optional is required for the stored image, empty "
+                    + "rather than null, so no null escapes this type");
             Objects.requireNonNull(diagnostic, "An Optional is required for the backend diagnostic, "
                     + "empty rather than null, so no null escapes this type");
             if (status.length() != FileStatus.STATUS_LENGTH) {
@@ -1609,21 +1645,57 @@ public class CardXrefRepository {
                         + " A record is present exactly for OK and for DUPLICATE, which hands back the "
                         + "first of the matching records as CICS does.");
             }
+            // The stored image travels with the record and never without it. That is what makes
+            // DISPLAY CARD-XREF-RECORD reproducible: a caller on a record-bearing arm can always reach
+            // the row's own bytes and never has to re-encode the decoded fields, which would emit
+            // FILLER X(14) as spaces whatever the row held.
+            if (storedImage.isPresent() != record.isPresent()) {
+                throw new IllegalArgumentException(storedImage.isPresent()
+                        ? "Outcome " + outcome + " carries no record, so it carries no stored image "
+                                + "either; an image with no record to belong to has no meaning."
+                        : "Outcome " + outcome + " carries a record, so it must carry the stored image "
+                                + "that record was decoded from. Build it with "
+                                + "ReadResult.found(ddName, record, storedImage) or "
+                                + "ReadResult.duplicate(ddName, first, storedImage, cicsResp).");
+            }
+            storedImage.ifPresent(image -> {
+                if (image.length() != CardXrefRecord.RECORD_LENGTH) {
+                    throw new IllegalArgumentException("A stored CARD-XREF-RECORD image is "
+                            + CardXrefRecord.RECORD_LENGTH + " characters as app/cpy/CVACT03Y.cpy "
+                            + "declares, but this one is " + image.length()
+                            + ". DISPLAY CARD-XREF-RECORD writes the whole record area, so an image of "
+                            + "any other width would emit a line the program cannot produce. A row that "
+                            + "omits the trailing FILLER X(" + CardXrefRecord.FILLER_LENGTH
+                            + ") must be widened with FixedWidthCodec.padToDeclaredWidth first.");
+                }
+            });
         }
 
         /**
          * A record was read: status {@code '00'}, {@code RESP} of {@link FileStatus#NORMAL}. The
          * {@code WHEN DFHRESP(NORMAL)} arm.
          *
-         * @param ddName the access path that was read
-         * @param record the record that was read; never {@code null}
+         * <p>Both the decoded record and the bytes it was decoded from are carried, and the second is
+         * not redundant: {@code DISPLAY CARD-XREF-RECORD} ({@code app/cbl/CBACT03C.cbl:78} and
+         * {@code :96}) writes the whole record area, whose trailing {@code FILLER X(14)} holds no field
+         * and which a re-encode of the decoded record would therefore blank.
+         *
+         * @param ddName      the access path that was read
+         * @param record      the record that was read; never {@code null}
+         * @param storedImage the row's own characters, exactly {@link CardXrefRecord#RECORD_LENGTH} of
+         *                    them; never {@code null}
          * @return the outcome
-         * @throws NullPointerException if {@code record} is {@code null}
+         * @throws NullPointerException     if {@code record} or {@code storedImage} is {@code null}
+         * @throws IllegalArgumentException if {@code storedImage} is not
+         *                                  {@link CardXrefRecord#RECORD_LENGTH} characters
          */
-        public static ReadResult found(String ddName, CardXrefRecord record) {
+        public static ReadResult found(String ddName, CardXrefRecord record, String storedImage) {
             Objects.requireNonNull(record, "A found outcome must carry the record it found");
+            Objects.requireNonNull(storedImage, "A found outcome must carry the stored image the record "
+                    + "was decoded from, so DISPLAY CARD-XREF-RECORD can write the row's own bytes");
             return new ReadResult(ddName, FileStatus.OK, Outcome.OK, Optional.of(record),
-                    FileStatus.NORMAL, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
+                    Optional.of(storedImage), FileStatus.NORMAL, CICS_RESP2_NOT_APPLICABLE,
+                    Optional.empty());
         }
 
         /**
@@ -1636,7 +1708,7 @@ public class CardXrefRepository {
          */
         public static ReadResult notFound(String ddName) {
             return new ReadResult(ddName, FileStatus.NOT_FOUND, Outcome.NOT_FOUND, Optional.empty(),
-                    FileStatus.NOTFND, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
+                    Optional.empty(), FileStatus.NOTFND, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1653,7 +1725,7 @@ public class CardXrefRepository {
          */
         public static ReadResult endOfFile(String ddName) {
             return new ReadResult(ddName, FileStatus.END_OF_FILE, Outcome.END_OF_FILE, Optional.empty(),
-                    FileStatus.ENDFILE, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
+                    Optional.empty(), FileStatus.ENDFILE, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1670,9 +1742,12 @@ public class CardXrefRepository {
          * @throws IllegalArgumentException if {@code cicsResp} is neither {@link FileStatus#DUPREC} nor
          *                                  {@link FileStatus#DUPKEY}
          */
-        public static ReadResult duplicate(String ddName, CardXrefRecord first, int cicsResp) {
+        public static ReadResult duplicate(String ddName, CardXrefRecord first, String storedImage,
+                int cicsResp) {
             Objects.requireNonNull(first, "A duplicate outcome must carry the first matching record, "
                     + "because CICS returns it alongside the DUPKEY condition");
+            Objects.requireNonNull(storedImage, "A duplicate outcome returns a record, so it carries "
+                    + "the stored image that record was decoded from");
             if (cicsResp != FileStatus.DUPREC && cicsResp != FileStatus.DUPKEY) {
                 throw new IllegalArgumentException("A duplicate outcome must name which key "
                         + "duplicated: DUPREC (" + FileStatus.DUPREC + ") for the base key or DUPKEY ("
@@ -1681,7 +1756,7 @@ public class CardXrefRepository {
                         + "only, so the distinction is kept where it is still known.");
             }
             return new ReadResult(ddName, FileStatus.DUPLICATE, Outcome.DUPLICATE, Optional.of(first),
-                    cicsResp, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
+                    Optional.of(storedImage), cicsResp, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1699,8 +1774,8 @@ public class CardXrefRepository {
          *                                  {@link Outcome#OTHER}
          */
         public static ReadResult other(String ddName, String status) {
-            return new ReadResult(ddName, status, Outcome.OTHER, Optional.empty(), FileStatus.NOTOPEN,
-                    CICS_RESP2_NOT_APPLICABLE, Optional.empty());
+            return new ReadResult(ddName, status, Outcome.OTHER, Optional.empty(), Optional.empty(),
+                    FileStatus.NOTOPEN, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1727,8 +1802,28 @@ public class CardXrefRepository {
         public static ReadResult other(String ddName, String status, BackendDiagnostic diagnostic) {
             Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use "
                     + "other(String, String) where there is no backend refusal to report");
-            return new ReadResult(ddName, status, Outcome.OTHER, Optional.empty(), FileStatus.NOTOPEN,
-                    CICS_RESP2_NOT_APPLICABLE, Optional.of(diagnostic));
+            return new ReadResult(ddName, status, Outcome.OTHER, Optional.empty(), Optional.empty(),
+                    FileStatus.NOTOPEN, CICS_RESP2_NOT_APPLICABLE, Optional.of(diagnostic));
+        }
+
+        /**
+         * The row's own bytes as characters, for a caller already on an arm that carries a record.
+         *
+         * <p>This is what {@code DISPLAY CARD-XREF-RECORD} ({@code app/cbl/CBACT03C.cbl:78} and
+         * {@code :96}) writes: the whole {@link CardXrefRecord#RECORD_LENGTH}-byte record area, exactly
+         * as the row held it. Re-encoding {@link #record()} instead would agree on all three declared
+         * fields and disagree on {@code FILLER X(14)}, which holds no field and which a re-encode
+         * necessarily emits as spaces - so the two are not interchangeable and a raw display must use
+         * this one.
+         *
+         * @return exactly {@link CardXrefRecord#RECORD_LENGTH} characters
+         * @throws IllegalStateException if this arm carries no record, and so no image either
+         */
+        public String requireStoredImage() {
+            return storedImage.orElseThrow(() -> new IllegalStateException("Outcome " + outcome
+                    + " carries no record, so it carries no stored image. DISPLAY CARD-XREF-RECORD is "
+                    + "reached only on an arm that carries one - app/cbl/CBACT03C.cbl:94 tests the "
+                    + "status before it displays - so branch on the outcome first."));
         }
 
         /**
@@ -2055,7 +2150,8 @@ public class CardXrefRepository {
             // advances past the record it reported an error on.
             position = rowImage.clone();
             returned++;
-            return ReadResult.found(BASE_DD_NAME, repository.decodeRow(rowImage));
+            DecodedRow decoded = repository.decodeRow(rowImage);
+            return ReadResult.found(BASE_DD_NAME, decoded.record(), decoded.storedImage());
         }
 
         /**

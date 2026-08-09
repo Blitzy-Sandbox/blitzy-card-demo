@@ -3517,9 +3517,22 @@ public final class TransactionListResponse {
     }
 
     /**
-     * Echoes {@code CDEMO-TO-PROGRAM} out of the communication area as the next program, and names
-     * this map and mapset as the screen the client is on - the stateless equivalent of both
-     * {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)} sites.
+     * Echoes {@code CDEMO-TO-PROGRAM} out of the communication area as the next program, and blanks the
+     * mapset and map - the stateless equivalent of both {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)}
+     * sites.
+     *
+     * <p><strong>Only the program is named.</strong> Both transfer sites -
+     * {@code app/cbl/COTRN00C.cbl:188-195} on the {@code 'S'} selection and {@code :512-521} in
+     * {@code RETURN-TO-PREV-SCREEN} - state {@code PROGRAM(CDEMO-TO-PROGRAM)} and
+     * {@code COMMAREA(CARDDEMO-COMMAREA)} and nothing else. {@code COTRN00C} never writes
+     * {@code CDEMO-LAST-MAP} or {@code CDEMO-LAST-MAPSET} anywhere, so it hands the next program no map
+     * or mapset at all; the target decides its own, exactly as this program decided
+     * {@value #MAPSET_NAME} / {@value #MAP_NAME} for itself. Publishing this screen's own two names as
+     * the <em>next</em> screen's would tell a client to paint the map it is leaving.
+     *
+     * <p>Blanked at the declared widths of {@code CDEMO-LAST-MAPSET} and {@code CDEMO-LAST-MAP} rather
+     * than emptied, because those fields are {@code PIC X(7)} and a fixed-width field's absent state is
+     * spaces. This is the same convention the other transferring screens in the module use.
      *
      * @param context the communication area whose {@code CDEMO-TO-PROGRAM} names the target
      * @throws NullPointerException if {@code context} is {@code null}
@@ -3528,8 +3541,8 @@ public final class TransactionListResponse {
     public void echoTransferTarget(NavigationContext context) {
         Objects.requireNonNull(context, "A communication area is required to echo CDEMO-TO-PROGRAM");
         setNextProgram(context.toProgram());
-        setNextMapset(MAPSET_NAME);
-        setNextMap(MAP_NAME);
+        setNextMapset(spaces(NavigationContext.LAST_MAPSET_LENGTH));
+        setNextMap(spaces(NavigationContext.LAST_MAP_LENGTH));
     }
 
     // =================================================================================================

@@ -1551,9 +1551,15 @@ public class TransactionMenuController {
      * The stateless form of {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(...)} - both
      * sites, {@code :192-195} and {@code :518-521}.
      *
-     * <p>There is no server-side forward and no redirect: the response names the program, mapset and
-     * map the client goes to next and carries the communication area it must pass on, and the client
-     * issues that call itself (gate G40).
+     * <p>There is no server-side forward and no redirect: the response names the program the client goes
+     * to next and carries the communication area it must pass on, and the client issues that call itself
+     * (gate G40).
+     *
+     * <p>The program and <em>only</em> the program. Both {@code XCTL}s state
+     * {@code PROGRAM(CDEMO-TO-PROGRAM)} and {@code COMMAREA(CARDDEMO-COMMAREA)}, and this program never
+     * writes {@code CDEMO-LAST-MAP} or {@code CDEMO-LAST-MAPSET}, so the target is handed no map or
+     * mapset and chooses its own. {@link TransactionListResponse#echoTransferTarget(NavigationContext)}
+     * blanks both for that reason.
      *
      * @param ws       the work area, whose commarea names the target
      * @param response the response the triple is written onto

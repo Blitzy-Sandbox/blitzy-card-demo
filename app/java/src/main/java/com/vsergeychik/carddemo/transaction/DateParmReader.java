@@ -6,6 +6,7 @@ import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
@@ -437,6 +438,18 @@ public class DateParmReader {
     private final RecordImageForm recordImageForm;
 
     /**
+     * The physical-record ordinal this dataset's read is ordered by: the deployment's answer to how a
+     * stored record's position is recovered, injected rather than decided here.
+     *
+     * <p>{@value #DD_NAME} is a <strong>physical-sequential</strong> dataset written by
+     * {@code app/cbl/CORPT00C.cbl:L117-L121} into the transient-data queue this job's DD is fed from, and
+     * {@code 0550-DATEPARM-READ} takes its <em>first</em> record. "First" is only meaningful against an
+     * order, and SQL supplies none unless a statement says which - so the read names the ordinal. See
+     * {@link PhysicalSequence}.
+     */
+    private final PhysicalSequence physicalSequence;
+
+    /**
      * The dataset as this module reaches it: the validated name, its delimited rendering, and the
      * statements composed over it.
      *
@@ -490,6 +503,10 @@ public class DateParmReader {
      *                       explicit at the injection point
      * @param recordImageForm how the deployment's driver presents a record image over JDBC, from
      *                        {@value RecordImageForm#FORM_PROPERTY}
+     * @param physicalSequence the physical-record ordinal this dataset's read is ordered by, from
+     *                        {@value PhysicalSequence#EXPRESSION_PROPERTY}. {@value #DD_NAME} is
+     *                        physical-sequential and this reader takes its <em>first</em> record, so
+     *                        without an ordinal "first" would be whichever row the backend handed over
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if no binding is configured for {@link #DD_NAME}, if that binding
      *                               declares a record length other than {@link #RECORD_LENGTH}, or if
@@ -499,7 +516,8 @@ public class DateParmReader {
             JdbcTemplate jdbcTemplate,
             DatasetBindings datasetBindings,
             @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
-            RecordImageForm recordImageForm) {
+            RecordImageForm recordImageForm,
+            PhysicalSequence physicalSequence) {
 
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "A JdbcTemplate is required: the "
                 + "report date range is read from the " + DD_NAME + " dataset through the module's "
@@ -512,6 +530,12 @@ public class DateParmReader {
         this.recordImageForm = Objects.requireNonNull(recordImageForm, "A record-image representation is "
                 + "required: whether this deployment's driver presents a record image as characters or as "
                 + "bytes is stated once, by " + RecordImageForm.FORM_PROPERTY + ", and never decided per "
+                + "reader");
+        this.physicalSequence = Objects.requireNonNull(physicalSequence, "A physical-record ordinal is "
+                + "required: " + DD_NAME + " is a physical-sequential dataset and 0550-DATEPARM-READ "
+                + "takes its FIRST record, so which record that is depends on the order the dataset is "
+                + "read in - and SQL returns rows in no order unless a statement says which. It is "
+                + "stated once, by " + PhysicalSequence.EXPRESSION_PROPERTY + ", and never decided per "
                 + "reader");
         RecordImageForm.requireSingleByteCodePage(datasetCharset);
 
@@ -741,7 +765,7 @@ public class DateParmReader {
     public ReadResult read() {
         List<byte[]> rows;
         try {
-            rows = jdbcTemplate.query(firstRowOnly(relation.selectAll()), this::mapRecordImage);
+            rows = jdbcTemplate.query(firstRowOnly(selectRecordSql()), this::mapRecordImage);
         } catch (DataAccessException translated) {
             // WHEN OTHER. An I/O failure, reported as a status so the caller's own guard chain decides
             // what to do about it - which, in CBTRN03C, is to display and abend - and carrying the
@@ -915,7 +939,7 @@ public class DateParmReader {
      * @return the row-reading statement over the configured dataset
      */
     String selectRecordSql() {
-        return relation.selectAll();
+        return relation.selectAllInPhysicalSequence(physicalSequence);
     }
 
     /**
