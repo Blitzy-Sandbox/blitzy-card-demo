@@ -1,0 +1,95 @@
+{
+  "program": "COCRDUPC",
+  "caseId": "case01",
+  "description": "Statically derived by reading app/cbl/COCRDUPC.cbl, never captured from a run: the COBOL cannot be executed in this environment. EIBCALEN is 0, so the guard at :388-401 INITIALIZEs CARDDEMO-COMMAREA and WS-THIS-PROGCOMMAREA and sets CDEMO-PGM-ENTER with CCUP-DETAILS-NOT-FETCHED, the AID stays ENTER through the coercion at :413-424, and the ordered EVALUATE TRUE at :429 passes over arm one (:435-439, PF03 and the two done/failed arms) and arm two (:482-485, CDEMO-FROM-PROGRAM equal to LIT-CCLISTPGM) before matching arm three at :502-503, which performs 3000-SEND-MAP THRU 3000-SEND-MAP-EXIT at :507-508, flips the context to REENTER at :509 and leaves through COMMON-RETURN at :511. Every sent value is read from source at the width app/cpy-bms/COCRDUP.CPY declares for its xxxI item (4/40/8/8/40/8/11/16/50/1/2/4/2/40/80/21/18): 3100 fills CCRDUPAO with LOW-VALUES at :1053 before moving the two active COTTL01Y titles, LIT-THISTRANID and LIT-THISPGM, and the MM/DD/YY and HH:MM:SS renderings of the pinned clock; 3200 CONTINUEs at :1084-1085 under CDEMO-PGM-ENTER, so the seven data items keep those LOW-VALUES; 3250's first arm at :1141 supplies the X(40) prompt while WS-RETURN-MSG is still SPACES from :384, leaving ERRMSGO blank at its X(80) width; and 3300 marks and reddens nothing, because :1248's CDEMO-PGM-REENTER guard and the CCUP-CHANGES-NOT-OK guards from :1264 onward are all false - this case is the ENTER half of gate G38. Only EXPDAYC differs from DFHDFCOL, from the unconditional MOVE DFHBMDAR at :1285, and FKEYSO and FKEYSCO stay LOW-VALUES because the program never writes them - their text is a physical-map INITIAL in app/bms/COCRDUP.bms:162 and :167 that CICS merges at send time. Nothing is written on this path, so expectedWrites is empty by design rather than by omission; CARDDAT is seeded from the first three rows of fixtures/carddata.txt (row 1 is card 0500024453765740, account 00000000050, at the 150-byte CVACT02Y width) only because the handler is reached with a card key, and the cold start reads no record at all.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 0,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {},
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COCRDUP",
+    "nextMap": "CCRDUPA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCUP",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDUPC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTCDO": "\u0000",
+          "EXPMONO": "\u0000\u0000",
+          "EXPYEARO": "\u0000\u0000\u0000\u0000",
+          "EXPDAYO": "\u0000\u0000",
+          "INFOMSGO": "Please enter Account and Card Number    ",
+          "ERRMSGO": "                                                                                ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "FKEYSCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "CARDSIDC": "DFHDFCOL",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "EXPDAYC": "DFHBMDAR",
+          "INFOMSGC": "DFHDFCOL",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "FKEYSCC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": []
+}

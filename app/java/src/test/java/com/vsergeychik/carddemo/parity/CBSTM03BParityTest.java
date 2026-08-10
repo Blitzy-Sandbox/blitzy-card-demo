@@ -186,6 +186,21 @@ class CBSTM03BParityTest {
     private static final String UNRECOGNISED_DD = "NOSUCHDD";
 
     /**
+     * The key case06 hands to a keyed read of {@code TRNXFILE} and that the subroutine never looks
+     * at, because {@code 1000-TRNXFILE-PROC} has no {@code IF M03B-READ-K} to look at it with.
+     *
+     * <p>These are the first {@value StatementGenerationJobB#KEY_LENGTH} bytes of the 32-byte
+     * {@code TRNX-KEY} of the first seeded row - all that a {@code LK-M03B-KEY PIC X(25)} span can
+     * hold of a key {@code app/jcl/CREASTMT.JCL:30} defines to IDCAMS as {@code KEYS(32 0)}. It is
+     * paired with {@link StatementGenerationJobB#TRNXFILE_KEY_LENGTH}, so the call addresses 32
+     * bytes of a 25-byte span. That is deliberately nonsense and is deliberately harmless: the only
+     * statement that would evaluate {@code LK-M03B-KEY (1:LK-M03B-KEY-LN)} is the one at
+     * {@code app/cbl/CBSTM03B.CBL:189} and {@code :214}, in the two RANDOM paragraphs, so nothing
+     * here ever reference-modifies the span and {@link Request#usedKey()} is never reached.
+     */
+    private static final String TRNXFILE_UNUSED_KEY = "0500024453765740000000005";
+
+    /**
      * The dataset code page, stated explicitly and never taken from the platform (practice B8).
      *
      * <p>{@code US-ASCII} because the authoritative fixtures under {@code app/data/ASCII} are ASCII;
@@ -663,32 +678,54 @@ class CBSTM03BParityTest {
         int acctKey = StatementGenerationJobB.ACCTFILE_CALLER_KEY_LENGTH;
 
         return switch (caseId) {
-            // TRNXFILE - ACCESS MODE IS SEQUENTIAL. OPEN, READ, CLOSE and end of file.
+            // TRNXFILE - ACCESS MODE IS SEQUENTIAL. OPEN, READ, end of file, and CLOSE both after a
+            // browse (case03) and straight after the OPEN (case05).
             case "case01" -> List.of(Call.of(trnx, Operation.OPEN));
             case "case02" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ));
             case "case03" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ),
                 Call.of(trnx, Operation.READ), Call.keeping(trnx, Operation.CLOSE));
             case "case04" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ),
                 Call.keeping(trnx, Operation.READ));
+            // A CLOSE with no READ between it and the OPEN: the third guard (:146) reached only
+            // after the first two (:135, :140) were evaluated and failed, and - because :857-860
+            // omits the MOVE SPACES that :745 and :834 issue - LK-M03B-FLDT arrives blank and comes
+            // back blank, so "a CLOSE assigns no record area" is pinned in the direction case03,
+            // which closes after two reads, cannot reach.
+            case "case05" -> List.of(Call.of(trnx, Operation.OPEN),
+                Call.keeping(trnx, Operation.CLOSE));
+
+            // 'K' against a SEQUENTIAL DD - the other half of the capability asymmetry case12 and
+            // case15 pin from the RANDOM side. 1000-TRNXFILE-PROC guards OPEN (:135), READ (:140)
+            // and CLOSE (:146) and has no IF M03B-READ-K, so all three conditions are false and
+            // control falls into 1900-EXIT (:151-152), which still moves TRNXFILE-STATUS into
+            // LK-M03B-RC. The OPEN before it is what makes the stale status '00' rather than
+            // undefined: TRNXFILE-STATUS is declared at :83-85 with no VALUE clause. The key and
+            // the 32-byte TRNX-KEY length are supplied and never read, because the MOVE LK-M03B-KEY
+            // (1:LK-M03B-KEY-LN) that would read them lives only at :189 and :214.
+            case "case06" -> List.of(Call.of(trnx, Operation.OPEN),
+                Call.keyed(trnx, TRNXFILE_UNUSED_KEY, StatementGenerationJobB.TRNXFILE_KEY_LENGTH));
 
             // XREFFILE - the second SEQUENTIAL file, seeded from the 36-byte cardxref fixture.
-            case "case05" -> List.of(Call.of(xref, Operation.OPEN));
-            case "case06" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ));
             case "case07" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
                 Call.of(xref, Operation.READ), Call.of(xref, Operation.READ),
                 Call.keeping(xref, Operation.CLOSE));
             case "case08" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
                 Call.keeping(xref, Operation.READ), Call.keeping(xref, Operation.CLOSE));
 
-            // CUSTFILE - ACCESS MODE IS RANDOM. OPEN, keyed READ hit and miss, CLOSE, and the
-            // plain READ that reaches no IF at all.
+            // CUSTFILE - ACCESS MODE IS RANDOM. OPEN, CLOSE, and the keyed READ taken both ways:
+            // the miss in case 11, and in case 12 the hit that pins the whole 500-byte CUSTREC
+            // record field by field. Case 12's key is not arbitrary - 000000050 is the
+            // XREF-CUST-ID of row 0 of app/data/ASCII/cardxref.txt, so it is the value the
+            // statement flow actually carries out of the cross-reference and into
+            // app/cbl/CBSTM03A.CBL:368 2000-CUSTFILE-GET. The plain READ that reaches no IF at all
+            // on a RANDOM file is asserted on the other RANDOM DD, in case 15.
             case "case09" -> List.of(Call.of(cust, Operation.OPEN));
             case "case10" -> List.of(Call.of(cust, Operation.OPEN),
                 Call.keyed(cust, "000000011", custKey), Call.keeping(cust, Operation.CLOSE));
             case "case11" -> List.of(Call.of(cust, Operation.OPEN),
                 Call.keyed(cust, "000000099", custKey));
             case "case12" -> List.of(Call.of(cust, Operation.OPEN),
-                Call.keyed(cust, "000000099", custKey), Call.keeping(cust, Operation.READ));
+                Call.keyed(cust, "000000050", custKey));
 
             // ACCTFILE - the second RANDOM file, whose RECORD KEY is PIC 9(11) rather than PIC X.
             case "case13" -> List.of(Call.of(acct, Operation.OPEN),

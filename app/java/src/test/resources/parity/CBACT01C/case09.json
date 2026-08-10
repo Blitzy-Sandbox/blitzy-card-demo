@@ -1,12 +1,16 @@
 {
   "program": "CBACT01C",
   "caseId": "case09",
-  "description": "ACCT-ADDR-ZIP is stored but never labelled. app/cpy/CVACT01Y.cpy:L15 declares it at offset 102, yet 1100-DISPLAY-ACCT-RECORD at app/cbl/CBACT01C.cbl:L119-L129 displays eleven of the twelve named spans and omits this one. The inline record carries a value no other span could hold, so the expected line sequence proves it twice over: it appears once, inside the raw 300-byte image the mainline displays at L78, and in none of the eleven labelled lines. Adding a twelfth labelled line would be a new feature and would fail this case.",
+  "description": "Key order is not insertion order, proved against the shipped fixture. app/cbl/CBACT01C.cbl:L29-L33 declares ACCTFILE as ORGANIZATION IS INDEXED with ACCESS MODE IS SEQUENTIAL over RECORD KEY IS FD-ACCT-ID, so a sequential browse of the KSDS returns records in ascending ACCT-ID order however they were loaded. The five inline rows are therefore SEEDED IN DESCENDING KEY ORDER - fixture row indices 4, 3, 2, 1, 0, that is keys 00000000005, 00000000004, 00000000003, 00000000002 and 00000000001 - while EVERY EXPECTATION IS STATED IN ASCENDING KEY ORDER, 00000000001 through 00000000005. Two independent observations pin it: the sixty-five display lines between the banners, and the final state, which is read back from the relation with an ascending ORDER BY rather than echoed from the seed. A JDBC-backed AccountRepository.readNext that returned rows in insertion order would pass every case in this set that seeds in natural order, and fail this one twice over. The rows are the first five records of app/data/ASCII/acctdata.txt, unaltered, so the sixty-five expected lines are byte-identical to expectedMessages[1..65] of case01.json, which seeds the same five records at the head of a natural-order fifty-record pass. That equality is the second gate: it proves the reordering changed the ORDER of the blocks and nothing inside them. Emission order within a record is thirteen lines because each record is displayed twice. 1100-DISPLAY-ACCT-RECORD is performed from inside the '00' arm of 1000-ACCTFILE-GET-NEXT at L96 and emits eleven labelled lines then a forty-nine-hyphen separator; only then does the mainline's own DISPLAY ACCOUNT-RECORD at L78 emit the raw 300-byte image. 1 + (5 x 13) + 1 = 67 lines. RETURN-CODE is 0 because the program never touches it; expectedWrites is empty because CBACT01C opens the dataset INPUT and issues no WRITE and no REWRITE - the mandated name AccountBalanceJob notwithstanding, it computes no balance; and jobParameters is empty because app/jcl/READACCT.jcl declares a bare EXEC PGM=CBACT01C with no PARM. Offsets are taken mechanically from app/cpy/CVACT01Y.cpy, zero-based over 300 bytes: ACCT-ID 0/11, ACCT-ACTIVE-STATUS 11/1, ACCT-CURR-BAL 12/12, ACCT-CREDIT-LIMIT 24/12, ACCT-CASH-CREDIT-LIMIT 36/12, ACCT-OPEN-DATE 48/10, ACCT-EXPIRAION-DATE 58/10, ACCT-REISSUE-DATE 68/10, ACCT-CURR-CYC-CREDIT 78/12, ACCT-CURR-CYC-DEBIT 90/12, ACCT-ADDR-ZIP 102/10, ACCT-GROUP-ID 112/10 and FILLER 122/178, summing to exactly 300. ACCT-EXPIRAION-DATE is misspelled in the copybook and is spelled that way here on purpose. A PIC S9(10)V99 span is TWELVE characters and not thirteen: its trailing byte is a zoned sign overpunch carrying the low-order digit as well as the sign, so 00000001940{ is the twelve digits 000000019400 and reads 194.00 at scale 2, '{' being a positive zero. The 178 FILLER bytes are emitted as spaces, which is what lets the 300-byte total assert that FILLER was emitted at all. This case also still pins the span the display paragraph omits. ACCT-ADDR-ZIP holds A000000000 at offset 102 in all five rows and appears in the five raw 300-byte images and in none of the eleven labelled lines, because L119-L129 labels eleven of the twelve named spans and never this one; ACCT-GROUP-ID at offset 112 is ten spaces in this fixture and IS labelled. Adding a twelfth labelled line would be a new feature and would fail here. Every byte is US-ASCII, the code page of app/data/ASCII. The expected values are STATICALLY DERIVED - read out of the copybook layout, the SELECT clause, the paragraph order and the shipped fixture. Nothing here was captured from, recorded against or replayed from an execution of the legacy COBOL, which is empirically impossible in this environment; only the provenance of the expected values is substituted, and that substitution is escalated rather than absorbed.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "ACCTFILE": {
       "rows": [
-        "00000000301Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{Z987654321GRPZIPTEST                                                                                                                                                                                  "
+        "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
       ]
     }
   },
@@ -16,7 +20,47 @@
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000301Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{Z987654321GRPZIPTEST                                                                                                                                                                                  "
+      "fields": {
+        "ACCT-ID": "00000000001",
+        "ACCT-ADDR-ZIP": "A000000000"
+      },
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "fields": {
+        "ACCT-ID": "00000000002",
+        "ACCT-ADDR-ZIP": "A000000000"
+      },
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "fields": {
+        "ACCT-ID": "00000000003",
+        "ACCT-ADDR-ZIP": "A000000000"
+      },
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 3,
+      "fields": {
+        "ACCT-ID": "00000000004",
+        "ACCT-ADDR-ZIP": "A000000000"
+      },
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 4,
+      "fields": {
+        "ACCT-ID": "00000000005",
+        "ACCT-ADDR-ZIP": "A000000000"
+      },
+      "expectedBytes": "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     }
   ],
   "expectedReturnCode": 0,
@@ -27,7 +71,7 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000301"
+      "text": "ACCT-ID                 :00000000001"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -67,7 +111,7 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-GROUP-ID           :GRPZIPTEST"
+      "text": "ACCT-GROUP-ID           :          "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -75,12 +119,228 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "00000000301Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{Z987654321GRPZIPTEST                                                                                                                                                                                  "
+      "text": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000002"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001580{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000061300{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000054480{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2013-06-19"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2024-08-11"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2024-08-11"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000003"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001470{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000049090{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000005380{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2013-08-23"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2024-01-10"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2024-01-10"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000004"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000000400{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000035030{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000027890{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2012-11-17"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2023-12-16"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2023-12-16"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000005"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000003450{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000038190{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000024300{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2012-10-03"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-03-09"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-03-09"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "channel": "DISPLAY_LINE",
       "text": "END OF EXECUTION OF PROGRAM CBACT01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 5,
+      "recordLength": 300
+    }
+  ]
 }

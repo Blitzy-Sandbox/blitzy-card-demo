@@ -1,13 +1,14 @@
 {
   "program": "CORPT00C",
   "caseId": "case08",
-  "description": "The WHEN CUSTOMI arm at :256-436 taken all the way through with a well-formed range and CONFIRMI = 'Y' - the third arm of the ordered EVALUATE. Every stage runs and none rejects: the blank chain at :258-303 falls to WHEN OTHER CONTINUE at :301, the six FUNCTION NUMVAL-C stores at :305-327 leave each part unchanged because each already conforms, the six text edits at :329-379 pass, :381-386 compose the two ten-byte 'YYYY-MM-DD' groups and the two CALL 'CSUTLDTC' sites at :392 and :412 both report CSUTLDTC-RESULT-SEV-CD = '0000', so :396 CONTINUEs at both. WS-REPORT-NAME is assigned at :433 - after the edits, not before - and all seventeen records are emitted. Record 15 is the DATEPARM record: read back through DateParmReader's twenty-one byte receiver it yields exactly the range this request asked for, which is the strongest available proof that the online screen and the batch report agree. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The WHEN OTHER arm of SUBMIT-JOB-TO-INTRDR's ordered EVALUATE at :484-493 - the last of its three arms and the only one no other case in this folder reaches. CONFIRMI arrives holding 'Q', a single character that is neither 'Y'/'y' nor 'N'/'n' nor blank, so the blank-confirm guard at :464 is FALSE, :476 IF NOT ERR-FLG-ON is TRUE, and the inner EVALUATE TRUE is walked in source order: :478 does not match, :480 does not match, and :484 WHEN OTHER matches LAST. Proving that arm is reachable, and reachable last, is the whole purpose of this case (gate G30). The message is composed by the STRING at :485-490 from three operands: '\"' DELIMITED BY SIZE contributes one character; CONFIRMI OF CORPT0AI DELIMITED BY SPACE contributes the single character 'Q', because app/cpy-bms/CORPT00.CPY:114 declares it PIC X(1) and a one-character field holds no space to delimit on; and '\" is not a valid value to confirm...' DELIMITED BY SIZE contributes thirty-six - thirty-eight characters in total, in which BOTH double quotes are literal message content rather than delimiters. WS-MESSAGE is PIC X(80) at :39 so it carries those thirty-eight plus forty-two spaces; :560 moves it to ERRMSGO, which CORPT00.CPY:224 declares PIC X(78), so the screen line is the same thirty-eight followed by forty spaces and the two bytes lost in that MOVE are why the two message channels are declared separately. NOTHING IS WRITTEN, and the reason is doubly determined rather than incidental: :491 raises the error flag and :493 performs SEND-TRNRPT-SCREEN, which ends at :580 GO TO RETURN-TO-CICS - the program's ONLY GO TO, a benign shared terminal collapsing to a return after a shared finalisation step (rule R7, so gate G32 does not apply) - so control never reaches :496 at all; and even if it did, the PERFORM VARYING at :498-508 carries OR ERR-FLG-ON in its UNTIL, which already holds, so its body would run zero times. The monthly arm at :213-238 has already run to completion, so WS-REPORT-NAME holds 'Monthly' padded to the PIC X(10) at :58 and the four PARM- substitution points hold 2022-07-01 and 2022-07-31, the :229-230 DATE-OF-INTEGER round trip included; they are simply never written anywhere. expectedWrites is therefore empty, and per the case model an empty write list is a POSITIVE assertion that nothing was written rather than an absence of interest - that is this case's negative form of gate G42. The JOBS port is deliberately NOT also pinned as a dataset holding zero rows: a dataset-level expectation asserts that the dataset itself was opened or created, and on this path the program never reaches WIRTE-JOBSUB-TDQ at :515 at all, so there is no EXEC CICS WRITEQ TD and no queue interaction of any kind to claim. Pinning it at zero rows would assert an open that never happened, which is the opposite of parity; case20, the other arm that emits nothing, states it the same way. Unlike the 'N' arm at :480-483 that case20 pins, this arm does NOT perform INITIALIZE-ALL-FIELDS, so the ten xxxI items keep exactly what the operator typed; and because CORPT00.CPY:121 declares CORPT0AO REDEFINES CORPT0AI the xxxO items share that storage, so the screen echoes MONTHLYO 'X' and CONFIRMO 'Q' straight back at the operator. Gate G38 is asserted here as what this program actually does, not as a template: CORPT00C copies neither CSSETATY nor CSSTRPFY - its verified COPY list at :138-149 is COCOM01Y, CORPT00, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA - and the only DFH colour constant it names anywhere is DFHGREEN at :448, on a path this case never reaches because :445 IF NOT ERR-FLG-ON is false. There is therefore no DFHRED move and no '*' marker to assert, and fabricating one would be a parity violation; the error presentation is exactly three things: the byte-exact ERRMSGO text, the cursor placed at CONFIRML by :492, and ERRMSGC left at its default. The unit is reached as a CONTROLLER_POJO: the controller is constructed directly and its handler method called once as a plain Java object, with no MockMvc, no servlet container and no server-side session anywhere in the path (gates G51, G37). Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl cross-checked against app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy, app/cpy/COCOM01Y.cpy and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is empirically impossible in this environment (risk R-A, practice B12). DFHAID is IBM-supplied and absent from this repository, so the AID mnemonic resolves through common/CicsAid.java (risk R-D). review_rules returns exactly one line, 'No user rules provided', so NO user rule governs this fixture and its absence is not licence to lower the bar; enterprise practice governs instead - B12 provenance as above, B8 explicitness with the charset named US-ASCII and every one of the seventeen xxxO fields stated rather than defaulted, B7 the clock pinned so the two header items are deterministic, B5 preservation of the DELIMITED BY SPACE echo of a one-character field and of the fact that this arm does not clear the form, B3 app/cbl, app/cpy, app/cpy-bms, app/bms, app/csd, app/jcl and app/proc read as provenance only and are never written, and B1 no placeholders anywhere.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,14 +29,8 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "CUSTOMI": "Y",
-      "SDTMMI": "07",
-      "SDTDDI": "01",
-      "SDTYYYYI": "2026",
-      "EDTMMI": "07",
-      "EDTDDI": "31",
-      "EDTYYYYI": "2026",
-      "CONFIRMI": "Y"
+      "MONTHLYI": "X",
+      "CONFIRMI": "Q"
     },
     "forcedOutcomes": {}
   },
@@ -66,11 +61,11 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
-          "MONTHLYO": " ",
+          "CURTIMEO": "10:30:45",
+          "MONTHLYO": "X",
           "YEARLYO": " ",
           "CUSTOMO": " ",
           "SDTMMO": "  ",
@@ -79,165 +74,28 @@
           "EDTMMO": "  ",
           "EDTDDO": "  ",
           "EDTYYYYO": "    ",
-          "CONFIRMO": " ",
-          "ERRMSGO": "Custom report submitted for printing ...                                      "
+          "CONFIRMO": "Q",
+          "ERRMSGO": "\"Q\" is not a valid value to confirm...                                        "
         },
         "attributes": {
-          "ERRMSGC": "DFHGREEN"
+          "ERRMSGC": "DFHDFCOL"
         }
       }
     ],
-    "cursorField": "MONTHLYL",
+    "cursorField": "CONFIRML",
     "termination": "RETURN_TRANSID"
   },
-  "expectedWrites": [
-    {
-      "dataset": "JOBS",
-      "rowIndex": 0,
-      "fields": {
-        "JCL-RECORD": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
-      },
-      "expectedBytes": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 1,
-      "fields": {
-        "JCL-RECORD": "// NOTIFY=&SYSUID                                                               "
-      },
-      "expectedBytes": "// NOTIFY=&SYSUID                                                               "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 2,
-      "fields": {
-        "JCL-RECORD": "//*                                                                             "
-      },
-      "expectedBytes": "//*                                                                             "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 3,
-      "fields": {
-        "JCL-RECORD": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
-      },
-      "expectedBytes": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 4,
-      "fields": {
-        "JCL-RECORD": "//*                                                                             "
-      },
-      "expectedBytes": "//*                                                                             "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 5,
-      "fields": {
-        "JCL-RECORD": "//STEP10 EXEC PROC=TRANREPT                                                     "
-      },
-      "expectedBytes": "//STEP10 EXEC PROC=TRANREPT                                                     "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 6,
-      "fields": {
-        "JCL-RECORD": "//*                                                                             "
-      },
-      "expectedBytes": "//*                                                                             "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 7,
-      "fields": {
-        "JCL-RECORD": "//STEP05R.SYMNAMES DD *                                                         "
-      },
-      "expectedBytes": "//STEP05R.SYMNAMES DD *                                                         "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 8,
-      "fields": {
-        "JCL-RECORD": "TRAN-CARD-NUM,263,16,ZD                                                         "
-      },
-      "expectedBytes": "TRAN-CARD-NUM,263,16,ZD                                                         "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 9,
-      "fields": {
-        "JCL-RECORD": "TRAN-PROC-DT,305,10,CH                                                          "
-      },
-      "expectedBytes": "TRAN-PROC-DT,305,10,CH                                                          "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 10,
-      "fields": {
-        "JCL-RECORD": "PARM-START-DATE,C'2026-07-01'                                                   "
-      },
-      "expectedBytes": "PARM-START-DATE,C'2026-07-01'                                                   "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 11,
-      "fields": {
-        "JCL-RECORD": "PARM-END-DATE,C'2026-07-31'                                                     "
-      },
-      "expectedBytes": "PARM-END-DATE,C'2026-07-31'                                                     "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 12,
-      "fields": {
-        "JCL-RECORD": "/*                                                                              "
-      },
-      "expectedBytes": "/*                                                                              "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 13,
-      "fields": {
-        "JCL-RECORD": "//STEP10R.DATEPARM DD *                                                         "
-      },
-      "expectedBytes": "//STEP10R.DATEPARM DD *                                                         "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 14,
-      "fields": {
-        "JCL-RECORD": "2026-07-01 2026-07-31                                                           "
-      },
-      "expectedBytes": "2026-07-01 2026-07-31                                                           "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 15,
-      "fields": {
-        "JCL-RECORD": "/*                                                                              "
-      },
-      "expectedBytes": "/*                                                                              "
-    },
-    {
-      "dataset": "JOBS",
-      "rowIndex": 16,
-      "fields": {
-        "JCL-RECORD": "/*EOF                                                                           "
-      },
-      "expectedBytes": "/*EOF                                                                           "
-    }
-  ],
+  "expectedWrites": [],
   "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Custom report submitted for printing ...                                        "
+      "text": "\"Q\" is not a valid value to confirm...                                          "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "Custom report submitted for printing ...                                      "
+      "text": "\"Q\" is not a valid value to confirm...                                        "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -245,12 +103,5 @@
     }
   ],
   "normalisations": [],
-  "expectedDatasets": [
-    {
-      "dataset": "JOBS",
-      "channel": "WRITES",
-      "rowCount": 17,
-      "recordLength": 80
-    }
-  ]
+  "expectedDatasets": []
 }

@@ -1,15 +1,15 @@
 {
   "program": "CBTRN03C",
   "caseId": "case04",
-  "description": "The account break and the WS-FIRST-TIME guard that suppresses it. :181 compares WS-CURR-CARD-NUM with TRAN-CARD-NUM - both PIC X(16) - and :182 writes account totals only when WS-FIRST-TIME is 'N', so the very first record breaks no account even though the card number certainly changed from the initial spaces. Four records over three cards produce exactly two account-total pairs, each an REPORT-ACCOUNT-TOTALS line followed by a TRANSACTION-HEADER-2 rule, and the third account's total is discarded unwritten when the run ends.",
+  "description": "NEGATIVE and MIXED-SIGN amounts - the half of the numeric surface case03's four positive magnitudes cannot reach, and the complement of the all-Z zero rule. Four in-range records sit on the single card 0500024453765740, which is row 1 of app/data/ASCII/cardxref.txt and whose XREF-ACCT-ID is 00000000050, so :181 finds WS-CURR-CARD-NUM equal to TRAN-CARD-NUM on records 2, 3 and 4 and re-reads the cross-reference only once, while 1500-B-LOOKUP-TRANTYPE and 1500-C-LOOKUP-TRANCATG still run on every record. One card means no account break, so the report holds no REPORT-ACCOUNT-TOTALS record and the page total is a clean signed running sum whose sign FLIPS mid-run: positive after record 1, negative from record 2 onward, negative at the foot. The signs are chosen from the families the real daily file actually carries: +14.00 as a type 01 'Regular Sales Draft' on TRAN-SOURCE 'POS TERM  ', then three credit-side negatives - type 03 'Credit to Account', type 05 'Refund credit' and type 06 'Fraud reversal' - each on TRAN-SOURCE 'OPERATOR  ', because app/data/ASCII/dailytran.txt holds exactly two shapes and every one of its 50 negative rows is a 03/0001/OPERATOR row while all 250 positives are 01/0001/POS TERM. Type codes 01, 03, 05 and 06 are all in app/data/ASCII/trantype.txt and keys 010001, 030001, 050001 and 060001 are all in app/data/ASCII/trancatg.txt, so no lookup abends. ENCODING. TRAN-AMT is PIC S9(09)V99 at CVTRA05Y bytes 133-143: eleven zoned US-ASCII DISPLAY bytes, nine integer digits then two cents digits, the sign carried as an overpunch in the TRAILING byte and never as a separate leading character in the stored record. The alphabet is {ABCDEFGHI for +0..+9 and }JKLMNOPQR for -0..-9, confirmed against the trailing byte of all 300 rows of the daily file, whose census covers all twenty characters. Each amount writes its first ten digits literally and overpunches only the low-order byte: +14.00 gives digits 000000014|00, so '0000000140' then final digit 0 positive = '{' -> '0000000140{'; -25.99 gives 000000025|99, so '0000000259' then final digit 9 negative = 'R' -> '0000000259R'; -4321.09 gives 000004321|09, so '0000043210' then final digit 9 negative = 'R' -> '0000043210R'; -987654.32 gives 000987654|32, so '0009876543' then final digit 2 negative = 'K' -> '0009876543K'. Every one re-decodes to the value intended. WS-LINE-COUNTER and WS-PAGE-SIZE are the only COMP-3 items in sight and they live in WORKING-STORAGE at :129-132; no copybook in this repository declares COMP-3, so no packed-decimal unpacking enters the codec. RENDERING. Both CVTRA07Y masks are fifteen bytes - sign, ZZZ, comma, ZZZ, comma, ZZZ, point, ZZ - and the sign is a FIXED insertion character at byte 1, not a floating one: PIC -ZZZ,ZZZ,ZZZ.ZZ prints '-' there for a negative value and a space otherwise, and PIC +ZZZ,ZZZ,ZZZ.ZZ prints '+' there for a non-negative value and '-' for a negative one. Zero suppression then walks the nine integer positions left to right, replacing zeros - and any comma still inside the suppressed run - with spaces, stopping at the first significant digit or at the decimal point. So the sign stays at byte 1 while the digits stay right-aligned in the fourteen-byte body, and a small negative renders as a minus followed by a long run of spaces. Detail record 1, +14.00 under the '-' mask: byte 1 space because the value is positive, integer 000000014 suppresses bytes 2-4, the first comma at byte 5, bytes 6-8 and the second comma at byte 9, then '1' at byte 11 and '4' at byte 12, '.' at 13 and '00' - ten spaces then '14.00', fifteen bytes. Detail record 2, -25.99: '-' at byte 1, integer 000000025 suppresses everything through byte 10 including both commas, '2' at 11 and '5' at 12, '.99' - one minus, nine spaces, '25.99', fifteen bytes, and the magnitude prints unsigned in the digit positions because the sign lives only at byte 1. Detail record 3, -4321.09: '-' at byte 1, bytes 2-4 suppressed, the FIRST comma suppressed at byte 5 because it lies inside the suppressed run, bytes 6-7 suppressed, '4' at byte 8, the second comma prints at byte 9, '321' at 10-12, '.09' - '-      4,321.09', fifteen bytes. Detail record 4, -987654.32: '-' at byte 1, bytes 2-4 suppressed, first comma suppressed, '987' at bytes 6-8, second comma prints, '654' at 10-12, '.32' - '-    987,654.32', fifteen bytes. The page and grand totals, -1979641.72 under the '+' mask, are where that mask shows '-' rather than '+': '-' at byte 1, only bytes 2-3 suppressed, '1' at byte 4, then BOTH commas print - '-  1,979,641.72', fifteen bytes - which is the strongest available proof that the sign does not float, since it stays at byte 1 with two suppressed positions between it and the leading digit. TRAN-REPORT-AMT, REPT-PAGE-TOTAL and REPT-GRAND-TOTAL are fifteen-character strings produced by an explicit formatter, never a raw number, and every amount and every total in this case is strictly non-zero: every digit position in both masks is Z, so an exactly zero value would blank all fifteen bytes including the decimal point, and that scenario belongs to the mask assertions rather than here. ARITHMETIC. All four amounts and all three accumulators are PIC S9(09)V99, so the scale is a uniform 2 and every add is exact at scale 2. The running sum is 14.00, then 14.00 + (-25.99) = -11.99 where the sign flips, then -11.99 + (-4321.09) = -4333.08, then -4333.08 + (-987654.32) = -991987.40, which is what :199 displays as the zoned image '0009919874}' before anything else happens. PRESERVED DEFECT 2. The read at :249 is a READ statement with an INTO phrase, which leaves its receiving area untouched AT END, so when end of file arrives TRAN-RECORD still holds record 4. The range test at :173-174 therefore still sees record 4's TRAN-PROC-TS and passes, the ELSE arm at :197-204 runs, and its ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL adds record 4's -987654.32 a SECOND time: -991987.40 + (-987654.32) = -1979641.72, pushing the total further negative, and :297 then rolls that same doubled figure into WS-GRAND-TOTAL, which is why the page total and the grand total read identically here. That is inherited legacy behaviour and it is kept deliberately; repairing it would be a behaviour change and a parity violation, so the expectation below pins the doubled figure rather than the 991987.40 the four records actually sum to. ROUNDING. The keyword ROUNDED appears zero times in CBTRN03C and zero times across all 28 programs, so COBOL truncates on store and RoundingMode.DOWN is the only faithful semantics. DOWN truncates toward ZERO - it truncates the magnitude - which matters precisely because every figure here except the first amount is negative: it is emphatically not FLOOR, which for a negative value moves away from zero rather than toward it, and it is not half-up, half-even or ceiling rounding either. No truncation is actually exercised by these values, because every operand and every result already carries exactly two decimal places; the gate is that nothing in the path can round. PROVENANCE. Every expected value in this case is STATICALLY DERIVED from app/cbl/CBTRN03C.cbl and cross-checked against the CVTRA05Y and CVTRA07Y byte layouts, the LRECL=133 RECFM=FB DCB of app/jcl/TRANREPT.jcl:78 and app/proc/TRANREPT.prc:76, and the real US-ASCII fixtures in app/data/ASCII. None of it was captured from a live COBOL run: eight independently verified blockers make executing the legacy programs impossible in this environment, and that substitution of provenance - and only of provenance - is the open risk carried against this baseline.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000200{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000003010001POS TERM  A statically derived fixture transaction                                                            0000000300{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000006835861981715162022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000004010001POS TERM  A statically derived fixture transaction                                                            0000000400{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000009238771932473302022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000000001010001POS TERM  Statically derived fixture transaction - positive debit, running total positive                     0000000140{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-01-11.22.33.4444442022-01-01-11.22.33.444444                    ",
+        "TRN0000000000002030001OPERATOR  Statically derived fixture transaction - negative credit, running total flips sign                  0000000259R999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-14-11.22.33.4444442022-02-14-11.22.33.444444                    ",
+        "TRN0000000000003050001OPERATOR  Statically derived fixture transaction - negative refund, crosses the thousands comma               0000043210R999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-20-11.22.33.4444442022-05-20-11.22.33.444444                    ",
+        "TRN0000000000004060001OPERATOR  Statically derived fixture transaction - negative reversal, double counted at end of file           0009876543K999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-11.22.33.4444442022-07-06-11.22.33.444444                    "
       ]
     },
     "CARDXREF": {
@@ -52,57 +52,37 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                14.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                20.00                     "
+      "expectedBytes": "TRN0000000000002 00000000050 03-Credit          0001-Credit to Account             OPERATOR      -         25.99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "Account Total....................................................................................+         30.00                     "
+      "expectedBytes": "TRN0000000000003 00000000050 05-Refund          0001-Refund credit                 OPERATOR      -      4,321.09                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "TRN0000000000004 00000000050 06-Reversal        0001-Fraud reversal                OPERATOR      -    987,654.32                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "TRN0000000000003 00000000027 01-Purchase        0001-Regular Sales Draft           POS TERM                30.00                     "
+      "expectedBytes": "Page Total ......................................................................................-  1,979,641.72                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 9,
-      "expectedBytes": "Account Total....................................................................................+         30.00                     "
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 10,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 11,
-      "expectedBytes": "TRN0000000000004 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                40.00                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 12,
-      "expectedBytes": "Page Total ......................................................................................+        140.00                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 13,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 14,
-      "expectedBytes": "Grand Total......................................................................................+        140.00                     "
+      "expectedBytes": "Grand Total......................................................................................-  1,979,641.72                     "
     }
   ],
   "expectedFinalState": [
@@ -129,57 +109,37 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                14.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                20.00                     "
+      "expectedBytes": "TRN0000000000002 00000000050 03-Credit          0001-Credit to Account             OPERATOR      -         25.99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "Account Total....................................................................................+         30.00                     "
+      "expectedBytes": "TRN0000000000003 00000000050 05-Refund          0001-Refund credit                 OPERATOR      -      4,321.09                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "TRN0000000000004 00000000050 06-Reversal        0001-Fraud reversal                OPERATOR      -    987,654.32                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "TRN0000000000003 00000000027 01-Purchase        0001-Regular Sales Draft           POS TERM                30.00                     "
+      "expectedBytes": "Page Total ......................................................................................-  1,979,641.72                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 9,
-      "expectedBytes": "Account Total....................................................................................+         30.00                     "
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 10,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 11,
-      "expectedBytes": "TRN0000000000004 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                40.00                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 12,
-      "expectedBytes": "Page Total ......................................................................................+        140.00                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 13,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 14,
-      "expectedBytes": "Grand Total......................................................................................+        140.00                     "
+      "expectedBytes": "Grand Total......................................................................................-  1,979,641.72                     "
     }
   ],
   "expectedReturnCode": 0,
@@ -194,27 +154,27 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000001010001POS TERM  Statically derived fixture transaction - positive debit, running total positive                     0000000140{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-01-11.22.33.4444442022-01-01-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000200{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000002030001OPERATOR  Statically derived fixture transaction - negative credit, running total flips sign                  0000000259R999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-14-11.22.33.4444442022-02-14-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000003010001POS TERM  A statically derived fixture transaction                                                            0000000300{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000006835861981715162022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000003050001OPERATOR  Statically derived fixture transaction - negative refund, crosses the thousands comma               0000043210R999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-20-11.22.33.4444442022-05-20-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000004010001POS TERM  A statically derived fixture transaction                                                            0000000400{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000009238771932473302022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000004060001OPERATOR  Statically derived fixture transaction - negative reversal, double counted at end of file           0009876543K999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-11.22.33.4444442022-07-06-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000000400{"
+      "text": "TRAN-AMT 0009876543K"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000001000{"
+      "text": "WS-PAGE-TOTAL0009919874}"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -231,13 +191,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 15,
+      "rowCount": 11,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 15,
+      "rowCount": 11,
       "recordLength": 133
     }
   ]

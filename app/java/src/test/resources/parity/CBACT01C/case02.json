@@ -1,23 +1,81 @@
 {
   "program": "CBACT01C",
   "caseId": "case02",
-  "description": "The account master exists and holds no record. The first READ at app/cbl/CBACT01C.cbl:L93 reports '10', so 1000-ACCTFILE-GET-NEXT moves 16 into APPL-RESULT, the 88 APPL-EOF condition at L107 holds, END-OF-FILE becomes 'Y' at L108, and the mainline's second IF END-OF-FILE = 'N' guard at L77 suppresses the raw display for the read that found nothing. The whole of SYSOUT is therefore the two banners, and the dataset-level expectation states what no row expectation can: the dataset was opened and holds zero rows at its declared 300-byte width.",
+  "description": "The minimal non-empty pass: exactly one account record, seeded as row 0 of the shipped fixture, which is what makes this case the diagnostic isolation of the per-record display block. When the module fails the diff gate, case01's 652 lines cannot say whether the thirteen-line block itself is wrong or only one of fifty records is; these fifteen lines can, because lines 2-14 here are byte-identical to case01's first record block by construction. case03 seeds this same row to pin all thirteen spans by name, so the two assert different things over one seed: that case fixes the field-for-field decode, this one fixes the emitted line sequence and the stored record image. The record is displayed TWICE, exactly as app/cbl/CBACT01C.cbl does it: 1100-DISPLAY-ACCT-RECORD is performed from inside the '00' arm of the read paragraph at L96, so its eleven labelled field lines (L119-L129) and the 49-hyphen separator (L130) precede the mainline's own raw DISPLAY ACCOUNT-RECORD at L78 - 1 + 13 + 1 = 15 lines in all. Three legacy oddities are preserved rather than tidied (practice B5): the double display itself; ACCT-ADDR-ZIP, which is stored at offset 102 and carries A000000000 in this row yet is never labelled by the paragraph, so A000000000 appears only inside the raw 300-byte line and in no labelled one; and ACCT-GROUP-ID, which is blank here, so its line ends in ten spaces. Sequencing: OPEN reports '00', the single READ reports '00' and displays, the second READ reports '10' so APPL-RESULT becomes 16, the 88 APPL-EOF condition at L107 holds, END-OF-FILE becomes 'Y' at L108 and the mainline's inner IF END-OF-FILE = 'N' guard at L77 suppresses a sixteenth line, then CLOSE reports '00' and GOBACK at L87 leaves RETURN-CODE 0 because the program never touches it. R1 caveat: the mandated name AccountBalanceJob performs no balance work whatsoever - the source Function header reads 'Read and print account data file' - and this case pins that positively, with expectedWrites empty and the one stored row asserted unchanged on the final-state channel, which the harness reads back from the relation rather than echoing from the seed. Record layout, taken mechanically from app/cpy/CVACT01Y.cpy as thirteen absolute zero-based spans over 300 bytes (practice B11): ACCT-ID 0/11, ACCT-ACTIVE-STATUS 11/1, ACCT-CURR-BAL 12/12, ACCT-CREDIT-LIMIT 24/12, ACCT-CASH-CREDIT-LIMIT 36/12, ACCT-OPEN-DATE 48/10, ACCT-EXPIRAION-DATE 58/10 (the copybook's own misspelling at L11, preserved per I1 - it is never silently corrected to the conventional spelling, which appears nowhere in this file), ACCT-REISSUE-DATE 68/10, ACCT-CURR-CYC-CREDIT 78/12, ACCT-CURR-CYC-DEBIT 90/12, ACCT-ADDR-ZIP 102/10, ACCT-GROUP-ID 112/10, FILLER 122/178 - summing to exactly 300. A PIC S9(10)V99 field occupies 12 bytes and not 13: it is zoned DISPLAY with the sign overpunched into the trailing byte, which is why every monetary value here ends in '{' - the positive-zero overpunch, a correct byte rather than corrupt data, and never to be normalised to '0'. The fixture bytes are US-ASCII (practice B8); acctdata.txt matches its copybook width exactly, so this case declares no normalisation. Baseline provenance (practice B12): these expected values are STATICALLY DERIVED from the COBOL source, the copybook byte layout, the app/jcl/READACCT.jcl STEP05 DD contract - a bare EXEC PGM with no PARM, hence no job parameter - and the real ASCII fixture. They were NEVER captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, as AAP section 0.7.6 establishes with eight independently verified blockers, and the substitution of provenance is escalated as risk R-A rather than absorbed silently. Gates discharged: G15 (one of the twenty cases this program owns), G16 (seeded from the real app/data/ASCII fixture, which matches the test fixture byte for byte), G18 (the diff count must be zero), G19 (the 300-byte account record width), G21 (FILLER present and space-filled - the raw line is 300 bytes with 122-299 all spaces), G46 (the dataset is addressed by its ACCTFILE binding key, and no dataset name appears anywhere) and G51 (the job is driven at tasklet level with no JobLauncher and no HTTP layer in the path).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "ACCTFILE": {
-      "empty": true,
-      "recordLength": 300,
-      "copybook": "CVACT01Y"
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
     }
   },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
       "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -29,7 +87,7 @@
     {
       "dataset": "ACCTFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 0,
+      "rowCount": 1,
       "recordLength": 300
     }
   ]

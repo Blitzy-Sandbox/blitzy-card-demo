@@ -1,7 +1,7 @@
 {
   "program": "COACTVWC",
   "caseId": "case03",
-  "description": "WHEN CDEMO-PGM-REENTER at :361 with an accepted eleven-digit filter, so all three reads run in the order 9000-READ-ACCT performs them at :693-711: the CXACAIX path yields XREF-CUST-ID and XREF-CARD-NUM at :739-740, ACCTDAT sets FOUND-ACCT-IN-MASTER at :788 and CUSTDAT sets FOUND-CUST-IN-MASTER at :838. Both 1200 projections therefore run, including the five PIC +ZZZ,ZZZ,ZZZ.99 money receivers and the SSN STRING of :496-504 whose twelfth byte the STRING never touches.",
+  "description": "WHEN CDEMO-PGM-REENTER at :361 - the third arm of the main EVALUATE TRUE at :323-383 and the anchor of this folder. An accepted eleven-digit filter drives all three EXEC CICS READs to WHEN DFHRESP(NORMAL), so every one of the 37 xxxO items is projected. 2210-EDIT-ACCOUNT clears both guards - the not-supplied test at :653-662 and the NOT NUMERIC OR ZEROES test at :666-676 - and takes its ELSE at :678-680, so FLG-ACCTFILTER-ISVALID is set at :679, INPUT-ERROR is false at :364 and 0000-MAIN performs 9000-READ-ACCT before 1000-SEND-MAP. 9000-READ-ACCT at :687-716 issues the reads in one order with an early-exit guard between each: 9200-GETCARDXREF-BYACCT at :723 reads the CXACAIX path on an eleven-byte RIDFLD for 50 bytes and moves XREF-CUST-ID and XREF-CARD-NUM into the commarea at :739-740; 9300-GETACCTDATA-BYACCT at :774 reads ACCTDAT for 300 bytes and sets FOUND-ACCT-IN-MASTER at :788; 9400-GETCUSTDATA-BYCUST at :825 reads CUSTDAT on a nine-byte RIDFLD for 500 bytes and sets FOUND-CUST-IN-MASTER at :838. Each of the three EVALUATE WS-RESP-CD blocks orders its arms NORMAL, NOTFND, WHEN OTHER, and this case drives the first at all three sites, which is the only place in the set where the '00' outcome is asserted on every call site. Both 1200-SETUP-SCREEN-VARS projections therefore run: the ten account fields at :471-491, including the misspelled ACCT-EXPIRAION-DATE at :488 and the five PIC +ZZZ,ZZZ,ZZZ.99 money receivers declared at app/cpy-bms/COACTVW.CPY:302, :314, :326, :332 and :344, and the seventeen customer fields at :493-523, in which CUST-ADDR-LINE-3 becomes the city field ACSCITYO at :513. INFOMSGO reads 'Enter or update id of account to display' and not 'Displaying details of given Account': WS-INFORM-OUTPUT is declared at :115-116 and no statement anywhere in the program ever SETs it, while 9000-READ-ACCT sets WS-NO-INFO-MESSAGE at :689 and no NORMAL arm replaces it, so the guard at :528-530 fires, SETs WS-PROMPT-FOR-INPUT and :534 moves that literal into INFOMSGO X(45) - which is also why 1300 takes its ELSE at :567-571 and colours INFOMSGC DFHNEUTR rather than DFHBMDAR. The twelfth byte of ACSTSSNO X(12) is a LOW-VALUE rather than a space, because :432 moves LOW-VALUES over the whole CACTVWAO area and the STRING at :496-504 transfers only the eleven characters of 931-24-8469 without padding its receiver. FLG-ACCTFILTER-BLANK is false, so the highlight at :561-565 does not fire even though CDEMO-PGM-REENTER holds - the negative half of the re-entry rule - and ACCTSIDC stays DFHDFCOL from :555. The cursor is ACCTSIDL either way, because the EVALUATE at :546-552 gives both of its arms the same body, and that duplication is preserved rather than collapsed. COACTVWC writes nothing, so the write channel is empty and all five seeded rows are pinned unchanged on the final-state channel, each field by field and as a whole image so that the 50-, 300- and 500-byte widths and their space-filled FILLER spans are both asserted. Statically derived and never captured from a live COBOL execution: every expected value comes from app/cbl/COACTVWC.cbl, the byte offsets of app/cpy/CVACT03Y.cpy, app/cpy/CVACT01Y.cpy and app/cpy/CVCUS01Y.cpy, the xxxO PICTURE clauses of app/cpy-bms/COACTVW.CPY, the PICOUT masks of app/bms/COACTVW.bms:120-195, the titles at app/cpy/COTTL01Y.cpy:19 and the active :22, and the real fixture rows - cardxref.txt 0-based rows 0, 1 and 2, acctdata.txt 0-based row 49 and custdata.txt 0-based row 49, the account and customer this case's seeded windows agree on. The cross reference is keyed by card number and is not ordered by account, which is why its row is named rather than assumed.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
@@ -20,6 +20,7 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
@@ -188,26 +189,80 @@
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
       "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
       "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004920{",
+        "ACCT-CREDIT-LIMIT": "00000061690{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000045870{",
+        "ACCT-OPEN-DATE": "2011-04-22",
+        "ACCT-EXPIRAION-DATE": "2023-03-09",
+        "ACCT-REISSUE-DATE": "2023-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYY-MM-DD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],

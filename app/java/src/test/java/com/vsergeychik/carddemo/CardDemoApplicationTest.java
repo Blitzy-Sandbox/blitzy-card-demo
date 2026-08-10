@@ -1,12 +1,10 @@
 package com.vsergeychik.carddemo;
 
-import com.vsergeychik.carddemo.config.BatchConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.CommandLineRunner;
-import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.io.IOException;
@@ -21,12 +19,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
-import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
  * Contract tests for {@link CardDemoApplication}, the module's composition root.
@@ -259,15 +255,16 @@ class CardDemoApplicationTest {
         }
 
         @Test
-        @DisplayName("every declared field is static final, so the class holds no mutable state")
-        void everyFieldIsStaticFinal() {
-            // Gate G53. The class carries one field - the relaxed environment-variable spelling of the
-            // job-name property, derived rather than transcribed - and a constant is not state.
+        @DisplayName("the class declares no field at all, so it holds no state of any kind")
+        void theClassDeclaresNoField() {
+            // Gate G53, asserted at its strongest. "No mutable static" would permit a constant, and a
+            // constant here would be the beginning of configuration living in the composition root -
+            // the very thing application.yml exists for. A composition root needs no field, so it has
+            // none, and this asserts the absence rather than the harmlessness.
             assertThat(authored(CardDemoApplication.class.getDeclaredFields()).stream()
-                    .filter(field -> !(Modifier.isStatic(field.getModifiers())
-                            && Modifier.isFinal(field.getModifiers())))
                     .map(java.lang.reflect.Field::getName)
                     .toList())
+                    .as("a composition root that needs no state should declare none")
                     .isEmpty();
         }
 
@@ -300,8 +297,8 @@ class CardDemoApplicationTest {
     class SourceLevelProhibitions {
 
         @Test
-        @DisplayName("every import is named, and the set is exactly what the entry point and its launch-"
-                + "mode decision need")
+        @DisplayName("every import is named, and the set is exactly the two Boot types the entry point "
+                + "needs")
         void importsAreNamedAndExactlyWhatIsNeeded() throws IOException {
             List<String> imports = code().lines()
                     .map(String::strip)
@@ -309,19 +306,13 @@ class CardDemoApplicationTest {
                     .toList();
 
             // Stated as an exact set rather than a count, so an import added for anything the entry
-            // point has no business doing - persistence, security, cloud, observability - fails here.
-            // The four beyond the two Boot types exist for the launch-mode decision alone: it is taken
-            // before any Environment exists, so it reads the command line and the process itself.
+            // point has no business doing - persistence, security, cloud, observability, or a launch
+            // decision that belongs to configuration - fails here. A composition root declares where
+            // beans come from and starts the context; it needs the annotation and the launcher, and
+            // nothing else. Two imports is the whole of it.
             assertThat(imports).containsExactly(
-                    "import java.util.Locale;",
-                    "import java.util.Objects;",
-                    "import java.util.function.UnaryOperator;",
-                    "import com.vsergeychik.carddemo.config.BatchConfig;",
                     "import org.springframework.boot.SpringApplication;",
-                    "import org.springframework.boot.WebApplicationType;",
-                    "import org.springframework.boot.autoconfigure.SpringBootApplication;",
-                    "import org.springframework.core.env.SimpleCommandLinePropertySource;",
-                    "import org.springframework.util.StringUtils;");
+                    "import org.springframework.boot.autoconfigure.SpringBootApplication;");
         }
 
         @Test
@@ -373,32 +364,58 @@ class CardDemoApplicationTest {
         }
 
         @Test
-        @DisplayName("the web application type is set for one reason only - a JCL submission is a "
-                + "one-shot non-web process")
-        void theWebApplicationTypeIsSetForOneReasonOnly() throws IOException {
-            // WebApplicationType is not banned here, because gate G35 requires the opposite: a
-            // submission has to end when its job ends and deliver the RETURN-CODE, which a servlet
-            // container's non-daemon threads would prevent. What IS required is that the type is chosen
-            // in exactly one place, from exactly one condition, so no second rule can quietly decide
-            // what kind of process this is.
+        @DisplayName("the entry point takes no launch-mode decision, because it is not the entry "
+                + "point's to take")
+        void theEntryPointTakesNoLaunchModeDecision() throws IOException {
+            // It is tempting to have this class choose a non-web mode when a job is being submitted,
+            // on the reasoning that a submission must end when its job ends and deliver the
+            // RETURN-CODE (gate G35), which a servlet container's non-daemon threads would prevent.
+            // That reasoning does not survive reading BatchConfig: JclJobLauncher is an
+            // ApplicationRunner and an ExitCodeGenerator, and it ends the process itself with
+            //     System.exit(SpringApplication.exit(applicationContext, () -> returnCode));
+            // System.exit terminates the JVM whatever else is running, so the RETURN-CODE contract is
+            // already satisfied where the batch concern lives. A mode decision here would be a second
+            // rule about what kind of process this is, duplicating a condition BatchConfig already
+            // owns, and it would put a branch in a composition root that should hold none. An operator
+            // who wants no container passes --spring.main.web-application-type=none, which is
+            // configuration, not code.
             String text = code();
 
-            assertThat(text.lines().filter(line -> line.contains("setWebApplicationType")).count())
-                    .as("one setter call, in the one method that decides the mode")
-                    .isOne();
-            assertThat(text.lines()
-                    .filter(line -> line.contains("WebApplicationType.NONE"))
-                    .count())
-                    .as("the non-web mode is chosen once, by the submission condition")
-                    .isOne();
             assertThat(text)
-                    .as("the condition is the launcher's own property, so the two halves of a "
-                            + "submission cannot disagree about what kind of process it is")
-                    .contains("BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY");
-            assertThat(text)
-                    .as("no profile is activated from code, and no default property is injected")
+                    .as("no launch mode is chosen in code, and no bean-lifecycle or property override "
+                            + "is applied to the application before it runs")
+                    .doesNotContain("setWebApplicationType")
+                    .doesNotContain("WebApplicationType")
                     .doesNotContain("setAdditionalProfiles")
                     .doesNotContain("setDefaultProperties");
+            assertThat(text)
+                    .as("the composition root names no configuration class, so it cannot drift with "
+                            + "one: it declares where beans come from and starts the context")
+                    .doesNotContain("BatchConfig");
+        }
+
+        @Test
+        @DisplayName("the executable part is a single statement, so there is nothing in it to get wrong")
+        void theExecutablePartIsASingleStatement() throws IOException {
+            // The declarations above are what this file is for; the executable part should be the
+            // smallest thing that starts a context. Anything that grows a second statement - a runner,
+            // a mode decision, an exit-code path, a log line - is logic that belongs in a bean, where
+            // it can be injected, mocked and covered. Asserted two ways: the statement is exactly the
+            // expected one, and it is the only one the class launches with.
+            String text = code();
+
+            assertThat(text)
+                    .as("the one statement Boot needs, with this class as the configuration source")
+                    .contains("SpringApplication.run(CardDemoApplication.class, args);");
+            assertThat(text.split("SpringApplication\\.run", -1).length - 1)
+                    .as("started once, in main, and nowhere else")
+                    .isOne();
+
+            // Semicolons over the comment-stripped text: the package declaration, the two imports and
+            // that single call. A fifth would be a statement this file has no business carrying.
+            assertThat(text.chars().filter(character -> character == ';').count())
+                    .as("package, two imports, one call")
+                    .isEqualTo(4L);
         }
 
         @Test
@@ -417,123 +434,6 @@ class CardDemoApplicationTest {
             assertThat(staticLines)
                     .as("a static that is neither final nor a method signature is shared mutable state")
                     .isEmpty();
-        }
-    }
-
-    /**
-     * The launch mode: a JCL submission is a one-shot non-web process, everything else is the web
-     * application.
-     *
-     * <p>The same jar serves the seventeen translated CICS transactions and submits batch jobs, and
-     * those are different kinds of process. A submission has to end when its job ends, delivering the
-     * {@code RETURN-CODE} to the shell (gate G35); a servlet container's non-daemon threads would keep
-     * it alive instead. The web application type is chosen while the environment is being prepared, so
-     * the decision cannot be taken by a bean - it is taken here, and asserted here, without starting
-     * anything.
-     */
-    @Nested
-    @DisplayName("The launch mode - a submission is a one-shot non-web process")
-    class LaunchMode {
-
-        /** The property whose presence makes an invocation a submission. */
-        private static final String JOB_NAME_PROPERTY =
-                BatchConfig.JclJobLauncher.JOB_NAME_PROPERTY;
-
-        /** A process that supplies nothing outside the command line. */
-        private static final UnaryOperator<String> NOTHING_EXTERNAL = name -> null;
-
-        @Test
-        @DisplayName("no job name anywhere means the web application, exactly as before")
-        void noJobNameMeansTheWebApplication() {
-            assertThat(CardDemoApplication.isJclSubmission(new String[0], NOTHING_EXTERNAL)).isFalse();
-            assertThat(CardDemoApplication.webApplicationTypeFor(
-                    new String[] { "--spring.profiles.active=test" }, NOTHING_EXTERNAL))
-                    .isEqualTo(WebApplicationType.SERVLET);
-        }
-
-        @Test
-        @DisplayName("a job name on the command line means a one-shot non-web process")
-        void aJobNameOnTheCommandLineMeansNonWeb() {
-            String[] submission = { "--" + JOB_NAME_PROPERTY + "=accountBalanceJob" };
-
-            assertThat(CardDemoApplication.isJclSubmission(submission, NOTHING_EXTERNAL)).isTrue();
-            assertThat(CardDemoApplication.webApplicationTypeFor(submission, NOTHING_EXTERNAL))
-                    .isEqualTo(WebApplicationType.NONE);
-        }
-
-        @Test
-        @DisplayName("a job name supplied outside the command line counts too, because a container "
-                + "supplies it that way")
-        void aJobNameSuppliedOutsideTheCommandLineCountsToo() {
-            UnaryOperator<String> supplied =
-                    name -> JOB_NAME_PROPERTY.equals(name) ? "statementGenerationJobA" : null;
-
-            assertThat(CardDemoApplication.isJclSubmission(new String[0], supplied)).isTrue();
-            assertThat(CardDemoApplication.webApplicationTypeFor(new String[0], supplied))
-                    .isEqualTo(WebApplicationType.NONE);
-        }
-
-        @Test
-        @DisplayName("a blank job name is not a submission, because there is no job to submit")
-        void aBlankJobNameIsNotASubmission() {
-            UnaryOperator<String> blank = name -> "   ";
-
-            assertThat(CardDemoApplication.isJclSubmission(new String[0], blank)).isFalse();
-        }
-
-        @Test
-        @DisplayName("both arguments are required, because a missing one would silently choose a mode")
-        void bothArgumentsAreRequired() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> CardDemoApplication.isJclSubmission(null, NOTHING_EXTERNAL))
-                    .withMessageContaining("command-line arguments are required");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> CardDemoApplication.isJclSubmission(new String[0], null))
-                    .withMessageContaining("process-value lookup is required");
-        }
-
-        @Test
-        @DisplayName("the application is built with the chosen mode, and this class as its source")
-        void theApplicationIsBuiltWithTheChosenMode() {
-            assertThat(CardDemoApplication.springApplicationFor(new String[0], NOTHING_EXTERNAL))
-                    .isNotNull();
-            assertThat(CardDemoApplication.springApplicationFor(
-                    new String[] { "--" + JOB_NAME_PROPERTY + "=accountBalanceJob" },
-                    NOTHING_EXTERNAL))
-                    .isNotNull();
-        }
-
-        @Test
-        @DisplayName("a system property is read, and it wins over the environment as it does everywhere "
-                + "else")
-        void aSystemPropertyIsReadAndWins() {
-            assertThat(CardDemoApplication.processValueOf(JOB_NAME_PROPERTY)).isNull();
-
-            System.setProperty(JOB_NAME_PROPERTY, "accountInterestCalcJob");
-            try {
-                assertThat(CardDemoApplication.processValueOf(JOB_NAME_PROPERTY))
-                        .isEqualTo("accountInterestCalcJob");
-                assertThat(CardDemoApplication.isJclSubmission(new String[0],
-                        CardDemoApplication::processValueOf)).isTrue();
-            } finally {
-                System.clearProperty(JOB_NAME_PROPERTY);
-            }
-
-            assertThat(CardDemoApplication.processValueOf(JOB_NAME_PROPERTY)).isNull();
-        }
-
-        @Test
-        @DisplayName("the environment-variable spelling is derived from the property, never transcribed")
-        void theEnvironmentVariableSpellingIsDerived() {
-            assertThat(CardDemoApplication.environmentVariableFor(JOB_NAME_PROPERTY))
-                    .isEqualTo("CARDDEMO_BATCH_JOB_NAME");
-            assertThat(CardDemoApplication.JOB_NAME_ENVIRONMENT_VARIABLE)
-                    .isEqualTo("CARDDEMO_BATCH_JOB_NAME");
-            assertThat(CardDemoApplication.environmentVariableFor("carddemo.charset.dataset"))
-                    .isEqualTo("CARDDEMO_CHARSET_DATASET");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> CardDemoApplication.environmentVariableFor(null))
-                    .withMessageContaining("property name is required");
         }
     }
 

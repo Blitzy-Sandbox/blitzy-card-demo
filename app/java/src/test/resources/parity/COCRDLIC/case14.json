@@ -1,7 +1,7 @@
 {
   "program": "COCRDLIC",
   "caseId": "case14",
-  "description": "The second field-driven transfer, at :566-569, and the arm ordering that separates it from case13. Both arms test CCARD-AID-ENTER and both require CDEMO-FROM-PROGRAM to equal this program; what distinguishes them is VIEW-REQUESTED-ON against UPDATE-REQUESTED-ON, the 88-levels for 'S' and 'U' at :78-79. EVALUATE is ordered, so an 'S' can never reach the update arm however the rows are arranged. Row two is used rather than row one to exercise the 1-based subscript on a row that is not the first: :559-562 reads WS-ROW-ACCTNO(2) and WS-ROW-CARD-NUM(2), and an off-by-one would hand over record one's identifiers while still transferring to the right program.",
+  "description": "The field-driven transfer at :538-541, taken on the last of the seven rows. ENTER with 'S' in CRDSEL7I is the only select character on the screen, so the INSPECT TALLYING at :1079-1082 counts exactly one, :1084 IF I > +1 is false and WS-MORE-THAN-1-ACTION is never set. :1097 zeroes I-SELECTED and the PERFORM VARYING at :1099-1115 then walks all seven subscripts: rows one to six take WHEN SELECT-BLANK(I) at :1106 and CONTINUE, because LOW-VALUES is a SELECT-BLANK value at :80-82 and a row the terminal never transmitted is not an error, and row seven takes WHEN SELECT-OK(I) at :1101 where :1102 moves 7 into I-SELECTED. Row seven is deliberate. case13 pins this same arm at subscript 1; pinning it here at the OCCURS 7 upper bound [:74-76] asserts the 1-based-to-0-based conversion at both ends of the table, which is the conversion the plan calls the top defect risk, and an off-by-one at either end now has a case that catches it. The EVALUATE reaches :517-519 - ENTER, VIEW-REQUESTED-ON(I-SELECTED) and CDEMO-FROM-PROGRAM equal to this program - and :526-529 loads CCARD-NEXT-PROG, -MAPSET and -MAP from LIT-CARDDTLPGM 'COCRDSLC' PIC X(8) [:195-196], LIT-CARDDTLMAPSET 'COCRDSL' PIC X(7) [:199-200] and LIT-CARDDTLMAP 'CCRDSLA' PIC X(7) [:201-202], whose widths are exactly the CCARD-NEXT-PROG X(8), CCARD-NEXT-MAPSET X(7) and CCARD-NEXT-MAP X(7) that app/cpy/CVCRD01Y.cpy declares. :531-534 hands the selected row's identifiers over in the communication area, read from WS-SCREEN-DATA at the 1-based subscript I-SELECTED, and they are fixture row seven's own bytes: CARD-ACCT-ID at 17-27 and CARD-NUM at 1-16 of a 150-byte CVACT02Y record. The XCTL verb is at :538 and PROGRAM(CCARD-NEXT-PROG) at :539 - a field and not a literal, which is the shape this case exists to pin. :522-523 SET CDEMO-USRTYP-USER and SET CDEMO-PGM-ENTER unconditionally, so the REENTER context this request arrives with comes back as ENTER; REENTER reaches this arm untouched because the only test of it, :459-460, also requires the caller not to be this program. The arm performs neither 1000-SEND-MAP nor 9000-READ-FORWARD, so no map is sent, no browse is issued, no FILE STATUS outcome is contributed and the card master is left exactly as it was found - which is what the fifty unchanged expectedFinalState images assert. What comes back is a name plus the 160-byte CARDDEMO-COMMAREA the transfer would have passed in COMMAREA(CARDDEMO-COMMAREA) and the 58-byte WS-THIS-PROGCOMMAREA cursor [:228-250]; the client resolves the target, and no state is held on the server. Four divergences are recorded rather than corrected. First, COPY COCRDSL at :274 is commented out - the asterisk sits in column 7 - so the COCRDSL symbolic map is not in this compile unit at all, and the program has exactly one SEND MAP [:939] and one RECEIVE MAP [:963], both on CCRDLIA of COCRDLI. COCRDLIC therefore cannot render COCRDSL's 15 fields and none are asserted here: the second mapset enters this program as a name to transfer to and as nothing else, which is precisely what the stateless navigation contract asks of it. Second, CVCRD01Y declares 16 CCARD-AID conditions - ENTER, CLEAR, 'PA1  ' and 'PA2  ' space-padded to five, and PFK01 through PFK12, with no PA3 - where the folder brief says 15; the copybook is authoritative. Third, the three EXEC CICS XCTL verbs stand at :402, :538 and :566 and it is their PROGRAM(...) operands that fall on :403, :539 and :567 - the same three sites either way, in two shapes, a literal at :403 and this field at :539 and :567. Fourth, and about the folder rather than the source: this case was planned as the COCRDSLC half of that field-shape proof, and the sibling UPDATE-REQUESTED-ON arm at :546-569, which loads LIT-CARDUPDPGM 'COCRDUPC' into the same CCARD-NEXT-PROG field, keeps its proof in COCRDLICParityTest's targeted three-transfer-sites assertion, so all three transfer sites stay proven. Every value here is statically derived - from the program text, from app/cpy/CVACT02Y.cpy, app/cpy/CVCRD01Y.cpy and app/cpy/COCOM01Y.cpy, from the symbolic map app/cpy-bms/COCRDLI.CPY, and from the real fifty-row app/data/ASCII/carddata.txt - and none of it was captured from a live COBOL run, which this environment cannot perform. The clock is pinned to case01's instant so CURDATEO and CURTIMEO are reproducible, the page stays the behavioural seven of WS-MAX-SCREEN-LINES [:177-178] rather than anything configurable, nothing on this path fails edit so no CSSETATY DFHRED-plus-asterisk highlight applies, and COCRDLIC contains no CALL 'CEE3ABD' and moves nothing into RETURN-CODE, so the expected return code is zero even though control transfers away.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -11,13 +11,14 @@
   },
   "screenRequest": {
     "eibcalen": 160,
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
@@ -43,15 +44,13 @@
       "ACCTNO7I": "00000000037",
       "CRDNUM7I": "1142167692878931",
       "CRDSTS7I": "Y",
-      "CRDSEL2I": "U"
-    },
-    "forcedOutcomes": {},
-    "aid": "DFHENTER"
+      "CRDSEL7I": "S"
+    }
   },
   "expectedResponse": {
-    "nextProgram": "COCRDUPC",
-    "nextMapset": "COCRDUP",
-    "nextMap": "CCRDUPA",
+    "nextProgram": "COCRDSLC",
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
     "navigation": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
@@ -64,9 +63,9 @@
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000027",
+      "CDEMO-ACCT-ID": "00000000037",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0683586198171516",
+      "CDEMO-CARD-NUM": "1142167692878931",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
@@ -108,6 +107,15 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 6,
+      "fields": {
+        "CARD-NUM": "1142167692878931",
+        "CARD-ACCT-ID": "00000000037",
+        "CARD-CVV-CD": "625",
+        "CARD-EMBOSSED-NAME": "Shany Walker                                      ",
+        "CARD-EXPIRAION-DATE": "2023-10-24",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
     },
     {

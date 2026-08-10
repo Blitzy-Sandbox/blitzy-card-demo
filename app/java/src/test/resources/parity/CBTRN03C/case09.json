@@ -1,12 +1,28 @@
 {
   "program": "CBTRN03C",
   "caseId": "case09",
-  "description": "DATEPARM is a DATASET, not a PARM, and an empty one produces an empty report. app/jcl/TRANREPT.jcl:73-74 binds DD DATEPARM to a dataset and the job declares no PARM at all, so 0550-DATEPARM-READ at :220-243 is the only source of the reporting range. Seeded empty, that READ reports '10', the EVALUATE takes its second arm and moves 16 to APPL-RESULT, and the APPL-EOF test at :235 moves 'Y' to END-OF-FILE before the loop has run once. So TRANFILE is never read even though it holds a perfectly good in-range record, no 'Reporting from' line is displayed because that line is on the APPL-AOK arm, and the program ends normally with RETURN-CODE 0.",
+  "description": "THE FIRST PAGING BOUNDARY - the one place in app/cbl/CBTRN03C.cbl where FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) at :282 is true. WS-LINE-COUNTER is PIC 9(09) COMP-3 VALUE 0 at :129-130 and WS-PAGE-SIZE is PIC 9(03) COMP-3 VALUE 20 at :131-132; both are BEHAVIOUR AND NOT CONFIGURATION, so 20 is what the report does rather than a tunable, and they are also the program's only packed-decimal items - no copybook in the repository declares COMP-3, so no packed unpacking enters the record codec and these two are an in-memory counter and bound. Seventeen in-range transactions all carry TRAN-CARD-NUM 0500024453765740, row 1 of app/data/ASCII/cardxref.txt, whose XREF-ACCT-ID is 00000000050, so the guard at :181 is true exactly once, no account break ever intrudes, and the counter walk is clean. THE WALK, derived paragraph by paragraph: record 1 finds WS-FIRST-TIME 'Y' at :275, so 1120-WRITE-HEADERS (:324-341) writes four records and takes the counter 0 -> 4; the MOD test then evaluates MOD(4,20) = 4 and breaks no page; 1120-WRITE-DETAIL (:361-374) takes it to 5. Records 2 through 16 enter 1100-WRITE-TRANSACTION-REPORT with the counter at 5, 6, ... 19, every MOD non-zero, one detail line each, ending at 20. RECORD 17 ENTERS WITH THE COUNTER AT 20 AND MOD(20,20) = 0, so the trigger fires for the first and only time in the run: 1110-WRITE-PAGE-TOTALS (:293-304) writes REPORT-PAGE-TOTALS and its trailing TRANSACTION-HEADER-2 rule and takes 20 -> 22, then 1120-WRITE-HEADERS writes a fresh four-record header block and takes 22 -> 26, then :287-288 add the amount to a page total the trigger has just zeroed, then the detail takes it to 27. The end-of-file arm at :197-204 adds two more, 27 -> 29, and 1110-WRITE-GRAND-TOTALS (:318-322) writes the final record WITHOUT incrementing, which is the only paragraph in the program that does not. So THIRTY records leave the writer while WS-LINE-COUNTER ends at TWENTY-NINE, and the difference of exactly one is that missing increment. THE ORDERING IS LOAD-BEARING IN TWO PLACES. First, the counter is 0 when record 1 arrives and MOD(0,20) is itself zero, so a translation that hoisted the MOD test above the WS-FIRST-TIME block would break a page before a single line existed and open the report with a page total of zero; the first-time block runs FIRST, pushes the counter to 4, and the trigger therefore cannot fire on record 1. Second, inside the trigger the page total is written BEFORE the new headers (:283 then :284), so REPORT-PAGE-TOTALS closes the old page and the header block opens the new one - swap those two PERFORMs and the thirty records still number thirty but read as a report with its headers in the wrong place, which is why the expected order here is headers, sixteen details, page total and rule, headers, detail 17, page total and rule, grand total. THE ARITHMETIC, scale 2 throughout because WS-PAGE-TOTAL, WS-ACCOUNT-TOTAL and WS-GRAND-TOTAL are all PIC S9(09)V99 at :134-136 and every store truncates toward zero - ROUNDED appears zero times in CBTRN03C and zero times in any of the 28 programs. Records 1 to 16 carry 100.00, 200.00 ... 1600.00, an arithmetic series summing to 100.00 x 136 = 13,600.00, which is the FIRST PAGE TOTAL written at row 20 as '+     13,600.00'; :297 rolls it into the grand total and :298 zeroes the page total. That series also crosses the mask's thousands comma inside a single page, so record 9 renders '         900.00' and record 10 '       1,000.00'. Record 17 carries 750.25, added to the now-zero page total, so the SECOND PAGE TOTAL ought to be 750.25 and reads 1,500.50 instead. PRESERVED DEFECT 2 (practice B5): a COBOL READ ... INTO leaves its receiving area untouched AT END, so when the read at :249 reaches end of file TRAN-RECORD still holds record 17, and the ELSE arm at :197-204 adds its TRAN-AMT a SECOND time at :200-201 to a page total that already contains it. The second page total is therefore exactly twice amount 17 - 750.25 + 750.25 = 1,500.50 - and the GRAND TOTAL is (amounts 1 to 16) + 2 x amount 17 = 13,600.00 + 1,500.50 = 15,100.50, written as '+     15,100.50'. That is the clearest statement of the defect this folder can make: with one duplicated amount, every figure in the report except the sixteen first-page details is overstated. It is inherited legacy behaviour, deliberately reproduced and NEVER repaired, because correcting it would change every report this program has ever produced - a behaviour change and a parity violation. WS-ACCOUNT-TOTAL reaches the same 15,100.50 and IS NEVER WRITTEN: 1120-WRITE-ACCOUNT-TOTALS (:306-316) has exactly one caller, the account break at :183, which requires a card change, and the card never changes; the end-of-file arm performs only 1110-WRITE-PAGE-TOTALS and 1110-WRITE-GRAND-TOTALS. SO NO 'Account Total' LINE APPEARS ANYWHERE IN THESE THIRTY RECORDS - supplying one, which is exactly the line a helpful implementation adds, is a difference this case reports. THE TWO DIAGNOSTIC LINES AT :198-199 ARE THE SUBTLE ASSERTION. Both fire BEFORE the duplicate add, so DISPLAY 'TRAN-AMT ' TRAN-AMT reports 0000007502E - the raw zoned image of 750.25 with the sign overpunched into the trailing byte - and DISPLAY 'WS-PAGE-TOTAL' WS-PAGE-TOTAL reports the SAME 0000007502E, because the trigger zeroed the page total sixteen records into the run and it now holds amount 17 and nothing else. The two images are identical by construction rather than by coincidence: a page total that still carried the first page's 13,600.00 would read 0000136000{ instead, and a page total the trigger had failed to zero would read 0000143502E. The literals differ - 'TRAN-AMT ' carries a trailing space and 'WS-PAGE-TOTAL' does not. GEOMETRY. Every one of the thirty records is the 133 bytes app/jcl/TRANREPT.jcl:78 and app/proc/TRANREPT.prc:76 both declare as DCB=(LRECL=133,RECFM=FB,BLKSIZE=0): the two 115-byte REPORT-NAME-HEADERs are right-space-padded by 18, the two 114-byte TRANSACTION-HEADER-1 lines and the seventeen 114-byte detail lines by 19, and the two 112-byte REPORT-PAGE-TOTALS and the 112-byte REPORT-GRAND-TOTALS by 21, while the four TRANSACTION-HEADER-2 rules (PIC X(133) VALUE ALL '-') and the two WS-BLANK-LINEs (PIC X(133) VALUE SPACES at :133) arrive already at full width. Each total line keeps its FILLER PIC X(86) VALUE ALL '.' leader intact, all 86 dots of it. All seventeen detail lines carry 00000000050 at bytes 18-28 from the single cross-reference read the :181 guard allows, and the '-' bytes at 32 and 53 survive INITIALIZE at :362 because COBOL leaves FILLER untouched. Record 13's category description 'Online purchase authorization' is exactly 29 characters and so fills TRAN-REPORT-CAT-DESC to its last byte without truncating - case19 owns the truncating moves. The second header block still shows the same date range, because REPT-START-DATE and REPT-END-DATE were moved once at :277-278 and are never cleared. Both EVALUATE statements are exercised on '00' and on '10' and neither reaches WHEN OTHER; nothing abends, so RETURN-CODE stays 0. CARDXREF is seeded from the 36-byte fixture UNPADDED and the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation widens it to the 50 bytes app/cpy/CVACT03Y.cpy declares, so the fixture's absent trailing FILLER X(14) is padded at seeding time rather than hidden (gate G16, risk R-F). The reporting range is read from the DATEPARM dataset and this case declares NO job parameter, because app/jcl/TRANREPT.jcl gives STEP10R no PARM at all. PROVENANCE (practice B12): every value here is STATICALLY DERIVED by structured reading of the COBOL, cross-checked against the byte layouts of CVTRA05Y, CVTRA03Y, CVTRA04Y, CVACT03Y and CVTRA07Y, the DD and DCB contracts of TRANREPT.jcl and TRANREPT.prc, and the real US-ASCII fixtures in app/data/ASCII - it is NEVER captured from an execution of the legacy COBOL, which AAP section 0.7.6 documents as empirically impossible here across eight verified blockers, and that substitution of provenance alone is escalated as risk R-A rather than silently absorbed. review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set B1-B12.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000001000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000001000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-01-08.00.00.0000012022-01-01-08.00.00.000001                    ",
+        "TRN0000000000002010002POS TERM  A statically derived fixture transaction                                                            0000002000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-15-09.15.30.0000022022-01-15-09.15.30.000002                    ",
+        "TRN0000000000003010003POS TERM  A statically derived fixture transaction                                                            0000003000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-01-10.30.00.0000032022-02-01-10.30.00.000003                    ",
+        "TRN0000000000004010004POS TERM  A statically derived fixture transaction                                                            0000004000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-14-11.45.15.0000042022-02-14-11.45.15.000004                    ",
+        "TRN0000000000005010005POS TERM  A statically derived fixture transaction                                                            0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-01-12.00.00.0000052022-03-01-12.00.00.000005                    ",
+        "TRN0000000000006020001POS TERM  A statically derived fixture transaction                                                            0000006000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-13.10.20.0000062022-03-15-13.10.20.000006                    ",
+        "TRN0000000000007020002POS TERM  A statically derived fixture transaction                                                            0000007000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-01-14.25.30.0000072022-04-01-14.25.30.000007                    ",
+        "TRN0000000000008020003POS TERM  A statically derived fixture transaction                                                            0000008000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-15-15.40.40.0000082022-04-15-15.40.40.000008                    ",
+        "TRN0000000000009030001POS TERM  A statically derived fixture transaction                                                            0000009000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-01-16.55.50.0000092022-05-01-16.55.50.000009                    ",
+        "TRN0000000000010030002POS TERM  A statically derived fixture transaction                                                            0000010000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-15-17.05.05.0000102022-05-15-17.05.05.000010                    ",
+        "TRN0000000000011030003POS TERM  A statically derived fixture transaction                                                            0000011000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-01-18.20.10.0000112022-06-01-18.20.10.000011                    ",
+        "TRN0000000000012040001POS TERM  A statically derived fixture transaction                                                            0000012000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-15-19.35.20.0000122022-06-15-19.35.20.000012                    ",
+        "TRN0000000000013040002POS TERM  A statically derived fixture transaction                                                            0000013000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-20-20.50.30.0000132022-06-20-20.50.30.000013                    ",
+        "TRN0000000000014040003POS TERM  A statically derived fixture transaction                                                            0000014000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-25-21.00.40.0000142022-06-25-21.00.40.000014                    ",
+        "TRN0000000000015050001POS TERM  A statically derived fixture transaction                                                            0000015000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-30-22.15.50.0000152022-06-30-22.15.50.000015                    ",
+        "TRN0000000000016060001POS TERM  A statically derived fixture transaction                                                            0000016000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-01-23.30.00.0000162022-07-01-23.30.00.000016                    ",
+        "TRN0000000000017060002POS TERM  A statically derived fixture transaction                                                            0000007502E999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-23.59.59.0000172022-07-06-23.59.59.000017                    "
       ]
     },
     "CARDXREF": {
@@ -19,19 +35,401 @@
       "fixture": "trancatg.txt"
     },
     "DATEPARM": {
-      "empty": true,
-      "recordLength": 80,
-      "copybook": "CBTRN03C"
+      "rows": [
+        "2022-01-01 2022-07-06                                                           "
+      ]
     }
   },
   "jobParameters": {},
-  "expectedWrites": [],
-  "expectedFinalState": [],
+  "expectedWrites": [
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 0,
+      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 1,
+      "expectedBytes": "                                                                                                                                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 2,
+      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 3,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 4,
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM               100.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 5,
+      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0002-Regular Cash Advance          POS TERM               200.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 6,
+      "expectedBytes": "TRN0000000000003 00000000050 01-Purchase        0003-Convenience Check Debit       POS TERM               300.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 7,
+      "expectedBytes": "TRN0000000000004 00000000050 01-Purchase        0004-ATM Cash Advance              POS TERM               400.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 8,
+      "expectedBytes": "TRN0000000000005 00000000050 01-Purchase        0005-Interest Amount               POS TERM               500.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 9,
+      "expectedBytes": "TRN0000000000006 00000000050 02-Payment         0001-Cash payment                  POS TERM               600.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 10,
+      "expectedBytes": "TRN0000000000007 00000000050 02-Payment         0002-Electronic payment            POS TERM               700.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 11,
+      "expectedBytes": "TRN0000000000008 00000000050 02-Payment         0003-Check payment                 POS TERM               800.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 12,
+      "expectedBytes": "TRN0000000000009 00000000050 03-Credit          0001-Credit to Account             POS TERM               900.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 13,
+      "expectedBytes": "TRN0000000000010 00000000050 03-Credit          0002-Credit to Purchase balance    POS TERM             1,000.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 14,
+      "expectedBytes": "TRN0000000000011 00000000050 03-Credit          0003-Credit to Cash balance        POS TERM             1,100.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 15,
+      "expectedBytes": "TRN0000000000012 00000000050 04-Authorization   0001-Zero dollar authorization     POS TERM             1,200.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 16,
+      "expectedBytes": "TRN0000000000013 00000000050 04-Authorization   0002-Online purchase authorization POS TERM             1,300.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 17,
+      "expectedBytes": "TRN0000000000014 00000000050 04-Authorization   0003-Travel booking authorization  POS TERM             1,400.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 18,
+      "expectedBytes": "TRN0000000000015 00000000050 05-Refund          0001-Refund credit                 POS TERM             1,500.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 19,
+      "expectedBytes": "TRN0000000000016 00000000050 06-Reversal        0001-Fraud reversal                POS TERM             1,600.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 20,
+      "expectedBytes": "Page Total ......................................................................................+     13,600.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 21,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 22,
+      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 23,
+      "expectedBytes": "                                                                                                                                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 24,
+      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 25,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 26,
+      "expectedBytes": "TRN0000000000017 00000000050 06-Reversal        0002-Non-fraud reversal            POS TERM               750.25                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 27,
+      "expectedBytes": "Page Total ......................................................................................+      1,500.50                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 28,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 29,
+      "expectedBytes": "Grand Total......................................................................................+     15,100.50                     "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 0,
+      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 1,
+      "expectedBytes": "                                                                                                                                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 2,
+      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 3,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 4,
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM               100.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 5,
+      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0002-Regular Cash Advance          POS TERM               200.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 6,
+      "expectedBytes": "TRN0000000000003 00000000050 01-Purchase        0003-Convenience Check Debit       POS TERM               300.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 7,
+      "expectedBytes": "TRN0000000000004 00000000050 01-Purchase        0004-ATM Cash Advance              POS TERM               400.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 8,
+      "expectedBytes": "TRN0000000000005 00000000050 01-Purchase        0005-Interest Amount               POS TERM               500.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 9,
+      "expectedBytes": "TRN0000000000006 00000000050 02-Payment         0001-Cash payment                  POS TERM               600.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 10,
+      "expectedBytes": "TRN0000000000007 00000000050 02-Payment         0002-Electronic payment            POS TERM               700.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 11,
+      "expectedBytes": "TRN0000000000008 00000000050 02-Payment         0003-Check payment                 POS TERM               800.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 12,
+      "expectedBytes": "TRN0000000000009 00000000050 03-Credit          0001-Credit to Account             POS TERM               900.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 13,
+      "expectedBytes": "TRN0000000000010 00000000050 03-Credit          0002-Credit to Purchase balance    POS TERM             1,000.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 14,
+      "expectedBytes": "TRN0000000000011 00000000050 03-Credit          0003-Credit to Cash balance        POS TERM             1,100.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 15,
+      "expectedBytes": "TRN0000000000012 00000000050 04-Authorization   0001-Zero dollar authorization     POS TERM             1,200.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 16,
+      "expectedBytes": "TRN0000000000013 00000000050 04-Authorization   0002-Online purchase authorization POS TERM             1,300.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 17,
+      "expectedBytes": "TRN0000000000014 00000000050 04-Authorization   0003-Travel booking authorization  POS TERM             1,400.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 18,
+      "expectedBytes": "TRN0000000000015 00000000050 05-Refund          0001-Refund credit                 POS TERM             1,500.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 19,
+      "expectedBytes": "TRN0000000000016 00000000050 06-Reversal        0001-Fraud reversal                POS TERM             1,600.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 20,
+      "expectedBytes": "Page Total ......................................................................................+     13,600.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 21,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 22,
+      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 23,
+      "expectedBytes": "                                                                                                                                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 24,
+      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 25,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 26,
+      "expectedBytes": "TRN0000000000017 00000000050 06-Reversal        0002-Non-fraud reversal            POS TERM               750.25                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 27,
+      "expectedBytes": "Page Total ......................................................................................+      1,500.50                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 28,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 29,
+      "expectedBytes": "Grand Total......................................................................................+     15,100.50                     "
+    }
+  ],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
       "text": "START OF EXECUTION OF PROGRAM CBTRN03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Reporting from 2022-01-01 to 2022-07-06"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000001000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-01-08.00.00.0000012022-01-01-08.00.00.000001                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000002010002POS TERM  A statically derived fixture transaction                                                            0000002000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-15-09.15.30.0000022022-01-15-09.15.30.000002                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000003010003POS TERM  A statically derived fixture transaction                                                            0000003000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-01-10.30.00.0000032022-02-01-10.30.00.000003                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000004010004POS TERM  A statically derived fixture transaction                                                            0000004000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-14-11.45.15.0000042022-02-14-11.45.15.000004                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000005010005POS TERM  A statically derived fixture transaction                                                            0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-01-12.00.00.0000052022-03-01-12.00.00.000005                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000006020001POS TERM  A statically derived fixture transaction                                                            0000006000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-13.10.20.0000062022-03-15-13.10.20.000006                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000007020002POS TERM  A statically derived fixture transaction                                                            0000007000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-01-14.25.30.0000072022-04-01-14.25.30.000007                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000008020003POS TERM  A statically derived fixture transaction                                                            0000008000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-15-15.40.40.0000082022-04-15-15.40.40.000008                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000009030001POS TERM  A statically derived fixture transaction                                                            0000009000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-01-16.55.50.0000092022-05-01-16.55.50.000009                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000010030002POS TERM  A statically derived fixture transaction                                                            0000010000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-15-17.05.05.0000102022-05-15-17.05.05.000010                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000011030003POS TERM  A statically derived fixture transaction                                                            0000011000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-01-18.20.10.0000112022-06-01-18.20.10.000011                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000012040001POS TERM  A statically derived fixture transaction                                                            0000012000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-15-19.35.20.0000122022-06-15-19.35.20.000012                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000013040002POS TERM  A statically derived fixture transaction                                                            0000013000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-20-20.50.30.0000132022-06-20-20.50.30.000013                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000014040003POS TERM  A statically derived fixture transaction                                                            0000014000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-25-21.00.40.0000142022-06-25-21.00.40.000014                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000015050001POS TERM  A statically derived fixture transaction                                                            0000015000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-06-30-22.15.50.0000152022-06-30-22.15.50.000015                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000016060001POS TERM  A statically derived fixture transaction                                                            0000016000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-01-23.30.00.0000162022-07-01-23.30.00.000016                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000017060002POS TERM  A statically derived fixture transaction                                                            0000007502E999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-23.59.59.0000172022-07-06-23.59.59.000017                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRAN-AMT 0000007502E"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "WS-PAGE-TOTAL0000007502E"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -48,13 +446,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 0,
+      "rowCount": 30,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 0,
+      "rowCount": 30,
       "recordLength": 133
     }
   ]

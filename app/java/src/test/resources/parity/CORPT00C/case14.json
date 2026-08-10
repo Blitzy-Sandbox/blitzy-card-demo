@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case14",
-  "description": "FUNCTION NUMVAL-C ACCEPTING an embedded space, and the normalise-in-place edit that follows it. SDTMMI arrives as ' 7' and SDTDDI as '1 '; :305-307 and :309-311 pass each through NUMVAL-C into WS-NUM-99 PIC 99 and move the result BACK INTO THE SAME symbolic-map item, so the screen that is next sent shows '07' and '01'. That in-place rewrite is only possible because 01 CORPT0AO REDEFINES CORPT0AI - the input and output views are one buffer - and it is asserted here on the send rather than inferred. CONFIRMI is spaces, so SUBMIT-JOB-TO-INTRDR's guard at :464 fires and :465-470 STRINGs 'Please confirm to print the ' DELIMITED BY SIZE, WS-REPORT-NAME DELIMITED BY SPACE and ' report...' DELIMITED BY SIZE - which is where the ten-byte WS-REPORT-NAME contributes only its six significant characters. Nothing is handed to the queue: the emit loop at :498-508 is entered with ERR-FLG-ON and its body runs zero times. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The FIRST arm of the custom range's ordered blank chain, pinned for the UNREACHABILITY it creates. CUSTOMI arrives as 'X' - not 'Y' - so the outer ordered EVALUATE TRUE at :212 falls past the Monthly arm at :213 and the Yearly arm at :239 and matches the third at :256, whose condition is 'CUSTOMI NOT = SPACES AND LOW-VALUES': any non-blank byte selects it, and using 'X' is what proves the arm is chosen by non-blankness rather than by the letter 'Y'. Inside it the ordered chain at :258-303 is entered and its FIRST arm fires, :259 'SDTMMI = SPACES OR LOW-VALUES', because SDTMMI is two spaces while ALL FIVE of the later parts are present - SDTDDI '01', SDTYYYYI '2022', EDTMMI '07', EDTDDI '31', EDTYYYYI '2022'. That arrangement is the whole point: not one of the five later arms could have matched, so the outcome is attributable to the first arm alone and the chain's order is genuinely asserted rather than merely assumed (gate G30). :261 moves 'Start Date - Month can NOT be empty...' into WS-MESSAGE PIC X(80), :263 raises WS-ERR-FLG, :264 moves -1 into SDTMML and :265 performs SEND-TRNRPT-SCREEN. THE CONSEQUENCE IS THE CASE. SEND-TRNRPT-SCREEN ends at :580 with GO TO RETURN-TO-CICS - this program's SINGLE GO TO, a benign shared terminal - and RETURN-TO-CICS at :585-591 issues EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA), which ends the task. Control NEVER returns to PROCESS-ENTER-KEY, so on this path: the six FUNCTION NUMVAL-C stores at :305-327 DO NOT EXECUTE, which is why the ten echoed items below are the RAW received bytes and SDTMMO is still two spaces rather than a normalised '00'; the six validity IFs at :329-379 do not execute; NEITHER CSUTLDTC call site is reached, so util.DateUtilityJob is NOT INVOKED AT ALL and a strict double would see zero interactions; the IF NOT ERR-FLG-ON blocks at :434 and :445 are never reached, so there is no DFHGREEN and no submitted-for-printing notice; and no EXEC CICS WRITEQ TD occurs, so nothing whatsoever reaches the job-submission port. In Java the shared finalisation is followed by an immediate return from the whole handler (ReportRequestController :1215-1217, 'rejectAndSend(...); return;') rather than by a helper that merely returns to its caller - the latter would let execution fall into the NUMVAL-C block and would break parity silently while still looking correct (rule R7, practice B5: the terminal-GO-TO structure is behaviour to reproduce, not a bug to repair). Gate G32 does not apply; CBSTM03A is the only program with backward loop-forming GO TOs. THE EMPTY PORT STREAM IS ASSERTED, NOT IMPLIED: expectedWrites is empty, which this model defines as a positive assertion that nothing was written, and FieldDiffer enforces it in BOTH directions - had one record been handed over, its EXTRA_DATASET pass would report the JOBS dataset the case pins nothing from (negative gate G42). It is expressed that way rather than as a zero-row expectedDatasets entry because the queue is OPENTIME(INITIAL) and this program issues no OPEN, so 'opened and wrote nothing' is not a state the COBOL can be in and the fingerprint deliberately never reports it. GATE G38, CORRECTED FOR THIS PROGRAM: CORPT00C copies NEITHER CSSETATY NOR CSSTRPFY - its verified COPY list at :138-149 is COCOM01Y, CORPT00, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA - and the only DFH colour constant it references anywhere is DFHGREEN at :448, on the success path this case never reaches. There is therefore NO DFHRED move and NO '*' marker, and none is fabricated here. The error presentation is asserted as what the program actually does: the byte-exact ERRMSGO text, the -1 cursor on the offending field's own length item, and ERRMSGC left at DFHDFCOL - the default-colour mnemonic - because the red of that field is DECLARATIVE, coming from 'ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1)' in app/bms/CORPT00.bms:218-221 rather than from any MOVE. Note that SDTMML is recorded as cursorField METADATA and never as a payload member: only xxxI and xxxO items are payload, while xxxL, xxxF and xxxA are length, flag and attribute metadata. WIDTHS, COUNTED: the literal at :261 is exactly 38 characters with the casing 'can NOT be' preserved verbatim and not normalised; in WS-MESSAGE PIC X(80) it is 38 + 42 spaces, and :560 moves it to ERRMSGO PIC X(78), an alphanumeric move that truncates on the right, giving 38 + 40 spaces. Both channels are pinned so that two-byte truncation stays observable. TITLE01O is 6 spaces + 'AWS Mainframe Modernization' + 7 spaces = 40, and TITLE02O is 14 spaces + 'CardDemo' + 18 spaces = 40 - taken from app/cpy/COTTL01Y.cpy line 22, because LINE 21 IS COMMENTED OUT and is not the active value. The clock is PINNED at 2022-07-15T10:30:45 (practice B7, no wall-clock and no random value): POPULATE-HEADER-INFO reads it at :611 and :620 takes WS-CURDATE-YEAR(3:2), so CURDATEO is '07/15/22' and CURTIMEO is '10:30:45'. The custom path reads the clock only for the header, never for the range. The unit kind is CONTROLLER_POJO: ReportRequestController is constructed as a plain Java object and called through mainPara directly - no MockMvc, no TestRestTemplate, no servlet container, no JobLauncher and no server-side session (gates G51, G37); the commarea, the AID and the screen values all travel in the payload. The AID is named as the DFHAID mnemonic DFHENTER, reproduced by common.CicsAid because DFHAID is IBM-supplied and ABSENT from this repository (risk R-D). The code page is named explicitly as US-ASCII and is never the platform default (practice B8). PROVENANCE: every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CORPT00C.cbl cross-checked against app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and app/cpy/COCOM01Y.cpy - it is NEVER captured from a live COBOL execution, which is empirically impossible in this environment (risk R-A, practice B12). Those sources are read-only and were not modified (practice B3), and nothing here is a placeholder (practice B1). NO USER RULES GOVERN THIS FILE: review_rules returns exactly one line, 'No user rules provided.', and that absence is not treated as licence to lower the bar - enterprise-standard practices B1, B3, B5, B7, B8 and B12 are applied in their place. RECORDED OVERLAP, not silently resolved (practice B4): case12 pins this same :259 arm with CUSTOMI 'Y' and a 2026 clock. This case is kept distinct on the two axes the scenario itself supplies - the 'X' selector, which proves :256 tests non-blankness rather than a specific letter, and the 2022 clock, which exercises the :620 two-digit-year substring at a different year - and case12 is left untouched.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,14 +28,14 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "CUSTOMI": "Y",
-      "SDTMMI": " 7",
-      "SDTDDI": "1 ",
-      "SDTYYYYI": "2026",
-      "EDTMMI": "12",
+      "CUSTOMI": "X",
+      "SDTMMI": "  ",
+      "SDTDDI": "01",
+      "SDTYYYYI": "2022",
+      "EDTMMI": "07",
       "EDTDDI": "31",
-      "EDTYYYYI": "2026",
-      "CONFIRMI": " "
+      "EDTYYYYI": "2022",
+      "CONFIRMI": "Y"
     },
     "forcedOutcomes": {}
   },
@@ -66,28 +66,28 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
+          "CURTIMEO": "10:30:45",
           "MONTHLYO": " ",
           "YEARLYO": " ",
-          "CUSTOMO": "Y",
-          "SDTMMO": "07",
+          "CUSTOMO": "X",
+          "SDTMMO": "  ",
           "SDTDDO": "01",
-          "SDTYYYYO": "2026",
-          "EDTMMO": "12",
+          "SDTYYYYO": "2022",
+          "EDTMMO": "07",
           "EDTDDO": "31",
-          "EDTYYYYO": "2026",
-          "CONFIRMO": " ",
-          "ERRMSGO": "Please confirm to print the Custom report...                                  "
+          "EDTYYYYO": "2022",
+          "CONFIRMO": "Y",
+          "ERRMSGO": "Start Date - Month can NOT be empty...                                        "
         },
         "attributes": {
           "ERRMSGC": "DFHDFCOL"
         }
       }
     ],
-    "cursorField": "CONFIRML",
+    "cursorField": "SDTMML",
     "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
@@ -96,11 +96,11 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Please confirm to print the Custom report...                                    "
+      "text": "Start Date - Month can NOT be empty...                                          "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "Please confirm to print the Custom report...                                  "
+      "text": "Start Date - Month can NOT be empty...                                        "
     },
     {
       "channel": "DISPLAY_LINE",

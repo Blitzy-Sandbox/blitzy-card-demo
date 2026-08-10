@@ -1,19 +1,19 @@
 {
   "program": "COCRDSLC",
   "caseId": "case17",
-  "description": "The AID coercion at :291-299. CSSTRPFY maps DFHCLEAR to CCARD-AID-CLEAR at its L24-25, so the token IS recognised - but only ENTER and PFK03 satisfy the validity test at :292-293, so PFK-INVALID holds and :298 SETs CCARD-AID-ENTER. The EVALUATE then sees ENTER, and with CDEMO-PGM-REENTER set the run edits, reads and sends exactly as case05 does. An unusable key redisplays the screen; it never fails.",
+  "description": "The INVALID-AID COERCION at :291-299, which silently turns DFHCLEAR into ENTER, landing on WHEN CDEMO-PGM-REENTER at :357 - the same arm case04 takes, so the outcome is case04's shape and the inbound AID is the only variable. Four statements, in order: (1) PERFORM YYYY-STORE-PFKEY at :284-285 runs the CSSTRPFY include brought in at :855, whose 26-arm ordered EVALUATE TRUE matches its SECOND arm, WHEN EIBAID = DFHCLEAR, and SETs CCARD-AID-CLEAR - so the key IS recognised and CCARD-AID holds the five-byte token 'CLEAR'; (2) :291 SET PFK-INVALID TO TRUE sets WS-PFK-FLAG pessimistically to '1' before anything is tested (the 88-levels are PFK-VALID VALUE '0' and PFK-INVALID VALUE '1'); (3) :292-295 IF CCARD-AID-ENTER OR CCARD-AID-PFK03 SET PFK-VALID accepts only those two of the sixteen declared AID conditions, and CLEAR is neither, so the flag stays PFK-INVALID; (4) :297-299 IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE OVERWRITES the token in place - CCARD-AID becomes 'ENTER' and the original 'CLEAR' is destroyed, remembered nowhere. The ordered EVALUATE TRUE at :304 then sees CCARD-AID-PFK03 false (the coercion took it away) and CDEMO-PGM-ENTER false (the context is 1), and first-match-wins carries it to :357 (gate G30, rule R7). An unusable key is therefore never refused; it repaints the screen. CCARD-AID reads 'ENTER' and not 'CLEAR' after this, but it is NOT pinned below and that is deliberate rather than an omission: CCARD-AID lives in app/cpy/CVCRD01Y.cpy's CARDDEMO-CCARD-DATA, not in app/cpy/COCOM01Y.cpy, so it is neither a CDEMO- commarea field that ExpectedResponse.navigation accepts nor an xxxO symbolic-map item that ScreenSend.fields accepts, and ParityCase declares no member for it. Inventing one would fail to load, since the model refuses an unknown property. The coercion is asserted directly instead, on the enum this case exercises: thePfKeyResolverReproducesTheCopybookEvaluate pins DFHCLEAR to AidKey.CLEAR, and everyOtherAidIsCoercedToEnterAndRepaints drives all twenty AID bytes through :298. This case is the declarative half - it proves the coerced key reaches :357 and paints the record. Three structural properties of CSSTRPFY are preserved as found (practice B5): it has NO WHEN OTHER and NO DFHPA3 arm, and it does NOT clear CCARD-AID before evaluating, so an unmatched AID leaves whatever was there untouched - which is exactly why PfKeyResolver needs an explicit no-match outcome rather than a default, and why :298 can coerce even five spaces to ENTER. Its arms 17-28 fold DFHPF13-DFHPF24 BACK onto PFK01-PFK12 rather than extending the range; sibling case18 exercises that fold with DFHPF15, which becomes PFK03 and EXITS instead of being coerced - the complement of this case. Fourteen of the sixteen CCARD-AID 88-levels - CLEAR, 'PA1  ', 'PA2  ' (both literally space-padded in the PIC X(5) item) and PFK01, PFK02 and PFK04 through PFK12, there being no PA3 - are SET BY CSSTRPFY AND NEVER TESTED by this program, then discarded by the coercion. They are still produced correctly and CicsAid still publishes the whole DFHAID set including DFHPA3 and DFHPF13-DFHPF24: dead-but-preserved structure, not code to tidy (B5). NO INVALID-KEY MESSAGE IS PRODUCED. app/cpy/CSMSG01Y.cpy is copied at :221 but never referenced anywhere in the program, so its CCDA-MSG-INVALID-KEY item - the 49-character invalid-key text in a PIC X(50) field - is unreachable here and its literal is deliberately not reproduced anywhere in this file, not even to describe it. The key is coerced silently and ERRMSGO stays the eighty spaces WS-RETURN-MSG PIC X(75) supplies. Emitting that text would be the most plausible fabrication in this case, so its absence is the assertion (B1, B5). expectedMessages is empty for the same reason the map send makes it so: SEND-PLAIN-TEXT at app/cbl/COCRDSLC.cbl:839-844 is the only DISPLAY_LINE emitter and this path sends CCRDSLA. Downstream is case04's path with a MATCHED pair. 2000-PROCESS-INPUTS edits both criteria successfully: 2210-EDIT-ACCOUNT takes its ELSE at :676-677, MOVE CC-ACCT-ID TO CDEMO-ACCT-ID - the ALPHANUMERIC X(11) view - and 2220-EDIT-CARD takes its ELSE at :717, MOVE CC-CARD-NUM-N TO CDEMO-CARD-NUM - the NUMERIC 9(16) REDEFINES view. That X-versus-N asymmetry is genuine source behaviour and is reproduced rather than normalised (B5). INPUT-ERROR stays false, the cross-field edit at :637-640 does not fire, and no message is written. 9000-READ-DATA at :726-730 performs 9100-GETCARD-BYACCTCARD ALONE: :740 moves CC-CARD-NUM into WS-CARD-RID-CARDNUM and :742-750 READs FILE('CARDDAT ') KEYLENGTH(16) INTO(CARD-RECORD) LENGTH(150), while :739's MOVE CC-ACCT-ID-N TO WS-CARD-RID-ACCT-ID is COMMENTED OUT, so the account never enters the key. 9150-GETCARD-BYACCT at :779-812 is UNREACHABLE - the only occurrences of 9150 are its own two labels - so readByAccountIdViaAltIndex is NOT invoked and no CARDAIX input is declared: CARDAIX is a second finder over the one CARDDAT base cluster, never a second table (gate G45, B5). :752-754 takes WHEN DFHRESP(NORMAL) and SETs FOUND-CARDS-FOR-ACCOUNT (gate G47). Four fixture rows are seeded and the target is the LAST of them, so a translation that returned row 0 rather than keying on the full sixteen bytes differs in every projected field. 1200-SETUP-SCREEN-VARS then paints from row index 3: CDEMO-ACCT-ID and CDEMO-CARD-NUM are both non-zero so :464-465 and :470-471 move CC-ACCT-ID and CC-CARD-NUM rather than LOW-VALUES; under IF FOUND-CARDS-FOR-ACCOUNT at :475 CRDNAMEO takes CARD-EMBOSSED-NAME padded to X(50), CARD-EXPIRAION-DATE goes to CARD-EXPIRAION-DATE-X and the unnamed FILLER REDEFINES at :85-90 splits '2024-03-13' into CARD-EXPIRY-YEAR X(4), CARD-EXPIRY-MONTH X(2) and CARD-EXPIRY-DAY X(2), of which only EXPYEARO '2024' and EXPMONO '03' exist on this map - the day is computed and NEVER surfaced (gate G34) - and CRDSTCDO takes CARD-ACTIVE-STATUS 'Y'. Note which 88-level owns the info text: :127-128 is 88 WS-NO-INFO-MESSAGE VALUES SPACES LOW-VALUES and :129-130 is 88 FOUND-CARDS-FOR-ACCOUNT VALUE '   Displaying requested details' - two conditions on the one WS-INFO-MSG PIC X(40) item, so SETting the found flag IS moving that thirty-one character, three-leading-space literal into the field, and the IF WS-NO-INFO-MESSAGE at :490 is therefore false and does not overwrite it with the prompt. :496 moves it to INFOMSGO right-padded to 40. 1300-SETUP-SCREEN-ATTRS: this turn did not arrive from the card list - CDEMO-FROM-PROGRAM is 'COCRDSLC' - so :509-511 moves DFHBMFSE rather than DFHBMPRF into ACCTSIDA and CARDSIDA of CCRDSLAI and :526-530's DFHDFCOL does not fire; both are input-group items, so only the fifteen xxxC and fifteen xxxH output items appear below. With neither filter NOT-OK nor BLANK the cursor EVALUATE at :514-524 falls to WHEN OTHER and lands on ACCTSIDL, and NO DFHRED and NO '*' is written even though the context IS re-entry, because :541-551 guards the asterisk on BLANK AND CDEMO-PGM-REENTER together - the no-error side of gate G38. INFOMSGC takes DFHNEUTR at :556. 1400-SEND-SCREEN at :562-566 then names COCRDSL and CCRDSLA - LIT-THISMAPSET 'COCRDSL ' right-truncates into the X(7) carrier - and SETs CDEMO-PGM-REENTER, so the response context stays 1; COMMON-RETURN at :394-406 lays the 160-byte commarea plus its 12-byte WS-THIS-PROGCOMMAREA trailer into WS-COMMAREA and RETURNs under TRANSID('CCDL'). All conversation state travels in the payload and none is held server-side (gate G37, rule R6). The clock is pinned to 2022-07-19T23:16:00, so CURDATEO is '07/19/22' and CURTIMEO '23:16:00' on every run (practice B7); the fixture is the derived test copy under fixtures/, never app/data/ASCII/carddata.txt, which is read-only oracle (B3); and the code page is named US-ASCII rather than inherited from the platform (B8). The name says Select; the program is a detail VIEW, and four independent artefacts in this repository say so: its own :4 header reads 'Function: Accept and process credit card detail request'; README.md:213-231; app/csd/CARDDEMO.CSD:220's DESCRIPTION(VIEW CARD DETAIL); and app/cpy/COMEN02Y.cpy:45-46, whose menu slot 4 pairs the label 'Credit Card View' with the target program 'COCRDSLC'. Rule R1 keeps the mandated name and takes behaviour from the source, so the divergence is documented, not repaired (B4, register 0.8.4). Provenance (B12): derived by structured reading of app/cbl/COCRDSLC.cbl:291-304, app/cpy/CSSTRPFY.cpy, app/cpy/CVCRD01Y.cpy, the app/cpy/CVACT02Y.cpy byte layout, the app/cpy-bms/COCRDSL.CPY xxxI PICTURE clauses, app/bms/COCRDSL.bms and the real ASCII fixture - NEVER captured from a live COBOL execution, which plan 0.7.6 proves impossible here with eight verified blockers (risk R-A). Gates G32, G35 and G39 have no call site: all nine GO TOs in this program are forward early-exit or shared-terminal jumps and CBSTM03A alone forms backward loops; there is no CALL 'CEE3ABD' in COCRDSLC, whose abend path is the CICS-native HANDLE ABEND into ABEND ABCODE('9999'); and the map declares no PAGENO. R4 has no site either - COCRDSLC holds no PIC 9(n)V(n) monetary field, so G22-G28 are not exercised here.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
       "fixture": "carddata.txt",
       "fromRow": 0,
-      "rowCount": 3
+      "rowCount": 4
     }
   },
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHCLEAR",
-    "pinnedClock": "2022-07-19T23:12:33",
+    "pinnedClock": "2022-07-19T23:16:00",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCDL",
@@ -27,15 +27,15 @@
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-ID": "00000000020",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0683586198171516",
+      "CDEMO-CARD-NUM": "0927987108636232",
       "CDEMO-LAST-MAP": "CCRDSLA",
       "CDEMO-LAST-MAPSET": "COCRDSL"
     },
     "mapFields": {
-      "ACCTSIDI": "00000000027",
-      "CARDSIDI": "0683586198171516"
+      "ACCTSIDI": "00000000020",
+      "CARDSIDI": "0927987108636232"
     },
     "forcedOutcomes": {}
   },
@@ -55,9 +55,9 @@
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000027",
+      "CDEMO-ACCT-ID": "00000000020",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0683586198171516",
+      "CDEMO-CARD-NUM": "0927987108636232",
       "CDEMO-LAST-MAP": "CCRDSLA",
       "CDEMO-LAST-MAPSET": "COCRDSL"
     },
@@ -69,13 +69,13 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COCRDSLC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "ACCTSIDO": "00000000027",
-          "CARDSIDO": "0683586198171516",
-          "CRDNAMEO": "Ward Jones                                        ",
+          "CURTIMEO": "23:16:00",
+          "ACCTSIDO": "00000000020",
+          "CARDSIDO": "0927987108636232",
+          "CRDNAMEO": "Carter Veum                                       ",
           "CRDSTCDO": "Y",
-          "EXPMONO": "07",
-          "EXPYEARO": "2025",
+          "EXPMONO": "03",
+          "EXPYEARO": "2024",
           "INFOMSGO": "   Displaying requested details         ",
           "ERRMSGO": "                                                                                ",
           "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
@@ -133,6 +133,11 @@
       "dataset": "CARDDAT",
       "rowIndex": 2,
       "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
     }
   ],
   "expectedReturnCode": 0,
@@ -142,7 +147,7 @@
     {
       "dataset": "CARDDAT",
       "channel": "FINAL_STATE",
-      "rowCount": 3,
+      "rowCount": 4,
       "recordLength": 150
     }
   ]

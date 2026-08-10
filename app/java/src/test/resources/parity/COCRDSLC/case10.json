@@ -1,19 +1,19 @@
 {
   "program": "COCRDSLC",
   "caseId": "case10",
-  "description": "2210-EDIT-ACCOUNT's not-numeric arm at :665-674. The literal moved into WS-RETURN-MSG is the inline one at :670, 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER' - NOT the SEARCHED-ACCT-NOT-NUMERIC 88-level at :146-147, which declares different text and is never set by this program. FLG-ACCTFILTER-NOT-OK sends ACCTSIDC to DFHRED at :533-535, and that move is UNGUARDED by re-entry, unlike the asterisk at :541-545 - so this case shows a red field with no asterisk, which is exactly how a NOT-OK differs from a BLANK on the screen.",
+  "description": "2220-EDIT-CARD's not-numeric arm at :706-715, and with it the second of the two conditions that share the cursor arm at :519-521. CARDSIDI is '12345678901234AB' - exactly sixteen characters, non-blank, and not sixteen digits - so :622-626 moves it into CC-CARD-NUM unchanged; the not-supplied test at :691-693 fails on all three disjuncts, the third of which reads CC-CARD-NUM-N EQUAL ZEROS through the numeric 9(16) REDEFINES view over those very sixteen bytes rather than parsing them (gate G34); and :706 succeeds. The ordering is the whole point of this case. The message MOVE at :709-712 is guarded by IF WS-RETURN-MSG-OFF, and 2210-EDIT-ACCOUNT runs first at :629-631, so the literal can only be written because the account edit succeeded and left WS-RETURN-MSG at its off value of SPACES. ACCTSIDI is therefore '00000000040' deliberately: eleven digits and non-zero through the same kind of REDEFINES view at :653, so :665 fails, :676-677 moves the alphanumeric CC-ACCT-ID into CDEMO-ACCT-ID and sets FLG-ACCTFILTER-ISVALID, and no account message is written. Had the account failed as well, this card message would have been suppressed - the case that pins :651-661 on both fields shows that alternative, and this one is only assertable because the account is valid. The text is the inline literal at :711, fifty-two upper-case characters with no space after its comma, MOVEd into WS-RETURN-MSG PIC X(75) and on to ERRMSGO PIC X(80) at :494, so it carries twenty-three then twenty-eight trailing spaces. It is a literal MOVE and not an 88-level, and it is deliberately none of the three texts it is confused with: not WS-PROMPT-FOR-CARD at :140, which is the blank arm's 88-level and belongs to the case pinning :691-701; not NO-SEARCH-CRITERIA-RECEIVED at :142, which :637-640 sets only when both filter flags are BLANK and this account flag is ISVALID; and not SEARCHED-CARD-NOT-NUMERIC at :148, which grep proves is declared and never SET anywhere in the program - unreachable dead code, preserved unmodelled rather than tidied away or wired up, so its wording appears nowhere in this file (practices B5 and B1). :714 zeroes CDEMO-CARD-NUM, which is why :468-469 paints CARDSIDO as LOW-VALUES and the sixteen characters the operator typed are NOT echoed back, while CDEMO-ACCT-ID survives at forty and :465 echoes ACCTSIDO as 00000000040. FOUND-CARDS-FOR-ACCOUNT is false, so CRDNAMEO, CRDSTCDO, EXPMONO and EXPYEARO stay as :428's MOVE LOW-VALUES TO CCRDSLAO left them, and :490-492 turns the empty information line into the prompt that :496 sends to INFOMSGO. The crux is the colour. :537-539 is a bare IF FLG-CARDFILTER-NOT-OK with no AND CDEMO-PGM-REENTER guard, so CARDSIDC is DFHRED purely on the flag, whereas the asterisk at :541-545 and :547-551 IS re-entry gated and cannot fire here because the flag is NOT-OK rather than BLANK - the same one-byte item carries '0', '1' and a space - so no asterisk is written anywhere and ACCTSIDC is left at its initialised default, which is the byte DFHDFCOL names. app/cpy/CSSETATY.cpy gates the red and the asterisk together; COCRDSLC does not COPY it - its COPY list at :194-240 and :855 names CSSTRPFY and not CSSETATY - and gates only the asterisk, so the cases asserting the gated asterisk and this case asserting the ungated red are both required before gate G38 means anything, and neither side may be flattened into the other nor may a guard the source lacks be restored. :510-511 rather than :506-507 sets the two ACCTSIDA and CARDSIDA items of CCRDSLAI, and :527-531 does not fire, because CDEMO-LAST-MAPSET and CDEMO-FROM-PROGRAM name this program rather than the card list; those are input-group attribute metadata the case model deliberately cannot express, since only the C, P, H and V planes have DFHBMSCA mnemonics to name. The cursor EVALUATE at :515-524 is ordered and its first arm is false because the account flag is ISVALID, so the second wins on its NOT-OK condition: CARDSIDL takes the MOVE -1 and ACCTSIDL is left alone. The case pinning the card-blank path reaches that same arm through its BLANK condition, so between them both conditions of one arm are driven (gate G30). IF INPUT-ERROR at :360 sends the map and goes to COMMON-RETURN, so 9000-READ-DATA is never reached and readByCardNumber is not called; readByAccountIdViaAltIndex is not called either, because 9150-GETCARD-BYACCT is dead - its only occurrences are its own two labels at :779 and :810 - and the alternate index is a second finder on the one CARDDAT repository rather than a dataset of its own (gate G45). That matters more here than on any sibling: the seeded slice is fixture rows 47 to 49, and row 49 - slice index 2 - is the genuine owner of account 00000000040, carrying card 9805583408996588 and an embossed name an account-keyed read would return, so a translation that fell back to the alternate index would paint that name into CRDNAMEO and pinning CRDNAMEO at LOW-VALUES is what catches it. No row of the fixture carries 12345678901234AB, and no row other than 49 carries account 00000000040; both were verified mechanically against the file rather than assumed (practice B1). :567 re-sets CDEMO-PGM-REENTER so the context returns as 1, :587-590 names COCRDSLC, the X(8) literal right-truncated into the X(7) CCARD-NEXT-MAPSET as COCRDSL, and CCRDSLA, and COMMON-RETURN at :394-406 lays the 160-byte CARDDEMO-COMMAREA and the 12-byte WS-THIS-PROGCOMMAREA into WS-COMMAREA PIC X(2000) and returns under TRANSID 'CCDL' - every byte of conversation state in the payload and none of it on the server (gate G37, rule R6), with the forward GO TO at :715 becoming a plain return that preserves evaluation order (rule R7). No line is expected on any message channel: SEND-PLAIN-TEXT is not reached on this path and the harness records a DISPLAY_LINE only for the arm that sends no map, so the byte-exact error, information and heading text is pinned where this path actually produces it - ERRMSGO, INFOMSGO, TITLE01O and TITLE02O of the single send, each at the declared width of its xxxI PICTURE clause, with app/cpy/COTTL01Y.cpy:21 left as the commented-out earlier wording it is and :22 the only heading transcribed. The clock is pinned to 2022-07-19T23:16:00, the version instant app/cpy/CVCRD01Y.cpy itself records, so CURDATEO is 07/19/22 and CURTIMEO is 23:16:00 with nothing left to the wall clock (practice B7), and the code page is named US-ASCII rather than defaulted (practice B8). CardSelectController keeps the prompt's mandated name under rule R1 even though the source Function header at app/cbl/COCRDSLC.cbl:4, README.md:213-231 and app/csd/CARDDEMO.CSD:220 DESCRIPTION(VIEW CARD DETAIL) all describe a detail view rather than a selection; the divergence is documented rather than corrected (practice B4, AAP 0.8.4). Every expected value was produced by structured reading of app/cbl/COCRDSLC.cbl, the xxxI PICTURE clauses of app/cpy-bms/COCRDSL.CPY, app/bms/COCRDSL.bms, the 150-byte layout of app/cpy/CVACT02Y.cpy with the misspelled CARD-EXPIRAION-DATE and the FILLER X(59) that closes it, and the real US-ASCII fixture derived from app/data/ASCII/carddata.txt rather than that read-only file itself (practice B3) - never captured from a live COBOL execution, which eight independently verified blockers make impossible in this environment (AAP 0.7.6, risk R-A, practice B12). Gates G32, G35 and G39 have no site on this path - the program has no backward GO TO, no abend and no page counter - and it declares no PIC 9V99 item at all, so G22 through G28 have none either.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
       "fixture": "carddata.txt",
-      "fromRow": 0,
+      "fromRow": 47,
       "rowCount": 3
     }
   },
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:33",
+    "pinnedClock": "2022-07-19T23:16:00",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCDL",
@@ -27,15 +27,15 @@
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-ID": "00000000040",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0683586198171516",
+      "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "CCRDSLA",
       "CDEMO-LAST-MAPSET": "COCRDSL"
     },
     "mapFields": {
-      "ACCTSIDI": "1234567890A",
-      "CARDSIDI": "0683586198171516"
+      "ACCTSIDI": "00000000040",
+      "CARDSIDI": "12345678901234AB"
     },
     "forcedOutcomes": {}
   },
@@ -55,9 +55,9 @@
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000040",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0683586198171516",
+      "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "CCRDSLA",
       "CDEMO-LAST-MAPSET": "COCRDSL"
     },
@@ -69,15 +69,15 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COCRDSLC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CARDSIDO": "0683586198171516",
+          "CURTIMEO": "23:16:00",
+          "ACCTSIDO": "00000000040",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CRDSTCDO": "\u0000",
           "EXPMONO": "\u0000\u0000",
           "EXPYEARO": "\u0000\u0000\u0000\u0000",
           "INFOMSGO": "Please enter Account and Card Number    ",
-          "ERRMSGO": "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                            ",
+          "ERRMSGO": "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            ",
           "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
         },
         "attributes": {
@@ -87,8 +87,8 @@
           "PGMNAMEC": "DFHDFCOL",
           "TITLE02C": "DFHDFCOL",
           "CURTIMEC": "DFHDFCOL",
-          "ACCTSIDC": "DFHRED",
-          "CARDSIDC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "CARDSIDC": "DFHRED",
           "CRDNAMEC": "DFHDFCOL",
           "CRDSTCDC": "DFHDFCOL",
           "EXPMONC": "DFHDFCOL",
@@ -114,7 +114,7 @@
         }
       }
     ],
-    "cursorField": "ACCTSIDL",
+    "cursorField": "CARDSIDL",
     "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
@@ -122,17 +122,26 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 0,
-      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+      "expectedBytes": "950173372142989300000000009725Melvin Ondricka                                   2024-12-27Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 1,
-      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+      "expectedBytes": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 2,
-      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+      "fields": {
+        "CARD-NUM": "9805583408996588",
+        "CARD-ACCT-ID": "00000000040",
+        "CARD-CVV-CD": "908",
+        "CARD-EMBOSSED-NAME": "Davon Emmerich                                    ",
+        "CARD-EXPIRAION-DATE": "2023-10-27",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "980558340899658800000000040908Davon Emmerich                                    2023-10-27Y                                                           "
     }
   ],
   "expectedReturnCode": 0,

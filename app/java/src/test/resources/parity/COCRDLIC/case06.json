@@ -1,7 +1,7 @@
 {
   "program": "COCRDLIC",
   "caseId": "case06",
-  "description": "DFHPA3 has no arm in app/cpy/CSSTRPFY.cpy at all - the EVALUATE names DFHENTER, DFHCLEAR, DFHPA1, DFHPA2 and DFHPF1 through DFHPF24, and has no WHEN OTHER - and it does not clear CCARD-AID first. So the field keeps what INITIALIZE CC-WORK-AREA left at :300, which satisfies none of the fifteen 88-level conditions in app/cpy/CVCRD01Y.cpy. :370 sets PFK-INVALID, none of the four tests at :371-374 matches, and :378-380 forces CCARD-AID-ENTER. The observable result is identical to case01, and that is the assertion: an unrecognised key is neither an error nor a no-op, it lists.",
+  "description": "PF07 pressed while the operator is ALREADY on page one, arriving as a re-entry from this program: 1400-SETUP-MESSAGE answers 'NO PREVIOUS PAGES TO DISPLAY' and the same page one is re-read FORWARD rather than backward, with the page number left untouched at 1. PROVENANCE (practice B12): every value here is STATICALLY DERIVED from app/cbl/COCRDLIC.cbl [:439-455, :897-904, :924, :926-931, :1129, :1146, :1191, :1197], the byte layouts of app/cpy/CVACT02Y.cpy and app/cpy/COTTL01Y.cpy, the symbolic-map definitions of app/cpy-bms/COCRDLI.CPY with app/bms/COCRDLI.bms, and the real fixture app/data/ASCII/carddata.txt - and NEVER captured from a live COBOL execution, which the eight verified blockers of AAP 0.7.6 make impossible in this environment (risk R-A, AAP 0.9.11). No user rules exist for this project - review_rules returns exactly the one line 'No user rules provided.' - so AAP 0.10.2's enterprise practices govern instead. Encoding is US-ASCII, named explicitly and never the platform default (practice B8), and the clock is pinned to the same 2022-07-19T23:12:34 as case01 so CURDATEO renders 07/19/22 and CURTIMEO 23:12:34 on every run (practice B7). ENTRY STATE: EIBCALEN is greater than zero and CDEMO-FROM-PROGRAM equals LIT-THISPGM, so :357-362 performs 2000-RECEIVE-MAP - which is what separates this case from case09, where the identical arm is reached on a cold start with :315 taking the EIBCALEN = 0 branch instead. The re-init guard at :336-337 stays false for the same reason :319 makes it false on a cold start: the from-program is this program. eibcalen is stated as LENGTH OF CARDDEMO-COMMAREA, 160, in line with COCRDLIC's nine other re-entry cases; recorded rather than corrected (practice B4), the value CICS would actually report here is 2000, because COMMON-RETURN returns COMMAREA(WS-COMMAREA) LENGTH(LENGTH OF WS-COMMAREA) at :615-618 over WS-COMMAREA PIC X(2000) at :262, of which only the leading 414 bytes are meaningful - CARDDEMO-COMMAREA 160 plus WS-THIS-PROGCOMMAREA 254. Nothing behavioural rests on the number: :315, :357 and :839 test it only against zero. CURSOR: the paging cursor travels in the payload and nowhere else (rule R6, gate G37). It arrives in the first-page state - WS-CA-SCREEN-NUM 1, which satisfies 88 CA-FIRST-PAGE VALUE 1 at :238, WS-CA-LAST-PAGE-DISPLAYED 9 per 88 CA-LAST-PAGE-NOT-SHOWN at :241, and both 27-byte keys blank - so CA-FIRST-PAGE is true without any server-side state being consulted. AID: DFHPF7 resolves through app/cpy/CSSTRPFY.cpy, copied at :1416, to SET CCARD-AID-PFK07. PF07 is one of the four keys :371-374 accepts, so :370's PFK-INVALID is overturned at :375 and :378-380 does not coerce anything to ENTER. Because the key is not PF08, :410-414 re-asserts CA-LAST-PAGE-NOT-SHOWN, which was already 9. THE DUPLICATED ARM, which is why this case exists (gate G30, practice B5): the main EVALUATE TRUE carries WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE twice in succession at :439-440 and :444-445, separated only by the comment block at :441-443. The first of the two carries NO statements, so under COBOL multi-WHEN semantics it shares the second's body; the redundant duplicate is a genuine source artifact and is preserved as two conditions rather than collapsed into one. Two further quirks in the same arm are recorded and not normalised (practice B4): the commented-out MOVE WS-CA-FIRST-CARD-ACCT-ID TO WS-CARD-RID-ACCT-ID at :448-449, whose live twin at :446-447 moves only the card number; and PERFORM 1000-SEND-MAP THRU 1000-SEND-MAP at :452-453, whose range end equals its range start where the PF08 arm at :495-496 writes THRU 1000-SEND-MAP-EXIT. Because 1000-SEND-MAP-EXIT holds only EXIT, the outcome is identical, but the inconsistency is the dispatcher's own and is left standing. The arm's GO TO COMMON-RETURN at :454 is a benign shared-terminal jump, restructured to a return after the shared finalisation at :604-619 with the fall-through outcome unchanged (rule R7). DIRECTION AND PAGE NUMBER: the arm performs 9000-READ-FORWARD, NOT 9100-READ-BACKWARDS, and it touches WS-CA-SCREEN-NUM neither by ADD nor by SUBTRACT - unlike the PF08 arm's ADD +1 at :492 and the page-up-proper arm's SUBTRACT 1 at :508. Page one is simply re-read forward from WS-CA-FIRST-CARD-NUM and redisplayed under the same page number, so PAGENOO is 1 (gate G28). WS-SCRN-COUNTER accumulates to exactly 7 across the loop, from 0 at :1140 by ADD 1 at :1163. BROWSE: :1124 blanks WS-ALL-ROWS, then STARTBR ... GTEQ at :1129-1136 anchors on the first key at or after WS-CA-FIRST-CARD-NUM, which is blank and therefore sorts below every key in the file, so the browse opens at the top and this re-read returns fixture rows 1 to 7 - the same seven rows case01 and case09 list. :1140 zeroes WS-SCRN-COUNTER and :1141 sets CA-NEXT-PAGE-EXISTS before a single record has been read. The READNEXT at :1146 reports DFHRESP(NORMAL) seven times [:1157]; 9500-FILTER-RECORDS excludes nothing because both filter flags are blank; row one's key 0500024453765740 is stored as WS-CA-FIRST-CARDKEY at :1174-1176 and the screen-number bump at :1177-1178 is skipped because WS-CA-SCREEN-NUM is 1 and not 0. On WS-SCRN-COUNTER = WS-MAX-SCREEN-LINES at :1191 the loop exits and :1194-1195 stores row seven's key 1142167692878931; the look-ahead READNEXT at :1197 then finds row eight, so :1208-1214 sets CA-NEXT-PAGE-EXISTS and replaces the stored key with 1561409106491600. ENDBR at :1258. Both read sites report the NORMAL outcome of common/FileStatus and nothing is forced (gate G47). THE MESSAGE (gate G30): 1400-SETUP-MESSAGE's EVALUATE at :897 is ordered, and the order decides the outcome. Arms one and two, FLG-ACCTFILTER-NOT-OK and FLG-CARDFILTER-NOT-OK at :898-900, do not match because neither filter was supplied. Arm three at :901-904 does match and moves 'NO PREVIOUS PAGES TO DISPLAY' into WS-ERROR-MSG. It precedes both PF08 arms and the WHEN CA-NEXT-PAGE-EXISTS arm at :918, so it wins even though CA-NEXT-PAGE-EXISTS is also true by then - the look-ahead set it at :1210. Reversing those two arms would substitute the 'TYPE S FOR DETAIL' prompt for the error, which is exactly the substitution this case exists to prevent. Arm three sets no WS-INFORM-REC-ACTIONS, so WS-INFO-MSG keeps the SPACES that SET WS-NO-INFO-MESSAGE gave it at :669 - the 88 at :113-114 names SPACES first - and the guard at :926-927 is therefore false: INFOMSGO keeps its 45 spaces and INFOMSGC keeps the DFHBMDAR moved at :671 rather than the DFHNEUTR of :929 (practice B5). The operator is told there is no previous page and is not simultaneously told how to select a row. ERRMSGO is the 28-character literal in WS-ERROR-MSG PIC X(75) [:117], moved at :924 into ERRMSGO PIC X(78), so it is right-padded with 47 spaces to 75 and then with 3 more to 78. SCREEN: :643 MOVE LOW-VALUES TO CCRDLIAO paints the output group x00 and not spaces, which is why ACCTSIDO, CARDSIDO and CRDSTP2O through CRDSTP7O are expected as LOW-VALUES; the stopper items are never written by 1200-SCREEN-ARRAY-INIT at all and are preserved as found (practice B5). TITLE01O and TITLE02O are the byte-exact literals of app/cpy/COTTL01Y.cpy, TITLE02O taking the ACTIVE line 22 and not the commented-out line 21. Because this is a re-entry, 1300-SETUP-SCREEN-ATTRS takes the ELSE at :843 rather than the CONTINUE that a cold start takes at :839-842, and its ordered EVALUATE lands on WHEN CDEMO-ACCT-ID = 0 at :849-850 and WHEN CDEMO-CARD-NUM = 0 at :861-862, because the blank-filter branches of 2210-EDIT-ACCOUNT and 2220-EDIT-CARD zeroed both at :1011 and :1046 - so ACCTSIDO and CARDSIDO are LOW-VALUES by a different route to case09's, with the same bytes. Each CRDSELnO carries LOW-VALUES because 2100-RECEIVE-SCREEN moves the untransmitted CRDSELnI items into WS-EDIT-SELECT at :972-978 and 1200-SCREEN-ARRAY-INIT moves them back out at :683 onward; a cold start shows a space there instead, since INITIALIZE at :301 blanks WS-EDIT-SELECT-FLAGS whatever its VALUE clause says. The cursor request is ACCTSIDL, from IF INPUT-OK MOVE -1 TO ACCTSIDL at :884-885. There is no error highlight anywhere on this screen (gate G38): 2000-RECEIVE-MAP runs, but the blank filters take the not-supplied branches at :1007-1012 and :1042-1047, 2250-EDIT-ARRAY tallies zero actions and finds every row SELECT-BLANK, INPUT-ERROR is never set, and so neither 1250-SETUP-ARRAY-ATTRIBS' DFHRED nor the '*' of the CSSETATY pattern appears - COCRDLIC does not copy CSSETATY and drives its own per-row flags instead. OUTBOUND CURSOR: the 58-byte WS-THIS-PROGCOMMAREA prefix leaves with WS-CA-FIRST-CARDKEY taken from fixture row 1 (0500024453765740 with account 00000000050), WS-CA-LAST-CARDKEY taken from the look-ahead row 8 (1561409106491600 with account 00000000035), WS-CA-SCREEN-NUM 1, WS-CA-LAST-PAGE-DISPLAYED 9 and WS-CA-NEXT-PAGE-IND 'Y'. It is documented here rather than pinned because the compared fingerprint carries the next program, mapset and map, the communication area, the sends, the cursor item and the termination - the paging cursor reaches the client in the response payload and is asserted by this suite's targeted tests. PAGE SIZE: seven rows, from WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7 at :177-178. It is behaviour and not configuration, so this case declares no page-size parameter of any kind (gate G39), and it declares no jobParameters at all, because a CONTROLLER_POJO takes none. RECORDS: CARDDAT is the single dataset key this program reaches (gate G45); CARDAIX, declared at :215-217 as LIT-CARD-FILE-ACCT-PATH, is never opened by COCRDLIC and stays declared-but-unused. All fifty seeded rows are pinned unchanged, which is a positive assertion rather than an omission: a browse-and-return transaction must leave the card master exactly as it found it. Each image is 150 bytes summed by hand from app/cpy/CVACT02Y.cpy - CARD-NUM 16, CARD-ACCT-ID 11, CARD-CVV-CD 3, CARD-EMBOSSED-NAME 50, CARD-EXPIRAION-DATE 10, CARD-ACTIVE-STATUS 1, FILLER 59 (practice B11, gates G19 and G21). Rows 0, 6 and 7 - the browse anchor, the row whose key :1194-1195 stores, and the look-ahead record that replaces it - are additionally pinned span by span, so the misspelled CARD-EXPIRAION-DATE at offsets 81-90 is asserted BY NAME exactly as the copybook spells it (requirement I1) and the FILLER at 92-150 is asserted as 59 spaces rather than merely implied by the total width. NOT APPLICABLE HERE, stated so its absence is deliberate: gates G32 and G35 have no subject in this program. All 16 of COCRDLIC's GO TO sites are forward early exits or the shared terminal COMMON-RETURN, with no backward loop-forming jump - CBSTM03A is the only program that has one - and RETURN-CODE, CEE3ABD and ABEND occur exactly zero times in the source, so a completed transaction reports 0 and expectedReturnCode says so. None of the three XCTL sites at :402, :538 and :566 is reached on this path, so nextProgram, nextMapset and nextMap are absent and the termination is RETURN_TRANSID with exactly one send. One further discrepancy is recorded rather than fixed (practice B4): app/cpy/CVCRD01Y.cpy declares SIXTEEN 88-level conditions over CCARD-AID PIC X(5) - ENTER, CLEAR, PA1, PA2 and PFK01 through PFK12 - where AAP 0.3.3 and the prose of a sibling case both say fifteen. The copybook is the contract; the count in the prose is left alone. GATE: this is one of the twenty cases COCRDLIC must satisfy, and the module is not complete until the diff count is zero across all twenty of them (gates G15 and G18). The unit is reached as a plain object with no HTTP in the path (gate G51).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -10,13 +10,42 @@
     }
   },
   "screenRequest": {
-    "eibcalen": 0,
+    "eibcalen": 160,
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
-    "commarea": {},
-    "mapFields": {},
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "ACCTNO1I": "00000000050",
+      "CRDNUM1I": "0500024453765740",
+      "CRDSTS1I": "Y",
+      "ACCTNO2I": "00000000027",
+      "CRDNUM2I": "0683586198171516",
+      "CRDSTS2I": "Y",
+      "ACCTNO3I": "00000000002",
+      "CRDNUM3I": "0923877193247330",
+      "CRDSTS3I": "Y",
+      "ACCTNO4I": "00000000020",
+      "CRDNUM4I": "0927987108636232",
+      "CRDSTS4I": "Y",
+      "ACCTNO5I": "00000000012",
+      "CRDNUM5I": "0982496213629795",
+      "CRDSTS5I": "Y",
+      "ACCTNO6I": "00000000044",
+      "CRDNUM6I": "1014086565224350",
+      "CRDSTS6I": "Y",
+      "ACCTNO7I": "00000000037",
+      "CRDNUM7I": "1142167692878931",
+      "CRDSTS7I": "Y"
+    },
     "forcedOutcomes": {},
-    "aid": "DFHPA3"
+    "aid": "DFHPF7"
   },
   "expectedResponse": {
     "navigation": {
@@ -49,45 +78,45 @@
           "PAGENOO": "1  ",
           "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CRDSEL1O": " ",
+          "CRDSEL1O": "\u0000",
           "ACCTNO1O": "00000000050",
           "CRDNUM1O": "0500024453765740",
           "CRDSTS1O": "Y",
-          "CRDSEL2O": " ",
+          "CRDSEL2O": "\u0000",
           "CRDSTP2O": "\u0000",
           "ACCTNO2O": "00000000027",
           "CRDNUM2O": "0683586198171516",
           "CRDSTS2O": "Y",
-          "CRDSEL3O": " ",
+          "CRDSEL3O": "\u0000",
           "CRDSTP3O": "\u0000",
           "ACCTNO3O": "00000000002",
           "CRDNUM3O": "0923877193247330",
           "CRDSTS3O": "Y",
-          "CRDSEL4O": " ",
+          "CRDSEL4O": "\u0000",
           "CRDSTP4O": "\u0000",
           "ACCTNO4O": "00000000020",
           "CRDNUM4O": "0927987108636232",
           "CRDSTS4O": "Y",
-          "CRDSEL5O": " ",
+          "CRDSEL5O": "\u0000",
           "CRDSTP5O": "\u0000",
           "ACCTNO5O": "00000000012",
           "CRDNUM5O": "0982496213629795",
           "CRDSTS5O": "Y",
-          "CRDSEL6O": " ",
+          "CRDSEL6O": "\u0000",
           "CRDSTP6O": "\u0000",
           "ACCTNO6O": "00000000044",
           "CRDNUM6O": "1014086565224350",
           "CRDSTS6O": "Y",
-          "CRDSEL7O": " ",
+          "CRDSEL7O": "\u0000",
           "CRDSTP7O": "\u0000",
           "ACCTNO7O": "00000000037",
           "CRDNUM7O": "1142167692878931",
           "CRDSTS7O": "Y",
-          "INFOMSGO": "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    ",
-          "ERRMSGO": "                                                                              "
+          "INFOMSGO": "                                             ",
+          "ERRMSGO": "NO PREVIOUS PAGES TO DISPLAY                                                  "
         },
         "attributes": {
-          "INFOMSGC": "DFHNEUTR"
+          "INFOMSGC": "DFHBMDAR"
         }
       }
     ],
@@ -99,6 +128,15 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 0,
+      "fields": {
+        "CARD-NUM": "0500024453765740",
+        "CARD-ACCT-ID": "00000000050",
+        "CARD-CVV-CD": "747",
+        "CARD-EMBOSSED-NAME": "Aniya Von                                         ",
+        "CARD-EXPIRAION-DATE": "2023-03-09",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
     },
     {
@@ -129,11 +167,29 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 6,
+      "fields": {
+        "CARD-NUM": "1142167692878931",
+        "CARD-ACCT-ID": "00000000037",
+        "CARD-CVV-CD": "625",
+        "CARD-EMBOSSED-NAME": "Shany Walker                                      ",
+        "CARD-EXPIRAION-DATE": "2023-10-24",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 7,
+      "fields": {
+        "CARD-NUM": "1561409106491600",
+        "CARD-ACCT-ID": "00000000035",
+        "CARD-CVV-CD": "031",
+        "CARD-EMBOSSED-NAME": "Angelica Dach                                     ",
+        "CARD-EXPIRAION-DATE": "2025-09-23",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
     },
     {

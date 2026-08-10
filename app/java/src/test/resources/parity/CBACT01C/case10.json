@@ -1,31 +1,13 @@
 {
   "program": "CBACT01C",
   "caseId": "case10",
-  "description": "ACCT-GROUP-ID as a PIC X(10) receiver: one record leaves it as the ten spaces every row of the shipped fixture carries, the other fills it completely. Its label line is the last of the eleven, so a space-filled value must still emit a line of exactly the 25-character label followed by ten spaces - a trimmed line would be one character sequence short and a dropped line would change the block from thirteen lines to twelve.",
+  "description": "The fatal OPEN arm of 0000-ACCTFILE-OPEN at app/cbl/CBACT01C.cbl:L133-L149, and the reference for the three-line abend tail every fatal arm of this program shares. The case declares no ACCTFILE input at all, which is how this contract states that the account master is not there to be opened: DatasetInput admits exactly one of \"rows\", \"fixture\" or \"empty\": true, refuses an entry declaring none, and says in that refusal that a dataset the case says nothing about must be omitted from \"inputs\" altogether. The sequence, statement by statement: L134 moves 8 into APPL-RESULT before the OPEN; L135 issues OPEN INPUT; L136 tests the status against '00' and nothing else, so L139 moves 12; the guard at L141 therefore fails APPL-AOK and takes its ELSE arm - DISPLAY 'ERROR OPENING ACCTFILE' at L144, whose literal is the bare DD name ACCTFILE and not ACCOUNT FILE as the read literal at L110 and the close literal at L162 are; MOVE ACCTFILE-STATUS TO IO-STATUS at L145; PERFORM 9910-DISPLAY-IO-STATUS at L146, which emits the status line; then PERFORM 9999-ABEND-PROGRAM at L147, which displays 'ABENDING PROGRAM' at L170, moves 0 into TIMING at L171 and 999 into ABCODE at L172, and calls 'CEE3ABD' at L173. This paragraph has no end-of-file arm, unlike 1000-ACCTFILE-GET-NEXT at L94-L103 which tests '10' as well: the open tests '00' and sends every other status to the abend, so no empty-dataset or end-of-file tolerance is added here that the COBOL does not have. The return code is 12, from the MOVE 12 TO APPL-RESULT at L139 and carried out of the program by the CALL 'CEE3ABD'; ABCODE 999 and TIMING 0 are Language Environment abend parameters and are never the return code. Deriving the status line: 01 IO-STATUS-04 is IO-STATUS-0401 PIC 9 followed by IO-STATUS-0403 PIC 999 at L57-L59, four bytes in total, and both arms of 9910 display the 20-character literal 'FILE STATUS IS: NNNN' followed by that image, so the line is 24 characters and the NNNN is part of the hard-coded literal at L183 and L187 rather than a placeholder awaiting substitution. The ELSE arm at L184-L187 is taken when IO-STATUS is numeric and IO-STAT1 is not '9': MOVE '0000' TO IO-STATUS-04, then MOVE IO-STATUS TO IO-STATUS-04(3:2). A z/OS OPEN INPUT of a non-optional dataset that is not present reports '35', which through that arm renders 0, 0, 3, 5 and would give FILE STATUS IS: NNNN0035. The IF arm at L177-L183 is taken instead when IO-STATUS is not numeric or IO-STAT1 is '9': it moves IO-STAT1 into IO-STATUS-04(1:1) and the binary value of IO-STAT2 into IO-STATUS-0403. This translation reaches its data through a configuration-bound JDBC driver that cannot tell a dataset that is absent from one whose description was refused, so AccountRepository reports PERMANENT_ERROR_STATUS - '9' followed by a binary-zero feedback byte - for a refused open; that takes the IF arm, renders 9 then 000, and gives FILE STATUS IS: NNNN9000, also 24 characters. The frozen contract fixes that value rather than leaving it to a case: CBACT01CParityTest requires every case whose return code is not zero to end with the rendering composed from AccountRepository.PERMANENT_ERROR_STATUS followed by 'ABENDING PROGRAM'. This case therefore states 9000 and the divergence from the mainframe's 0035 is recorded here rather than silently resolved. The numeric ELSE arm of 9910 is unreachable from this suite - omission is the only declared input that reaches the fatal open, so every case in this directory pinning that arm necessarily states this same four-line sequence, and no second one can contribute a different status image - which is why the numeric arm and the '22' and '23' statuses are asserted by FileStatusTest against the paragraph itself. Nothing is read: no labelled field line, no 49-dash separator and no 300-byte record image appears, the closing banner at L85 is never reached because L173 terminates the program, and SYSOUT is therefore exactly these four lines of 38, 22, 24 and 16 characters. Nothing is written anywhere, and no dataset survives the run to have a final state reported for it. Every line is US-ASCII, the code page of app/data/ASCII and of ParityHarness.FIXTURE_CHARSET, never a platform default. The case is deterministic - it carries no wall-clock and no random value, and the condition it forces is the absence of the input rather than anything computed - and it declares no job parameter because app/jcl/READACCT.jcl:L22 is a bare EXEC PGM=CBACT01C with no PARM. No fully-qualified dataset name appears: a case addresses a dataset only by its binding key, ACCTFILE, and this one names none because it declares no input. Provenance: statically derived by reading app/cbl/CBACT01C.cbl, app/cpy/CVACT01Y.cpy and app/jcl/READACCT.jcl, cross-checked against the constants published by AccountBalanceJob, AbendException, AccountRepository and FileStatus. Nothing here was captured from a run of the legacy COBOL, which is impossible in this environment - there is no z/OS runtime, the available compiler reports its indexed file handler as disabled, and no Language Environment CEE service exists to link the CALL 'CEE3ABD' at L173 - and that substitution of provenance, and nothing else about the gate, is the escalated deviation recorded as risk R-A.",
   "unitKind": "BATCH_JOB",
-  "inputs": {
-    "ACCTFILE": {
-      "rows": [
-        "00000000401Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
-        "00000000402Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000GROUPABCDE                                                                                                                                                                                  "
-      ]
-    }
-  },
+  "inputs": {},
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 0,
-      "expectedBytes": "00000000401Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 1,
-      "expectedBytes": "00000000402Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000GROUPABCDE                                                                                                                                                                                  "
-    }
-  ],
-  "expectedReturnCode": 0,
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -33,111 +15,15 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000401"
+      "text": "ERROR OPENING ACCTFILE"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-ACTIVE-STATUS      :Y"
+      "text": "FILE STATUS IS: NNNN9000"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-BAL           :00000001940{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-OPEN-DATE          :2014-11-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-REISSUE-DATE       :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-GROUP-ID           :          "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "-------------------------------------------------"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "00000000401Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000402"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-ACTIVE-STATUS      :Y"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-BAL           :00000001940{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-OPEN-DATE          :2014-11-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-REISSUE-DATE       :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-GROUP-ID           :GROUPABCDE"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "-------------------------------------------------"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "00000000402Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000GROUPABCDE                                                                                                                                                                                  "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBACT01C"
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": []

@@ -1,82 +1,137 @@
 {
   "program": "COCRDSLC",
   "caseId": "case16",
-  "description": "The other half of the PF3 arm: CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM are SPACES, so :311 and :318 substitute LIT-MENUTRANID 'CM00' and LIT-MENUPGM 'COMEN01C'. The source tests EQUAL LOW-VALUES OR EQUAL SPACES at :309-310 and :316-317; this case pins the SPACES disjunct. Note that :328 moves LIT-THISMAPSET, a PIC X(8) item holding 'COCRDSL ', into CDEMO-LAST-MAPSET PIC X(7) - the trailing space is discarded by the PIC X rule, and the X(8)-into-X(7) mismatch is preserved.",
+  "description": "WHEN CDEMO-PGM-REENTER at app/cbl/COCRDSLC.cbl:357 reached with both criteria valid, pinning the INACTIVE card - CARD-ACTIVE-STATUS 'N' - and, far more importantly, pinning that an inactive card has NO consequence whatever. This is the one case in this folder whose record is HAND-AUTHORED INLINE rather than drawn from the fixture, and the reason is arithmetic rather than preference: all fifty rows of app/java/src/test/resources/fixtures/carddata.txt carry 'Y' in the CARD-ACTIVE-STATUS byte at offset 91 - verified across every row, and the file is byte-identical to app/data/ASCII/carddata.txt - so the fixture set contains no inactive card at all and no fixture row could honestly be claimed for this scenario (practices B1 and B12). The row is therefore declared in \"rows\" here, in this JSON file only; app/data/ASCII/carddata.txt and every other reference input stay untouched (practice B3). Its two keys are chosen to be incapable of colliding with the real data: card '4000000000000001' appears in no fixture row, and account '00000000099' lies outside the fixture's 00000000001-00000000050 range. The record is app/cpy/CVACT02Y.cpy's CARD-RECORD at its declared RECLN 150, summed span by span from the copybook: CARD-NUM X(16) 1-16, CARD-ACCT-ID 9(11) 17-27, CARD-CVV-CD 9(03) 28-30, CARD-EMBOSSED-NAME X(50) 31-80, CARD-EXPIRAION-DATE X(10) 81-90, CARD-ACTIVE-STATUS X(01) 91 and FILLER X(59) 92-150, which is 16+11+3+50+10+1+59 = 150 (practice B11). The FILLER is present and space-filled and \"expectedBytes\" pins the whole image, so the total width is asserted and a record short by that span could not pass (gates G19 and G21). CARD-EXPIRAION-DATE is MISSPELLED in the copybook and is reproduced misspelled in every occurrence here, including the \"fields\" map: repairing that spelling would leave the differ hunting a span the decoder never emits, which is a silent parity break rather than a loud one (requirement I1). The path: EIBCALEN is 172 - the 160-byte CARDDEMO-COMMAREA of app/cpy/COCOM01Y.cpy plus the 12-byte WS-THIS-PROGCOMMAREA trailer - so :268's guard is false on both disjuncts (the commarea is present, and CDEMO-FROM-PROGRAM is 'COCRDSLC' rather than LIT-MENUPGM 'COMEN01C') and :274-278 splits it instead. DFHENTER satisfies :292-293, so the :297-299 coercion does not fire, and the ordered EVALUATE TRUE at :304 passes the PFK03 arm and both ENTER arms to land on :357 (gate G30, rule R7). 2000-PROCESS-INPUTS then finds neither filter blank nor non-numeric, so 2210-EDIT-ACCOUNT takes its ELSE at :675-677 and 2220-EDIT-CARD takes its ELSE at :716-718; the asymmetry between them is genuine source behaviour and is reproduced rather than tidied - :676 moves the ALPHANUMERIC CC-ACCT-ID X(11) view while :717 moves the NUMERIC CC-CARD-NUM-N 9(16) REDEFINES view (practice B5). The cross-field edit at :637-640 needs BOTH filters blank and does not fire, so INPUT-ERROR stays false and the ELSE at :364-369 runs 9000-READ-DATA, 1000-SEND-MAP and GO TO COMMON-RETURN. :588's MOVE LIT-THISPGM TO CCARD-NEXT-PROG sits inside 2000-PROCESS-INPUTS, which is why this arm names a nextProgram where the cold-start case01 does not. The read is keyed on the sixteen-byte card number ALONE: :739's MOVE CC-ACCT-ID-N TO WS-CARD-RID-ACCT-ID is commented out, so only :740 populates the RID and :742-750 READs FILE('CARDDAT ') KEYLENGTH(16) INTO(CARD-RECORD) LENGTH(150) - one call to CardRepository.readByCardNumber and no other. 9150-GETCARD-BYACCT at :779-812 is UNREACHABLE dead code, the only occurrences of 9150 in the program being its own two labels while 9000-READ-DATA at :726-730 performs 9100 alone, so the CARDAIX alternate-index path never executes, readByAccountIdViaAltIndex is NOT invoked, and no CARDAIX input is declared - CARDAIX is a second finder over the one CARDDAT base cluster, never a second table (gate G45, practice B5). :752-754 takes WHEN DFHRESP(NORMAL) and SETs FOUND-CARDS-FOR-ACCOUNT (gate G47, the NORMAL arm). 1200-SETUP-SCREEN-VARS then paints the detail under IF FOUND-CARDS-FOR-ACCOUNT at :474-485. CRDSTCDO takes CARD-ACTIVE-STATUS 'N' from :484 - and that is the whole of it. COCRDSLC NEVER TESTS CARD-ACTIVE-STATUS: the field is referenced exactly once in the entire program, in that MOVE, with no IF, no EVALUATE and no 88-level anywhere on it, so an inactive card paints an identical screen to an active one apart from that single byte. No warning message, no colour change, no blocked navigation and no extra emitted line is invented here; INFOMSGO carries the ordinary FOUND-CARDS-FOR-ACCOUNT text and INFOMSGC the ordinary DFHNEUTR. Asserting the ABSENCE of a consequence is as much a parity assertion as asserting a value, and manufacturing one would be precisely the new feature this migration forbids (practice B5). :477-478 moves the expiry into CARD-EXPIRAION-DATE-X, whose unnamed FILLER REDEFINES at :85-90 overlays CARD-EXPIRY-YEAR X(4), FILLER X(1), CARD-EXPIRY-MONTH X(2), FILLER X(1) and CARD-EXPIRY-DAY X(2); over '2021-12-31' that yields year '2021', month '12' and day '31', so EXPYEARO is '2021' and EXPMONO is '12' while the day is computed and NEVER SURFACED, because this map declares no EXPDAY field - only COCRDUP does (gate G34, and the asymmetry stands as found). WS-INFO-MSG is PIC X(40) at :126 and its FOUND-CARDS-FOR-ACCOUNT 88 at :129-130 carries three LEADING spaces before 'Displaying requested details', 31 characters right-padded to 40; being neither spaces nor LOW-VALUES it fails WS-NO-INFO-MESSAGE at :490, so the prompt does not overwrite it. ERRMSGO is the X(75) WS-RETURN-MSG of spaces moved into an X(80) receiver, right-padded to 80. 1300-SETUP-SCREEN-ATTRS: this turn did not arrive from the card list - CDEMO-LAST-MAPSET is 'COCRDSL' where LIT-CCLISTMAPSET is 'COCRDLI' - so :509-511 moves DFHBMFSE rather than DFHBMPRF and :527-531's DFHDFCOL does not fire; both are CCRDSLAI input-group items, so only the fifteen xxxC and fifteen xxxH output items appear in \"attributes\" here. With neither filter NOT-OK nor BLANK the cursor EVALUATE at :515-524 falls through to WHEN OTHER and lands on ACCTSIDL, and NO DFHRED and NO '*' is written even though the context IS re-entry, because :541-551 guards the asterisk on BLANK AND CDEMO-PGM-REENTER together - the no-error side of gate G38. :565-567 moves LIT-THISMAPSET, a PIC X(8) item holding 'COCRDSL ', into the X(7) CCARD-NEXT-MAPSET, so the trailing space is right-truncated to 'COCRDSL'; CCARD-NEXT-MAP takes 'CCRDSLA'; and SET CDEMO-PGM-REENTER keeps the response context at 1. COMMON-RETURN at :394-406 moves WS-RETURN-MSG into CCARD-ERROR-MSG, lays the 160-byte commarea and its 12-byte trailer into WS-COMMAREA and RETURNs under TRANSID('CCDL'): every byte of conversation state travels in the payload and none is held server-side (gate G37, rule R6). The clock is pinned to 2022-07-19T23:16:00, the version-footer stamp of app/cpy/CVACT02Y.cpy and app/cpy/CVCRD01Y.cpy - the two copybooks this case pins - so CURDATEO is '07/19/22' and CURTIMEO '23:16:00' on every run, and the code page is named US-ASCII explicitly, IBM037 belonging to app/data/EBCDIC and not to this fixture (practices B7 and B8). The name says Select; the program is a detail VIEW, per its own Function header, README.md:213-231 and app/csd/CARDDEMO.CSD:220's DESCRIPTION(VIEW CARD DETAIL). Rule R1 keeps the mandated class name and takes behaviour from the source, so the divergence is documented rather than repaired (practice B4, register AAP 0.8.4). Provenance (practice B12): every expected value here is STATICALLY DERIVED by structured reading of app/cbl/COCRDSLC.cbl, the app/cpy/CVACT02Y.cpy byte layout, the app/cpy-bms/COCRDSL.CPY xxxI PICTURE clauses and app/bms/COCRDSL.bms - never captured from a live COBOL execution, which AAP 0.7.6 proves impossible in this environment with eight verified blockers (risk R-A). Gates G32, G35 and G39 have no call site: CBSTM03A alone forms backward GO TO loops; there is no CALL 'CEE3ABD' in COCRDSLC, whose abend path is the CICS-native HANDLE ABEND; and this map declares no PAGENO. R4 has no site either - COCRDSLC holds no PIC 9..V.. monetary field, so gates G22-G28 are not exercised.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
-      "fixture": "carddata.txt",
-      "fromRow": 0,
-      "rowCount": 3
+      "rows": [
+        "400000000000000100000000099123Inactive Test Card                                2021-12-31N                                                           "
+      ]
     }
   },
   "screenRequest": {
     "eibcalen": 172,
-    "aid": "DFHPF3",
-    "pinnedClock": "2022-07-19T23:12:33",
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:16:00",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "    ",
-      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
       "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000099",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-CARD-NUM": "4000000000000001",
       "CDEMO-LAST-MAP": "CCRDSLA",
       "CDEMO-LAST-MAPSET": "COCRDSL"
     },
     "mapFields": {
-      "CARDSIDI": "                "
+      "ACCTSIDI": "00000000099",
+      "CARDSIDI": "4000000000000001"
     },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextProgram": "COMEN01C",
+    "nextProgram": "COCRDSLC",
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
     "navigation": {
       "CDEMO-FROM-TRANID": "CCDL",
       "CDEMO-FROM-PROGRAM": "COCRDSLC",
-      "CDEMO-TO-TRANID": "CM00",
-      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
       "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000099",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-CARD-NUM": "4000000000000001",
       "CDEMO-LAST-MAP": "CCRDSLA",
       "CDEMO-LAST-MAPSET": "COCRDSL"
     },
-    "sends": [],
-    "termination": "XCTL"
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCDL",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDSLC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:16:00",
+          "ACCTSIDO": "00000000099",
+          "CARDSIDO": "4000000000000001",
+          "CRDNAMEO": "Inactive Test Card                                ",
+          "CRDSTCDO": "N",
+          "EXPMONO": "12",
+          "EXPYEARO": "2021",
+          "INFOMSGO": "   Displaying requested details         ",
+          "ERRMSGO": "                                                                                ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "CARDSIDC": "DFHDFCOL",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "CARDSIDH": "DFHDFHI",
+          "CRDNAMEH": "DFHDFHI",
+          "CRDSTCDH": "DFHDFHI",
+          "EXPMONH": "DFHDFHI",
+          "EXPYEARH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI",
+          "FKEYSH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "CARDDAT",
       "rowIndex": 0,
-      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 1,
-      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 2,
-      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+      "fields": {
+        "CARD-NUM": "4000000000000001",
+        "CARD-ACCT-ID": "00000000099",
+        "CARD-CVV-CD": "123",
+        "CARD-EMBOSSED-NAME": "Inactive Test Card                                ",
+        "CARD-EXPIRAION-DATE": "2021-12-31",
+        "CARD-ACTIVE-STATUS": "N",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "400000000000000100000000099123Inactive Test Card                                2021-12-31N                                                           "
     }
   ],
   "expectedReturnCode": 0,
@@ -86,7 +141,7 @@
     {
       "dataset": "CARDDAT",
       "channel": "FINAL_STATE",
-      "rowCount": 3,
+      "rowCount": 1,
       "recordLength": 150
     }
   ]

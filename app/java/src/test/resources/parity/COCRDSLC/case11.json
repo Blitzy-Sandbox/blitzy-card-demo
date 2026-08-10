@@ -1,7 +1,7 @@
 {
   "program": "COCRDSLC",
   "caseId": "case11",
-  "description": "2220-EDIT-CARD's not-numeric arm at :706-715, carrying the inline literal at :711, 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'. CDEMO-CARD-NUM is zeroed at :714, so :468-469 moves LOW-VALUES into CARDSIDO even though the operator typed sixteen characters - the echo is driven by the commarea's emptiness test and the work area's value, and here the two disagree. The cursor lands on CARDSIDL.",
+  "description": "Both filters blank by the ASTERISK route, and the proof that the highlight marker round-trips stably. This case is the controlled pair of case06: the seeded rows, the carried context, the pinned instant and every expected value are identical, and the two differ in exactly one respect - which disjunct of :615-616 and :622-623 fires. case06 arrives with eleven and sixteen typed spaces and takes the SPACES disjunct; this one arrives carrying the very image 1300-SETUP-SCREEN-ATTRS painted on the previous turn and takes the ASTERISK disjunct, so what drives it is a client echoing the screen back faithfully. That echoed image is an asterisk followed by ten spaces in ACCTSIDI and an asterisk followed by fifteen in CARDSIDI, and the padding is derived rather than assumed: :543 and :549 MOVE '*' into ACCTSIDO PIC X(11) and CARDSIDO PIC X(16), and a one-character non-numeric literal moved to a longer alphanumeric item is left-justified and SPACE-filled - never LOW-VALUES-filled - while the test at :615 pads its own literal to the receiving field's width the same way before comparing. The distinction is load-bearing rather than cosmetic. Had the echo been an asterisk followed by ten LOW-VALUES bytes, NEITHER disjunct would fire, :619 would move that image into CC-ACCT-ID, the three-way not-supplied test at :651-653 would fail on all of LOW-VALUES, SPACES and CC-ACCT-ID-N ZEROS, and :665 IS NOT NUMERIC would emit case09's 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER' instead - which is the precise divergence this case exists to detect, and the reason that text appears nowhere in this expectation. A lenient reading in the other direction, matching any value merely beginning with an asterisk, would swallow a filter a user had prefixed with one, so the equality is against the padded literal and nothing looser. The asterisk is therefore CONSUMED by the normalisation at :617 and :624, which move LOW-VALUES over it, and never reaches 2210 or 2220 as data. From there the path is case06's, step for step, and it must be. 2200-EDIT-MAP-INPUTS sets INPUT-OK, FLG-CARDFILTER-ISVALID and FLG-ACCTFILTER-ISVALID at :610-612 before either test. Step one: 2210-EDIT-ACCOUNT sets FLG-ACCTFILTER-NOT-OK at :648, matches :651-653 on its LOW-VALUES disjunct, sets INPUT-ERROR and FLG-ACCTFILTER-BLANK, finds WS-RETURN-MSG-OFF still true from :264 - its off value is SPACES at :135 - and so claims the one message slot with the account prompt WS-PROMPT-FOR-ACCT declares at :138-139, zeroes CDEMO-ACCT-ID at :659 and leaves by the forward early exit at :660. Step two: 2220-EDIT-CARD repeats that shape at :688-701, but its IF WS-RETURN-MSG-OFF at :696 now fails, so FLG-CARDFILTER-BLANK is set and CDEMO-CARD-NUM zeroed at :700 while WS-PROMPT-FOR-CARD at :140-141 is never set - the flag survives and only the message is suppressed. Step three: the cross-field edit at :637-640 carries no message guard at all and overwrites whatever step one left, so the line that reaches the screen is 'No input received', 17 characters in WS-RETURN-MSG PIC X(75) and 17 then 63 spaces once :494 moves it into ERRMSGO PIC X(80). Neither of the other two texts is written anywhere in this case, and that ordering is exactly what gate G30 protects. INPUT-ERROR at :360 then sends the map and goes to COMMON-RETURN at :361-363, so 9000-READ-DATA is never reached, no CARDDAT read is issued, readByAccountIdViaAltIndex is not reached either because 9150-GETCARD-BYACCT at :779-810 is performed from nowhere in the program, and the seeded rows are asserted byte for byte as seeded. 1200-SETUP-SCREEN-VARS takes its ELSE at :461 because EIBCALEN is not zero, and both carried keys are now zero, so :463 and :469 write LOW-VALUES into ACCTSIDO and CARDSIDO; FOUND-CARDS-FOR-ACCOUNT at :474 is false, so CRDNAMEO, EXPMONO, EXPYEARO and CRDSTCDO keep theirs; :490-491 turns the empty information line into 'Please enter Account and Card Number', 36 characters in WS-INFO-MSG PIC X(40). 1300-SETUP-SCREEN-ATTRS then closes the round trip. The turn did not come from the card list, so :509-511 takes the ELSE and unprotects both filters, and :527-531 leaves the colours alone. Both flags are BLANK rather than NOT-OK - SET FLG-ACCTFILTER-BLANK replaced the earlier setting on the same one-byte field, '0' NOT-OK, '1' ISVALID, ' ' BLANK at :55-62 - so the colour guards at :533-539 are false and :541-551 fires instead, gated on CDEMO-PGM-REENTER, moving an asterisk over the LOW-VALUES that 1200 had just written and DFHRED into both colours. The output is therefore BYTE-IDENTICAL to the input for those two fields: ACCTSIDO equals ACCTSIDI and CARDSIDO equals CARDSIDI, an asterisk and then spaces at eleven and sixteen. That is the round-trip assertion this case owns - a client echoing the screen back is handed the same screen again, and the marker is stable rather than oscillating between an asterisk and LOW-VALUES or accumulating a second one - and :567 SET CDEMO-PGM-REENTER TO TRUE keeps the returned context at 1, which is what lets the turn repeat unchanged. COCRDSLC copies no CSSETATY: it re-implements that highlight inline and gates the BLANK path on re-entry while leaving the NOT-OK path ungated, so this case and case06 own the gated side of gate G38 and the NOT-OK cases own the other - the two must not be flattened together. The cursor EVALUATE at :515-524 is ordered and arm one wins on its second condition, FLG-ACCTFILTER-BLANK, so ACCTSIDL takes the -1 before the card arm is considered. The turn arrives from the main menu with CDEMO-PGM-CONTEXT 1, which makes the second conjunct of :269-270 false and keeps the passed area rather than initialising it, and it arrives carrying account 50, which is what makes the :659 zeroing observable in the returned context; the carried card number is already zero because the blank path value projects as zero before any arm is chosen. COMMON-RETURN at :394-406 moves WS-RETURN-MSG into CCARD-ERROR-MSG, lays the 160-byte CARDDEMO-COMMAREA and the 12-byte WS-THIS-PROGCOMMAREA into WS-COMMAREA and returns with TRANSID('CCDL'), so every byte of the conversation travels in the payload and none of it in a session (gate G37, rule R6). CCARD-NEXT-MAPSET is 'COCRDSL' because :589 moves LIT-THISMAPSET, declared PIC X(8) VALUE 'COCRDSL ' at :167-168, into a PIC X(7) item and the trailing space is right-truncated. The clock is pinned to 2022-07-19T23:16:00, so CURDATEO and CURTIMEO are the literals 07/19/22 and 23:16:00 rather than today. Gates G32, G35 and G39 have no site here: every GO TO in this program is a forward early exit or the shared COMMON-RETURN, so there is no backward loop to restructure; there is no CALL 'CEE3ABD' anywhere in COCRDSLC, whose abend path is the CICS-native HANDLE ABEND at :250-252 into ABEND ABCODE('9999') at :871-876; and COCRDSL declares no PAGENO. The class is called CardSelectController because the migration plan names it so, while the source Function header at :4, README.md:220 and CARDDEMO.CSD:219-220 DESCRIPTION(VIEW CARD DETAIL) all call it a card detail view - honoured verbatim per rule R1 and documented rather than corrected per practice B4. Every expected value here was derived by structured reading of app/cbl/COCRDSLC.cbl against the app/cpy-bms/COCRDSL.CPY widths, the app/cpy/CVACT02Y.cpy record layout, app/cpy/CVCRD01Y.cpy, app/bms/COCRDSL.bms and the real US-ASCII fixture; none of it was captured from a running COBOL program, because this environment cannot run one.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -13,43 +13,15 @@
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:33",
+    "pinnedClock": "2022-07-19T23:16:00",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CCDL",
-      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000050",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0683586198171516",
-      "CDEMO-LAST-MAP": "CCRDSLA",
-      "CDEMO-LAST-MAPSET": "COCRDSL"
-    },
-    "mapFields": {
-      "ACCTSIDI": "00000000050",
-      "CARDSIDI": "40000000000000AB"
-    },
-    "forcedOutcomes": {}
-  },
-  "expectedResponse": {
-    "nextProgram": "COCRDSLC",
-    "nextMapset": "COCRDSL",
-    "nextMap": "CCRDSLA",
-    "navigation": {
-      "CDEMO-FROM-TRANID": "CCDL",
-      "CDEMO-FROM-PROGRAM": "COCRDSLC",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
@@ -58,8 +30,36 @@
       "CDEMO-ACCT-ID": "00000000050",
       "CDEMO-ACCT-STATUS": " ",
       "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "CCRDSLA",
-      "CDEMO-LAST-MAPSET": "COCRDSL"
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "ACCTSIDI": "*          ",
+      "CARDSIDI": "*               "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDSLC",
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
     },
     "sends": [
       {
@@ -69,15 +69,15 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COCRDSLC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "ACCTSIDO": "00000000050",
-          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CURTIMEO": "23:16:00",
+          "ACCTSIDO": "*          ",
+          "CARDSIDO": "*               ",
           "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CRDSTCDO": "\u0000",
           "EXPMONO": "\u0000\u0000",
           "EXPYEARO": "\u0000\u0000\u0000\u0000",
           "INFOMSGO": "Please enter Account and Card Number    ",
-          "ERRMSGO": "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            ",
+          "ERRMSGO": "No input received                                                               ",
           "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
         },
         "attributes": {
@@ -87,7 +87,7 @@
           "PGMNAMEC": "DFHDFCOL",
           "TITLE02C": "DFHDFCOL",
           "CURTIMEC": "DFHDFCOL",
-          "ACCTSIDC": "DFHDFCOL",
+          "ACCTSIDC": "DFHRED",
           "CARDSIDC": "DFHRED",
           "CRDNAMEC": "DFHDFCOL",
           "CRDSTCDC": "DFHDFCOL",
@@ -114,7 +114,7 @@
         }
       }
     ],
-    "cursorField": "CARDSIDL",
+    "cursorField": "ACCTSIDL",
     "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],

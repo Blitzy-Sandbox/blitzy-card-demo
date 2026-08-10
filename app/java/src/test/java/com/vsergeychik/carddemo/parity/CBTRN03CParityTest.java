@@ -114,7 +114,16 @@ import org.springframework.transaction.PlatformTransactionManager;
  * decodes an 80-byte record right-truncated into the 21-byte {@code WS-DATEPARM-RECORD} receiver - two
  * {@code PIC X(10)} dates around a one-byte separator the program never reads - and its {@code '10'}
  * outcome sets {@code END-OF-FILE} to {@code 'Y'} <em>before any record is processed</em>, which
- * {@code case09} pins by seeding the dataset empty.
+ * {@code TransactionReportJobTest} pins directly rather than through a fixture, because every case in
+ * this folder seeds a range. {@code case09} spends its slot on the one arithmetic event no other case
+ * reaches: the first {@code FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE)} page break at {@code :282}.
+ * {@code WS-PAGE-SIZE} is {@code PIC 9(03) COMP-3 VALUE 20} at {@code :131-132}, and the break fires
+ * before the seventeenth of seventeen records on one card - not before the first, because the
+ * {@code WS-FIRST-TIME} block at {@code :275-280} runs ahead of the test and has already pushed the
+ * counter from zero to four. It writes its page total <em>before</em> the fresh header block
+ * ({@code :283} then {@code :284}) and leaves thirty records written against a counter of twenty-nine,
+ * the difference being {@code 1110-WRITE-GRAND-TOTALS} at {@code :318-322} - the one paragraph in the
+ * program that writes without incrementing.
  *
  * <h2>How it runs</h2>
  * <p>{@link ParityHarness} seeds each case's datasets, invokes the unit and captures a fingerprint;

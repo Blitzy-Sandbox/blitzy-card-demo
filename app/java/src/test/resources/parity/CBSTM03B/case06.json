@@ -1,13 +1,14 @@
 {
   "program": "CBSTM03B",
   "caseId": "case06",
-  "description": "app/cbl/CBSTM03B.CBL:164-166 - READ XREF-FILE INTO LK-M03B-FLDT. The record is 50 bytes, so the area is the row followed by 950 spaces. This is also the case that proves the 36-to-50 pad reached the record area rather than being applied somewhere downstream: bytes 37 to 50 of the area are the fourteen spaces standing in for CVACT03Y's trailing FILLER PIC X(14), and bytes 51 to 1000 are the receiver's own padding. Both runs of spaces are stated in the expectation, and they mean different things.",
+  "description": "Gate G48's SEQUENTIAL half: operation code 'K' against the TRNXFILE DD, which is the silent no-op that returns a STALE status. app/cbl/CBSTM03B.CBL:118's ordered EVALUATE LK-M03B-DD matches WHEN 'TRNXFILE' (:119) and performs 1000-TRNXFILE-PROC THRU 1999-EXIT (:120). That paragraph (:133) holds exactly three guards - IF M03B-OPEN (:135), IF M03B-READ (:140) and IF M03B-CLOSE (:146) - and NO IF M03B-READ-K at all, because TRNXFILE is declared ACCESS MODE IS SEQUENTIAL (:33). With LK-M03B-OPER = 'K' (88 M03B-READ-K VALUE 'K', :106) all three conditions are false. Every GO TO 1900-EXIT sits INSIDE its IF, so none of them fires and control falls out of the third IF straight into 1900-EXIT (:151), whose MOVE TRNXFILE-STATUS TO LK-M03B-RC (:152) is outside every IF and still runs; 1999-EXIT then EXITs (:154-155). So this CALL performs NO I/O whatsoever and LK-M03B-RC is nonetheless overwritten - with whatever TRNXFILE-STATUS already held. THE TRAP, stated so that nobody tidies it away. The scripted OPEN left '00' in TRNXFILE-STATUS, so the keyed call reports '00'. Here '00' means UNCHANGED, not SUCCEEDED. A caller reading it as success goes on to read LK-M03B-FLDT and finds the 1000 spaces it primed itself: no record, no AT END, no error, no diagnostic. A Java implementation must therefore NOT throw - not UnsupportedOperationException, not IllegalArgumentException, not anything - must NOT return an error or an unsupported-operation status, and must NOT silently substitute a sequential read for the keyed one. All three would be parity violations, and the third is the most dangerous because it would hand back a plausible record. Deciding what a status means is the caller's job, not the subroutine's: app/cbl/CBSTM03A.CBL:353-359 turns '10' into MOVE 'Y' TO END-OF-FILE and sends WHEN OTHER to a DISPLAY and an abend, and a throw here would bypass every one of those guards. WHY THE OPEN IS SCRIPTED (practice B7). TRNXFILE-STATUS is declared at :83-85 with NO VALUE clause, so what it holds before any I/O is not defined by the source - case15 pins exactly that untouched state, two spaces, on the ACCTFILE area. Asserting a stale '00' without first establishing it would make this case non-deterministic. One preceding call, the OPEN, establishes it and makes the assertion sound, which is why the transcript carries two rows rather than one and why row 0 is byte-identical to case01's. WHAT IS SUPPLIED AND NEVER USED. LK-M03B-KEY carries the 25-byte image 0500024453765740000000005 - the first 25 bytes of row 0's 32-byte TRNX-KEY, which is all a PIC X(25) span can hold - and LK-M03B-KEY-LN carries +32, the length of the TRNX-KEY that app/jcl/CREASTMT.JCL:30 defines to IDCAMS as KEYS(32 0) and precisely what a careless caller would compute. Neither is read. The one place either would be used is the MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) reference modification, and that appears only in the CUSTFILE and ACCTFILE paragraphs (:189 and :214), never here. That is the point of the case: addressing 32 bytes of a 25-byte span is nonsense and is nevertheless HARMLESS, because the guard that would evaluate it is not present in this paragraph. Both members come back unmodified. LK-M03B-KEY-LN is PIC S9(4) with no USAGE clause (:111), so it is four zoned DISPLAY bytes with the sign overpunched into the low-order byte: +32 is '003B', as +0 is '000{' in case01 and +9 is '000I' in case12. THE CALLER NEVER ISSUES THIS, WHICH IS WHY IT IS PINNED. app/cbl/CBSTM03A.CBL sets M03B-READ-K only in 2000-CUSTFILE-GET (:377) and 3000-ACCTFILE-GET (:401), both against RANDOM files. 'K' on TRNXFILE is therefore reachable but unused - exactly the combination someone later removes on the grounds that nothing calls it. Pinning its behaviour is what prevents that. THE MIRROR. case12 is the same asymmetry from the other side: a plain 'R' against CUSTFILE, which is ACCESS MODE IS RANDOM (:45) and guards OPEN, READ-K and CLOSE but never READ; case15 does the same on ACCTFILE. With this case the per-DD capability matrix is proven in both directions - 'K' is a valid operation code and an invalid operation for a SEQUENTIAL DD, just as 'R' is valid and invalid for a RANDOM one - and the no-op is represented identically in all three: one area row carrying the unmatched operation and the stale status, and no record row at all. WHAT IS ASSERTED, AND WHAT IS ASSERTED BY ABSENCE. There is NO TRNXFILE row on the writes channel, and that absence is half the value of the case: nothing was read, so a record row would itself be a difference, since FieldDiffer reports an extra record as a diff. Both seeded rows are pinned on the final-state channel instead, field by field and including the trailing FILLER X(20) that carries the record's full width (gates G19 and G21) - the read-only proof, since all four SELECTs are OPEN INPUT and no paragraph writes. 8 + 1 + 2 + 25 + 4 + 1000 = 1040, re-derivable from the LINKAGE SECTION at :100-112 without tooling (practice B11), and every span is stated by name as well as inside the complete image, because FieldDiffer compares field by field and never as a whole string (gate G17). THE UNIT. StatementGenerationJobB, whose prompt-mandated ...Job name is honoured verbatim under rule R1 while its nature is a Spring @Component and not a Spring Batch Job (gate G12, implicit requirement I3): the source header reads 'Type : BATCH COBOL Subroutine', no EXEC PGM=CBSTM03B exists anywhere in app/jcl, app/proc or app/csd, and CBSTM03A calls it thirteen times. That divergence is recorded rather than quietly resolved (practice B4). unitKind is COMPONENT and the unit is reached through a typed method with no JobLauncher and no HTTP layer in the path (gate G51), which is also why jobParameters is empty - a job parameter comes from a JCL PARM and this subroutine has no way to receive one. expectedReturnCode is 0 because CBSTM03B never assigns RETURN-CODE at all; the two-byte LK-M03B-RC is a FILE STATUS carried in the linkage area and the two are never conflated. expectedMessages is empty because CBSTM03B contains no DISPLAY statement. Operation codes 'W' (:107) and 'Z' (:108) are declared in the linkage area and tested by no IF in any of the four paragraphs; they stay unimplemented rather than tidied away (practice B5) and this case does not drive either of them, because an unsupported DD-and-operation COMBINATION is a different thing from a declared-but-dead operation code and this case is the former. SEED AND PROVENANCE. TRNXFILE is a derived dataset with no ASCII fixture, so its two rows are seeded inline rather than by adding a tenth fixture file. They come from app/jcl/CREASTMT.JCL STEP010, whose SORT FIELDS=(263,16,CH,A,1,16,CH,A) and OUTREC FIELDS=(1:263,16, 17:1,262, 279:279,50) over a KEYS(32 0) RECORDSIZE(350 350) cluster were applied mechanically to rows 20 and 101 (0-based) of app/data/ASCII/dailytran.txt, leaving bytes 329-350 blank-filled by SORT; they are byte-identical to the rows in case01 through case04 and case16. Both carry card 0500024453765740, which is cardxref.txt row 0's XREF-CARD-NUM, so the seed stays coherent with the other three DDs. The trailing 'H' and '{' in TRNX-AMT are zoned sign overpunches on PIC S9(09)V99 ('{' = +0 through 'I' = +9), so the images denote +183.88 and +14.00 and are reproduced as bytes rather than normalised to a signed literal. All byte content is US-ASCII, stated explicitly and never taken from the platform default (practice B8). Provenance (practice B12, risk R-A): every expected value here is STATICALLY DERIVED from the line numbers cited above and from the byte offsets of app/cpy/COSTM01.CPY, and was NEVER captured from a COBOL execution - AAP 0.7.6 proves that impossible in this environment across eight independently verified blockers, and 0.9.11 escalates the substitution for explicit confirmation rather than absorbing it silently.",
   "unitKind": "COMPONENT",
   "inputs": {
-    "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 3
+    "TRNXFILE": {
+      "rows": [
+        "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              ",
+        "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
+      ]
     }
   },
   "jobParameters": {},
@@ -18,57 +19,88 @@
       "dataset": "M03BAREA",
       "rowIndex": 0,
       "fields": {
-        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
-      "expectedBytes": "XREFFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+      "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
     {
       "dataset": "M03BAREA",
       "rowIndex": 1,
       "fields": {
-        "LK-M03B-DD": "XREFFILE",
-        "LK-M03B-OPER": "R",
-        "LK-M03B-RC": "00"
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "0500024453765740000000005",
+        "LK-M03B-KEY-LN": "003B",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
-      "expectedBytes": "XREFFILER00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+      "expectedBytes": "TRNXFILEK000500024453765740000000005003B                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     }
   ],
   "expectedFinalState": [
     {
-      "dataset": "XREFFILE",
+      "dataset": "TRNXFILE",
       "rowIndex": 0,
-      "fields": {},
-      "expectedBytes": "050002445376574000000005000000000050              "
+      "fields": {
+        "TRNX-CARD-NUM": "0500024453765740",
+        "TRNX-ID": "0000000058866561",
+        "TRNX-TYPE-CD": "01",
+        "TRNX-CAT-CD": "0001",
+        "TRNX-SOURCE": "POS TERM  ",
+        "TRNX-DESC": "Purchase at Blick-Rippin                                                                            ",
+        "TRNX-AMT": "0000001838H",
+        "TRNX-MERCHANT-ID": "800000000",
+        "TRNX-MERCHANT-NAME": "Blick-Rippin                                      ",
+        "TRNX-MERCHANT-CITY": "East Julien                                       ",
+        "TRNX-MERCHANT-ZIP": "87157     ",
+        "TRNX-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRNX-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
     },
     {
-      "dataset": "XREFFILE",
+      "dataset": "TRNXFILE",
       "rowIndex": 1,
-      "fields": {},
-      "expectedBytes": "068358619817151600000002700000000027              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 2,
-      "fields": {},
-      "expectedBytes": "092387719324733000000000200000000002              "
+      "fields": {
+        "TRNX-CARD-NUM": "0500024453765740",
+        "TRNX-ID": "0000000329724245",
+        "TRNX-TYPE-CD": "01",
+        "TRNX-CAT-CD": "0001",
+        "TRNX-SOURCE": "POS TERM  ",
+        "TRNX-DESC": "Purchase at Reichel Group                                                                           ",
+        "TRNX-AMT": "0000000140{",
+        "TRNX-MERCHANT-ID": "800000000",
+        "TRNX-MERCHANT-NAME": "Reichel Group                                     ",
+        "TRNX-MERCHANT-CITY": "Port Romanfort                                    ",
+        "TRNX-MERCHANT-ZIP": "95843     ",
+        "TRNX-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRNX-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
     }
   ],
   "expectedReturnCode": 0,
   "expectedMessages": [],
-  "normalisations": [
-    {
-      "dataset": "XREFFILE",
-      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
-    }
-  ],
+  "normalisations": [],
   "expectedDatasets": [
     {
       "dataset": "M03BAREA",
       "channel": "WRITES",
       "rowCount": 2,
       "recordLength": 1040
+    },
+    {
+      "dataset": "TRNXFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
     }
   ]
 }

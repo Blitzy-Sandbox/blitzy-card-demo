@@ -1,13 +1,13 @@
 {
   "program": "CBSTM03B",
   "caseId": "case12",
-  "description": "The asymmetric capability matrix, and the silent no-op it produces. CUSTFILE is ACCESS MODE IS RANDOM (app/cbl/CBSTM03B.CBL:45) and 3000-CUSTFILE-PROC tests M03B-OPEN, M03B-READ-K and M03B-CLOSE - never M03B-READ. A plain 'R' against it therefore matches no IF and falls out of the third one straight into 3900-EXIT, whose MOVE CUSTFILE-STATUS TO LK-M03B-RC is outside every IF and still runs. So the call performs no I/O and returns the file's LAST-KNOWN status. The sequence makes that unmistakable: the keyed read before it leaves '23' in CUSTFILE-STATUS, so the plain read reports '23' rather than the '00' a fresh status would carry, and the record area comes back exactly as it went in.",
+  "description": "The CUSTFILE keyed read that HITS, and the one case in this folder that pins the whole 500-byte customer record field by field. app/cbl/CBSTM03B.CBL:118 EVALUATE LK-M03B-DD reaches WHEN 'CUSTFILE' at :123 - the third dispatch arm, so 'TRNXFILE' (:119) and 'XREFFILE' (:121) are passed over first - and :124 performs 3000-CUSTFILE-PROC THRU 3999-EXIT. Call one is the OPEN the session needs: IF M03B-OPEN (:183) true, OPEN INPUT CUST-FILE (:184), GO TO 3900-EXIT (:185), and :201 MOVE CUSTFILE-STATUS TO LK-M03B-RC reports '00'. Call two is the subject: IF M03B-OPEN (:183) is now FALSE, so control reaches IF M03B-READ-K (:188) TRUE, then :189 MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) TO FD-CUST-ID, :190 READ CUST-FILE INTO LK-M03B-FLDT, :192 GO TO 3900-EXIT and :201 again - so the status is '00' on CUSTFILE-STATUS specifically, the third of the four independent two-byte areas at :83-97, which is what a per-DD status assertion means. That guard order is behaviour, not arrangement: the CLOSE arm at :195 is never reached because :192 has already left the paragraph. The reference-modified MOVE at :189 is the statement worth reading twice. LK-M03B-KEY (1:LK-M03B-KEY-LN) takes the first NINE bytes of the 25-byte key field, and the receiver FD-CUST-ID is PIC X(09) at :72 - ALPHANUMERIC - so the nine bytes fill it exactly, with no padding and no realignment, and the lookup key is the literal string '000000050'. The identical-looking statement at :214 moves into FD-ACCT-ID PIC 9(11) at :77, a NUMERIC-DISPLAY receiver, where the same syntax performs a numeric move with left zero-fill instead; cases 13, 14, 16 and 17 pin that half. One statement, two move rules, decided entirely by the receiver's PICTURE - and both are reproduced rather than unified. The length itself is not a guess: app/cbl/CBSTM03A.CBL:368-377 drives this call, and :374 COMPUTE WS-M03B-KEY-LN = LENGTH OF XREF-CUST-ID takes it from a PIC 9(09) field in app/cpy/CVACT03Y.cpy, so it is nine. It is pinned as the signed zoned image '000I' because LK-M03B-KEY-LN is PIC S9(4) DISPLAY (:111) and a positive sign is overpunched into the low-order byte rather than occupying a fifth one - the same reason the OPEN's zero is '000{'. LK-M03B-KEY comes back unmodified at 25 bytes, left-justified and space-padded, because MOVE XREF-CUST-ID TO WS-M03B-KEY (:372) moves PIC 9(09) into PIC X(25) under the alphanumeric rule and the subroutine never writes back to the key field. READ ... INTO moves the 500-byte record into LK-M03B-FLDT PIC X(1000): left-justified and space-filled, so bytes 1-500 are the record and 501-1000 are spaces. The key is not invented. '000000050' is the XREF-CUST-ID of row 0 of app/data/ASCII/cardxref.txt, whose XREF-CARD-NUM 0500024453765740 is the card the TRNXFILE seeds of cases 1 to 6 carry and whose row case 8 decodes; it is the value the statement flow actually carries out of the cross-reference and into 2000-CUSTFILE-GET. The record decodes through app/cpy/CUSTREC.cpy (statement.model.Stm03CustomerRecord) and never through app/cpy/CVCUS01Y.cpy - CBSTM03A copies CUSTREC at :55 and moves LK-M03B-FLDT into that CUSTOMER-RECORD at :388 - so the date field is named CUST-DOB-YYYYMMDD, with no hyphens between the date components. CVCUS01Y names the very same span with hyphens there instead, and that one field name is the ONLY difference between two otherwise byte-identical layouts. They are kept apart precisely so field-for-field diffing stays meaningful, so the hyphenated spelling is deliberately absent from this file altogether - carrying it even in prose would put the wrong name one careless copy away from the expectation map. Note also that the VALUE in that field is the hyphenated text 1960-12-01 even though the field NAME carries none - a legacy oddity preserved rather than tidied. All nineteen spans are pinned in declaration order, including the trailing FILLER X(168) as 168 spaces: FILLER is an emitted span and not a gap, and it is what takes the record to 9+25+25+25+50+50+50+2+3+10+15+15+9+20+10+10+1+3+168 = 500. Omit it and every offset after it shifts while the total silently falls to 332. CUST-ID, CUST-SSN and CUST-FICO-CREDIT-SCORE are PIC 9 fields carried as characters so their leading zeros survive. All fifty fixture rows are seeded and all fifty are pinned, which is what makes '000000050' the row at zero-based index 49 - the fiftieth of custdata.txt's ascending 000000001 to 000000050 - and is at the same time the read-only proof: every SELECT is OPEN INPUT (:136, :160, :184, :209) and no paragraph writes, so a row that came back different from the way it went in would be a parity failure no area image could reveal. The caller's verdict stays with the caller. CBSTM03B has no DISPLAY of its own and never assigns RETURN-CODE - it GOBACKs without touching it - which is why the expected return code is 0 and no message is expected; LK-M03B-RC is a FILE STATUS, not a return code. And CBSTM03A's EVALUATE at :379-386 has deliberately NO '10' arm for this DD: it distinguishes '00' from WHEN OTHER only, so any status other than '00' would take DISPLAY 'ERROR READING CUSTFILE' and 9999-ABEND-PROGRAM. This case takes the '00' arm; case 11 supplies the '23' miss that the OTHER arm would act on. 'W' (:107) and 'Z' (:108) remain declared and are SET nowhere in app/cbl, so this case does not drive them and leaving them unexercised is deliberate. Provenance: every expected value here is STATICALLY DERIVED - from the line numbers above, from the CUSTREC offsets, from the LK-M03B-AREA widths 8+1+2+25+4+1000 = 1040 at :100-112, and from the real bytes of app/data/ASCII/custdata.txt row 49 - and was never captured from an execution of the COBOL. Section 0.7.6 of the plan records eight independently verified blockers to running it in this environment and 0.9.11 escalates the substituted provenance as risk R-A; the twenty cases per program, the field-for-field diffing and the diff-count-zero gate are all unchanged.",
   "unitKind": "COMPONENT",
   "inputs": {
     "CUSTFILE": {
       "fixture": "custdata.txt",
-      "fromRow": 9,
-      "rowCount": 3
+      "fromRow": 0,
+      "rowCount": 50
     }
   },
   "jobParameters": {},
@@ -20,7 +20,10 @@
       "fields": {
         "LK-M03B-DD": "CUSTFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "CUSTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -30,19 +33,12 @@
       "fields": {
         "LK-M03B-DD": "CUSTFILE",
         "LK-M03B-OPER": "K",
-        "LK-M03B-RC": "23"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "000000050                ",
+        "LK-M03B-KEY-LN": "000I",
+        "LK-M03B-FLDT": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "
       },
-      "expectedBytes": "CUSTFILEK23000000099                000I                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
-    },
-    {
-      "dataset": "M03BAREA",
-      "rowIndex": 2,
-      "fields": {
-        "LK-M03B-DD": "CUSTFILE",
-        "LK-M03B-OPER": "R",
-        "LK-M03B-RC": "23"
-      },
-      "expectedBytes": "CUSTFILER23                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+      "expectedBytes": "CUSTFILEK00000000050                000I000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "
     }
   ],
   "expectedFinalState": [
@@ -50,19 +46,321 @@
       "dataset": "CUSTFILE",
       "rowIndex": 0,
       "fields": {},
-      "expectedBytes": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
     },
     {
       "dataset": "CUSTFILE",
       "rowIndex": 1,
       "fields": {},
-      "expectedBytes": "000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                        "
+      "expectedBytes": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
     },
     {
       "dataset": "CUSTFILE",
       "rowIndex": 2,
       "fields": {},
+      "expectedBytes": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 3,
+      "fields": {},
+      "expectedBytes": "000000004Delbert                  Kaia                     Parisian                 638 Blanda Gateway                                Apt. 076                                          Lake Virginie                                     MIUSA39035-0455(801)603-4121  (156)074-6837  660354258000000000000685792491985-01-130040802739Y776                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 4,
+      "fields": {},
+      "expectedBytes": "000000005Treva                    Manley                   Schowalter               5653 Legros Plaza                                 Apt. 968                                          Alvinaport                                        MIUSA02251-1698(978)775-4633  (439)943-7644  611264288000000000006397997541971-09-290006365573Y529                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 5,
+      "fields": {},
+      "expectedBytes": "000000006Ignacio                  Emery                    Douglas                  3963 Yasmin Port                                  Suite 756                                         Port Josephstad                                   VIUSA46713-5148(277)743-4266  (519)010-8739  880329521000000000009755354961994-11-290067163009Y753                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 6,
+      "fields": {},
+      "expectedBytes": "000000007Cooper                   Dennis                   Mayert                   6490 Zakary Locks                                 Apt. 765                                          Madieport                                         ALUSA34206-2974(698)282-4096  (458)199-0016  835138951000000000009590131701977-05-060024571415Y499                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 7,
+      "fields": {},
+      "expectedBytes": "000000008Kelsie                   Jordyn                   Dicki                    0925 Welch Streets                                Apt. 152                                          North Nanniestad                                  SCUSA27610     (345)563-7159  (443)197-1271  295270759000000000001097469911964-03-250033132723Y051                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 8,
+      "fields": {},
+      "expectedBytes": "000000009Melvin                   Regan                    Ondricka                 87893 Samson Flats                                Apt. 135                                          New Braden                                        VIUSA21113     (035)456-1404  (412)440-3130  842035847000000000005682994511975-11-070039446039Y699                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 9,
+      "fields": {},
+      "expectedBytes": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 10,
+      "fields": {},
+      "expectedBytes": "000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 11,
+      "fields": {},
       "expectedBytes": "000000012Maci                     Alan                     Robel                    80501 Isac Cliffs                                 Suite 623                                         Predovicton                                       MNUSA78861     (584)045-5200  (610)244-0407  666114218000000000009021433511984-02-180061317348Y688                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 12,
+      "fields": {},
+      "expectedBytes": "000000013Mariane                  Oma                      Fadel                    2689 Derick Mission                               Suite 055                                         Bruenfurt                                         ORUSA02322     (875)943-7287  (075)550-6435  757924569000000000001813772201999-03-090044807431Y053                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 13,
+      "fields": {},
+      "expectedBytes": "000000014Chelsea                  Ignacio                  Marks                    747 Dino Lodge                                    Apt. 850                                          West Chase                                        RIUSA12914-8465(141)807-6571  (284)088-9052  655128548000000000005259552221974-11-290048306401Y243                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 14,
+      "fields": {},
+      "expectedBytes": "000000015Aubree                   Elliot                   Hermann                  36365 Ledner Drives                               Suite 882                                         Port Efrainland                                   DEUSA63205-7014(769)100-7971  (366)310-2061  033922034000000000002303699411964-12-060000634612Y681                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 15,
+      "fields": {},
+      "expectedBytes": "000000016Carroll                  Cicero                   Bergstrom                06988 Thiel Falls                                 Suite 148                                         Concepcionland                                    VTUSA84390     (631)343-8667  (938)648-3716  649827971000000000002932657521983-04-270012556599Y326                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 16,
+      "fields": {},
+      "expectedBytes": "000000017Sigrid                   Angeline                 Mann                     95666 Dare Isle                                   Suite 286                                         New Presley                                       FMUSA56181-0584(087)314-2070  (541)003-6606  303334693000000000004976063571979-01-260052356071Y054                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 17,
+      "fields": {},
+      "expectedBytes": "000000018Emile                    Jairo                    White                    133 Bergnaum Square                               Apt. 328                                          Hansenville                                       APUSA96003-5867(303)654-3323  (520)186-2176  385849271000000000000883418211987-03-250086459831Y340                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 18,
+      "fields": {},
+      "expectedBytes": "000000019Hadley                   Sigrid                   Hamill                   6273 Ondricka Meadows                             Apt. 130                                          New Arturoshire                                   RIUSA48161     (817)452-4986  (724)901-6019  439569907000000000002701763871991-01-070036492057Y259                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 19,
+      "fields": {},
+      "expectedBytes": "000000020Carter                   Oren                     Veum                     5845 Allison Valleys                              Suite 934                                         Mitchellmouth                                     MHUSA72362     (618)994-0531  (571)695-4136  717778238000000000003426612931996-04-140036749754Y493                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 20,
+      "fields": {},
+      "expectedBytes": "000000021Jerrold                  Adolphus                 Maggio                   401 Haylie Crest                                  Apt. 320                                          North Myrnaton                                    CAUSA72407     (399)526-3254  (326)193-1118  336490822000000000000276562601977-11-150011744660Y163                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 21,
+      "fields": {},
+      "expectedBytes": "000000022Allene                   Icie                     Brown                    4467 Donnie Crossroad                             Apt. 437                                          Anabelton                                         MDUSA01993-9116(231)251-5792  (494)652-0009  292059024000000000006911598531994-02-200024791470Y597                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 22,
+      "fields": {},
+      "expectedBytes": "000000023Johnson                  Blanca                   Ruecker                  2433 Jacobi Forks                                 Apt. 845                                          Hendersonbury                                     KSUSA78239-9466(981)873-1589  (131)638-5974  944154289000000000002689671221998-12-070075158529Y337                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 23,
+      "fields": {},
+      "expectedBytes": "000000024Stefanie                 Verla                    Dickinson                6367 Stracke River                                Apt. 444                                          East Otho                                         KSUSA15414     (617)348-9142  (330)116-5634  017590544000000000004392446331996-01-240005459662Y711                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 24,
+      "fields": {},
+      "expectedBytes": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 25,
+      "fields": {},
+      "expectedBytes": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 26,
+      "fields": {},
+      "expectedBytes": "000000027Ward                     Henri                    Jones                    210 Amaya Turnpike                                Suite 180                                         Port Dwight                                       GUUSA07923-8822(935)027-1145  (103)537-5007  980161210000000000008815587571986-11-080050024139Y078                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 27,
+      "fields": {},
+      "expectedBytes": "000000028Hester                   Vesta                    Hane                     06816 Ursula Meadows                              Suite 605                                         South Aurore                                      ASUSA77442-7954(122)357-7257  (050)352-6579  677986013000000000005141877961991-06-050026946180Y114                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 28,
+      "fields": {},
+      "expectedBytes": "000000029Rickie                   Otho                     Daugherty                676 Funk Curve                                    Apt. 375                                          Hayesstad                                         NHUSA01226     (418)291-9023  (795)634-7776  015027332000000000000627456551973-04-050067736493Y552                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 29,
+      "fields": {},
+      "expectedBytes": "000000030Layla                    Dannie                   Ullrich                  269 Eleazar Circle                                Apt. 817                                          Kutchland                                         AKUSA64266     (330)408-6966  (413)347-7306  866102152000000000004920216861965-11-280050520060Y133                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 30,
+      "fields": {},
+      "expectedBytes": "000000031Lucious                  Otto                     O'Connell                919 Swift Valleys                                 Suite 548                                         Hermanborough                                     MSUSA56133-5636(259)414-9625  (118)946-9264  357462348000000000006183105391976-08-030092999757Y058                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 31,
+      "fields": {},
+      "expectedBytes": "000000032Stephany                 Meda                     Fisher                   63452 Kenny Streets                               Apt. 116                                          Predovicburgh                                     AKUSA85943-7605(202)436-5156  (246)296-3533  146204208000000000002062003411980-11-190035970593Y221                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 32,
+      "fields": {},
+      "expectedBytes": "000000033Bernice                  Norbert                  Herman                   877 Kassandra Ranch                               Suite 956                                         Haleyport                                         ARUSA19113-4329(836)743-5487  (640)208-1176  144195105000000000004006054291988-05-190065245171Y469                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 33,
+      "fields": {},
+      "expectedBytes": "000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544-2869(179)036-5135  (986)905-0112  548088300000000000001598825331994-03-210067445089Y104                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 34,
+      "fields": {},
+      "expectedBytes": "000000035Angelica                 Damaris                  Dach                     396 Pearl Loop                                    Suite 383                                         Pfefferhaven                                      LAUSA46142     (303)480-9098  (637)710-7367  220547115000000000009771448391987-06-230047435332Y793                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 35,
+      "fields": {},
+      "expectedBytes": "000000036Toney                    Emerald                  Gerhold                  35943 Raleigh Harbor                              Apt. 116                                          Lake Derekburgh                                   ALUSA10932-0480(034)271-9180  (507)529-4523  420360688000000000009420292101991-03-310066461979Y266                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 36,
+      "fields": {},
+      "expectedBytes": "000000037Shany                    Darby                    Walker                   91196 Heaney Turnpike                             Suite 814                                         Lubowitzberg                                      NVUSA11857-8177(052)759-5167  (706)896-1282  891897974000000000005243126321984-12-090066111704Y653                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 37,
+      "fields": {},
+      "expectedBytes": "000000038Angela                   Ceasar                   Ankunding                65482 Zoila Skyway                                Apt. 054                                          East Malachi                                      VAUSA63928-0008(316)640-2650  (148)111-1148  764307306000000000003355621411990-05-280018048939Y446                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 38,
+      "fields": {},
+      "expectedBytes": "000000039Aliyah                   Horace                   Berge                    5761 Pasquale Trail                               Apt. 616                                          New Sabryna                                       IAUSA74267     (089)096-3287  (768)959-4733  510793388000000000005532544031972-08-260061869530Y475                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 39,
+      "fields": {},
+      "expectedBytes": "000000040Davon                    Demond                   Emmerich                 23499 Beer Views                                  Suite 816                                         Erniechester                                      TXUSA87156-8689(463)762-3017  (419)414-2177  054960660000000000003983532991992-01-260087069976Y284                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 40,
+      "fields": {},
+      "expectedBytes": "000000041Lucinda                  Kiana                    Dach                     3220 Yolanda Corner                               Suite 649                                         East Harmonystad                                  VTUSA72971-7481(284)052-5831  (091)234-2144  643942675000000000009196534421967-02-200007315287Y725                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 41,
+      "fields": {},
+      "expectedBytes": "000000042Heather                  Ericka                   Nienow                   5523 Archibald Club                               Apt. 358                                          Reillyland                                        FMUSA83589     (640)954-4538  (565)873-6897  800455633000000000009970299661964-11-030079262985Y044                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 42,
+      "fields": {},
+      "expectedBytes": "000000043Britney                  Jermain                  Waters                   97765 Bernhard Fort                               Apt. 666                                          South Marisaview                                  OKUSA10050-7980(407)042-6952  (438)659-6397  262568593000000000002445558051966-10-160053043599Y558                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 43,
+      "fields": {},
+      "expectedBytes": "000000044Irving                   Kiera                    Emard                    978 Fatima Stream                                 Apt. 110                                          Lake King                                         IDUSA05704-0501(703)484-5840  (537)392-5569  318104527000000000009344209741984-04-040032076778Y145                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 44,
+      "fields": {},
+      "expectedBytes": "000000045Dixie                    Norris                   Beier                    441 Levi Prairie                                  Suite 749                                         Abbottshire                                       NVUSA09048     (697)143-3221  (499)287-7255  352819961000000000008857432862001-12-120027833000Y629                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 45,
+      "fields": {},
+      "expectedBytes": "000000046Cindy                    Kira                     Cremin                   494 Lang Avenue                                   Apt. 937                                          Alexandroview                                     PWUSA63082-4520(358)349-2574  (077)525-9966  656405528000000000007626995771987-12-140017535749Y514                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 46,
+      "fields": {},
+      "expectedBytes": "000000047Rigoberto                Savanna                  Hoeger                   00097 Gleichner Spur                              Apt. 932                                          Port Aidanborough                                 GUUSA31329-6973(946)322-6160  (973)443-8438  029222192000000000005676014721979-02-250022102472Y722                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 47,
+      "fields": {},
+      "expectedBytes": "000000048Lyric                    Mackenzie                Pacocha                  453 Rosina Mountain                               Apt. 011                                          Albertville                                       ORUSA83985-4937(950)497-1005  (004)244-7955  635734407000000000002653928321986-08-170046317382Y746                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 48,
+      "fields": {},
+      "expectedBytes": "000000049Immanuel                 Ellie                    Bednar                   5423 Esther Locks                                 Apt. 142                                          Langoshstad                                       GAUSA12288-3495(843)095-2553  (615)988-9038  813044111000000000004244959812000-01-050058726120Y148                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 49,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYYMMDD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],
   "expectedReturnCode": 0,
@@ -72,8 +370,14 @@
     {
       "dataset": "M03BAREA",
       "channel": "WRITES",
-      "rowCount": 3,
+      "rowCount": 2,
       "recordLength": 1040
+    },
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 50,
+      "recordLength": 500
     }
   ]
 }

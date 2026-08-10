@@ -1,39 +1,18 @@
 {
   "program": "CBACT01C",
   "caseId": "case03",
-  "description": "One record - the first of the shipped fixture - with every one of the thirteen CVACT01Y spans pinned by name as well as by the complete 300-byte image. This is the case that fixes the field-for-field contract: ACCT-EXPIRAION-DATE is pinned under the misspelling app/cpy/CVACT01Y.cpy:L11 actually carries, and FILLER PIC X(178) at L17 is pinned as an addressable span of 178 spaces rather than treated as a gap. The record's total width is what proves FILLER was emitted at all, since a record missing it would be short by exactly 178 bytes. ACCT-CURR-BAL is stated as the stored image 00000001940{, whose trailing '{' is a positive-zero overpunch and which denotes 194.00 in a twelve-character S9(10)V99 span.",
+  "description": "The account master exists and holds no row, and this case pins the fact about that which is easiest to mistranslate: reaching end of file is not an error and emits nothing at all. The whole of SYSOUT is the two banners, so a translation that logged anything on the end-of-file path - a diagnostic, a 'no records processed' summary, or the working-storage record image left over from a read that returned none - is caught cleanly here, where every other successful case buries the transition behind at least one thirteen-line record block. Derived by reading app/cbl/CBACT01C.cbl paragraph by paragraph. (1) L71 displays the opening banner before the open at L72. (2) 0000-ACCTFILE-OPEN sees '00' at L136 and moves 0 into APPL-RESULT, so the 88 APPL-AOK condition at L62 holds and L142 CONTINUEs - no message. (3) The PERFORM UNTIL END-OF-FILE = 'Y' loop at L74 runs one iteration: 1000-ACCTFILE-GET-NEXT reads at L93, the READ reports '10', L99 moves 16 into APPL-RESULT, APPL-AOK is therefore false while the 88 APPL-EOF condition at L63 holds, and L108 moves 'Y' into END-OF-FILE. That arm carries no DISPLAY, and 1100-DISPLAY-ACCT-RECORD is performed only from the '00' arm at L96, so none of its eleven labelled field lines and no separator appear. (4) Back in the mainline the second IF END-OF-FILE = 'N' at L77 is false, so the raw DISPLAY ACCOUNT-RECORD at L78 is skipped - an empty dataset produces no record line even though ACCOUNT-RECORD exists in WORKING-STORAGE. (5) 9000-ACCTFILE-CLOSE sees '00' at L154 and SUBTRACT APPL-RESULT FROM APPL-RESULT at L155 leaves 0, so APPL-AOK holds and L160 CONTINUEs - no message. (6) L85 displays the closing banner and L87 GOBACKs; no abend is reached, so RETURN-CODE stays 0. Both banner texts are the literals at L71 and L85 transcribed verbatim, byte-identical to the first and last lines case01 expects. ACCTFILE is addressed by its binding key and never by a dataset name, and it is declared present-and-empty rather than omitted: omitting it would say the case is not about the dataset at all and would instead reach the fatal open arm, whereas 'empty': true carrying the 300-byte width app/cpy/CVACT01Y.cpy declares and the copybook naming what it is empty of is the positive statement that a real dataset was opened and the first READ found nothing. The dataset-level expectation of exactly 0 rows at 300 bytes states what no row expectation can, because a dataset holding no row has no row to address. The unit is reached as a BATCH_JOB at tasklet level with no JobLauncher, no job repository and no HTTP layer in the path; app/jcl/READACCT.jcl:L22 is a bare EXEC PGM= with no PARM, so no job parameter is declared, and the program issues no WRITE and no REWRITE, so nothing is expected on the writes channel. Every row and expected value is US-ASCII, the code page of app/data/ASCII, named explicitly and never left to the platform default. Every expected value here is statically derived from the COBOL source, the CVACT01Y byte layout and the READACCT.jcl DD contract; none was captured from a run of the legacy COBOL, which is empirically impossible in this environment, and that substitution of provenance is the escalated deviation recorded as risk R-A.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "ACCTFILE": {
-      "fixture": "acctdata.txt",
-      "fromRow": 0,
-      "rowCount": 1
+      "empty": true,
+      "recordLength": 300,
+      "copybook": "CVACT01Y"
     }
   },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 0,
-      "fields": {
-        "ACCT-ID": "00000000001",
-        "ACCT-ACTIVE-STATUS": "Y",
-        "ACCT-CURR-BAL": "00000001940{",
-        "ACCT-CREDIT-LIMIT": "00000020200{",
-        "ACCT-CASH-CREDIT-LIMIT": "00000010200{",
-        "ACCT-OPEN-DATE": "2014-11-20",
-        "ACCT-EXPIRAION-DATE": "2025-05-20",
-        "ACCT-REISSUE-DATE": "2025-05-20",
-        "ACCT-CURR-CYC-CREDIT": "00000000000{",
-        "ACCT-CURR-CYC-DEBIT": "00000000000{",
-        "ACCT-ADDR-ZIP": "A000000000",
-        "ACCT-GROUP-ID": "          ",
-        "FILLER": "                                                                                                                                                                                  "
-      },
-      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    }
-  ],
+  "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
@@ -42,60 +21,16 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000001"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-ACTIVE-STATUS      :Y"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-BAL           :00000001940{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-OPEN-DATE          :2014-11-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-REISSUE-DATE       :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-GROUP-ID           :          "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "-------------------------------------------------"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "channel": "DISPLAY_LINE",
       "text": "END OF EXECUTION OF PROGRAM CBACT01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 300
+    }
+  ]
 }

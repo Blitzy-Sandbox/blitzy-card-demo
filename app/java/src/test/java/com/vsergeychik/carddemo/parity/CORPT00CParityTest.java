@@ -114,8 +114,10 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <p>Between them the cases drive: the {@code EIBCALEN = 0} guard; first entry, where
  * {@code MOVE LOW-VALUES TO CORPT0AO} clears all seventeen items; all three arms of the ordered
  * {@code EVALUATE EIBAID} including {@code WHEN OTHER}; all three arms of the ordered report-type
- * {@code EVALUATE} plus its {@code WHEN OTHER}; the monthly month-end derivation at a leap February, a
- * thirty-day month and December, where the arm's own year roll-over runs; both ends of the six-arm blank
+ * {@code EVALUATE} plus its {@code WHEN OTHER}; the monthly month-end derivation at a thirty-one day
+ * month, a thirty-day month and December, where the arm's own year roll-over runs - the leap and common
+ * February forms of that same derivation are pinned mechanically by {@link TheDateIntrinsics} rather
+ * than by a case, so no fixture spends its scenario on them; both ends of the six-arm blank
  * chain; {@code FUNCTION NUMVAL-C} accepting an embedded space and rejecting a non-conforming argument
  * through <em>both</em> of its receivers; the character comparison {@code SDTMMI > '12'}; all three
  * {@code CSUTLDTC} outcomes - converted, the tolerated {@code '2513'}, and rejected; the confirm prompt,
@@ -205,6 +207,41 @@ final class CORPT00CParityTest {
      * its own, unlike the transaction-list screens.
      */
     private static final int COMMAREA_LENGTH = NavigationContext.COMMAREA_LENGTH;
+
+    /**
+     * The case the {@code DATEPARM} hand-off is read off a real run of.
+     *
+     * <p>It has to be one that both selects the monthly report <em>and</em> confirms it, because the
+     * guard at {@code app/cbl/CORPT00C.cbl:464} sends the confirmation prompt and returns to CICS: an
+     * unconfirmed case hands the queue nothing at all, which is exactly what {@code case06} - the
+     * monthly arm's blank-confirm prompt - and {@code case20} - its {@code 'N'} refusal - are for.
+     * {@code case10} is the December monthly confirmation, so reading the hand-off off it carries the
+     * arm's own year-roll at {@code :225-227} through record fifteen as well.
+     *
+     * <p>Named here rather than written at the call site so that the case, the range it produces and the
+     * reason for the choice sit together, and so the precondition the test states can quote it.
+     */
+    private static final String MONTHLY_CONFIRMED_CASE = ParityHarness.caseId(10);
+
+    /**
+     * The first day of the month {@link #MONTHLY_CONFIRMED_CASE}'s pinned clock falls in, which
+     * {@code :217-219} compose from {@code WS-CURDATE-YEAR}, {@code WS-CURDATE-MONTH} and the literal
+     * {@code '01'}.
+     */
+    private static final String MONTHLY_CONFIRMED_START = "2026-12-01";
+
+    /**
+     * The last day of that same month, which {@code :223-230} reach by moving 1 into the day, adding 1
+     * to the month - rolling the year, since the month is December - and subtracting a single day
+     * through {@code FUNCTION DATE-OF-INTEGER} of {@code FUNCTION INTEGER-OF-DATE}.
+     */
+    private static final String MONTHLY_CONFIRMED_END = "2026-12-31";
+
+    /**
+     * The value that confirms, taken from the controller's own constant rather than re-typed, so the
+     * precondition below cannot drift from the arm it is about ({@code :478}).
+     */
+    private static final String CONFIRMED = ReportRequestController.CONFIRM_YES_UPPER;
 
     // =================================================================================================
     // The gate.
@@ -961,20 +998,40 @@ final class CORPT00CParityTest {
         @Test
         @DisplayName("record fifteen of a real run is that same record")
         void theEmittedRecordIsTheOneTheReaderParses() {
-            ParityCase parityCase = ParityHarness.usAscii().load(PROGRAM, ParityHarness.caseId(6));
+            ParityCase parityCase =
+                    ParityHarness.usAscii().load(PROGRAM, MONTHLY_CONFIRMED_CASE);
+
+            // Stated before the run rather than assumed by it. Only a CONFIRMED submission reaches the
+            // emit loop at app/cbl/CORPT00C.cbl:498-508, so a case that selected a report type without
+            // confirming it - case06 is the monthly arm's blank-confirm prompt, and case20 its 'N' -
+            // hands nothing over at all, and this test would then fail reporting a missing queue rather
+            // than the wrong case. Asserting the case's own received map says which shape is required.
+            assertThat(parityCase.screenRequest().mapFields())
+                    .as("%s has to select the monthly report AND confirm it: the guard at :464 sends the "
+                            + "confirmation prompt and returns to CICS, so an unconfirmed case never "
+                            + "reaches the loop that hands record fifteen to the queue",
+                            MONTHLY_CONFIRMED_CASE)
+                    .containsEntry(ReportRequestRequest.ScreenField.CONFIRM.inputItem(), CONFIRMED)
+                    .hasEntrySatisfying(ReportRequestRequest.ScreenField.MONTHLY.inputItem(),
+                            selection -> assertThat(selection)
+                                    .as("the monthly guard at :213 is 'NOT = SPACES AND LOW-VALUES', so "
+                                            + "any non-blank selection takes the arm")
+                                    .isNotBlank());
+
             ParityHarness.DecodedFingerprint fingerprint =
                     ParityHarness.usAscii().run(parityCase, UNIT_KIND, CORPT00CParityTest::execute);
 
             List<ParityHarness.DecodedRecord> emitted = fingerprint.findWrites(QUEUE_DATASET)
-                    .orElseThrow(() -> new AssertionError("case06 confirms a monthly report, so "
-                            + "SUBMIT-JOB-TO-INTRDR must hand seventeen records to the queue"));
+                    .orElseThrow(() -> new AssertionError(MONTHLY_CONFIRMED_CASE + " confirms a monthly "
+                            + "report, so SUBMIT-JOB-TO-INTRDR must hand seventeen records to the queue"));
             assertThat(emitted).hasSize(ReportRequestController.JOB_LINE_COUNT);
 
             String recordFifteen = emitted.get(ReportRequestController.DATEPARM_ENTRY - 1)
                     .field(JCL_RECORD_FIELD)
                     .orElseThrow(() -> new AssertionError("the JCL-RECORD span is the whole record"));
             assertThat(recordFifteen)
-                    .isEqualTo(ReportRequestController.dateParmRecord("2026-08-01", "2026-08-31"));
+                    .isEqualTo(ReportRequestController.dateParmRecord(
+                            MONTHLY_CONFIRMED_START, MONTHLY_CONFIRMED_END));
         }
     }
 

@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case04",
-  "description": "The WHEN OTHER arm of EVALUATE EIBAID at :190-194, reached with DFHPF5 - a key this program names in neither of its two arms. :191 raises WS-ERR-FLG, :192 moves -1 into MONTHLYL, :193 moves CCDA-MSG-INVALID-KEY (app/cpy/CSMSG01Y.cpy, PIC X(50)) into WS-MESSAGE PIC X(80) and :194 sends. MONTHLYI travelled as 'Y' and is echoed back untouched, because this arm blanks nothing - proving the received map really is the buffer that is re-sent. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "Case 4 of 20 - the WHEN OTHER arm of EVALUATE EIBAID at app/cbl/CORPT00C.cbl:190-194, reached in REENTER state with DFHPF9, a key neither of the two named arms claims. ORDERED EVALUATE, WHEN OTHER LAST (gate G30): :185 WHEN DFHENTER does not match, :187 WHEN DFHPF3 does not match, and :190 WHEN OTHER - which is genuinely last in the source - matches. It then runs :191 MOVE 'Y' TO WS-ERR-FLG, :192 MOVE -1 TO MONTHLYL OF CORPT0AI, :193 MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE and :194 PERFORM SEND-TRNRPT-SCREEN. All TEN of the screen's data fields travel in, and three mutually exclusive report types are selected at once (MONTHLYI, YEARLYI and CUSTOMI all 'Y') on top of a complete custom range and a 'Y' confirmation: not one of them is inspected on this arm, which is exactly the point. Had WHEN OTHER leaked into PROCESS-ENTER-KEY, the ordered report-type EVALUATE at :212-443 would have taken its first matching arm and SUBMIT-JOB-TO-INTRDR would have handed seventeen eighty-byte records to the queue; expectedWrites being empty is what proves the short circuit. The ten values are echoed back untouched because app/cpy-bms/CORPT00.CPY:121 declares 01 CORPT0AO REDEFINES CORPT0AI - the received map and the sent map are one buffer - and because this arm reaches neither the LOW-VALUES reset at :179 (first entry only) nor INITIALIZE-ALL-FIELDS at :633. RULE R7, THE SINGLE GO TO: :580 GO TO RETURN-TO-CICS is the only GO TO in the whole program and it is a benign shared terminal - SEND-TRNRPT-SCREEN never returns to its caller, so the shared finalisation (POPULATE-HEADER-INFO at :558, MOVE WS-MESSAGE TO ERRMSGO at :560, the SEND at :563-569) is followed by an immediate return from the handler and termination is RETURN_TRANSID, from :587 EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA). Gate G32 does not apply: CBSTM03A is the only program with backward, loop-forming GO TOs. THE CORRECTED FORM OF GATE G38 FOR THIS PROGRAM: CORPT00C copies NEITHER CSSETATY NOR CSSTRPFY - its COPY list at :138-149 is exactly COCOM01Y, CORPT00, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA - and the only DFH colour constant it names anywhere is DFHGREEN at :448, on the success path. So there is no DFHRED move and no '*' marker to assert, and none is fabricated here. The REENTER-only error presentation is exactly three things: the byte-exact text in ERRMSGO, the cursor placed by MOVE -1 into MONTHLYL, and ERRMSGC left unassigned at the map's default - app/bms/CORPT00.bms:218-221 declares ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1), so the red is declarative in the BMS rather than moved by the program, and DFHDFCOL is what an unassigned colour byte reports. STATELESSNESS (rule R6, gate G37): the whole conversation - the 160-byte COMMAREA, the AID and the received map - travels in screenRequest and comes back in expectedResponse; no server-side session holds any of it. UNIT KIND (gate G51): CONTROLLER_POJO. ReportRequestController is constructed directly and mainPara is called as a plain method - no MockMvc, no HTTP, no JobLauncher - so the decision under test is reached with nothing in the path. No dataset is seeded: every EXEC CICS in this program is WRITEQ TD, SEND, RECEIVE, RETURN or XCTL, so gates G16, G19, G21, G45 and G47 have no subject here, and expectedReturnCode is 0 because the program contains no CALL 'CEE3ABD' and never sets RETURN-CODE, which makes gate G35 inapplicable too. PROVENANCE - practice B12: every value below is STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl and cross-checking app/cpy/CSMSG01Y.cpy, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy, app/cpy/COCOM01Y.cpy, app/cpy-bms/CORPT00.CPY and app/bms/CORPT00.bms. It was NEVER captured from a live COBOL run, which is impossible in this environment - risk R-A, eight verified blockers. DFHAID itself is IBM-supplied and absent from this repository (17 consumers, risk R-D), so the DFHPF9 mnemonic is resolved through common/CicsAid.java, the module's single reproduction of it, and folded by common/PfKeyResolver.java so the inline tests at :184-195 and the shared resolver can never disagree about which key was pressed. FOUR CORRECTIONS carried here rather than absorbed silently (practice B12). (1) BYTE COUNT: 'Invalid key pressed. Please see below...' is FORTY characters, not thirty-nine. app/cpy/CSMSG01Y.cpy:20-21 declares CCDA-MSG-INVALID-KEY PIC X(50) with a forty-nine character literal - forty of text plus nine spaces - which PIC X(50) pads to fifty. MOVE to WS-MESSAGE PIC X(80) gives forty plus forty spaces, and :560 MOVE WS-MESSAGE TO ERRMSGO PIC X(78) truncates on the RIGHT, as an alphanumeric move does, giving forty plus THIRTY-EIGHT spaces. Counted, not estimated (practice B8). (2) TWO MESSAGE CHANNELS, not one: WS-MESSAGE is eighty bytes wide and ERRMSGO seventy-eight, so both are reported - pinning only the screen line would make the two bytes that :560 loses unobservable, which is the whole defect the channel split exists to catch. DISPLAY 'PROCESS ENTER KEY' at :210 is correctly absent, because PROCESS-ENTER-KEY is never reached on this arm. (3) nextProgram is CORPT00C, not blank: no XCTL happens here, but :588 RETURN TRANSID(WS-TRANID) routes the next input back to CR00 and app/csd/CARDDEMO.CSD binds CR00 to CORPT00C, so the response names this program as the one the client calls next. (4) The written-record expectation is carried in expectedWrites and expectedFinalState, the members the frozen ParityCase contract declares. GOVERNING PRACTICES: review_rules returns exactly one line, 'No user rules provided.' - that is the complete document, so ZERO user rules govern this fixture and their absence is not licence to lower the bar; enterprise practice is held instead. B1 - no placeholders, every one of the seventeen output fields, sixteen COMMAREA fields, ten input fields and two message lines is stated explicitly rather than defaulted. B3 - app/cbl, app/cpy, app/cpy-bms, app/bms, app/csd, app/jcl and app/proc are read-only and not one byte of them was touched. B5 - the inline EIBAID test is preserved exactly as the source writes it and nothing is tidied. B7 - FUNCTION CURRENT-DATE at :611 is pinned to 2022-07-15T10:30:45, which is the prompt's pinnedCurrentDate 20220715 and pinnedCurrentTime 10304500, so CURDATEO and CURTIMEO are derived from that instant and never from a wall clock. B8 - the code page is named US-ASCII rather than left to the platform default, and every trailing space is counted.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
-    "aid": "DFHPF5",
-    "pinnedClock": "2022-07-19T23:12:34",
+    "aid": "DFHPF9",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,7 +28,16 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "MONTHLYI": "Y"
+      "MONTHLYI": "Y",
+      "YEARLYI": "Y",
+      "CUSTOMI": "Y",
+      "SDTMMI": "07",
+      "SDTDDI": "01",
+      "SDTYYYYI": "2022",
+      "EDTMMI": "07",
+      "EDTDDI": "31",
+      "EDTYYYYI": "2022",
+      "CONFIRMI": "Y"
     },
     "forcedOutcomes": {}
   },
@@ -59,20 +68,20 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "07/19/22",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:34",
+          "CURTIMEO": "10:30:45",
           "MONTHLYO": "Y",
-          "YEARLYO": " ",
-          "CUSTOMO": " ",
-          "SDTMMO": "  ",
-          "SDTDDO": "  ",
-          "SDTYYYYO": "    ",
-          "EDTMMO": "  ",
-          "EDTDDO": "  ",
-          "EDTYYYYO": "    ",
-          "CONFIRMO": " ",
+          "YEARLYO": "Y",
+          "CUSTOMO": "Y",
+          "SDTMMO": "07",
+          "SDTDDO": "01",
+          "SDTYYYYO": "2022",
+          "EDTMMO": "07",
+          "EDTDDO": "31",
+          "EDTYYYYO": "2022",
+          "CONFIRMO": "Y",
           "ERRMSGO": "Invalid key pressed. Please see below...                                      "
         },
         "attributes": {

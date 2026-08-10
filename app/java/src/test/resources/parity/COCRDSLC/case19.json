@@ -1,7 +1,7 @@
 {
   "program": "COCRDSLC",
   "caseId": "case19",
-  "description": "The no-match outcome, which is the property of YYYY-STORE-PFKEY easiest to lose. The EVALUATE in app/cpy/CSSTRPFY.cpy has NO WHEN OTHER, no DFHPA3 branch, and it does not clear CCARD-AID first, so an unrecognised EIBAID leaves the field holding whatever was there - here the five spaces INITIALIZE CC-WORK-AREA put in it at :254. Five spaces satisfies neither CCARD-AID-ENTER nor CCARD-AID-PFK03, so :297-299 coerces it to ENTER and the screen is redisplayed. A translation that defaulted the resolver to ENTER instead of returning no match would pass this case for the wrong reason, which is why case15 pins a key that must NOT be coerced.",
+  "description": "WHEN OTHER of the ordered EVALUATE WS-RESP-CD at :752-771 - the third and last arm of the only file verb COCRDSLC owns, and the one arm no arrangement of seeded rows can produce, so it is forced at the repository rather than provoked at the keyboard. The typed pair is deliberately ordinary and entirely valid: ACCTSIDI 00000000050 and CARDSIDI 0500024453765740 are row 0 of the real fixture, so :610-612 sets INPUT-OK, 2210 moves the alphanumeric CC-ACCT-ID view at :675-678 while 2220 moves the numeric CC-CARD-NUM-N REDEFINES view at :716-719 - that asymmetry is the source's own and is reproduced, not tidied - both filters end ISVALID, INPUT-ERROR is false at :360, and the ELSE at :364-369 reads then sends. The failure therefore arises INSIDE the read, after the edits passed, which is what separates this case from 06-13 where no read happens at all. forcedOutcomes names read because 9000-READ-DATA at :726-730 performs 9100-GETCARD-BYACCTCARD and nothing else, and its READ at :742-750 is FILE(LIT-CARDFILENAME) RIDFLD(WS-CARD-RID-CARDNUM) KEYLENGTH(16) INTO(CARD-RECORD) LENGTH(150) RESP(WS-RESP-CD) RESP2(WS-REAS-CD). The outcome is OTHER with RESP 19 and RESP2 0, both stated rather than defaulted: 19 is FileStatus.NOTOPEN, a file that is not open, which is the archetypal I/O failure a keyed read cannot be seeded into, and 0 is FileStatus.NO_REASON_CODE; FileStatus.outcomeOfCicsResp(19) classifies as OTHER, which CardReadResult requires to agree with the declared arm, and naming both values keeps the case off the harness's LENGERR fallback so nothing here is chosen by omission. The arm runs in source order: SET INPUT-ERROR at :763 unguarded; then IF WS-RETURN-MSG-OFF SET FLG-ACCTFILTER-NOT-OK at :764-766, where the FLAG sits INSIDE the message-off guard even though a flag has nothing to do with a message - WS-RETURN-MSG is still the SPACES :264 cleared it to, so the guard passes and the flag is set, and the nesting is preserved exactly because hoisting it would behave identically here and diverge on any path that already carried a message; then :767-771 moves 'READ' to ERROR-OPNAME, LIT-CARDFILENAME to ERROR-FILE, WS-RESP-CD to ERROR-RESP, WS-REAS-CD to ERROR-RESP2 and WS-FILE-ERROR-MESSAGE to WS-RETURN-MSG. Contrast the NOTFND arm at :756-761, which sets BOTH filter flags UNGUARDED and guards only the message: because WHEN OTHER never touches the card flag, IF FLG-CARDFILTER-NOT-OK at :537 is false and CARDSIDC is left exactly as MOVE LOW-VALUES TO CCRDSLAO wrote it, where the NOTFND arm reddens both. That one-sided reddening is the precise, deliberate difference between this case and the not-found one. ERROR-FILE is CARDDAT and can never be CARDAIX: 9150-GETCARD-BYACCT at :779-809 is the paragraph that would have moved LIT-CARDFILENAME-ACCT-PATH there, and nothing performs it - the only two occurrences of its name are its own label and its exit - so readByAccountIdViaAltIndex is not invoked on this path and the alternate index stays a second finder over one base cluster rather than a dataset of its own (gate G45). The X(8) literal 'CARDDAT ' moved into the X(9) ERROR-FILE right-pads to nine bytes, CARDDAT followed by two spaces. WS-FILE-ERROR-MESSAGE at :102-121 composes to exactly eighty bytes, summed mechanically rather than asserted: FILLER X(12) 'File Error: ' 12, ERROR-OPNAME X(8) 'READ' right-padded 8, FILLER X(4) ' on ' 4, ERROR-FILE X(9) 9, FILLER X(15) ' returned RESP ' 15, ERROR-RESP X(10) 10, FILLER X(7) ',RESP2 ' 7, ERROR-RESP2 X(10) 10, FILLER X(5) spaces 5 - 12+8+4+9+15+10+7+10+5 = 80. WS-RETURN-MSG is PIC X(75) at :132, so MOVE WS-FILE-ERROR-MESSAGE TO WS-RETURN-MSG right-truncates by five bytes (rule R5, PIC X truncates on the right), and 12+8+4+9+15+10+7+10 = 75 exactly means the five bytes lost are precisely the trailing filler's spaces: the truncation is real and applied, and it is also lossless. ERRMSGO is PIC X(80) in this map - the sibling COCRDLI map declares 78 and the two must not be confused - so the seventy-five bytes are right-padded back to eighty, and COMMON-RETURN moves the same seventy-five into the equally wide CCARD-ERROR-MSG unchanged. ERROR-RESP and ERROR-RESP2 are the one genuinely uncertain element and are derived rather than guessed. They are PIC X(10) ALPHANUMERIC receivers fed by WS-RESP-CD and WS-REAS-CD, which :41-44 declares PIC S9(09) COMP - binary - so this is not a decimal render into a text field. COBOL performs it in two steps: the binary sender is first taken as its nine declared digit positions, UNSIGNED and zero-filled on the left, because an alphanumeric receiver has no sign position to carry one; the PIC X rule then left-justifies those nine characters in the ten-byte receiver and pads a single space on the right. RESP 19 therefore images as '000000019 ' - nine digits and one trailing space, neither ten digits nor a right-justified number - and RESP2 0 as '000000000 '. The derivation is stated because getting it wrong yields a plausible message that is off by one character, and it is corroborated three ways: the PICTURE semantics above, the eighty-byte sum closing at exactly 80 only if each field is ten wide, and the sibling COCRDLIC WHEN OTHER case, whose composed line decomposes on these same offsets. Note that no asterisk image can arise here: the account-view translation renders an unreported RESP as asterisks, this program's does not. The screen: 1200 takes its ELSE because EIBCALEN is not zero, and since CDEMO-ACCT-ID and CDEMO-CARD-NUM are both non-zero, ACCTSIDO gets 00000000050 and CARDSIDO 0500024453765740. IF FOUND-CARDS-FOR-ACCOUNT at :474 is FALSE - the read failed, so the 88-level was never set - which means CRDNAMEO, EXPMONO, EXPYEARO and CRDSTCDO keep the LOW-VALUES that 1100-SCREEN-INIT's MOVE LOW-VALUES TO CCRDSLAO left, binary x'00' rather than spaces: in particular CRDNAMEO must NOT read Aniya Von even though that row is sitting in the seeded dataset, which is the trap this case exists to catch. WS-INFO-MSG is still blank, so IF WS-NO-INFO-MESSAGE at :489-491 fires and sets WS-PROMPT-FOR-INPUT, putting 'Please enter Account and Card Number' - thirty-six characters in X(40) - into INFOMSGO. The prompt and the file error therefore coexist on one screen; that is genuine behaviour and is preserved rather than reconciled. Because this turn did not arrive from the card list, :509-511 moves DFHBMFSE into ACCTSIDA and CARDSIDA of CCRDSLAI, which a send cannot observe since ACCTSIDA REDEFINES ACCTSIDF where CCRDSLAO declares FILLER, so the attributes pinned are the output colour and highlight planes. The cursor EVALUATE at :515-524 stops on its FIRST arm, FLG-ACCTFILTER-NOT-OK, because the read set that flag inside the guard, giving ACCTSIDL - and it reaches that arm rather than the WHEN OTHER that case05 falls through to. For colour, the card-list guard at :527-531 is false so no DFHDFCOL is moved, and IF FLG-ACCTFILTER-NOT-OK at :533-535 is a BARE IF with no AND CDEMO-PGM-REENTER, so it fires and ACCTSIDC is DFHRED; COCRDSLC does not COPY app/cpy/CSSETATY.cpy but re-implements the highlight inline, and only the asterisk is gated on re-entry (gate G38). Both BLANK guards at :541-551 are false, so no '*' is written anywhere. INFOMSGC is DFHNEUTR at :556 because the info line is no longer blank. 1400 then moves LIT-THISMAPSET 'COCRDSL ' into the X(7) CCARD-NEXT-MAPSET, right-truncating it to COCRDSL, moves CCRDSLA into CCARD-NEXT-MAP, and SETs CDEMO-PGM-REENTER so the context stays 1; :588 named CCARD-NEXT-PROG earlier, which is why nextProgram is COCRDSLC. Nothing is written - the program issues no WRITE, REWRITE or DELETE - so the write channel is empty and CARDDAT holds its three seeded rows unchanged. The 88-level XREF-READ-ERROR at :155-156, 'Error reading Card Data File', is never SET anywhere in the program and is deliberately NOT emitted here: the file-error path uses the composed WS-FILE-ERROR-MESSAGE, and inventing a use for unreachable text would be a behaviour change. The clock is pinned to 2022-07-19T23:16:00 so CURDATEO is 07/19/22 and CURTIMEO 23:16:00 and the header is assertable at all. Rule R1: the mandated name says Select where the source Function header, README.md:213-231 and app/csd/CARDDEMO.CSD:220 DESCRIPTION(VIEW CARD DETAIL) all say view; the name is honoured verbatim and the divergence is documented rather than corrected. Statically derived and never executed: taken by structured reading of app/cbl/COCRDSLC.cbl, the app/cpy/CVACT02Y.cpy byte layout, the xxxI PICTURE clauses of app/cpy-bms/COCRDSL.CPY, app/bms/COCRDSL.bms, app/csd/CARDDEMO.CSD and the real ASCII fixture, in US-ASCII - IBM037 belongs to app/data/EBCDIC and is out of scope - because executing the legacy programs is impossible here on eight independently verified counts. Pins G15, G18, G30 on both the ordered RESP EVALUATE and the cursor arm, G37, G38 on its non-re-entry-gated NOT-OK side, G45, G47 on the WHEN OTHER arm that completes this folder's three-outcome coverage, and G51; G32, G35 - COCRDSLC contains no CALL 'CEE3ABD' at all - and G39 have no site here, and neither do G19, G21, G34 or G40.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -10,37 +10,63 @@
       "rowCount": 3
     }
   },
+  "jobParameters": {},
   "screenRequest": {
-    "eibcalen": 0,
-    "aid": "DFHPA3",
-    "pinnedClock": "2022-07-19T23:12:33",
+    "eibcalen": 172,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:16:00",
     "charset": "US-ASCII",
-    "commarea": {},
-    "mapFields": {
-      "CARDSIDI": "                "
-    },
-    "forcedOutcomes": {}
-  },
-  "expectedResponse": {
-    "nextMapset": "COCRDSL",
-    "nextMap": "CCRDSLA",
-    "navigation": {
-      "CDEMO-FROM-TRANID": "    ",
-      "CDEMO-FROM-PROGRAM": "        ",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "        ",
-      "CDEMO-USER-TYPE": " ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000050",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "       ",
-      "CDEMO-LAST-MAPSET": "       "
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000050",
+      "CARDSIDI": "0500024453765740"
+    },
+    "forcedOutcomes": {
+      "read": {
+        "outcome": "OTHER",
+        "resp": 19,
+        "resp2": 0
+      }
+    }
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDSLC",
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
     },
     "sends": [
       {
@@ -50,15 +76,15 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COCRDSLC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CURTIMEO": "23:16:00",
+          "ACCTSIDO": "00000000050",
+          "CARDSIDO": "0500024453765740",
           "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CRDSTCDO": "\u0000",
           "EXPMONO": "\u0000\u0000",
           "EXPYEARO": "\u0000\u0000\u0000\u0000",
           "INFOMSGO": "Please enter Account and Card Number    ",
-          "ERRMSGO": "                                                                                ",
+          "ERRMSGO": "File Error: READ     on CARDDAT   returned RESP 000000019 ,RESP2 000000000      ",
           "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
         },
         "attributes": {
@@ -68,7 +94,7 @@
           "PGMNAMEC": "DFHDFCOL",
           "TITLE02C": "DFHDFCOL",
           "CURTIMEC": "DFHDFCOL",
-          "ACCTSIDC": "DFHDFCOL",
+          "ACCTSIDC": "DFHRED",
           "CARDSIDC": "DFHDFCOL",
           "CRDNAMEC": "DFHDFCOL",
           "CRDSTCDC": "DFHDFCOL",
