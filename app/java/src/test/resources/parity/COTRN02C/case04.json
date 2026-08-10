@@ -1,0 +1,106 @@
+{
+  "program" : "COTRN02C",
+  "caseId" : "case04",
+  "description" : "PF3 with no caller recorded. :132 receives the map, the EVALUATE EIBAID at :133 takes the DFHPF3 arm at :136, and the test at :137 finds CDEMO-FROM-PROGRAM at spaces, so :138 moves the literal 'COMEN01C' into CDEMO-TO-PROGRAM and :143 performs RETURN-TO-PREV-SCREEN. The transfer at :508-511 names no map, so the response's mapset and map are blanked rather than left naming the screen being left - the target program paints its own. :505-507 stamp CDEMO-FROM-TRANID with 'CT02', CDEMO-FROM-PROGRAM with 'COTRN02C' and CDEMO-PGM-CONTEXT with zeros, so the next screen sees a first entry. No map is sent and therefore no message reaches a terminal, and no cursor is requested: the PF3 arm contains no MOVE -1.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "CCXREF" : {
+      "rows" : [ ],
+      "fixture" : "cardxref.txt",
+      "fromRow" : 0,
+      "rowCount" : 5,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    },
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
+      "fixture" : null,
+      "fromRow" : null,
+      "rowCount" : null,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    }
+  },
+  "jobParameters" : { },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHPF3",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "        ",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "mapFields" : { },
+    "forcedOutcomes" : { }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COMEN01C",
+    "nextMapset" : null,
+    "nextMap" : null,
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "CT02",
+      "CDEMO-FROM-PROGRAM" : "COTRN02C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COMEN01C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "0",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT02-TRNID-FIRST" : "                ",
+      "CDEMO-CT02-TRNID-LAST" : "                ",
+      "CDEMO-CT02-PAGE-NUM" : "00000000",
+      "CDEMO-CT02-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT02-TRN-SEL-FLG" : " ",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "sends" : [ ],
+    "cursorField" : null,
+    "termination" : "XCTL"
+  },
+  "expectedWrites" : [ ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "fields" : { },
+    "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "fields" : { },
+    "expectedBytes" : "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "fields" : { },
+    "expectedBytes" : "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ ],
+  "normalisations" : [ {
+    "dataset" : "CCXREF",
+    "kind" : "CARDXREF_FILLER_PAD_36_TO_50"
+  } ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 3,
+    "recordLength" : 350
+  } ]
+}

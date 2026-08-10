@@ -1,13 +1,16 @@
 {
   "program": "CBACT03C",
   "caseId": "case10",
-  "description": "The third READ reports '23', no record found. '23' is a perfectly ordinary branch in the online programs, which test DFHRESP(NOTFND) explicitly, and it is fatal here - which is the whole point of the case. CBACT03C tests exactly two statuses, '00' at :94 and '10' at :98, so a recognised-elsewhere status still reaches :101, still moves 12, and still abends at :113. Eight lines and RETURN-CODE 12. A translation that reused a shared status vocabulary and treated '23' as a benign not-found would silently turn an abend into a clean run.",
+  "description": "Four cross-reference rows, written out literally at the 36 characters the shipped data measures and drawn NON-CONTIGUOUSLY from app/data/ASCII/cardxref.txt - its lines 3, 18, 37 and 50 - then seeded in ascending XREF-CARD-NUM order. Two are read and displayed and the third READ reports '23'. THE ORDER IS THE RECORD KEY'S, AND THAT IS DERIVED RATHER THAN ASSUMED: app/cbl/CBACT03C.cbl declares ORGANIZATION IS INDEXED at :30, ACCESS MODE IS SEQUENTIAL at :31 and RECORD KEY IS FD-XREF-CARD-NUM at :32, so sequential retrieval returns records in ascending 16-byte card-number order whatever order they were loaded in. The browse is over the CCXREF base KSDS and never the CXACAIX alternate-index path - app/jcl/READXREF.jcl:25-26 binds the one DD XREFFILE to the base cluster and AccountBalanceUpdateJob opens it through CardXrefRepository's base browse - so the ordering key is the card number and NOT the account id. The two are not interchangeable here: line 18 carries account 13 and line 37 account 29, and their order is correct only because 4011500891777367 sorts before 7251508149188883. The four rows are deliberately non-adjacent, because a contiguous fixture slice cannot tell 'in key order' apart from 'in fixture order' at all. THE SEEDED ORDER IS THE KEY ORDER ON PURPOSE, NOT BY ACCIDENT: the harness models a dataset as an ordered list of record images and hands the browse row 0, then row 1, in seeding order; it sorts nothing. The rows are therefore seeded in exactly the ascending order the KSDS would deliver them in, so the two coincide by construction and the expectation below is faithful to the COBOL rather than to the model. Seeding them in any other order would pin a sequence a sequential KSDS browse cannot produce, which is why the first lines displayed are 0923877193247330 and 4011500891777367 - the two LOWEST keys - and not the rows a descending load order would have presented first. IF THIS CASE EVER FAILS ON ORDER, THE EXPECTATION IS NOT THE DEFECT: the sequence here is fixed by the 16-byte record key, so a run that displays these records in another order is reporting a defect in the browse-ordering model - the harness's dataset model or the repository's cursor - and not a case-authoring error. That distinction is stated rather than left to be inferred, because a statically derived baseline makes both possibilities real (AAP risk R-A). WHY '23' IS FATAL: :94 tests '00' and :98 tests '10', and the program names no other status, so '23' - DFHRESP(NOTFND) and a perfectly ordinary branch in the online programs - falls to :101, moves 12, displays ERROR READING XREFFILE at :110, renders through the non-'9' arm of 9910-DISPLAY-IO-STATUS at :170-171 as 0023, and abends at :113 and :158. Eight lines and RETURN-CODE 12, with no END OF EXECUTION because :83 and :85 are never reached. A translation that reused a shared status vocabulary and treated '23' as a benign not-found would silently turn an abend into a clean run. THE DOUBLED DISPLAY: each successfully read record contributes TWO byte-identical 50-character lines - :96 inside 1000-XREFFILE-GET-NEXT on the '00' arm, then :78 in the mainline loop - so two records give four lines. The failing read contributes none, because :96 sits on the '00' arm only and the abend never reaches :78. NO OUTPUT DATASET APPEARS ANYWHERE HERE: :120 is OPEN INPUT and the 178 lines contain no WRITE, no REWRITE and no DELETE, so the job whose mandated name is AccountBalanceUpdateJob updates nothing (AAP rule R1, register 0.8.4) and expectedWrites is empty by derivation rather than by omission. The rows are cited at 36 and asserted at 50 because CVACT03Y's trailing FILLER PIC X(14) is absent from the shipped data; the declared CARDXREF_FILLER_PAD_36_TO_50 applies that pad once, at seed time, by its single owner, and nothing re-pads at comparison time. PROVENANCE: every expected value here was STATICALLY DERIVED by reading app/cbl/CBACT03C.cbl statement by statement against app/cpy/CVACT03Y.cpy for the byte layout, app/jcl/READXREF.jcl for the step and DD contract, and app/data/ASCII/cardxref.txt for the row images. Nothing was captured from a running COBOL program, because none can be run in this environment - a documented and escalated deviation, not an omission (AAP 0.7.6, risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 10,
-      "rowCount": 4
+      "rows": [
+        "092387719324733000000000200000000002",
+        "401150089177736700000001300000000013",
+        "725150814918888300000002900000000029",
+        "980558340899658800000004000000000040"
+      ]
     }
   },
   "jobParameters": {},
@@ -16,22 +19,46 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "287196825281249000000000600000000006              "
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
+      "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
-      "expectedBytes": "294013936230044900000002200000000022              "
+      "fields": {
+        "XREF-CARD-NUM": "4011500891777367",
+        "XREF-CUST-ID": "000000013",
+        "XREF-ACCT-ID": "00000000013",
+        "FILLER": "              "
+      },
+      "expectedBytes": "401150089177736700000001300000000013              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 2,
-      "expectedBytes": "298809135309431200000000400000000004              "
+      "fields": {
+        "XREF-CARD-NUM": "7251508149188883",
+        "XREF-CUST-ID": "000000029",
+        "XREF-ACCT-ID": "00000000029",
+        "FILLER": "              "
+      },
+      "expectedBytes": "725150814918888300000002900000000029              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 3,
-      "expectedBytes": "326076361233756000000001000000000010              "
+      "fields": {
+        "XREF-CARD-NUM": "9805583408996588",
+        "XREF-CUST-ID": "000000040",
+        "XREF-ACCT-ID": "00000000040",
+        "FILLER": "              "
+      },
+      "expectedBytes": "980558340899658800000004000000000040              "
     }
   ],
   "expectedReturnCode": 12,
@@ -42,19 +69,19 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "287196825281249000000000600000000006              "
+      "text": "092387719324733000000000200000000002              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "287196825281249000000000600000000006              "
+      "text": "092387719324733000000000200000000002              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "294013936230044900000002200000000022              "
+      "text": "401150089177736700000001300000000013              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "294013936230044900000002200000000022              "
+      "text": "401150089177736700000001300000000013              "
     },
     {
       "channel": "DISPLAY_LINE",

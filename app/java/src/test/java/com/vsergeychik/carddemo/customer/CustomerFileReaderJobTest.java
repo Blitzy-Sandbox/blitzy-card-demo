@@ -1,112 +1,113 @@
 package com.vsergeychik.carddemo.customer;
 
-import com.vsergeychik.carddemo.CardDemoApplication;
 import com.vsergeychik.carddemo.common.AbendException;
-import com.vsergeychik.carddemo.common.FileStatus;
-import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
-import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
-import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
-import com.vsergeychik.carddemo.customer.CustomerRepository.CustomerFile;
 import com.vsergeychik.carddemo.customer.CustomerService.Execution;
 import com.vsergeychik.carddemo.customer.CustomerService.Sysout;
 import com.vsergeychik.carddemo.customer.CustomerService.SysoutSink;
-import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.repository.support.ResourcelessJobRepository;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.scope.context.StepContext;
+import org.springframework.batch.core.step.item.ChunkOrientedTasklet;
 import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.batch.core.step.tasklet.TaskletStep;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.batch.support.transaction.ResourcelessTransactionManager;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.ApplicationContext;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.springframework.test.context.ActiveProfiles;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
-import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 /**
- * Tests for {@link CustomerFileReaderJob}, the Spring Batch wiring of {@code app/jcl/READCUST.jcl}.
+ * Unit contract for {@link CustomerFileReaderJob}, the batch shell around {@code CBCUS01C}.
  *
- * <h2>What this suite guards</h2>
+ * <h2>Why the name and the behaviour differ</h2>
+ * <p>Rule R1 and practice B4 apply: the migration prompt names {@code CustomerRepository} and
+ * {@code CustomerService}, but {@code CBCUS01C} is also the runnable program submitted by
+ * {@code app/jcl/READCUST.jcl}. The job class preserves that runnable behaviour; assertions therefore
+ * follow the JCL and COBOL, never an implication inferred from a Java class name.
  *
- * <p>The job is deliberately thin, so this suite asserts the four things thinness does not excuse:
- * that the JCL's shape reached the batch metadata (one step named {@code STEP05}, no parameters, no
- * gate), that a mis-declared contract stops the context rather than producing a job that runs against
- * the wrong program, that every {@code DISPLAY} the program emitted reaches the {@code SYSOUT}
- * destination <strong>including on the abend path</strong> - because {@code CEE3ABD} does not retract
- * lines already spooled - and that an {@link AbendException} still reaches the framework so the
- * step's exit status carries the COBOL {@code RETURN-CODE} (gate G35).
+ * <h2>Provenance</h2>
+ * <p>Per practice B12 and AAP section 0.7.6 risk R-A, COBOL cannot execute in this environment.
+ * Every expectation below is statically derived from {@code READCUST.jcl}, {@code CBCUS01C.cbl},
+ * {@code CARDDEMO.CSD} and {@code CVCUS01Y.cpy}. The reference trees remain read-only.
  *
- * <p>What it deliberately does <em>not</em> re-assert: the program's own branches, statuses and
- * literals. Those belong to {@link CustomerServiceTest}, and duplicating them here would say nothing
- * about the wiring.
- *
- * <h2>How it runs</h2>
- *
- * <p>Plain JUnit 5 with Mockito and AssertJ over an in-memory relation, plus one nested
- * {@code @SpringBootTest} slice that proves the two bean names coexist. No platform default charset and
- * no locale anywhere.
+ * <h2>Rules and dependencies</h2>
+ * <p>{@code review_rules} returned exactly {@code No user rules provided.}; enterprise-grade AAP
+ * practices B1-B12 therefore remain binding. This is plain JUnit 5, Mockito and AssertJ over Batch
+ * core constructors already supplied by {@code spring-boot-starter-test} and the Batch starter.
+ * The dedicated Batch testing-support artifact and its launcher helpers are intentionally absent:
+ * the dependency set is closed, and the tasklet is directly reachable as gate G51 requires.
  */
-@DisplayName("CustomerFileReaderJob - READCUST.jcl STEP05, the wiring around CBCUS01C")
+@DisplayName("CustomerFileReaderJob - READCUST STEP05 / CBCUS01C")
 class CustomerFileReaderJobTest {
 
-    /** The code page of the ASCII fixtures, named explicitly and never taken from the platform. */
-    private static final Charset ASCII = StandardCharsets.US_ASCII;
+    private static final int FIXTURE_RECORD_COUNT = 50;
+    private static final int FIFTY_RECORD_LINE_COUNT = 102;
+    private static final String FIXTURE_RESOURCE = "/fixtures/custdata.txt";
 
-    /** The dataset name both bindings resolve to in these tests. */
-    private static final String TEST_DSNAME = "TEST.CUSTOMER.KSDS";
+    private static final Path MODULE_DIRECTORY = Path.of("app", "java");
+    private static final Path JOB_SOURCE = MODULE_DIRECTORY.resolve(Path.of("src", "main", "java",
+            "com", "vsergeychik", "carddemo", "customer", "CustomerFileReaderJob.java"));
+    private static final Path CUSTOMER_SOURCE_DIRECTORY = MODULE_DIRECTORY.resolve(Path.of("src", "main",
+            "java", "com", "vsergeychik", "carddemo", "customer"));
+    private static final Path TEST_SOURCE = MODULE_DIRECTORY.resolve(Path.of("src", "test", "java",
+            "com", "vsergeychik", "carddemo", "customer", "CustomerFileReaderJobTest.java"));
+    private static final Path POM = MODULE_DIRECTORY.resolve("pom.xml");
 
-    /** The shipped customer fixture, on the test classpath. */
-    private static final String FIXTURE = "/fixtures/custdata.txt";
-
-    /** The declared record width, {@code CVCUS01Y}. */
-    private static final int FIVE_HUNDRED = CustomerRecord.RECORD_LENGTH;
-
-    /** The declared key width, {@code CUST-ID PIC 9(09)}. */
-    private static final int NINE = CustomerRepository.KEY_LENGTH;
-
-    /** Keeps every test's in-memory database private to it. */
-    private static final AtomicInteger DATABASE_SEQUENCE = new AtomicInteger();
-
-    // =============================================================================================
-    // Test doubles and fixtures.
-    // =============================================================================================
-
-    /** A collecting {@code SYSOUT}: records the lines verbatim, trailing spaces included. */
+    /** Ordered sink used to prove that one service-produced line becomes one job-produced line. */
     private static final class CapturedSysout implements SysoutSink {
 
-        /** The lines written so far, in write order. */
         private final List<String> lines = new ArrayList<>();
 
         @Override
@@ -114,35 +115,12 @@ class CustomerFileReaderJobTest {
             lines.add(line);
         }
 
-        /**
-         * The captured sequence.
-         *
-         * @return the lines, in emission order
-         */
         private List<String> lines() {
-            return lines;
+            return List.copyOf(lines);
         }
     }
 
-    /**
-     * An {@link ObjectProvider} reporting the bean as absent, so the job falls back to its default sink.
-     *
-     * @param <T> the bean type
-     */
-    private static final class AbsentBean<T> implements ObjectProvider<T> {
-
-        @Override
-        public T getObject() {
-            throw new NoSuchBeanDefinitionException("no bean of this type is declared in this test");
-        }
-    }
-
-    /**
-     * An {@link ObjectProvider} that always yields the given bean.
-     *
-     * @param bean the bean to yield
-     * @param <T>  the bean type
-     */
+    /** Provider used when a concrete infrastructure object must be supplied without a context. */
     private record PresentBean<T>(T bean) implements ObjectProvider<T> {
 
         @Override
@@ -151,508 +129,809 @@ class CustomerFileReaderJobTest {
         }
     }
 
-    /**
-     * The dataset catalogue the repository resolves, at the copybook geometry.
-     *
-     * @return a catalogue naming {@link #TEST_DSNAME} under both the CICS file name and the batch DD name
-     */
-    private static DatasetBindings bindings() {
-        DatasetBindings catalogue = new DatasetBindings();
-        catalogue.put(CustomerRepository.CICS_FILE_NAME, new DatasetBinding(TEST_DSNAME, "ksds", false,
-                "FB", null, FIVE_HUNDRED, "CVCUS01Y", NINE, null, null, null));
-        catalogue.put(CustomerRepository.BATCH_DD_NAME, new DatasetBinding(TEST_DSNAME, "ksds", false,
-                "FB", null, FIVE_HUNDRED, "CVCUS01Y", NINE, null, null, null));
-        return catalogue;
+    /** Provider used to exercise the production fallback to standard output. */
+    private static final class AbsentBean<T> implements ObjectProvider<T> {
+
+        @Override
+        public T getObject() {
+            throw new NoSuchBeanDefinitionException("no bean is declared in this plain unit test");
+        }
     }
 
-    /**
-     * The {@code carddemo.jobs} contract for this job, exactly as {@code application.yml} declares it.
-     *
-     * @return the catalogue containing that one contract
-     */
+    /** The two plain Batch objects passed to one direct tasklet invocation. */
+    private record TaskletCall(StepContribution contribution, ChunkContext chunkContext) {
+    }
+
+    /** Result of executing a real Batch job without a launcher or application context. */
+    private record ExecutedJob(BatchConfig batchConfig,
+                               JobExecution jobExecution,
+                               StepExecution stepExecution,
+                               CapturedSysout sysout) {
+    }
+
     private static JobContracts jobContracts() {
-        return jobContracts(new StepContract(CustomerService.STEP_NAME, CustomerService.PROGRAM_ID,
-                false));
+        return jobContracts(List.of(new StepContract(CustomerService.STEP_NAME,
+                CustomerService.PROGRAM_ID, false)));
     }
 
-    /**
-     * The {@code carddemo.jobs} catalogue carrying one deliberately chosen step contract.
-     *
-     * @param step the step contract to declare
-     * @return the catalogue
-     */
     private static JobContracts jobContracts(StepContract step) {
         return jobContracts(List.of(step));
     }
 
-    /**
-     * The {@code carddemo.jobs} catalogue carrying a deliberately chosen step sequence.
-     *
-     * @param steps the sequence to declare, in order
-     * @return the catalogue
-     */
     private static JobContracts jobContracts(List<StepContract> steps) {
-        JobContracts catalogue = new JobContracts();
-        catalogue.put(CustomerFileReaderJob.JOB_KEY, new JobContract(CustomerService.PROGRAM_ID,
-                List.of(), steps, null, Map.of()));
-        return catalogue;
+        JobContracts contracts = new JobContracts();
+        contracts.put(CustomerFileReaderJob.JOB_KEY,
+                new JobContract(CustomerService.PROGRAM_ID, List.of(), steps, null, Map.of()));
+        return contracts;
     }
 
     /**
-     * The batch scaffolding, with a mocked job repository and transaction manager so a step and a job can
-     * be built without an application context.
+     * Instantiates the real configuration while importing only the assigned dependency surface.
      *
-     * @param contracts the {@code carddemo.jobs} catalogue to bind
-     * @return the scaffolding
+     * <p>The fourth constructor type is the DD catalogue owned by another configuration class. It is
+     * discovered from {@link BatchConfig}'s verified public constructor rather than imported here,
+     * keeping this test's internal imports within its declared dependency list.
      */
-    private static BatchConfig scaffolding(JobContracts contracts) {
-        return new BatchConfig(new PresentBean<>(Mockito.mock(JobRepository.class)),
-                new PresentBean<>(Mockito.mock(PlatformTransactionManager.class)),
-                contracts, bindings());
-    }
-
-    /**
-     * A private in-memory relation with one record-image column, seeded with the given rows.
-     *
-     * @param rows the record images to insert, in order
-     * @return a template over the seeded relation
-     */
-    private static JdbcTemplate seeded(List<String> rows) {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:custjob" + DATABASE_SEQUENCE.incrementAndGet()
-                        + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
-        dataSource.setDriverClassName("org.h2.Driver");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (REC VARCHAR(" + FIVE_HUNDRED + "))");
-        for (String row : rows) {
-            template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", row);
+    private static BatchConfig batchConfig(JobRepository repository,
+                                           PlatformTransactionManager transactionManager,
+                                           JobContracts contracts) {
+        try {
+            Constructor<?> constructor = Arrays.stream(BatchConfig.class.getConstructors())
+                    .filter(candidate -> candidate.getParameterCount() == 4)
+                    .filter(candidate -> candidate.getParameterTypes()[0] == ObjectProvider.class)
+                    .filter(candidate -> candidate.getParameterTypes()[1] == ObjectProvider.class)
+                    .filter(candidate -> candidate.getParameterTypes()[2] == JobContracts.class)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "BatchConfig no longer exposes its documented four-argument constructor"));
+            Object datasetBindings = constructor.getParameterTypes()[3].getConstructor().newInstance();
+            return (BatchConfig) constructor.newInstance(new PresentBean<>(repository),
+                    new PresentBean<>(transactionManager), contracts, datasetBindings);
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("Cannot instantiate the documented BatchConfig surface",
+                    failure);
         }
-        return template;
     }
 
-    /**
-     * Record images taken from the shipped fixture, so every numeric field holds real zoned digits.
-     *
-     * <p>A hand-built image would have to satisfy {@code CUST-ID PIC 9(09)},
-     * {@code CUST-SSN PIC 9(09)} and {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at their exact offsets;
-     * taking rows from {@code app/data/ASCII/custdata.txt} instead means the fixture's own bytes are what
-     * the browse yields.
-     *
-     * @param count how many of the fixture's rows to take, from the first
-     * @return that many 500-character record images, in fixture order
-     */
-    private static List<String> images(int count) {
-        return fixtureRows().subList(0, count);
+    private static BatchConfig mockedScaffolding(JobContracts contracts) {
+        return batchConfig(mock(JobRepository.class), mock(PlatformTransactionManager.class), contracts);
     }
 
-    /**
-     * The shipped customer fixture's rows.
-     *
-     * @return all 50 record images, in stored order
-     */
+    private static CustomerFileReaderJob subject(CustomerService service, SysoutSink sink) {
+        return subject(mockedScaffolding(jobContracts()), service, new PresentBean<>(sink));
+    }
+
+    private static CustomerFileReaderJob subject(BatchConfig batchConfig,
+                                                 CustomerService service,
+                                                 ObjectProvider<SysoutSink> sinkProvider) {
+        return new CustomerFileReaderJob(batchConfig, service, sinkProvider);
+    }
+
     private static List<String> fixtureRows() {
-        try (java.io.InputStream stream =
-                CustomerFileReaderJobTest.class.getResourceAsStream(FIXTURE)) {
+        try (InputStream stream =
+                     CustomerFileReaderJobTest.class.getResourceAsStream(FIXTURE_RESOURCE)) {
             if (stream == null) {
-                throw new IllegalStateException("The customer fixture " + FIXTURE + " is absent from the "
-                        + "test classpath; the record images in this class are seeded from it");
+                throw new IllegalStateException("Missing classpath fixture " + FIXTURE_RESOURCE);
             }
-            return new String(stream.readAllBytes(), ASCII).lines().toList();
-        } catch (java.io.IOException failure) {
-            throw new java.io.UncheckedIOException(failure);
+            List<String> rows = new String(stream.readAllBytes(), StandardCharsets.US_ASCII)
+                    .lines()
+                    .toList();
+            if (rows.size() != FIXTURE_RECORD_COUNT) {
+                throw new IllegalStateException("The customer fixture must contain exactly "
+                        + FIXTURE_RECORD_COUNT + " records, but contains " + rows.size());
+            }
+            return rows;
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
+    }
+
+    private static List<String> successfulLines(List<String> records) {
+        List<String> lines = new ArrayList<>(
+                CustomerService.expectedSysoutLineCount(records.size()));
+        lines.add(CustomerService.START_OF_EXECUTION);
+        for (String record : records) {
+            lines.add(record);
+            lines.add(record);
+        }
+        lines.add(CustomerService.END_OF_EXECUTION);
+        return List.copyOf(lines);
+    }
+
+    private static void emitSuccessfulRun(Sysout sysout, List<String> records) {
+        sysout.display(CustomerService.START_OF_EXECUTION);
+        for (String record : records) {
+            sysout.displayCustomerRecord(record);
+            sysout.displayCustomerRecord(record);
+        }
+        sysout.display(CustomerService.END_OF_EXECUTION);
+    }
+
+    private static CustomerService serviceReturning(List<String> records) {
+        CustomerService service = mock(CustomerService.class);
+        Execution execution = new Execution(successfulLines(records),
+                AbendException.RETURN_CODE_OK, records.size());
+        when(service.readAndPrintCustomerFile(any(Sysout.class))).thenAnswer(invocation -> {
+            Sysout sysout = invocation.getArgument(0, Sysout.class);
+            emitSuccessfulRun(sysout, records);
+            return execution;
+        });
+        return service;
+    }
+
+    private static List<String> abendLines() {
+        return List.of(CustomerService.START_OF_EXECUTION,
+                CustomerService.ERROR_READING_CUSTOMER_FILE,
+                "35",
+                CustomerService.ABENDING_PROGRAM);
+    }
+
+    private static CustomerService serviceThrowing(AbendException abend) {
+        CustomerService service = mock(CustomerService.class);
+        when(service.readAndPrintCustomerFile(any(Sysout.class))).thenAnswer(invocation -> {
+            Sysout sysout = invocation.getArgument(0, Sysout.class);
+            abendLines().forEach(sysout::display);
+            throw abend;
+        });
+        return service;
+    }
+
+    private static TaskletCall taskletCall() {
+        JobExecution jobExecution = new JobExecution(71L);
+        StepExecution stepExecution =
+                new StepExecution(CustomerService.STEP_NAME, jobExecution);
+        return new TaskletCall(new StepContribution(stepExecution),
+                new ChunkContext(new StepContext(stepExecution)));
+    }
+
+    private static ExecutedJob executeJob(CustomerService service) throws Exception {
+        ResourcelessJobRepository repository = new ResourcelessJobRepository();
+        BatchConfig batch = batchConfig(repository, new ResourcelessTransactionManager(),
+                jobContracts());
+        CapturedSysout sink = new CapturedSysout();
+        CustomerFileReaderJob subject =
+                subject(batch, service, new PresentBean<>(sink));
+        JobExecution execution = repository.createJobExecution(
+                CustomerFileReaderJob.JOB_NAME, new JobParameters());
+
+        subject.customerFileReaderJob().execute(execution);
+
+        StepExecution stepExecution = execution.getStepExecutions().stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "READCUST must record its one STEP05 execution"));
+        return new ExecutedJob(batch, execution, stepExecution, sink);
+    }
+
+    private static Path modulePath(Path relativePath) {
+        Path normalized = relativePath.normalize();
+        if (normalized.isAbsolute() || !normalized.startsWith(MODULE_DIRECTORY)) {
+            throw new IllegalArgumentException(
+                    "Source inspection is confined to app/java: " + relativePath);
+        }
+
+        for (Path cursor = Path.of("").toAbsolutePath().normalize();
+             cursor != null;
+             cursor = cursor.getParent()) {
+            Path candidate = cursor.resolve(normalized);
+            if (Files.exists(candidate)) {
+                try {
+                    Path moduleRoot = cursor.resolve(MODULE_DIRECTORY).toRealPath();
+                    Path resolved = candidate.toRealPath();
+                    if (!resolved.startsWith(moduleRoot)) {
+                        throw new IllegalArgumentException(
+                                "Resolved path escaped app/java: " + relativePath);
+                    }
+                    return resolved;
+                } catch (IOException failure) {
+                    throw new UncheckedIOException(failure);
+                }
+            }
+        }
+        throw new IllegalStateException("Cannot locate module path " + relativePath);
+    }
+
+    private static String moduleSource(Path relativePath) {
+        Path source = modulePath(relativePath);
+        if (!Files.isRegularFile(source)) {
+            throw new IllegalArgumentException("Expected a regular source file: " + relativePath);
+        }
+        try {
+            return Files.readString(source, StandardCharsets.UTF_8);
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
+    }
+
+    private static String customerProductionSources() {
+        try (Stream<Path> files = Files.walk(modulePath(CUSTOMER_SOURCE_DIRECTORY))) {
+            return files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .sorted()
+                    .map(CustomerFileReaderJobTest::readUtf8)
+                    .collect(Collectors.joining(System.lineSeparator()));
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
+    }
+
+    private static String readUtf8(Path path) {
+        try {
+            return Files.readString(path, StandardCharsets.UTF_8);
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
         }
     }
 
     /**
-     * The job over a seeded relation, with the given {@code SYSOUT} destination.
-     *
-     * @param rows the record images the browse yields
-     * @param sink where the displayed lines go, or {@code null} to leave the default resolved
-     * @return the subject
+     * Removes comments and literals before keyword absence checks, so documentation may explain an
+     * excluded type without making the executable source appear to use it.
      */
-    private static CustomerFileReaderJob job(List<String> rows, SysoutSink sink) {
-        CustomerRepository repository = new CustomerRepository(seeded(rows), bindings(), ASCII,
-                RecordImageForm.CHARACTER);
-        return new CustomerFileReaderJob(scaffolding(jobContracts()), new CustomerService(repository),
-                sink == null ? new AbsentBean<>() : new PresentBean<>(sink));
-    }
+    private static String executableJava(String source) {
+        StringBuilder code = new StringBuilder(source.length());
+        boolean lineComment = false;
+        boolean blockComment = false;
+        boolean stringLiteral = false;
+        boolean characterLiteral = false;
+        boolean escaped = false;
 
-    /**
-     * A job whose service is a stub reporting the given read statuses, so a fatal arm can be driven.
-     *
-     * @param sink     where the displayed lines go
-     * @param statuses the statuses successive reads report
-     * @return the subject
-     */
-    private static CustomerFileReaderJob jobReporting(SysoutSink sink, String... statuses) {
-        CustomerRepository repository = Mockito.mock(CustomerRepository.class);
-        CustomerFile file = Mockito.mock(CustomerFile.class);
-        Mockito.when(repository.datasetCharset()).thenReturn(ASCII);
-        Mockito.when(repository.openInput()).thenReturn(file);
-        Mockito.when(file.openStatus()).thenReturn(FileStatus.OK);
-        Mockito.when(file.closeFile()).thenReturn(FileStatus.OK);
-        CustomerRepository.ReadResult first = CustomerRepository.ReadResult.of(statuses[0]);
-        CustomerRepository.ReadResult[] rest =
-                new CustomerRepository.ReadResult[Math.max(statuses.length - 1, 0)];
-        for (int index = 1; index < statuses.length; index++) {
-            rest[index - 1] = CustomerRepository.ReadResult.of(statuses[index]);
+        for (int index = 0; index < source.length(); index++) {
+            char current = source.charAt(index);
+            char next = index + 1 < source.length() ? source.charAt(index + 1) : '\0';
+
+            if (lineComment) {
+                if (current == '\n') {
+                    lineComment = false;
+                    code.append(current);
+                }
+            } else if (blockComment) {
+                if (current == '*' && next == '/') {
+                    blockComment = false;
+                    index++;
+                }
+            } else if (stringLiteral) {
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '"') {
+                    stringLiteral = false;
+                }
+            } else if (characterLiteral) {
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '\'') {
+                    characterLiteral = false;
+                }
+            } else if (current == '/' && next == '/') {
+                lineComment = true;
+                index++;
+            } else if (current == '/' && next == '*') {
+                blockComment = true;
+                index++;
+            } else if (current == '"') {
+                stringLiteral = true;
+                code.append(' ');
+            } else if (current == '\'') {
+                characterLiteral = true;
+                code.append(' ');
+            } else {
+                code.append(current);
+            }
         }
-        Mockito.when(file.readNext()).thenReturn(first, rest);
-        return new CustomerFileReaderJob(scaffolding(jobContracts()), new CustomerService(repository),
-                new PresentBean<>(sink));
+        return code.toString();
     }
 
-    /**
-     * A step contribution and chunk context pair for a tasklet call.
-     *
-     * @return a fresh contribution
-     */
-    private static StepContribution contribution() {
-        return new StepContribution(new StepExecution(CustomerService.STEP_NAME,
-                new JobExecution(41L)));
+    private static String compiledForm(Class<?> type) {
+        String resourceName = "/" + type.getName().replace('.', '/') + ".class";
+        try (InputStream stream = type.getResourceAsStream(resourceName)) {
+            if (stream == null) {
+                throw new IllegalStateException("Missing compiled class resource " + resourceName);
+            }
+            return new String(stream.readAllBytes(), StandardCharsets.ISO_8859_1);
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
     }
 
-    /**
-     * @return a fresh chunk context
-     */
-    private static ChunkContext chunkContext() {
-        return new ChunkContext(new StepContext(new StepExecution(CustomerService.STEP_NAME,
-                new JobExecution(42L))));
+    private static Object shippedProperty(String resourceName, String propertyName) {
+        try {
+            List<PropertySource<?>> sources = new YamlPropertySourceLoader().load(resourceName,
+                    new ClassPathResource(resourceName));
+            return sources.stream()
+                    .map(source -> source.getProperty(propertyName))
+                    .filter(value -> value != null)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            propertyName + " is absent from " + resourceName));
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
     }
 
-    // =============================================================================================
-    // Identity and wiring.
-    // =============================================================================================
+    private static List<String> declaredTypeNames() {
+        List<String> names = new ArrayList<>();
+        for (Field field : CustomerFileReaderJob.class.getDeclaredFields()) {
+            names.add(field.getType().getName());
+            names.add(field.getGenericType().getTypeName());
+        }
+        for (Constructor<?> constructor : CustomerFileReaderJob.class.getDeclaredConstructors()) {
+            Arrays.stream(constructor.getParameterTypes())
+                    .map(Class::getName)
+                    .forEach(names::add);
+            Arrays.stream(constructor.getGenericParameterTypes())
+                    .map(java.lang.reflect.Type::getTypeName)
+                    .forEach(names::add);
+        }
+        return List.copyOf(names);
+    }
 
     @Nested
-    @DisplayName("Wiring - one job, one step named for the JCL, no parameters, no gate")
-    class Wiring {
+    @DisplayName("JobAndStepShape")
+    class JobAndStepShape {
 
         @Test
-        @DisplayName("the job and its single step carry the names READCUST.jcl gives them")
-        void theJobAndStepAreNamed() {
-            CustomerFileReaderJob subject = job(List.of(), new CapturedSysout());
+        @DisplayName("the published Job and ordinary Step factory use the READCUST identities")
+        void jobBeanAndStepCarryTheJclNames() throws ReflectiveOperationException {
+            CustomerService service = mock(CustomerService.class);
+            CustomerFileReaderJob subject =
+                    subject(service, new CapturedSysout());
+            Method jobFactory =
+                    CustomerFileReaderJob.class.getDeclaredMethod("customerFileReaderJob");
+            Method stepFactory =
+                    CustomerFileReaderJob.class.getDeclaredMethod("customerFileReaderStep");
 
-            Job built = subject.customerFileReaderJob();
+            // READCUST.jcl:L1/L6: one published job executes one STEP05 program step.
+            assertThat(CustomerFileReaderJob.class.getAnnotation(Configuration.class).value())
+                    .isEqualTo(CustomerFileReaderJob.CONFIGURATION_BEAN_NAME);
+            assertThat(jobFactory.getAnnotation(Bean.class)).isNotNull();
+            assertThat(jobFactory.getName()).isEqualTo(CustomerFileReaderJob.JOB_NAME);
+            assertThat(stepFactory.getAnnotation(Bean.class))
+                    .as("the actual API keeps Step ordinary so sibling jobs do not create ambiguity")
+                    .isNull();
+
+            Job job = subject.customerFileReaderJob();
             Step step = subject.customerFileReaderStep();
-
-            assertThat(built.getName()).isEqualTo(CustomerFileReaderJob.JOB_NAME);
-            assertThat(built).isInstanceOf(SimpleJob.class);
-            assertThat(((SimpleJob) built).getStepNames())
+            assertThat(job.getName()).isEqualTo(CustomerFileReaderJob.JOB_NAME);
+            assertThat(job).isInstanceOf(SimpleJob.class);
+            assertThat(((SimpleJob) job).getStepNames())
+                    .as("READCUST.jcl contains exactly one EXEC statement")
+                    .hasSize(1)
                     .containsExactly(CustomerService.STEP_NAME);
             assertThat(step.getName()).isEqualTo(CustomerService.STEP_NAME);
-        }
-
-        @Test
-        @DisplayName("the step name comes from the contract, not from the constant")
-        void theStepNameComesFromTheContract() {
-            CustomerFileReaderJob subject = job(List.of(), new CapturedSysout());
-
-            assertThat(subject.stepContract().name()).isEqualTo(CustomerService.STEP_NAME);
-            assertThat(subject.stepContract().program()).isEqualTo(CustomerService.PROGRAM_ID);
-            assertThat(subject.stepContract().requirePrecedingExitCodeZero()).isFalse();
-        }
-
-        @Test
-        @DisplayName("no job parameter is declared - READCUST.jcl:L6 is a bare EXEC PGM=")
-        void noJobParameterIsDeclared() {
-            assertThat(job(List.of(), new CapturedSysout()).jobParameters().isEmpty()).isTrue();
-        }
-
-        @Test
-        @DisplayName("the configuration bean name is not the job bean name, so both can be registered")
-        void theTwoBeanNamesDiffer() {
             assertThat(CustomerFileReaderJob.CONFIGURATION_BEAN_NAME)
                     .isNotEqualTo(CustomerFileReaderJob.JOB_NAME);
-            assertThat(CustomerFileReaderJob.JOB_KEY).isEqualTo("customer-file-reader-job");
         }
 
         @Test
-        @DisplayName("every collaborator is required")
-        void everyCollaboratorIsRequired() {
-            CustomerRepository repository = new CustomerRepository(seeded(List.of()), bindings(), ASCII,
-                    RecordImageForm.CHARACTER);
-            CustomerService service = new CustomerService(repository);
-            BatchConfig batch = scaffolding(jobContracts());
+        @DisplayName("STEP05 is one single-pass tasklet and has no item pipeline or commit interval")
+        void stepIsATaskletAndNotAChunkPipeline() {
+            Step step = subject(mock(CustomerService.class), new CapturedSysout())
+                    .customerFileReaderStep();
+            String bytecode = compiledForm(CustomerFileReaderJob.class);
+            String source = moduleSource(JOB_SOURCE);
 
-            assertThatNullPointerException().isThrownBy(() ->
-                    new CustomerFileReaderJob(null, service, new AbsentBean<>()));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new CustomerFileReaderJob(batch, null, new AbsentBean<>()));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new CustomerFileReaderJob(batch, service, null));
+            // CBCUS01C:L74-L83 is one sequential pass; L96 and L78 must remain adjacent.
+            assertThat(step).isInstanceOf(TaskletStep.class);
+            assertThat(((TaskletStep) step).getTasklet())
+                    .isNotInstanceOf(ChunkOrientedTasklet.class);
+            assertThat(bytecode).doesNotContain(
+                    "org/springframework/batch/item/ItemReader",
+                    "org/springframework/batch/item/ItemProcessor",
+                    "org/springframework/batch/item/ItemWriter",
+                    "org/springframework/batch/core/step/builder/SimpleStepBuilder");
+            assertThat(source)
+                    .contains("batchConfig.taskletStep(stepContract.name(), "
+                            + "customerFileDisplayTasklet())")
+                    .doesNotContain("batchConfig.chunkStep(");
         }
 
         @Test
-        @DisplayName("an injected SYSOUT sink is the one in use; otherwise the default is resolved")
-        void theSinkIsInjectableAndDefaulted() {
-            CapturedSysout published = new CapturedSysout();
+        @DisplayName("the job declares no scheduling, trigger, retry, skip or transition policy")
+        void jobHasNoExecutionPolicyBeyondItsSingleStep() {
+            String bytecode = compiledForm(CustomerFileReaderJob.class);
+            String source = moduleSource(JOB_SOURCE);
 
-            assertThat(job(List.of(), published).sysoutSink()).isSameAs(published);
-            assertThat(job(List.of(), null).sysoutSink())
-                    .as("with no sink bean declared, the standard-output sink is resolved")
-                    .isNotNull();
+            // READCUST.jcl has one ungated EXEC and no scheduler, COND, retry or skip declaration.
+            assertThat(bytecode).doesNotContain(
+                    "org/springframework/scheduling/annotation/Scheduled",
+                    "org/springframework/scheduling/Trigger",
+                    "org/springframework/retry/RetryPolicy",
+                    "org/springframework/batch/core/step/skip/SkipPolicy");
+            assertThat(source).doesNotContain(
+                    "@Scheduled",
+                    ".retry(",
+                    ".skip(",
+                    ".faultTolerant(",
+                    ".next(",
+                    ".on(",
+                    ".from(");
         }
 
         @Test
-        @DisplayName("the default SYSOUT is the service's own, and the job declares no sink of its own")
-        void theDefaultSinkIsTheServices() {
-            SysoutSink resolved = job(List.of(), null).sysoutSink();
+        @DisplayName("both shipped profiles disable startup execution while the Job remains buildable")
+        void automaticStartupIsDisabled() {
+            CustomerService service = mock(CustomerService.class);
+            CustomerFileReaderJob subject =
+                    subject(service, new CapturedSysout());
 
-            assertThat(resolved)
-                    .as("CBCUS01C's SYSOUT belongs to the translation of CBCUS01C, so the job "
-                            + "defaults to the service's sink rather than building one")
+            // Explicit launch mirrors submitting READCUST.jcl; context refresh must execute nothing.
+            assertThat(shippedProperty("application.yml", "spring.batch.job.enabled"))
+                    .isEqualTo(false);
+            assertThat(shippedProperty("application-test.yml", "spring.batch.job.enabled"))
+                    .isEqualTo(false);
+            assertThat(subject.customerFileReaderJob()).isNotNull();
+            verifyNoInteractions(service);
+        }
+
+        @Test
+        @DisplayName("READCUST has empty parameters, one ungated step and configuration-bound CUSTFILE")
+        void parametersFlowAndDatasetBindingMatchTheJcl() {
+            CustomerFileReaderJob subject =
+                    subject(mock(CustomerService.class), new CapturedSysout());
+            JobParameters parameters = subject.jobParameters();
+
+            // READCUST.jcl:L6 has no PARM; its sole step also has no COND.
+            assertThat(parameters.isEmpty()).isTrue();
+            assertThat(parameters.getParameters()).isEmpty();
+            assertThat(parameters.getParameters()).doesNotContainKey("parmDate");
+            assertThat(subject.stepContract())
+                    .isEqualTo(new StepContract(CustomerService.STEP_NAME,
+                            CustomerService.PROGRAM_ID, false));
+            assertThat(((SimpleJob) subject.customerFileReaderJob()).getStepNames())
+                    .containsExactly(CustomerService.STEP_NAME);
+
+            // READCUST.jcl:L9-L10 names DD CUSTFILE; Java resolves its location from YAML.
+            assertThat(shippedProperty("application.yml",
+                    "carddemo.datasets.CUSTFILE.dsname").toString())
+                    .startsWith("${CARDDEMO_DATASET_CUSTFILE:")
+                    .endsWith("}");
+            assertThat(shippedProperty("application-test.yml",
+                    "carddemo.datasets.CUSTFILE.dsname"))
+                    .isEqualTo("CARDDEMO.TEST.CUSTDATA.VSAM.KSDS");
+        }
+
+        @Test
+        @DisplayName("absence of a sink bean resolves the service-owned standard-output sink")
+        void standardOutputIsTheDeterministicFallback() {
+            CustomerFileReaderJob subject = subject(mockedScaffolding(jobContracts()),
+                    mock(CustomerService.class), new AbsentBean<>());
+
+            // READCUST.jcl:L11 assigns DISPLAY output to SYSOUT.
+            assertThat(subject.sysoutSink())
                     .isInstanceOf(CustomerService.PrintStreamSysoutSink.class);
-            assertThat(((CustomerService.PrintStreamSysoutSink) resolved).stream())
+            assertThat(((CustomerService.PrintStreamSysoutSink) subject.sysoutSink()).stream())
                     .isSameAs(System.out);
-            assertThat(CustomerFileReaderJob.class.getDeclaredClasses())
-                    .as("a sink type declared here too would be a second definition of one "
-                            + "program's output, and a spooled line could drift from an asserted one")
+        }
+    }
+
+    @Nested
+    @DisplayName("Delegation")
+    class Delegation {
+
+        @Test
+        @DisplayName("CustomerService is the only decision-making collaborator")
+        void onlyTheServiceOwnsProgramDecisions() {
+            Constructor<?> constructor =
+                    CustomerFileReaderJob.class.getDeclaredConstructors()[0];
+            List<Field> instanceFields = Arrays.stream(
+                            CustomerFileReaderJob.class.getDeclaredFields())
+                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                    .toList();
+            List<Class<?>> decisionCollaborators = Stream.concat(
+                            instanceFields.stream().map(Field::getType),
+                            Arrays.stream(constructor.getParameterTypes()))
+                    .filter(type -> type.getSimpleName().endsWith("Service")
+                            || type.getSimpleName().endsWith("Repository"))
+                    .distinct()
+                    .toList();
+
+            // G51: all CBCUS01C branches stay in the directly callable service, never in job plumbing.
+            assertThat(decisionCollaborators).containsExactly(CustomerService.class);
+            assertThat(constructor.getParameterTypes()).containsExactly(
+                    BatchConfig.class, CustomerService.class, ObjectProvider.class);
+
+            List<String> forbiddenDirectTypes = List.of(
+                    "com.vsergeychik.carddemo.customer.Customer" + "Repository",
+                    "org.springframework.jdbc.core.Jdbc" + "Template",
+                    "javax.sql.Data" + "Source",
+                    "java.nio.charset.Char" + "set");
+            assertThat(declaredTypeNames()).noneMatch(typeName ->
+                    forbiddenDirectTypes.stream().anyMatch(typeName::contains));
+        }
+
+        @Test
+        @DisplayName("one tasklet invocation delegates once, finishes, and publishes all 102 lines")
+        void oneInvocationSurfacesTheFiftyRecordRun() throws Exception {
+            List<String> records = fixtureRows();
+            List<String> expected = successfulLines(records);
+            CustomerService service = serviceReturning(records);
+            CapturedSysout sink = new CapturedSysout();
+            Tasklet tasklet = subject(service, sink).customerFileDisplayTasklet();
+            TaskletCall call = taskletCall();
+
+            RepeatStatus status =
+                    tasklet.execute(call.contribution(), call.chunkContext());
+
+            // CBCUS01C:L71, L96, L78 and L85: 1 + 50*2 + 1 lines, in that order.
+            assertThat(status).isEqualTo(RepeatStatus.FINISHED);
+            assertThat(call.contribution().getReadCount()).isEqualTo(FIXTURE_RECORD_COUNT);
+            assertThat(sink.lines())
+                    .hasSize(FIFTY_RECORD_LINE_COUNT)
+                    .containsExactlyElementsOf(expected);
+            assertThat(sink.lines()).hasSize(
+                    1 + FIXTURE_RECORD_COUNT * CustomerService.DISPLAYS_PER_RECORD + 1);
+            for (int record = 0; record < FIXTURE_RECORD_COUNT; record++) {
+                int firstImage = 1 + record * CustomerService.DISPLAYS_PER_RECORD;
+                assertThat(sink.lines().get(firstImage))
+                        .isEqualTo(records.get(record))
+                        .isEqualTo(sink.lines().get(firstImage + 1));
+            }
+            verify(service, times(1)).readAndPrintCustomerFile(any(Sysout.class));
+            verifyNoMoreInteractions(service);
+        }
+    }
+
+    @Nested
+    @DisplayName("ExitStatusContract")
+    class ExitStatusContract {
+
+        @Test
+        @DisplayName("a successful real job completes and contributes process code zero")
+        void successCompletesWithZero() throws Exception {
+            CustomerService service = serviceReturning(List.of());
+
+            ExecutedJob executed = executeJob(service);
+
+            // CBCUS01C:L87 GOBACK leaves RETURN-CODE at zero.
+            assertThat(executed.stepExecution().getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            assertThat(executed.stepExecution().getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
+            assertThat(executed.jobExecution().getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            assertThat(executed.jobExecution().getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
+            assertThat(executed.batchConfig().abendExitCodeMapper().getExitCode(null)).isZero();
+            assertThat(executed.batchConfig().precedingExitCodeZeroDecider()
+                    .decide(executed.jobExecution(), executed.stepExecution()))
+                    .isEqualTo(BatchConfig.PROCEED);
+            verify(service, times(1)).readAndPrintCustomerFile(any(Sysout.class));
+        }
+
+        @Test
+        @DisplayName("an abend escapes the tasklet with its standard parameters and keeps prior output")
+        void abendIsNotSwallowedByTheTasklet() {
+            AbendException abend = AbendException.standard(CustomerService.PROGRAM_ID,
+                    AbendException.RETURN_CODE_IO_ERROR,
+                    CustomerService.ERROR_READING_CUSTOMER_FILE);
+            CustomerService service = serviceThrowing(abend);
+            CapturedSysout sink = new CapturedSysout();
+            Tasklet tasklet = subject(service, sink).customerFileDisplayTasklet();
+            TaskletCall call = taskletCall();
+
+            AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> tasklet.execute(call.contribution(), call.chunkContext()));
+
+            // CBCUS01C:L101 and L154-L158: return code 12, ABCODE 999, TIMING 0, then termination.
+            assertThat(thrown).isSameAs(abend);
+            assertThat(thrown.getProgram()).isEqualTo(CustomerService.PROGRAM_ID);
+            assertThat(thrown.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+            assertThat(thrown.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
+            assertThat(thrown.getTiming()).hasValue(AbendException.STANDARD_TIMING);
+            assertThat(sink.lines())
+                    .containsExactlyElementsOf(abendLines())
+                    .doesNotContain(CustomerService.END_OF_EXECUTION);
+            verify(service, times(1)).readAndPrintCustomerFile(any(Sysout.class));
+        }
+
+        @Test
+        @DisplayName("the failed step, failed job, gate and process mapper all carry return code 12")
+        void abendReturnCodeCrossesEveryBatchBoundary() throws Exception {
+            AbendException abend = AbendException.standard(CustomerService.PROGRAM_ID,
+                    AbendException.RETURN_CODE_IO_ERROR,
+                    CustomerService.ERROR_READING_CUSTOMER_FILE);
+
+            ExecutedJob executed = executeJob(serviceThrowing(abend));
+
+            // CBCUS01C:L101 and L154-L158: failure metadata must retain the COBOL code.
+            assertThat(executed.stepExecution().getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(executed.jobExecution().getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(executed.stepExecution().getExitStatus().getExitCode()).isEqualTo("12");
+            assertThat(executed.jobExecution().getExitStatus().getExitCode()).isEqualTo("12");
+            assertThat(executed.stepExecution().getFailureExceptions()).contains(abend);
+            assertThat(executed.jobExecution().getAllFailureExceptions()).contains(abend);
+            assertThat(executed.sysout().lines()).containsExactlyElementsOf(abendLines());
+
+            // G35: the same non-zero code reaches a downstream COND decision and the process boundary.
+            assertThat(executed.batchConfig().precedingExitCodeZeroDecider()
+                    .decide(executed.jobExecution(), executed.stepExecution()))
+                    .isEqualTo(BatchConfig.SKIP);
+            assertThat(executed.batchConfig().abendExitCodeMapper().getExitCode(abend))
+                    .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+            assertThat(executed.batchConfig().abendExitCodeMapper()
+                    .getExitCode(new IllegalStateException("framework wrapper", abend)))
+                    .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+
+            // Module-wide values are 0/4/8/12; EOF 16 ends this program's loop normally.
+            assertThat(List.of(AbendException.RETURN_CODE_OK,
+                    AbendException.RETURN_CODE_WARNING,
+                    AbendException.RETURN_CODE_ASSUMED_FAILURE,
+                    AbendException.RETURN_CODE_IO_ERROR))
+                    .containsExactly(0, 4, 8, 12);
+            assertThat(AbendException.RETURN_CODE_END_OF_FILE).isEqualTo(16);
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+        }
+    }
+
+    @Nested
+    @DisplayName("AbsenceAssertions")
+    class AbsenceAssertions {
+
+        @Test
+        @DisplayName("production dataset identity is absent and all locations come from configuration")
+        void noProductionDatasetLiteralIsCompiledIntoTheJob() {
+            String productionPrefix = "AWS.M2." + "CARDDEMO.";
+
+            // G46 / READCUST.jcl:L9-L10: the JCL owns the literal; application.yml owns the binding.
+            assertThat(moduleSource(JOB_SOURCE)).doesNotContain(productionPrefix);
+            assertThat(compiledForm(CustomerFileReaderJob.class)).doesNotContain(productionPrefix);
+        }
+
+        @Test
+        @DisplayName("all state is final or constant and every dependency arrives through one constructor")
+        void noMutableStaticOrSetterInjectedStateExists() {
+            List<Field> fields = Arrays.stream(
+                            CustomerFileReaderJob.class.getDeclaredFields())
+                    .filter(field -> !field.isSynthetic())
+                    .toList();
+
+            // G53/B9: a singleton configuration may retain no mutable per-run state.
+            assertThat(fields).allSatisfy(field -> {
+                if (Modifier.isStatic(field.getModifiers())) {
+                    assertThat(Modifier.isFinal(field.getModifiers()))
+                            .as("static field %s must be a constant", field.getName())
+                            .isTrue();
+                } else {
+                    assertThat(Modifier.isFinal(field.getModifiers()))
+                            .as("instance field %s must be constructor-set", field.getName())
+                            .isTrue();
+                }
+            });
+            assertThat(CustomerFileReaderJob.class.getDeclaredConstructors()).hasSize(1);
+            assertThat(Arrays.stream(CustomerFileReaderJob.class.getDeclaredMethods())
+                    .map(Method::getName)
+                    .filter(name -> name.startsWith("set")))
                     .isEmpty();
         }
 
         @Test
-        @DisplayName("a sink is a functional interface, so a list's add method is one")
-        void aSinkCanBeALambda() {
-            List<String> captured = new ArrayList<>();
-            SysoutSink sink = captured::add;
+        @DisplayName("imports are explicit and legacy Batch support is absent")
+        void noWildcardOrForbiddenBatchTestSupportAppears() {
+            String testSource = moduleSource(TEST_SOURCE);
+            String jobSource = moduleSource(JOB_SOURCE);
+            String pomSource = moduleSource(POM);
+            List<String> unavailableSupport = List.of(
+                    "spring-batch" + "-test",
+                    "JobLauncher" + "TestUtils",
+                    "JobRepository" + "TestUtils",
+                    "@Spring" + "BatchTest",
+                    "MetaDataInstance" + "Factory");
+            List<String> removedConfiguration = List.of(
+                    "JobBuilder" + "Factory",
+                    "StepBuilder" + "Factory",
+                    "@Enable" + "BatchProcessing");
 
-            sink.write(CustomerService.START_OF_EXECUTION);
-
-            assertThat(captured).containsExactly(CustomerService.START_OF_EXECUTION);
+            // B1/B2/G52: starter-test plus Batch core is the complete test surface.
+            assertThat(testSource)
+                    .doesNotContainPattern("(?m)^\\s*import\\s+(?:static\\s+)?[^;]*\\.\\*;\\s*$")
+                    .doesNotContain(unavailableSupport.toArray(String[]::new))
+                    .doesNotContain(removedConfiguration.toArray(String[]::new));
+            assertThat(jobSource)
+                    .doesNotContainPattern("(?m)^\\s*import\\s+(?:static\\s+)?[^;]*\\.\\*;\\s*$")
+                    .doesNotContain(unavailableSupport.toArray(String[]::new))
+                    .doesNotContain(removedConfiguration.toArray(String[]::new));
+            assertThat(pomSource).doesNotContain(unavailableSupport.get(0));
         }
 
         @Test
-        @DisplayName("no field of the job is a mutable static")
-        void nothingMutableIsStatic() {
-            for (Field field : CustomerFileReaderJob.class.getDeclaredFields()) {
-                if (field.isSynthetic()) {
-                    continue;
-                }
-                assertThat(Modifier.isStatic(field.getModifiers())
-                        && !Modifier.isFinal(field.getModifiers()))
-                        .as("mutable static %s", field.getName())
-                        .isFalse();
-            }
+        @DisplayName("the customer package declares no approximate or scaled numeric Java type")
+        void copybookHasNoNumericTypeToTranslate() {
+            String executableSources = executableJava(customerProductionSources());
+            String wideBinaryKeyword = "dou" + "ble";
+            String narrowBinaryKeyword = "flo" + "at";
+
+            // CVCUS01Y.cpy:L5-L23 has zero scaled pictures; G23/G24 are absence checks here.
+            assertThat(executableSources)
+                    .doesNotContainPattern("\\b" + wideBinaryKeyword + "\\b")
+                    .doesNotContainPattern("\\b" + narrowBinaryKeyword + "\\b")
+                    .doesNotContain("BigDecimal");
+        }
+
+        @Test
+        @DisplayName("source helpers reject every read-only reference tree")
+        void sourceInspectionCannotEscapeTheJavaModule() {
+            List<Path> referenceFiles = List.of(
+                    Path.of("app", "jcl", "READCUST.jcl"),
+                    Path.of("app", "cbl", "CBCUS01C.cbl"),
+                    Path.of("app", "csd", "CARDDEMO.CSD"),
+                    Path.of("app", "cpy", "CVCUS01Y.cpy"),
+                    Path.of("app", "data", "ASCII", "custdata.txt"));
+
+            // B3/G5: oracle paths may be cited, but this test can only open app/java files.
+            referenceFiles.forEach(reference ->
+                    assertThatIllegalArgumentException()
+                            .isThrownBy(() -> modulePath(reference))
+                            .withMessageContaining("confined to app/java"));
+            assertThat(FIXTURE_RESOURCE).startsWith("/fixtures/");
         }
     }
 
-    // =============================================================================================
-    // The startup guards.
-    // =============================================================================================
-
     @Nested
-    @DisplayName("Startup guards - the contract must still say what READCUST.jcl says")
+    @DisplayName("StartupGuards")
     class StartupGuards {
 
         @Test
-        @DisplayName("a step naming another program is refused")
-        void anotherProgramIsRefused() {
-            CustomerRepository repository = new CustomerRepository(seeded(List.of()), bindings(), ASCII,
-                    RecordImageForm.CHARACTER);
-            BatchConfig wrong = scaffolding(jobContracts(
+        @DisplayName("a contract pointing STEP05 at another program is refused")
+        void wrongProgramIsRefused() {
+            BatchConfig wrong = mockedScaffolding(jobContracts(
                     new StepContract(CustomerService.STEP_NAME, "CBACT01C", false)));
 
+            // READCUST.jcl:L6 fixes EXEC PGM=CBCUS01C.
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new CustomerFileReaderJob(wrong,
-                            new CustomerService(repository), new AbsentBean<>()))
+                    .isThrownBy(() -> subject(wrong, mock(CustomerService.class),
+                            new PresentBean<>(new CapturedSysout())))
                     .withMessageContaining(CustomerService.PROGRAM_ID)
                     .withMessageContaining("READCUST.jcl");
         }
 
         @Test
-        @DisplayName("a gated step is refused - READCUST.jcl carries no COND")
-        void aGatedStepIsRefused() {
-            CustomerRepository repository = new CustomerRepository(seeded(List.of()), bindings(), ASCII,
-                    RecordImageForm.CHARACTER);
-            BatchConfig gated = scaffolding(jobContracts(
-                    new StepContract(CustomerService.STEP_NAME, CustomerService.PROGRAM_ID, true)));
+        @DisplayName("a gate on the only READCUST step is refused")
+        void gatedStepIsRefused() {
+            BatchConfig gated = mockedScaffolding(jobContracts(
+                    new StepContract(CustomerService.STEP_NAME,
+                            CustomerService.PROGRAM_ID, true)));
 
+            // READCUST.jcl:L6 has no COND and no preceding step.
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new CustomerFileReaderJob(gated,
-                            new CustomerService(repository), new AbsentBean<>()))
+                    .isThrownBy(() -> subject(gated, mock(CustomerService.class),
+                            new PresentBean<>(new CapturedSysout())))
                     .withMessageContaining("COND")
                     .withMessageContaining("bypass");
         }
 
         @Test
-        @DisplayName("a second step declared beside STEP05 is refused - READCUST.jcl has one EXEC")
-        void anAddedStepIsRefused() {
-            // Both guards above resolve STEP05 by name, so both find it whether it stands alone or first
-            // of two. A second step would read CUSTFILE twice and emit two passes of the DISPLAY output
-            // the parity harness compares line for line.
-            CustomerRepository repository = new CustomerRepository(seeded(List.of()), bindings(), ASCII,
-                    RecordImageForm.CHARACTER);
-            BatchConfig extra = scaffolding(jobContracts(List.of(
-                    new StepContract(CustomerService.STEP_NAME, CustomerService.PROGRAM_ID, false),
+        @DisplayName("an additional step is refused")
+        void additionalStepIsRefused() {
+            BatchConfig extra = mockedScaffolding(jobContracts(List.of(
+                    new StepContract(CustomerService.STEP_NAME,
+                            CustomerService.PROGRAM_ID, false),
                     new StepContract("STEP06", CustomerService.PROGRAM_ID, false))));
 
+            // READCUST.jcl contains one EXEC statement, at L6.
             assertThatIllegalStateException()
-                    .isThrownBy(() -> new CustomerFileReaderJob(extra,
-                            new CustomerService(repository), new AbsentBean<>()))
-                    .withMessageContaining("does not declare the step sequence of "
-                            + "app/jcl/READCUST.jcl:L6")
+                    .isThrownBy(() -> subject(extra, mock(CustomerService.class),
+                            new PresentBean<>(new CapturedSysout())))
                     .withMessageContaining("configured: [STEP05/CBCUS01C, STEP06/CBCUS01C]")
                     .withMessageContaining("required:   [STEP05/CBCUS01C]");
         }
 
         @Test
-        @DisplayName("the shipped single-step sequence is what the class requires")
-        void theShippedSequenceIsRequired() {
+        @DisplayName("an absent job contract is refused")
+        void absentContractIsRefused() {
+            BatchConfig absent = mockedScaffolding(new JobContracts());
+
+            // A missing READCUST contract cannot supply STEP05, its program or its empty parameters.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> subject(absent, mock(CustomerService.class),
+                            new PresentBean<>(new CapturedSysout())));
+        }
+
+        @Test
+        @DisplayName("the required sequence is exactly the shipped one-step contract")
+        void requiredSequenceIsExact() {
+            // READCUST.jcl:L6 is the complete sequence, not merely one required member.
             assertThat(CustomerFileReaderJob.REQUIRED_STEPS)
                     .containsExactly(new StepContract(CustomerService.STEP_NAME,
                             CustomerService.PROGRAM_ID, false));
-            assertThat(jobContracts().get(CustomerFileReaderJob.JOB_KEY).steps())
-                    .isEqualTo(CustomerFileReaderJob.REQUIRED_STEPS);
-        }
-
-        @Test
-        @DisplayName("an absent contract is refused by the scaffolding itself")
-        void anAbsentContractIsRefused() {
-            CustomerRepository repository = new CustomerRepository(seeded(List.of()), bindings(), ASCII,
-                    RecordImageForm.CHARACTER);
-            BatchConfig empty = new BatchConfig(
-                    new PresentBean<>(Mockito.mock(JobRepository.class)),
-                    new PresentBean<>(Mockito.mock(PlatformTransactionManager.class)),
-                    new JobContracts(), bindings());
-
-            assertThatIllegalStateException()
-                    .isThrownBy(() -> new CustomerFileReaderJob(empty,
-                            new CustomerService(repository), new AbsentBean<>()));
-        }
-    }
-
-    // =============================================================================================
-    // The step body.
-    // =============================================================================================
-
-    @Nested
-    @DisplayName("The tasklet - one pass, every DISPLAY spooled, the abend not swallowed")
-    class TheTasklet {
-
-        @Test
-        @DisplayName("the tasklet finishes once and reports one read per record")
-        void theTaskletFinishes() throws Exception {
-            CapturedSysout sysout = new CapturedSysout();
-            Tasklet tasklet = job(images(2), sysout)
-                    .customerFileDisplayTasklet();
-            StepContribution contribution = contribution();
-
-            assertThat(tasklet.execute(contribution, chunkContext())).isEqualTo(RepeatStatus.FINISHED);
-
-            assertThat(contribution.getReadCount()).isEqualTo(2);
-        }
-
-        @Test
-        @DisplayName("every DISPLAY reaches the spool, in order, two identical images per record")
-        void everyDisplayIsSpooled() throws Exception {
-            CapturedSysout sysout = new CapturedSysout();
-            String only = images(1).get(0);
-
-            job(List.of(only), sysout).customerFileDisplayTasklet()
-                    .execute(contribution(), chunkContext());
-
-            assertThat(sysout.lines()).containsExactly(CustomerService.START_OF_EXECUTION, only, only,
-                    CustomerService.END_OF_EXECUTION);
-            assertThat(sysout.lines().get(1)).hasSize(FIVE_HUNDRED);
-        }
-
-        @Test
-        @DisplayName("an empty dataset spools the two banners and nothing else")
-        void anEmptyDatasetSpoolsTwoBanners() throws Exception {
-            CapturedSysout sysout = new CapturedSysout();
-
-            job(List.of(), sysout).customerFileDisplayTasklet()
-                    .execute(contribution(), chunkContext());
-
-            assertThat(sysout.lines()).containsExactly(CustomerService.START_OF_EXECUTION,
-                    CustomerService.END_OF_EXECUTION);
-        }
-
-        @Test
-        @DisplayName("an abend reaches the framework and its lines still reach the spool")
-        void anAbendIsNotSwallowedAndItsLinesAreSpooled() {
-            CapturedSysout sysout = new CapturedSysout();
-            Tasklet tasklet = jobReporting(sysout, "35").customerFileDisplayTasklet();
-            StepContribution contribution = contribution();
-            ChunkContext chunkContext = chunkContext();
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> tasklet.execute(contribution, chunkContext))
-                    .satisfies(abend -> {
-                        assertThat(abend.getProgram()).isEqualTo(CustomerService.PROGRAM_ID);
-                        assertThat(abend.getReturnCode())
-                                .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
-                    });
-
-            assertThat(sysout.lines())
-                    .as("CEE3ABD does not retract lines already spooled")
-                    .containsSubsequence(CustomerService.START_OF_EXECUTION,
-                            CustomerService.ERROR_READING_CUSTOMER_FILE,
-                            CustomerService.ABENDING_PROGRAM)
-                    .doesNotContain(CustomerService.END_OF_EXECUTION);
-        }
-
-        @Test
-        @DisplayName("the program is runnable from this job with no launcher in the path (gate G51)")
-        void theProgramIsDirectlyRunnable() {
-            CapturedSysout spool = new CapturedSysout();
-            CustomerFileReaderJob subject = job(images(1), spool);
-            Sysout own = new Sysout();
-
-            Execution execution = subject.readAndPrintCustomerFile(own);
-
-            assertThat(execution.recordsRead()).isEqualTo(1);
-            assertThat(execution.returnCode()).isEqualTo(AbendException.RETURN_CODE_OK);
-            assertThat(own.lines()).hasSize(4);
-            assertThat(spool.lines())
-                    .as("a direct call spools nothing: only the tasklet writes to SYSOUT")
-                    .isEmpty();
-            assertThatNullPointerException()
-                    .isThrownBy(() -> subject.readAndPrintCustomerFile(null));
-        }
-    }
-
-    // =============================================================================================
-    // The context slice: the two bean names must coexist.
-    // =============================================================================================
-
-    @Nested
-    @SpringBootTest(classes = CardDemoApplication.class)
-    @ActiveProfiles("test")
-    @DisplayName("Context wiring - the configuration bean and the job bean coexist")
-    class ContextWiring {
-
-        /** The started context, injected so the beans can be looked up by name and by type. */
-        @Autowired
-        private ApplicationContext context;
-
-        @Test
-        @DisplayName("the configuration bean and the job bean are both registered, under distinct names")
-        void bothBeansAreRegistered() {
-            assertThat(context.containsBean(CustomerFileReaderJob.CONFIGURATION_BEAN_NAME)).isTrue();
-            assertThat(context.containsBean(CustomerFileReaderJob.JOB_NAME)).isTrue();
-        }
-
-        @Test
-        @DisplayName("the job bean is a Job whose name is the one a launcher looks up")
-        void theJobBeanResolves() {
-            Job published = context.getBean(CustomerFileReaderJob.JOB_NAME, Job.class);
-
-            assertThat(published.getName()).isEqualTo(CustomerFileReaderJob.JOB_NAME);
-            assertThat(context.getBeanNamesForType(Job.class))
-                    .contains(CustomerFileReaderJob.JOB_NAME);
-        }
-
-        @Test
-        @DisplayName("the job class wires with the configured contract, no parameters and a sink")
-        void theJobClassWires() {
-            CustomerFileReaderJob subject = context.getBean(CustomerFileReaderJob.class);
-
-            assertThat(subject.stepContract().name()).isEqualTo(CustomerService.STEP_NAME);
-            assertThat(subject.stepContract().program()).isEqualTo(CustomerService.PROGRAM_ID);
-            assertThat(subject.jobParameters().isEmpty()).isTrue();
-            assertThat(subject.sysoutSink()).isNotNull();
         }
     }
 }

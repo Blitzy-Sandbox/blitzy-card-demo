@@ -1,0 +1,36 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case11",
+  "description": "The very first READ fails, so no record is ever displayed. app/cbl/CBCUS01C.cbl:L93 reports '30' - a permanent I/O error - which is neither '00' at L94 nor '10' at L98, so L101 moves 12 into APPL-RESULT, the 88 APPL-AOK test at L104 fails, the 88 APPL-EOF test at L107 fails too, and the WHEN OTHER arm runs: DISPLAY 'ERROR READING CUSTOMER FILE', the rendered status, then the abend. Three records are seeded and none is delivered, which makes the absence of any record line an assertion rather than a consequence of an empty dataset. RETURN-CODE 12; the closing banner is never reached.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0030"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

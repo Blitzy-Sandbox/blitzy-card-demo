@@ -1,0 +1,106 @@
+{
+  "program": "CORPT00C",
+  "caseId": "case20",
+  "description": "The WHEN 'N' OR 'n' arm of SUBMIT-JOB-TO-INTRDR's ordered EVALUATE at :480-483, the middle of its three arms. The operator declines: INITIALIZE-ALL-FIELDS blanks the ten input items and clears WS-MESSAGE at :646, :482 raises the error flag and :483 sends an EMPTY form with no message at all. Nothing is emitted, and the reason is worth stating precisely - :496 still sets END-LOOP-NO and the PERFORM VARYING at :498 is still reached, but its UNTIL already holds because of ERR-FLG-ON, so the body runs zero times. The monthly arm ran to completion first, so the four PARM- fields hold 2026-08-01 and 2026-08-31; they are simply never written anywhere, which is why this case pins no record. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2026-08-09T14:05:06",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "MONTHLYI": "Y",
+      "CONFIRMI": "N"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "CORPT00C",
+    "nextMapset": "CORPT00",
+    "nextMap": "CORPT0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CR00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "08/09/26",
+          "PGMNAMEO": "CORPT00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "14:05:06",
+          "MONTHLYO": " ",
+          "YEARLYO": " ",
+          "CUSTOMO": " ",
+          "SDTMMO": "  ",
+          "SDTDDO": "  ",
+          "SDTYYYYO": "    ",
+          "EDTMMO": "  ",
+          "EDTDDO": "  ",
+          "EDTYYYYO": "    ",
+          "CONFIRMO": " ",
+          "ERRMSGO": "                                                                              "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "MONTHLYL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "                                                                              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "PROCESS ENTER KEY"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": []
+}

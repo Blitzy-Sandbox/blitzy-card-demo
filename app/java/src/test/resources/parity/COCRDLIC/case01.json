@@ -1,7 +1,7 @@
 {
   "program": "COCRDLIC",
   "caseId": "case01",
-  "description": "EIBCALEN = 0 at app/cbl/COCRDLIC.cbl:315, so :316-325 initialises both areas and sets CA-FIRST-PAGE and CA-LAST-PAGE-NOT-SHOWN. 2000-RECEIVE-MAP is skipped because :357-358 needs EIBCALEN > 0, so WS-EDIT-SELECT holds what INITIALIZE left at :301 - spaces, because INITIALIZE sets an alphanumeric item to spaces whatever its VALUE clause says, and :72-73 says LOW-VALUES. ENTER is one of the four keys :371-376 accepts, so the EVALUATE falls to WHEN OTHER at :572: read forward from an INITIALIZEd WS-CA-FIRST-CARD-NUM, which sorts below every key so STARTBR GTEQ anchors on the first record. Seven records fill the page [:1163-1191]; the look-ahead READNEXT at :1197 succeeds, so :1210-1214 sets CA-NEXT-PAGE-EXISTS and stores the eighth record's key as the page's last. 1400-SETUP-MESSAGE reaches WHEN WS-NO-INFO-MESSAGE at :917 - always true, because :669 set it - and informs the row actions, and :926-929 moves the text in with DFHNEUTR. INPUT-OK holds, so :885 aims the cursor at ACCTSIDL.",
+  "description": "Fresh entry to CICS transaction CCLI with EIBCALEN = 0, no account filter, no card filter and AID = ENTER: the first page of exactly seven card rows, which is the foundational case the other nineteen echo. PROVENANCE (practice B12): every value here is STATICALLY DERIVED from app/cbl/COCRDLIC.cbl, the byte layouts of app/cpy/CVACT02Y.cpy and app/cpy/COTTL01Y.cpy, the symbolic-map field definitions of app/cpy-bms/COCRDLI.CPY with app/bms/COCRDLI.bms, and the real fixture app/data/ASCII/carddata.txt - and NEVER captured from a live COBOL execution, which the eight verified blockers of AAP 0.7.6 make impossible in this environment (risk R-A, AAP 0.9.11). Encoding is US-ASCII throughout and the clock is pinned to 2022-07-19T23:12:34 so CURDATEO and CURTIMEO are reproducible (practice B7). ENTRY STATE: :300-302 INITIALIZE, :307 WS-TRANID, :311 SET WS-ERROR-MSG-OFF, then :315 EIBCALEN = 0 takes :316-325 - CDEMO-FROM-TRANID CCLI, CDEMO-FROM-PROGRAM COCRDLIC, CDEMO-USRTYP-USER U, CDEMO-PGM-ENTER 0, CDEMO-LAST-MAP CCRDLIA, CDEMO-LAST-MAPSET COCRDLI, CA-FIRST-PAGE 1 per WS-CA-SCREEN-NUM PIC 9(1) at :237 and its 88 at :238, and CA-LAST-PAGE-NOT-SHOWN 9. The re-init guard at :336-337 is false, because :319 has already made CDEMO-FROM-PROGRAM equal LIT-THISPGM. 2000-RECEIVE-MAP is skipped because :357-358 requires EIBCALEN > 0, so this is an ENTER case and no CSSETATY highlight appears anywhere (gate G38); WS-EDIT-SELECT holds spaces rather than the LOW-VALUES of :72-73, because INITIALIZE at :301 blanks an alphanumeric item whatever its VALUE clause says, which is why every CRDSELnO is a single space. ENTER is one of the four keys :371-376 accepts, so the main EVALUATE falls to WHEN OTHER at :572 and reads forward from an INITIALIZEd WS-CA-FIRST-CARD-NUM - LOW-VALUES sorts below every key, so STARTBR GTEQ at :1129-1133 anchors on the first record. BROWSE: :1140 zeroes WS-SCRN-COUNTER, :1141 sets CA-NEXT-PAGE-EXISTS, and the PERFORM UNTIL at :1144 fills seven rows [:1146-1191], where WHEN DFHRESP(NORMAL) and WHEN DFHRESP(DUPREC) at :1157-1158 share one body and 9500-FILTER-RECORDS excludes nothing because both filter flags are blank. On WS-SCRN-COUNTER = WS-MAX-SCREEN-LINES at :1191 the loop exits, :1194-1195 stores row seven's key, and the look-ahead READNEXT at :1197 succeeds, so :1210-1214 sets CA-NEXT-PAGE-EXISTS to Y and restores the page's last key from the eighth record; ENDBR at :1258. SCREEN: :643 MOVE LOW-VALUES TO CCRDLIAO paints the whole output group as x00 and not as spaces, which is why ACCTSIDO, CARDSIDO and CRDSTP2O through CRDSTP7O are expected as LOW-VALUES. 1200-SCREEN-ARRAY-INIT [:678-743] moves only four items per row - CRDSELnO, ACCTNOnO, CRDNUMnO and CRDSTSnO - so CRDSTPnO is never written by the program at all, a decisive expectation rather than an oversight, and row one has no CRDSTP1 item to write [COCRDLI.CPY:73-78]. TWO DERIVATIONS DIFFER FROM THE FOLDER BRIEF AND THE SOURCE IS THE AUTHORITY. First, 1300-SETUP-SCREEN-ATTRS never reaches the filter EVALUATEs at :844-867: :839 IF EIBCALEN = 0 ... CONTINUE short-circuits, so ACCTSIDO and CARDSIDO simply retain the LOW-VALUES :643 left - the same value the brief predicts, by a different path. INPUT-OK holds, so :885 aims the cursor at ACCTSIDL. Second, 1400-SETUP-MESSAGE's winning arm is WHEN WS-NO-INFO-MESSAGE at :917 and not WHEN CA-NEXT-PAGE-EXISTS at :918, because EVALUATE takes the first match and :669 has already set WS-NO-INFO-MESSAGE; the two arms share one body, SET WS-INFORM-REC-ACTIONS, so WS-INFO-MSG becomes TYPE S FOR DETAIL, U TO UPDATE ANY RECORD [:115-116] padded to the 45 of WS-INFO-MSG [:112], and :926-929 writes it into INFOMSGO with DFHNEUTR into INFOMSGC. ERRMSGO is 78 spaces: WS-ERROR-MSG is PIC X(75) [:117] still at its 88 WS-ERROR-MSG-OFF VALUE SPACES state, and MOVE WS-ERROR-MSG TO ERRMSGO OF CCRDLIAO at :924 moves 75 bytes into the PIC X(78) of ERRMSGO [COCRDLI.CPY:288], right-padding with three spaces. The titles are byte-exact from COTTL01Y.cpy:18-22, where line 21 is COMMENTED OUT and line 22 is the active one, so TITLE02O carries fourteen spaces, CardDemo and eighteen spaces; no CSMSG01Y text is emitted at all, because COCRDLIC references only CCDA-TITLE01 [:647] and CCDA-TITLE02 [:648]. GATES: G19 and G21 - every CARDDAT row is pinned at the full 150 bytes of CVACT02Y (16+11+3+50+10+1+59), and rows 0 through 7, the seven the page projects plus the look-ahead, are additionally pinned span by span including the FILLER X(59) and the misspelled CARD-EXPIRAION-DATE, which stays misspelled (AAP 0.1.4 I1). G39 - page size is 7, from WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7 [:177-178] and the three OCCURS 7 TIMES at :76, :86 and :255; it is behaviour and never configuration, so this fixture declares no page-size key of any spelling, and jobParameters is deliberately absent because CCLI has no JCL and no PARM and ParityCase refuses job parameters for a CONTROLLER_POJO in any case. G45 - all eight DATASET and FILE operands name LIT-CARD-FILE CARDDAT, while LIT-CARD-FILE-ACCT-PATH CARDAIX is declared at :215-217 and referenced by no EXEC CICS; it is preserved declared-but-unused (practice B5). G51 - the unit is CardListController built through its constructor, with no HTTP in the path. G32 AND G35 DO NOT APPLY. All sixteen GO TO statements are forward - eight to the shared terminal COMMON-RETURN [:604] from :438, :454, :482, :497, :513, :582, :597 and :601, and eight to -EXIT labels - so there is no backward loop-forming GO TO here; CBSTM03A is the only program that has one. And COCRDLIC contains no CALL CEE3ABD and never moves anything into RETURN-CODE, the single case-insensitive abend hit being the comment at :282, so the transaction always ends through EXEC CICS RETURN [:615-619] and the return code is 0. THREE CONFLICTS ARE RECORDED RATHER THAN CORRECTED (practice B4). The folder brief says CVCRD01Y declares 15 AID conditions; it declares 16 - ENTER, CLEAR, PA1, PA2 and PFK01 through PFK12, with no PA3 [CVCRD01Y.cpy:4-19]. The brief cites the transfer sites as :403, :539 and :567, which are the PROGRAM(...) operand lines; the EXEC CICS XCTL verbs themselves are at :402, :538 and :566. And the brief asks for the 58-byte page cursor to be echoed in this expectation, which the frozen ParityCase contract cannot carry - ExpectedResponse.navigation admits only CDEMO-prefixed names and ScreenSend.fields only xxxO items - so the contract wins and the cursor is asserted by COCRDLICParityTest's own tests instead. Its derivation is on the record regardless: WS-THIS-PROGCOMMAREA [:229-248, which the brief frames as :228-250] is WS-CA-LAST-CARD-NUM X(16) + WS-CA-LAST-CARD-ACCT-ID 9(11) + WS-CA-FIRST-CARD-NUM X(16) + WS-CA-FIRST-CARD-ACCT-ID 9(11) + WS-CA-SCREEN-NUM 9(1) + WS-CA-LAST-PAGE-DISPLAYED 9(1) + WS-CA-NEXT-PAGE-IND X(1) + WS-RETURN-FLAG X(1) = 58, and for this case it holds the last key 1561409106491600 with 00000000035 from the look-ahead row, a first key still LOW-VALUES as INITIALIZE left it, screen number 1, last-page-displayed 9 and next-page indicator Y. No project rules exist for this repository - review_rules returns only the single line No user rules provided - so AAP 0.10.2's practices B1, B3, B4, B5, B7, B8, B11 and B12 govern this fixture instead, and nothing under app/cbl, app/cpy, app/cpy-bms, app/bms, app/csd or app/data was written to.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -99,41 +99,113 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 0,
+      "fields": {
+        "CARD-NUM": "0500024453765740",
+        "CARD-ACCT-ID": "00000000050",
+        "CARD-CVV-CD": "747",
+        "CARD-EMBOSSED-NAME": "Aniya Von                                         ",
+        "CARD-EXPIRAION-DATE": "2023-03-09",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 1,
+      "fields": {
+        "CARD-NUM": "0683586198171516",
+        "CARD-ACCT-ID": "00000000027",
+        "CARD-CVV-CD": "567",
+        "CARD-EMBOSSED-NAME": "Ward Jones                                        ",
+        "CARD-EXPIRAION-DATE": "2025-07-13",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 2,
+      "fields": {
+        "CARD-NUM": "0923877193247330",
+        "CARD-ACCT-ID": "00000000002",
+        "CARD-CVV-CD": "028",
+        "CARD-EMBOSSED-NAME": "Enrico Rosenbaum                                  ",
+        "CARD-EXPIRAION-DATE": "2024-08-11",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 3,
+      "fields": {
+        "CARD-NUM": "0927987108636232",
+        "CARD-ACCT-ID": "00000000020",
+        "CARD-CVV-CD": "003",
+        "CARD-EMBOSSED-NAME": "Carter Veum                                       ",
+        "CARD-EXPIRAION-DATE": "2024-03-13",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 4,
+      "fields": {
+        "CARD-NUM": "0982496213629795",
+        "CARD-ACCT-ID": "00000000012",
+        "CARD-CVV-CD": "075",
+        "CARD-EMBOSSED-NAME": "Maci Robel                                        ",
+        "CARD-EXPIRAION-DATE": "2023-07-07",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "098249621362979500000000012075Maci Robel                                        2023-07-07Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 5,
+      "fields": {
+        "CARD-NUM": "1014086565224350",
+        "CARD-ACCT-ID": "00000000044",
+        "CARD-CVV-CD": "640",
+        "CARD-EMBOSSED-NAME": "Irving Emard                                      ",
+        "CARD-EXPIRAION-DATE": "2024-01-17",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "101408656522435000000000044640Irving Emard                                      2024-01-17Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 6,
+      "fields": {
+        "CARD-NUM": "1142167692878931",
+        "CARD-ACCT-ID": "00000000037",
+        "CARD-CVV-CD": "625",
+        "CARD-EMBOSSED-NAME": "Shany Walker                                      ",
+        "CARD-EXPIRAION-DATE": "2023-10-24",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 7,
+      "fields": {
+        "CARD-NUM": "1561409106491600",
+        "CARD-ACCT-ID": "00000000035",
+        "CARD-CVV-CD": "031",
+        "CARD-EMBOSSED-NAME": "Angelica Dach                                     ",
+        "CARD-EXPIRAION-DATE": "2025-09-23",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
     },
     {

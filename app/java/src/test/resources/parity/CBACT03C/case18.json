@@ -1,13 +1,15 @@
 {
   "program": "CBACT03C",
   "caseId": "case18",
-  "description": "Ten consecutive rows from the head of the fixture: twenty-two lines, which is 2 + (2 x 10). Volume between case03's single record and case01's fifty, chosen so that the 2 + 2n line arithmetic is pinned at a third point. Two candidate defects are separated by having three such points rather than one: a translation that displayed each record once would emit twelve lines here, and one that emitted a banner per record would emit forty - and neither can be distinguished from the correct count by a single-record case alone.",
+  "description": "OPEN INPUT at :120 reports FILE STATUS '37' - an OPEN attempted on a file whose organization or access mode is incompatible with the open mode - so :123 takes the ELSE arm, :124 moves 12 into APPL-RESULT, the 88 APPL-AOK condition declared at :62 is false at :126, and :129-132 run in order: DISPLAY 'ERROR OPENING XREFFILE', MOVE XREFFILE-STATUS TO IO-STATUS, 9910-DISPLAY-IO-STATUS, then 9999-ABEND-PROGRAM. Four lines and RETURN-CODE 12. Three READABLE rows are seeded deliberately and not one of them is displayed, which is the whole assertion this case exists to make: :72 performs the open before :74 enters the PERFORM UNTIL, so a failed open short-circuits every read whatever the dataset holds, and the line count is a constant four with no term in the number of rows. A translation that opened lazily, or that ordered those two statements the other way round, would emit six record lines here - two per row, because :96 and :78 each display the record area - and that is the defect the seeded rows are here to catch. Do not empty \"inputs\" and do not add record lines: an OPEN failure over readable data is a different statement from an OPEN failure over nothing, and only this case makes the first one. The suite's other failed open, case06, reports '35'; what this case adds is a second, DISTINCT status at the same call site. '37' is numeric and its first byte is not '9', so 9910-DISPLAY-IO-STATUS takes its ELSE arm at :170-172 - MOVE '0000' TO IO-STATUS-04, then MOVE IO-STATUS TO IO-STATUS-04(3:2) - giving 0037, and the line reads FILE STATUS IS: NNNN0037. Set against the 0035 image case06 pins after that same prefix, this proves the four digits are substituted from the real IO-STATUS rather than hard-coded, which no single status can show on its own. The NNNN is emitted verbatim: it is part of the COBOL literal at :172, and is not four characters awaiting substitution. There is no 'END OF EXECUTION OF PROGRAM CBACT03C' line, because CALL 'CEE3ABD' at :158 does not return and :85 is never reached; and RETURN-CODE is 12 rather than 8, because :119's MOVE 8 TO APPL-RESULT is always overwritten - by :122 or by :124 - before the test at :126 reads it. 9999-ABEND-PROGRAM moves 0 to TIMING at :156 and 999 to ABCODE at :157, and those are the verified LE arguments the abend carries. The final state is the pre-state, unchanged, and is pinned row by row: :120 opens INPUT, the program has no WRITE, REWRITE or DELETE in its 178 lines, and the abend reaches no operation that could make one, so all three rows must still be there byte for byte. The rows are declared at the 36 characters app/data/ASCII/cardxref.txt measures and the CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER PIC X(14) once, at seed time, by its single owner. Fault expression: a BATCH_JOB case cannot carry a ForcedOutcome - that member belongs to ParityCase.screenRequest, which a batch case may not declare - so the injected condition is named here, call site OPEN and status '37', and arranged by the scenario table in CBACT03CParityTest, exactly as every other abend case in this suite names and arranges its own. Statically derived, never captured: every expected value was read out of app/cbl/CBACT03C.cbl (:71, :118-134, :154-158, :161-174), app/cpy/CVACT03Y.cpy (the 50-byte record and its trailing FILLER), app/jcl/READXREF.jcl (STEP05 EXEC PGM=CBACT03C with no PARM, hence no job parameter) and app/data/ASCII/cardxref.txt (rows 0 to 2, verbatim). Executing the legacy program is empirically impossible in this environment - AAP 0.7.6 records eight independently verified blockers - so the provenance of these values is the one thing that substitution changes.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 10
+      "rows": [
+        "050002445376574000000005000000000050",
+        "068358619817151600000002700000000027",
+        "092387719324733000000000200000000002"
+      ]
     }
   },
   "jobParameters": {},
@@ -27,44 +29,9 @@
       "dataset": "XREFFILE",
       "rowIndex": 2,
       "expectedBytes": "092387719324733000000000200000000002              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 3,
-      "expectedBytes": "092798710863623200000002000000000020              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 4,
-      "expectedBytes": "098249621362979500000001200000000012              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 5,
-      "expectedBytes": "101408656522435000000004400000000044              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 6,
-      "expectedBytes": "114216769287893100000003700000000037              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 7,
-      "expectedBytes": "156140910649160000000003500000000035              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 8,
-      "expectedBytes": "274530372000209000000003900000000039              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 9,
-      "expectedBytes": "276083679710756500000002400000000024              "
     }
   ],
-  "expectedReturnCode": 0,
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -72,87 +39,15 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "050002445376574000000005000000000050              "
+      "text": "ERROR OPENING XREFFILE"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "050002445376574000000005000000000050              "
+      "text": "FILE STATUS IS: NNNN0037"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "068358619817151600000002700000000027              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "068358619817151600000002700000000027              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "092387719324733000000000200000000002              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "092387719324733000000000200000000002              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "092798710863623200000002000000000020              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "092798710863623200000002000000000020              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "098249621362979500000001200000000012              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "098249621362979500000001200000000012              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "101408656522435000000004400000000044              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "101408656522435000000004400000000044              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "114216769287893100000003700000000037              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "114216769287893100000003700000000037              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "156140910649160000000003500000000035              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "156140910649160000000003500000000035              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "274530372000209000000003900000000039              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "274530372000209000000003900000000039              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "276083679710756500000002400000000024              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "276083679710756500000002400000000024              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -165,7 +60,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 10,
+      "rowCount": 3,
       "recordLength": 50
     }
   ]

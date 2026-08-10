@@ -1,0 +1,36 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case16",
+  "description": "The fatal close on a run that read nothing at all. The dataset is opened, holds no record, and the first READ reports '10' so END-OF-FILE becomes 'Y' immediately; the CLOSE then reports '96', whose first byte is '9', so the extended branch renders the second byte as its decimal value - '6' is 54 - giving FILE STATUS IS: NNNN9054. Four lines and nothing else: the opening banner, the close's error text, the rendered status and the abend banner. It is the exact complement of case02, which is the same empty dataset with a close that succeeds, and the pair isolates the close's two arms with every other variable held fixed.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "CUSTFILE": {
+      "empty": true,
+      "recordLength": 500,
+      "copybook": "CVCUS01Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9054"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

@@ -1,0 +1,132 @@
+{
+  "program": "CORPT00C",
+  "caseId": "case18",
+  "description": "The WHEN OTHER arm of EVALUATE WS-RESP-CD in WIRTE-JOBSUB-TDQ at :528-534, reached by forcing the queue to report DFHRESP(NOTOPEN) = 19. Three things follow and all three are pinned. The first record has ALREADY been handed over when the condition is reported, and the queue is DISPOSITION(MOD) with ERROROPTION(IGNORE), so there is no rollback and exactly one eighty-byte record stands - not seventeen and not none. :529 DISPLAYs 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD, both PIC S9(09) COMP, which renders as nine zero-filled digits each. And :530-534 raise the error flag, report 'Unable to Write TDQ (JOBS)...' and send with the cursor on MONTHLYL - which stops the emit loop through the OR ERR-FLG-ON in its UNTIL at :499 and also suppresses the success notice at :445. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2026-08-09T14:05:06",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "MONTHLYI": "Y",
+      "CONFIRMI": "Y"
+    },
+    "forcedOutcomes": {
+      "write": {
+        "outcome": "OTHER",
+        "resp": 19,
+        "resp2": 0
+      }
+    }
+  },
+  "expectedResponse": {
+    "nextProgram": "CORPT00C",
+    "nextMapset": "CORPT00",
+    "nextMap": "CORPT0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CR00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "08/09/26",
+          "PGMNAMEO": "CORPT00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "14:05:06",
+          "MONTHLYO": "Y",
+          "YEARLYO": " ",
+          "CUSTOMO": " ",
+          "SDTMMO": "  ",
+          "SDTDDO": "  ",
+          "SDTYYYYO": "    ",
+          "EDTMMO": "  ",
+          "EDTDDO": "  ",
+          "EDTYYYYO": "    ",
+          "CONFIRMO": "Y",
+          "ERRMSGO": "Unable to Write TDQ (JOBS)...                                                 "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "MONTHLYL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "JOBS",
+      "rowIndex": 0,
+      "fields": {
+        "JCL-RECORD": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+      },
+      "expectedBytes": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+    }
+  ],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Unable to Write TDQ (JOBS)...                                                   "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Unable to Write TDQ (JOBS)...                                                 "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "PROCESS ENTER KEY"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "RESP:000000019REAS:000000000"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "JOBS",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 80
+    }
+  ]
+}

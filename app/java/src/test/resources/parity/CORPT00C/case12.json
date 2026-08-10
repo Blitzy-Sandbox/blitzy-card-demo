@@ -1,0 +1,112 @@
+{
+  "program": "CORPT00C",
+  "caseId": "case12",
+  "description": "The FIRST arm of the custom range's ordered blank chain at :259-265: SDTMMI = SPACES. :261 moves 'Start Date - Month can NOT be empty...' into WS-MESSAGE, :263 raises the error flag, :264 asks for the cursor on SDTMML and :265 sends - which ends the task, because SEND-TRNRPT-SCREEN ends GO TO RETURN-TO-CICS at :580. That termination is the load-bearing fact: stage two's six NUMVAL-C stores at :305-327 never run, so SDTMMI is echoed back as the two spaces that arrived rather than normalised to '00', and stage four never reports the date as invalid on top of the month. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2026-08-09T14:05:06",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "CUSTOMI": "Y",
+      "SDTMMI": "  ",
+      "SDTDDI": "01",
+      "SDTYYYYI": "2026",
+      "EDTMMI": "07",
+      "EDTDDI": "31",
+      "EDTYYYYI": "2026",
+      "CONFIRMI": "Y"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "CORPT00C",
+    "nextMapset": "CORPT00",
+    "nextMap": "CORPT0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CR00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "08/09/26",
+          "PGMNAMEO": "CORPT00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "14:05:06",
+          "MONTHLYO": " ",
+          "YEARLYO": " ",
+          "CUSTOMO": "Y",
+          "SDTMMO": "  ",
+          "SDTDDO": "01",
+          "SDTYYYYO": "2026",
+          "EDTMMO": "07",
+          "EDTDDO": "31",
+          "EDTYYYYO": "2026",
+          "CONFIRMO": "Y",
+          "ERRMSGO": "Start Date - Month can NOT be empty...                                        "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "SDTMML",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Start Date - Month can NOT be empty...                                          "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Start Date - Month can NOT be empty...                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "PROCESS ENTER KEY"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": []
+}

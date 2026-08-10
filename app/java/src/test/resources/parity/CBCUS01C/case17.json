@@ -1,0 +1,44 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case17",
+  "description": "A permanent backend refusal in the middle of the browse. One record is read and displayed twice, and the next READ reports the '9'-plus-binary-feedback status that this migration uses for an operation the backend refused - the COBOL convention for a permanent error, and the case L162's IO-STATUS NOT NUMERIC test exists for, since the second byte is not a digit at all. It renders as FILE STATUS IS: NNNN9000 through the extended branch and reaches the read's WHEN OTHER arm, so the run displays the error text, the status and the abend banner and carries RETURN-CODE 12. Three records are seeded, so two are never reached.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

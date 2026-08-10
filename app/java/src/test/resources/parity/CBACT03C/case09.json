@@ -1,13 +1,11 @@
 {
   "program": "CBACT03C",
   "caseId": "case09",
-  "description": "Three records are read and displayed normally and the fourth READ reports '04', a record whose length disagrees with the copybook. Ten lines: the opening banner, six record lines, then the three failure lines. This case pins the ORDER that the two other read cases cannot - the error lines follow every line the successful reads already produced, because 1000-XREFFILE-GET-NEXT is performed inside the loop at :76 rather than before it - and it pins that '04' is fatal here. '04' is a status this program never names: :94 tests only '00' and :98 only '10', so everything else falls to :101. There is no END OF EXECUTION line, because :113 abends before :83 and :85 are reached.",
+  "description": "The whole of app/data/ASCII/cardxref.txt - all 50 rows - is seeded, and the fourth READ reports '04', a record whose length disagrees with the copybook. Ten lines: the opening banner at app/cbl/CBACT03C.cbl:71, six record lines, then the three failure lines. This is the folder's exhaustive instance of the 36-to-50 width normalisation (AAP gate G16, risk R-F): every row of the fixture measures exactly 36 bytes because CVACT03Y's trailing FILLER PIC X(14) is absent from the data, and all 50 arrive at the declared 50 through the seed-time CARDXREF_FILLER_PAD_36_TO_50 - this case pre-pads nothing itself. Each of the 50 rows is pinned twice over, once as the four named spans XREF-CARD-NUM, XREF-CUST-ID, XREF-ACCT-ID and FILLER and once as the complete 50-character image, so every byte of every row is asserted by name as well as by width (gates G19 and G21). Each of the three records read before the failure is displayed TWICE consecutively - once at :96 inside 1000-XREFFILE-GET-NEXT on the '00' arm and again at :78 in the mainline loop - so 1 + (2 x 3) + 3 = 10; the failing read itself contributes no line, because :96 sits on the '00' arm only and the abend never returns to :78. This case pins the ORDER the other read cases cannot: the error lines follow every line the successful reads already produced, because 1000-XREFFILE-GET-NEXT is performed inside the loop at :76 rather than before it. It also pins that '04' is fatal here - a status the program never names, since :94 tests only '00' and :98 only '10', so everything else falls to :101 - and that the 50-row input is left exactly as seeded even on the abend path, which is how a program with no WRITE, REWRITE or DELETE anywhere proves it wrote nothing positively rather than by omission. There is no END OF EXECUTION line, because :113 abends before :83 and :85 are reached. Every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CBACT03C.cbl, app/cpy/CVACT03Y.cpy, app/jcl/READXREF.jcl and app/data/ASCII/cardxref.txt, and is never captured from any execution of the legacy COBOL, which is empirically impossible in this environment (AAP 0.7.6, risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 6
+      "fixture": "cardxref.txt"
     }
   },
   "jobParameters": {},
@@ -16,32 +14,552 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
       "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
       "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 3,
+      "fields": {
+        "XREF-CARD-NUM": "0927987108636232",
+        "XREF-CUST-ID": "000000020",
+        "XREF-ACCT-ID": "00000000020",
+        "FILLER": "              "
+      },
       "expectedBytes": "092798710863623200000002000000000020              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 4,
+      "fields": {
+        "XREF-CARD-NUM": "0982496213629795",
+        "XREF-CUST-ID": "000000012",
+        "XREF-ACCT-ID": "00000000012",
+        "FILLER": "              "
+      },
       "expectedBytes": "098249621362979500000001200000000012              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 5,
+      "fields": {
+        "XREF-CARD-NUM": "1014086565224350",
+        "XREF-CUST-ID": "000000044",
+        "XREF-ACCT-ID": "00000000044",
+        "FILLER": "              "
+      },
       "expectedBytes": "101408656522435000000004400000000044              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 6,
+      "fields": {
+        "XREF-CARD-NUM": "1142167692878931",
+        "XREF-CUST-ID": "000000037",
+        "XREF-ACCT-ID": "00000000037",
+        "FILLER": "              "
+      },
+      "expectedBytes": "114216769287893100000003700000000037              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 7,
+      "fields": {
+        "XREF-CARD-NUM": "1561409106491600",
+        "XREF-CUST-ID": "000000035",
+        "XREF-ACCT-ID": "00000000035",
+        "FILLER": "              "
+      },
+      "expectedBytes": "156140910649160000000003500000000035              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 8,
+      "fields": {
+        "XREF-CARD-NUM": "2745303720002090",
+        "XREF-CUST-ID": "000000039",
+        "XREF-ACCT-ID": "00000000039",
+        "FILLER": "              "
+      },
+      "expectedBytes": "274530372000209000000003900000000039              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 9,
+      "fields": {
+        "XREF-CARD-NUM": "2760836797107565",
+        "XREF-CUST-ID": "000000024",
+        "XREF-ACCT-ID": "00000000024",
+        "FILLER": "              "
+      },
+      "expectedBytes": "276083679710756500000002400000000024              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 10,
+      "fields": {
+        "XREF-CARD-NUM": "2871968252812490",
+        "XREF-CUST-ID": "000000006",
+        "XREF-ACCT-ID": "00000000006",
+        "FILLER": "              "
+      },
+      "expectedBytes": "287196825281249000000000600000000006              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 11,
+      "fields": {
+        "XREF-CARD-NUM": "2940139362300449",
+        "XREF-CUST-ID": "000000022",
+        "XREF-ACCT-ID": "00000000022",
+        "FILLER": "              "
+      },
+      "expectedBytes": "294013936230044900000002200000000022              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 12,
+      "fields": {
+        "XREF-CARD-NUM": "2988091353094312",
+        "XREF-CUST-ID": "000000004",
+        "XREF-ACCT-ID": "00000000004",
+        "FILLER": "              "
+      },
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 13,
+      "fields": {
+        "XREF-CARD-NUM": "3260763612337560",
+        "XREF-CUST-ID": "000000010",
+        "XREF-ACCT-ID": "00000000010",
+        "FILLER": "              "
+      },
+      "expectedBytes": "326076361233756000000001000000000010              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 14,
+      "fields": {
+        "XREF-CARD-NUM": "3766281984155154",
+        "XREF-CUST-ID": "000000041",
+        "XREF-ACCT-ID": "00000000041",
+        "FILLER": "              "
+      },
+      "expectedBytes": "376628198415515400000004100000000041              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 15,
+      "fields": {
+        "XREF-CARD-NUM": "3940246016141489",
+        "XREF-CUST-ID": "000000019",
+        "XREF-ACCT-ID": "00000000019",
+        "FILLER": "              "
+      },
+      "expectedBytes": "394024601614148900000001900000000019              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 16,
+      "fields": {
+        "XREF-CARD-NUM": "3999169246375885",
+        "XREF-CUST-ID": "000000003",
+        "XREF-ACCT-ID": "00000000003",
+        "FILLER": "              "
+      },
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 17,
+      "fields": {
+        "XREF-CARD-NUM": "4011500891777367",
+        "XREF-CUST-ID": "000000013",
+        "XREF-ACCT-ID": "00000000013",
+        "FILLER": "              "
+      },
+      "expectedBytes": "401150089177736700000001300000000013              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 18,
+      "fields": {
+        "XREF-CARD-NUM": "4385271476627819",
+        "XREF-CUST-ID": "000000034",
+        "XREF-ACCT-ID": "00000000034",
+        "FILLER": "              "
+      },
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 19,
+      "fields": {
+        "XREF-CARD-NUM": "4534784102713951",
+        "XREF-CUST-ID": "000000036",
+        "XREF-ACCT-ID": "00000000036",
+        "FILLER": "              "
+      },
+      "expectedBytes": "453478410271395100000003600000000036              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 20,
+      "fields": {
+        "XREF-CARD-NUM": "4859452612877065",
+        "XREF-CUST-ID": "000000007",
+        "XREF-ACCT-ID": "00000000007",
+        "FILLER": "              "
+      },
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 21,
+      "fields": {
+        "XREF-CARD-NUM": "5407099850479866",
+        "XREF-CUST-ID": "000000021",
+        "XREF-ACCT-ID": "00000000021",
+        "FILLER": "              "
+      },
+      "expectedBytes": "540709985047986600000002100000000021              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 22,
+      "fields": {
+        "XREF-CARD-NUM": "5656830544981216",
+        "XREF-CUST-ID": "000000046",
+        "XREF-ACCT-ID": "00000000046",
+        "FILLER": "              "
+      },
+      "expectedBytes": "565683054498121600000004600000000046              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 23,
+      "fields": {
+        "XREF-CARD-NUM": "5671184478505844",
+        "XREF-CUST-ID": "000000018",
+        "XREF-ACCT-ID": "00000000018",
+        "FILLER": "              "
+      },
+      "expectedBytes": "567118447850584400000001800000000018              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 24,
+      "fields": {
+        "XREF-CARD-NUM": "5787351228879339",
+        "XREF-CUST-ID": "000000047",
+        "XREF-ACCT-ID": "00000000047",
+        "FILLER": "              "
+      },
+      "expectedBytes": "578735122887933900000004700000000047              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 25,
+      "fields": {
+        "XREF-CARD-NUM": "5975117516616077",
+        "XREF-CUST-ID": "000000042",
+        "XREF-ACCT-ID": "00000000042",
+        "FILLER": "              "
+      },
+      "expectedBytes": "597511751661607700000004200000000042              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 26,
+      "fields": {
+        "XREF-CARD-NUM": "6009619150674526",
+        "XREF-CUST-ID": "000000005",
+        "XREF-ACCT-ID": "00000000005",
+        "FILLER": "              "
+      },
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 27,
+      "fields": {
+        "XREF-CARD-NUM": "6349250331648509",
+        "XREF-CUST-ID": "000000015",
+        "XREF-ACCT-ID": "00000000015",
+        "FILLER": "              "
+      },
+      "expectedBytes": "634925033164850900000001500000000015              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 28,
+      "fields": {
+        "XREF-CARD-NUM": "6503535181795992",
+        "XREF-CUST-ID": "000000048",
+        "XREF-ACCT-ID": "00000000048",
+        "FILLER": "              "
+      },
+      "expectedBytes": "650353518179599200000004800000000048              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 29,
+      "fields": {
+        "XREF-CARD-NUM": "6509230362553816",
+        "XREF-CUST-ID": "000000030",
+        "XREF-ACCT-ID": "00000000030",
+        "FILLER": "              "
+      },
+      "expectedBytes": "650923036255381600000003000000000030              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 30,
+      "fields": {
+        "XREF-CARD-NUM": "6723000463207764",
+        "XREF-CUST-ID": "000000028",
+        "XREF-ACCT-ID": "00000000028",
+        "FILLER": "              "
+      },
+      "expectedBytes": "672300046320776400000002800000000028              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 31,
+      "fields": {
+        "XREF-CARD-NUM": "6727055190616014",
+        "XREF-CUST-ID": "000000016",
+        "XREF-ACCT-ID": "00000000016",
+        "FILLER": "              "
+      },
+      "expectedBytes": "672705519061601400000001600000000016              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 32,
+      "fields": {
+        "XREF-CARD-NUM": "6832676047698087",
+        "XREF-CUST-ID": "000000033",
+        "XREF-ACCT-ID": "00000000033",
+        "FILLER": "              "
+      },
+      "expectedBytes": "683267604769808700000003300000000033              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 33,
+      "fields": {
+        "XREF-CARD-NUM": "7026637615032277",
+        "XREF-CUST-ID": "000000031",
+        "XREF-ACCT-ID": "00000000031",
+        "FILLER": "              "
+      },
+      "expectedBytes": "702663761503227700000003100000000031              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 34,
+      "fields": {
+        "XREF-CARD-NUM": "7058267261837752",
+        "XREF-CUST-ID": "000000043",
+        "XREF-ACCT-ID": "00000000043",
+        "FILLER": "              "
+      },
+      "expectedBytes": "705826726183775200000004300000000043              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 35,
+      "fields": {
+        "XREF-CARD-NUM": "7094142751055551",
+        "XREF-CUST-ID": "000000032",
+        "XREF-ACCT-ID": "00000000032",
+        "FILLER": "              "
+      },
+      "expectedBytes": "709414275105555100000003200000000032              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 36,
+      "fields": {
+        "XREF-CARD-NUM": "7251508149188883",
+        "XREF-CUST-ID": "000000029",
+        "XREF-ACCT-ID": "00000000029",
+        "FILLER": "              "
+      },
+      "expectedBytes": "725150814918888300000002900000000029              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 37,
+      "fields": {
+        "XREF-CARD-NUM": "7379335634661142",
+        "XREF-CUST-ID": "000000045",
+        "XREF-ACCT-ID": "00000000045",
+        "FILLER": "              "
+      },
+      "expectedBytes": "737933563466114200000004500000000045              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 38,
+      "fields": {
+        "XREF-CARD-NUM": "7427684863423209",
+        "XREF-CUST-ID": "000000011",
+        "XREF-ACCT-ID": "00000000011",
+        "FILLER": "              "
+      },
+      "expectedBytes": "742768486342320900000001100000000011              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 39,
+      "fields": {
+        "XREF-CARD-NUM": "7443870988897530",
+        "XREF-CUST-ID": "000000038",
+        "XREF-ACCT-ID": "00000000038",
+        "FILLER": "              "
+      },
+      "expectedBytes": "744387098889753000000003800000000038              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 40,
+      "fields": {
+        "XREF-CARD-NUM": "8040580410348680",
+        "XREF-CUST-ID": "000000026",
+        "XREF-ACCT-ID": "00000000026",
+        "FILLER": "              "
+      },
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 41,
+      "fields": {
+        "XREF-CARD-NUM": "8112545834239735",
+        "XREF-CUST-ID": "000000023",
+        "XREF-ACCT-ID": "00000000023",
+        "FILLER": "              "
+      },
+      "expectedBytes": "811254583423973500000002300000000023              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 42,
+      "fields": {
+        "XREF-CARD-NUM": "8262593602473076",
+        "XREF-CUST-ID": "000000049",
+        "XREF-ACCT-ID": "00000000049",
+        "FILLER": "              "
+      },
+      "expectedBytes": "826259360247307600000004900000000049              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 43,
+      "fields": {
+        "XREF-CARD-NUM": "8517866958206008",
+        "XREF-CUST-ID": "000000014",
+        "XREF-ACCT-ID": "00000000014",
+        "FILLER": "              "
+      },
+      "expectedBytes": "851786695820600800000001400000000014              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 44,
+      "fields": {
+        "XREF-CARD-NUM": "8931369351894783",
+        "XREF-CUST-ID": "000000008",
+        "XREF-ACCT-ID": "00000000008",
+        "FILLER": "              "
+      },
+      "expectedBytes": "893136935189478300000000800000000008              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 45,
+      "fields": {
+        "XREF-CARD-NUM": "9056297931664011",
+        "XREF-CUST-ID": "000000025",
+        "XREF-ACCT-ID": "00000000025",
+        "FILLER": "              "
+      },
+      "expectedBytes": "905629793166401100000002500000000025              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 46,
+      "fields": {
+        "XREF-CARD-NUM": "9349107475869214",
+        "XREF-CUST-ID": "000000017",
+        "XREF-ACCT-ID": "00000000017",
+        "FILLER": "              "
+      },
+      "expectedBytes": "934910747586921400000001700000000017              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 47,
+      "fields": {
+        "XREF-CARD-NUM": "9501733721429893",
+        "XREF-CUST-ID": "000000009",
+        "XREF-ACCT-ID": "00000000009",
+        "FILLER": "              "
+      },
+      "expectedBytes": "950173372142989300000000900000000009              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 48,
+      "fields": {
+        "XREF-CARD-NUM": "9680294154603697",
+        "XREF-CUST-ID": "000000001",
+        "XREF-ACCT-ID": "00000000001",
+        "FILLER": "              "
+      },
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 49,
+      "fields": {
+        "XREF-CARD-NUM": "9805583408996588",
+        "XREF-CUST-ID": "000000040",
+        "XREF-ACCT-ID": "00000000040",
+        "FILLER": "              "
+      },
+      "expectedBytes": "980558340899658800000004000000000040              "
     }
   ],
   "expectedReturnCode": 12,
@@ -97,7 +615,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 6,
+      "rowCount": 50,
       "recordLength": 50
     }
   ]

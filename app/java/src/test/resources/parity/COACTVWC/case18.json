@@ -1,0 +1,242 @@
+{
+  "program": "COACTVWC",
+  "caseId": "case18",
+  "description": "DFHPF7 is page-backward on the list screens and nothing at all here. CSSTRPFY stores CCARD-AID-PFK07, the gate rewrites it to ENTER, and the account is displayed. Its arm is app/cpy/CSSTRPFY.cpy:42-43, which sets CCARD-AID-PFK07 - a condition the gate at :307-308 does not accept - so :312-314 rewrites it to ENTER. Driving a key from the middle of the copybook's range rather than only its edges is what catches a resolver that mapped PF7 to the wrong condition name: the mapping is by raw EIBAID byte and adjacent keys differ by one.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CCXREF": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    },
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    },
+    "CUSTDAT": {
+      "fixture": "custdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHPF7",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000050"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COACTVWC",
+    "nextMapset": "COACTVW",
+    "nextMap": "CACTVWA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CAVW",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COACTVWC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:32",
+          "ACCTSIDO": "00000000050",
+          "ACSTTUSO": "Y",
+          "ADTOPENO": "2011-04-22",
+          "ACRDLIMO": "+      6,169.00",
+          "AEXPDTO": "2023-03-09",
+          "ACSHLIMO": "+      4,587.00",
+          "AREISDTO": "2023-03-09",
+          "ACURBALO": "+        492.00",
+          "ACRCYCRO": "+           .00",
+          "AADDGRPO": "          ",
+          "ACRCYDBO": "+           .00",
+          "ACSTNUMO": "000000050",
+          "ACSTSSNO": "931-24-8469\u0000",
+          "ACSTDOBO": "1960-12-01",
+          "ACSTFCOO": "623",
+          "ACSFNAMO": "Aniya                    ",
+          "ACSMNAMO": "Alba                     ",
+          "ACSLNAMO": "Von                      ",
+          "ACSADL1O": "1588 Nienow Cape                                  ",
+          "ACSSTTEO": "OR",
+          "ACSADL2O": "Suite 187                                         ",
+          "ACSZIPCO": "04257",
+          "ACSCITYO": "New Aricchester                                   ",
+          "ACSCTRYO": "USA",
+          "ACSPHN1O": "(325)301-0827",
+          "ACSGOVTO": "00000000000030387824",
+          "ACSPHN2O": "(493)985-9283",
+          "ACSEFTCO": "0074883577",
+          "ACSPFLGO": "Y",
+          "INFOMSGO": "Enter or update id of account to display     ",
+          "ERRMSGO": "                                                                              "
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "ACSTTUSC": "DFHDFCOL",
+          "ADTOPENC": "DFHDFCOL",
+          "ACRDLIMC": "DFHDFCOL",
+          "AEXPDTC": "DFHDFCOL",
+          "ACSHLIMC": "DFHDFCOL",
+          "AREISDTC": "DFHDFCOL",
+          "ACURBALC": "DFHDFCOL",
+          "ACRCYCRC": "DFHDFCOL",
+          "AADDGRPC": "DFHDFCOL",
+          "ACRCYDBC": "DFHDFCOL",
+          "ACSTNUMC": "DFHDFCOL",
+          "ACSTSSNC": "DFHDFCOL",
+          "ACSTDOBC": "DFHDFCOL",
+          "ACSTFCOC": "DFHDFCOL",
+          "ACSFNAMC": "DFHDFCOL",
+          "ACSMNAMC": "DFHDFCOL",
+          "ACSLNAMC": "DFHDFCOL",
+          "ACSADL1C": "DFHDFCOL",
+          "ACSSTTEC": "DFHDFCOL",
+          "ACSADL2C": "DFHDFCOL",
+          "ACSZIPCC": "DFHDFCOL",
+          "ACSCITYC": "DFHDFCOL",
+          "ACSCTRYC": "DFHDFCOL",
+          "ACSPHN1C": "DFHDFCOL",
+          "ACSGOVTC": "DFHDFCOL",
+          "ACSPHN2C": "DFHDFCOL",
+          "ACSEFTCC": "DFHDFCOL",
+          "ACSPFLGC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "ACSTTUSH": "DFHDFHI",
+          "ADTOPENH": "DFHDFHI",
+          "ACRDLIMH": "DFHDFHI",
+          "AEXPDTH": "DFHDFHI",
+          "ACSHLIMH": "DFHDFHI",
+          "AREISDTH": "DFHDFHI",
+          "ACURBALH": "DFHDFHI",
+          "ACRCYCRH": "DFHDFHI",
+          "AADDGRPH": "DFHDFHI",
+          "ACRCYDBH": "DFHDFHI",
+          "ACSTNUMH": "DFHDFHI",
+          "ACSTSSNH": "DFHDFHI",
+          "ACSTDOBH": "DFHDFHI",
+          "ACSTFCOH": "DFHDFHI",
+          "ACSFNAMH": "DFHDFHI",
+          "ACSMNAMH": "DFHDFHI",
+          "ACSLNAMH": "DFHDFHI",
+          "ACSADL1H": "DFHDFHI",
+          "ACSSTTEH": "DFHDFHI",
+          "ACSADL2H": "DFHDFHI",
+          "ACSZIPCH": "DFHDFHI",
+          "ACSCITYH": "DFHDFHI",
+          "ACSCTRYH": "DFHDFHI",
+          "ACSPHN1H": "DFHDFHI",
+          "ACSGOVTH": "DFHDFHI",
+          "ACSPHN2H": "DFHDFHI",
+          "ACSEFTCH": "DFHDFHI",
+          "ACSPFLGH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "CCXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "CCXREF",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

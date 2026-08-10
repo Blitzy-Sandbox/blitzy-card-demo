@@ -1,13 +1,15 @@
 {
   "program": "CBACT03C",
   "caseId": "case04",
-  "description": "The fixture's last two rows, 48 and 49, so the browse ends on the highest key the cluster holds. The last-record boundary: the second row is displayed in full and only THEN does the next READ report '10'. On that end-of-file READ the record area is left untouched, exactly as a COBOL READ ... INTO leaves it at AT END, and the :77 guard is what stops the stale record being displayed a third time - which is precisely the defect this case would catch, as a translation that displayed it would emit seven lines instead of six.",
+  "description": "Three records, the fixture's three lowest base keys 0500024453765740, 0683586198171516 and 0923877193247330, written out inline at the 36 bytes the shipped data measures so the declared CARDXREF_FILLER_PAD_36_TO_50 is what widens them to the 50 app/cpy/CVACT03Y.cpy declares. It carries the 2 + 2n shape past the two-record boundary to n = 3, which is eight lines, and the six record lines are grouped r1,r1,r2,r2,r3,r3 rather than alternating: the :96 display on the '00' arm of 1000-XREFFILE-GET-NEXT is followed immediately by the :78 display of the same unchanged record area, so each pair is byte-identical and consecutive. A translation that emitted one line per record, or that interleaved the pairs, is wrong here for every record. The third row widens the zero-fill evidence the first two give: XREF-CUST-ID 000000002 carries eight leading zeros and XREF-ACCT-ID 00000000002 carries ten, so a translation binding either PIC 9 span to a number rather than to its zoned DISPLAY image would drop them and shorten the record. Statically derived, never captured (AAP 0.7.6, risk R-A): every value is read from app/cbl/CBACT03C.cbl, app/cpy/CVACT03Y.cpy, app/jcl/READXREF.jcl and app/data/ASCII/cardxref.txt, because this environment cannot run the COBOL.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 48,
-      "rowCount": 2
+      "rows": [
+        "050002445376574000000005000000000050",
+        "068358619817151600000002700000000027",
+        "092387719324733000000000200000000002"
+      ]
     }
   },
   "jobParameters": {},
@@ -16,12 +18,35 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "968029415460369700000000100000000001              "
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
+      "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
-      "expectedBytes": "980558340899658800000004000000000040              "
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
+      "expectedBytes": "092387719324733000000000200000000002              "
     }
   ],
   "expectedReturnCode": 0,
@@ -32,19 +57,27 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "968029415460369700000000100000000001              "
+      "text": "050002445376574000000005000000000050              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "968029415460369700000000100000000001              "
+      "text": "050002445376574000000005000000000050              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "980558340899658800000004000000000040              "
+      "text": "068358619817151600000002700000000027              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "980558340899658800000004000000000040              "
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -61,7 +94,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 2,
+      "rowCount": 3,
       "recordLength": 50
     }
   ]

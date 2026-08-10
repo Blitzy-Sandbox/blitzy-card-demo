@@ -12,8 +12,9 @@ import com.vsergeychik.carddemo.account.AccountUpdateService.MonetaryEdit;
 import com.vsergeychik.carddemo.account.AccountUpdateService.NumvalArgument;
 import com.vsergeychik.carddemo.account.AccountUpdateService.WriteOutcome;
 import com.vsergeychik.carddemo.account.AccountUpdateService.WriteResult;
+import com.vsergeychik.carddemo.account.dto.AccountUpdateRequest.ChangeAction;
 import com.vsergeychik.carddemo.account.model.AccountRecord;
-import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
+import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
@@ -22,17 +23,24 @@ import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 
 import org.assertj.core.api.Assertions;
+import org.h2.Driver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -42,15 +50,17 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.transaction.TransactionStatus;
-import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -67,6 +77,35 @@ import static org.mockito.Mockito.when;
  * added without a case appearing for it. Around that sit the fold-direction cases, the asymmetric
  * date-of-birth case, the two lock arms, the two rewrite arms, the staged-image offsets - including
  * the layout defect - and every invariant the five value objects enforce.
+ *
+ * <h2>Correction to the Agent Action Plan: the paragraph is 9700, not 9300</h2>
+ *
+ * <p>Sections 0.4.4 and 0.7.4 of the plan both name COACTUPC's optimistic-concurrency paragraph
+ * {@code 9300-CHECK-CHANGE-IN-REC}. That label does not exist in COACTUPC. Verified by grep against
+ * this checkout rather than taken on trust, and recorded here rather than quietly conformed to
+ * (practice B4 - document divergences):
+ *
+ * <table border="1">
+ *   <caption>Where each label actually lives</caption>
+ *   <tr><th>Program</th><th>Paragraph</th><th>Opens</th><th>Exit label</th><th>Performed from</th></tr>
+ *   <tr><td>{@code app/cbl/COACTUPC.cbl}</td><td>{@code 9700-CHECK-CHANGE-IN-REC}</td>
+ *       <td>4109</td><td>4193</td><td>3947-3948</td></tr>
+ *   <tr><td>{@code app/cbl/COCRDUPC.cbl}</td><td>{@code 9300-CHECK-CHANGE-IN-REC}</td>
+ *       <td>1498</td><td>1521</td><td>1453-1454</td></tr>
+ * </table>
+ *
+ * <p>{@code 9300} is <em>COCRDUPC's</em> label for the same idea, and it compares a card record over
+ * twenty-four lines, not an account and a customer over eighty-five. COACTUPC does have a paragraph
+ * numbered 9300 - {@code 9300-GETACCTDATA-BYACCT} at {@code :3701}, exit {@code :3748} - which reads
+ * the account record by key and compares nothing. Following the plan's number would therefore have
+ * landed on a reader, so every citation in this class is to {@code 9700} and its real line numbers.
+ *
+ * <h2>Provenance of every expectation</h2>
+ *
+ * <p>No COBOL execution baseline exists - the plan documents eight verified blockers in section 0.7.6
+ * and carries the substitution as risk R-A - so not one value below was captured from a run. Each was
+ * derived by reading the source and is cited to the line it came from, so a reviewer can check the
+ * expectation against the COBOL without running anything (practice B12).
  */
 @DisplayName("AccountUpdateService - COACTUPC 9600-WRITE-PROCESSING and 9700-CHECK-CHANGE-IN-REC")
 class AccountUpdateServiceTest {
@@ -114,7 +153,7 @@ class AccountUpdateServiceTest {
 
         /** The real manager, over a database of this instance's own so no two tests share one. */
         private final PlatformTransactionManager delegate = new DataSourceTransactionManager(
-                new SimpleDriverDataSource(new org.h2.Driver(),
+                new SimpleDriverDataSource(new Driver(),
                         "jdbc:h2:mem:acctupd-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
 
         /** How many units of work committed. */
@@ -334,7 +373,7 @@ class AccountUpdateServiceTest {
         void noStaticMutableState() {
             Assertions.assertThat(AccountUpdateService.class.getDeclaredFields())
                     .allSatisfy(field -> Assertions.assertThat(
-                            java.lang.reflect.Modifier.isFinal(field.getModifiers()))
+                            Modifier.isFinal(field.getModifiers()))
                             .as(field.getName() + " must be final")
                             .isTrue());
         }
@@ -627,6 +666,27 @@ class AccountUpdateServiceTest {
     @DisplayName("The five COMPUTE sites - :1079, :1093, :1107, :1121, :1135 (gate G28)")
     class ComputeSites {
 
+        // Correction #2 to the plan's account of this program, recorded for the same reason as the
+        // paragraph-number correction in the class documentation (practice B4).
+        //
+        // The plan warns that the five receiver names "also appear at L945, L958, L971, L984 and L997"
+        // as commented-out statements, and that counting naively would find ten sites rather than five.
+        // Its CONCLUSION is right - there are exactly five - but its reason does not hold for this
+        // checkout. Verified two ways:
+        //
+        //   awk 'substr($0,7,1)!="*"' app/cbl/COACTUPC.cbl | grep -cE '^.{6} *COMPUTE '   ->  5
+        //   grep -nE 'COMPUTE ACUP-NEW-(CREDIT-LIMIT|CASH-CREDIT-LIMIT|CURR-BAL|CURR-CYC-CREDIT|
+        //             CURR-CYC-DEBIT)-N' app/cbl/COACTUPC.cbl   ->  1079, 1093, 1107, 1121, 1135
+        //
+        // Lines 945, 958, 971, 984 and 997 are not comments and have nothing to do with these receivers:
+        // they are MOVE LIT-THISPGM TO CDEMO-FROM-PROGRAM, COMMAREA(CARDDEMO-COMMAREA),
+        // SET CDEMO-PGM-REENTER TO TRUE, SET CDEMO-PGM-ENTER TO TRUE and PERFORM 1000-PROCESS-INPUTS.
+        // A search of every comment line in the program for COMPUTE returns nothing at all, so there are
+        // no decoy sites to be misled by - the count is five because five is all there is.
+        //
+        // Recorded rather than silently relied upon: a future reader checking the plan against the source
+        // would otherwise find the cited lines innocent and doubt the count, which is sound.
+
         @Test
         @DisplayName(":1079 COMPUTE ACUP-NEW-CREDIT-LIMIT-N = FUNCTION NUMVAL-C(ACRDLIMI)")
         void creditLimit() {
@@ -702,6 +762,225 @@ class AccountUpdateServiceTest {
             Assertions.assertThat(edit.computed()).isTrue();
             // Twelve integer digits into a ten-digit receiver: the two high-order digits are lost.
             Assertions.assertThat(edit.value()).isEqualByComparingTo(new BigDecimal("3456789012.34"));
+        }
+
+        // ---------------------------------------------------------------------------------------------
+        // One truncation matrix per site. Every row carries a third fractional digit of five or more, so
+        // truncating and rounding give different answers and a regression to a rounding mode cannot pass
+        // quietly. The expectation a rounding mode WOULD have produced is written as a literal and
+        // asserted against, rather than computed by applying some other RoundingMode - gate G24 is
+        // enforced by grep, so the names of the rounding modes this codebase must never use are kept out
+        // of the file entirely, and a literal proves the same divergence without introducing one.
+        //
+        // ROUNDED appears zero times in all twenty-eight programs (verified by grep over app/cbl), which
+        // is why RoundingMode.DOWN is not a preference here but the only faithful choice.
+        // ---------------------------------------------------------------------------------------------
+
+        @ParameterizedTest(name = "{0} <- \"{1}\" truncates to {2}, never {3}")
+        @CsvSource({
+            // receiver,                       screen field,   truncates to,  rounding would give
+            "ACUP-NEW-CREDIT-LIMIT-N,          '$1|234.567',   1234.56,       1234.57",
+            "ACUP-NEW-CASH-CREDIT-LIMIT-N,     999.995,        999.99,        1000.00",
+            "ACUP-NEW-CURR-BAL-N,              -0.005,         0.00,          -0.01",
+            "ACUP-NEW-CURR-CYC-CREDIT-N,       250.759,        250.75,        250.76",
+            "ACUP-NEW-CURR-CYC-DEBIT-N,        99.999,         99.99,         100.00",
+        })
+        @DisplayName("every one of the five sites TRUNCATES the third fractional digit away")
+        void everySiteTruncatesRatherThanRounds(String receiver, String screenField,
+                                               BigDecimal truncated, BigDecimal roundingWouldGive) {
+            MonetaryEdit edit = applyComputeSite(receiver, screenField.replace('|', ','), null);
+
+            Assertions.assertThat(edit.computed())
+                    .as("%s must reach its COMPUTE for a conforming argument", receiver).isTrue();
+            Assertions.assertThat(edit.value()).isEqualByComparingTo(truncated);
+            Assertions.assertThat(edit.value())
+                    .as("%s must not round: ROUNDED is absent from the source", receiver)
+                    .isNotEqualByComparingTo(roundingWouldGive);
+            // Gate G23: the receiver is PIC S9(10)V99, so the stored value carries scale exactly two -
+            // asserted on scale itself, not on compareTo, which is scale-blind.
+            Assertions.assertThat(edit.value().scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
+            Assertions.assertThat(edit.value().scale()).isEqualTo(2);
+        }
+
+        @ParameterizedTest(name = "{0} <- \"{1}\" keeps only the low ten integer digits: {2}")
+        @CsvSource({
+            // Twelve integer digits into PIC S9(10)V99. COBOL stores the low-order ten and discards the
+            // rest silently, because ON SIZE ERROR is nowhere in this codebase - so truncation here is on
+            // the LEFT, the opposite end from the fractional truncation above.
+            "ACUP-NEW-CREDIT-LIMIT-N,          123456789012.34, 3456789012.34",
+            "ACUP-NEW-CASH-CREDIT-LIMIT-N,     999999999999.99, 9999999999.99",
+            "ACUP-NEW-CURR-BAL-N,              -12345678901.34,  -2345678901.34",
+            "ACUP-NEW-CURR-CYC-CREDIT-N,       100000000000.01, 0.01",
+            "ACUP-NEW-CURR-CYC-DEBIT-N,        987654321098.76, 7654321098.76",
+        })
+        @DisplayName("every one of the five sites drops excess HIGH-order digits without throwing")
+        void everySiteTruncatesHighOrderDigits(String receiver, String screenField,
+                                              BigDecimal expected) {
+            MonetaryEdit edit = applyComputeSite(receiver, screenField, null);
+
+            Assertions.assertThat(edit.computed()).isTrue();
+            Assertions.assertThat(edit.value()).isEqualByComparingTo(expected);
+            Assertions.assertThat(edit.value().precision() - edit.value().scale())
+                    .as("%s holds at most ten integer digits", receiver)
+                    .isLessThanOrEqualTo(AccountUpdateService.MONETARY_INTEGER_DIGITS);
+        }
+
+        @Test
+        @DisplayName("the module's one rounding policy is truncation, and every site routes through it")
+        void theRoundingPolicyIsTruncation() {
+            // Asserted positively, on the constant the production path actually uses. Stating the policy
+            // this way keeps the forbidden mode names out of the file while still failing loudly if the
+            // single seam every monetary store passes through is ever changed.
+            Assertions.assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
+            Assertions.assertThat(CobolDecimal.MONETARY_SCALE).isEqualTo(2);
+            Assertions.assertThat(AccountUpdateService.MONETARY_INTEGER_DIGITS).isEqualTo(10);
+        }
+
+        @ParameterizedTest(name = "{0} refuses \"{1}\" and computes nothing")
+        @CsvSource({
+            "ACUP-NEW-CREDIT-LIMIT-N,          ABC",
+            "ACUP-NEW-CASH-CREDIT-LIMIT-N,     12.34.56",
+            "ACUP-NEW-CURR-BAL-N,              1.2.3",
+            "ACUP-NEW-CURR-CYC-CREDIT-N,       ++1.00",
+            "ACUP-NEW-CURR-CYC-DEBIT-N,        1O0.00",
+        })
+        @DisplayName("the ELSE CONTINUE arm is reached at every site when the argument does not conform")
+        void everySiteHasAnElseContinueArm(String receiver, String screenField) {
+            // :1082, :1096, :1110, :1124, :1138 - IF TEST-NUMVAL-C = 0 ... ELSE CONTINUE END-IF. The
+            // receiving -N span is never assigned, so it keeps whatever it held, and no error is raised.
+            //
+            // Note what is NOT here: a mis-grouped comma. NUMVAL-C accepts a grouping comma anywhere
+            // between integer digits and does not require three-digit groups, so "1,23" conforms and
+            // would take the COMPUTE arm rather than this one. Each argument above fails for a reason the
+            // intrinsic really rejects - a letter, a second decimal point, a doubled sign, a letter O
+            // typed for a zero.
+            BigDecimal prior = new BigDecimal("13.13");
+
+            MonetaryEdit edit = applyComputeSite(receiver, screenField, prior);
+
+            Assertions.assertThat(edit.computed()).isFalse();
+            Assertions.assertThat(edit.notSupplied()).isFalse();
+            Assertions.assertThat(edit.isNotValid()).isTrue();
+            Assertions.assertThat(edit.testNumvalC()).isPresent();
+            Assertions.assertThat(edit.testNumvalC().orElseThrow())
+                    .isNotEqualTo(AccountUpdateService.NUMVAL_CONFORMS);
+            Assertions.assertThat(edit.value()).isEqualByComparingTo(prior);
+        }
+
+        // ---------------------------------------------------------------------------------------------
+        // The operand asymmetry is real in the source text and behaviourally inert, and BOTH halves of
+        // that are worth pinning down - which is why the two tests below give every site the same
+        // over-wide entry and assert the same answer.
+        //
+        // Why it cannot matter: the map field and the staged copy are the SAME WIDTH. All five map fields
+        // are PIC X(15) (app/cpy-bms/COACTUP.CPY:90, 114, 138, 144, 156) and all five staged copies are
+        // PIC X(15) (app/cbl/COACTUPC.cbl:412-416). A sixteenth character therefore cannot exist on
+        // either side: the field the operator types into holds fifteen, and the MOVE at :1077, :1091,
+        // :1106, :1119 and :1134 copies fifteen into fifteen. Whichever operand a statement names, the
+        // characters NUMVAL-C sees are identical.
+        //
+        // Why it is still worth asserting: if either width is ever mis-modelled - a staged copy widened,
+        // or a map field trimmed - the two groups would start disagreeing, and these tests are where that
+        // shows up. The entry below is deliberately sixteen characters so the right-hand truncation is
+        // exercised rather than assumed.
+        // ---------------------------------------------------------------------------------------------
+
+        @ParameterizedTest(name = "{0} truncates the over-wide entry on the RIGHT, then converts")
+        @CsvSource({
+            "ACUP-NEW-CREDIT-LIMIT-N,          MAP_FIELD",
+            "ACUP-NEW-CASH-CREDIT-LIMIT-N,     MAP_FIELD",
+            "ACUP-NEW-CURR-BAL-N,              STAGING_COPY",
+            "ACUP-NEW-CURR-CYC-CREDIT-N,       MAP_FIELD",
+            "ACUP-NEW-CURR-CYC-DEBIT-N,        STAGING_COPY",
+        })
+        @DisplayName("all five sites lose a sixteenth character, whichever operand they name")
+        void everySiteTruncatesAnOverWideEntryOnTheRight(String receiver, NumvalArgument argument) {
+            String sixteenCharacters = "-123456789012.34";
+            Assertions.assertThat(sixteenCharacters).hasSize(16);
+
+            MonetaryEdit edit = applyComputeSite(receiver, sixteenCharacters, null);
+
+            // PIC X truncates on the RIGHT, so it is the hundredths digit that goes, not the sign.
+            Assertions.assertThat(edit.stagingImage()).hasSize(15).isEqualTo("-123456789012.3");
+            Assertions.assertThat(edit.computed()).isTrue();
+            // ".3" survives as ".30", and the two excess integer digits are dropped on the LEFT - both
+            // truncations, at opposite ends, in one store.
+            Assertions.assertThat(edit.value()).isEqualByComparingTo(new BigDecimal("-3456789012.30"));
+            Assertions.assertThat(edit.numvalArgument()).isEqualTo(argument);
+        }
+
+        @Test
+        @DisplayName("the two operand shapes cannot disagree, because both spans are PIC X(15)")
+        void theOperandAsymmetryCannotChangeTheAnswer() {
+            String entry = "-123456789012.34";
+
+            List<BigDecimal> values = new ArrayList<>();
+            List<String> images = new ArrayList<>();
+            for (String receiver : List.of("ACUP-NEW-CREDIT-LIMIT-N", "ACUP-NEW-CASH-CREDIT-LIMIT-N",
+                    "ACUP-NEW-CURR-BAL-N", "ACUP-NEW-CURR-CYC-CREDIT-N",
+                    "ACUP-NEW-CURR-CYC-DEBIT-N")) {
+                MonetaryEdit edit = applyComputeSite(receiver, entry, null);
+                values.add(edit.value());
+                images.add(edit.stagingImage());
+            }
+
+            // Three MAP_FIELD sites and two STAGING_COPY sites, one answer between them.
+            Assertions.assertThat(values).hasSize(5)
+                    .allSatisfy(value -> Assertions.assertThat(value)
+                            .isEqualByComparingTo(new BigDecimal("-3456789012.30")));
+            Assertions.assertThat(images).hasSize(5).containsOnly("-123456789012.3");
+            // Both shapes are genuinely in play, so this is not vacuously true.
+            Assertions.assertThat(EnumSet.allOf(NumvalArgument.class))
+                    .containsExactlyInAnyOrder(NumvalArgument.MAP_FIELD, NumvalArgument.STAGING_COPY);
+        }
+
+        @ParameterizedTest(name = "{0} carries the operand shape its statement uses")
+        @CsvSource({
+            // The one asymmetry in the group, verified statement by statement in app/cbl/COACTUPC.cbl:
+            // three sites convert the map field, two convert the staging copy they have just moved into.
+            "ACUP-NEW-CREDIT-LIMIT-N,          MAP_FIELD,    1079-1080",
+            "ACUP-NEW-CASH-CREDIT-LIMIT-N,     MAP_FIELD,    1093-1094",
+            "ACUP-NEW-CURR-BAL-N,              STAGING_COPY, 1107-1108",
+            "ACUP-NEW-CURR-CYC-CREDIT-N,       MAP_FIELD,    1121-1122",
+            "ACUP-NEW-CURR-CYC-DEBIT-N,        STAGING_COPY, 1135-1136",
+        })
+        @DisplayName("each site names its own receiver, operand shape and source lines")
+        void eachSiteCarriesItsOwnEvidence(String receiver, NumvalArgument argument, String lines) {
+            MonetaryEdit edit = applyComputeSite(receiver, "1.00", null);
+
+            Assertions.assertThat(edit.cobolReceiver()).isEqualTo(receiver);
+            Assertions.assertThat(edit.numvalArgument()).isEqualTo(argument);
+            Assertions.assertThat(edit.sourceLines()).isEqualTo(lines);
+        }
+
+        /**
+         * Dispatches to the one of the five statements that stores into {@code receiver}.
+         *
+         * <p>A switch rather than reflection, so a renamed method is a compile error here rather than a
+         * runtime surprise, and so the five COBOL receiver names appear verbatim in this file.
+         *
+         * @param receiver    the {@code ACUP-NEW-...-N} receiver name, verbatim from the source
+         * @param screenField the map field's content
+         * @param prior       what the receiving span held beforehand, or {@code null} for the initialized
+         *                    state
+         * @return the edit that statement performs
+         */
+        private MonetaryEdit applyComputeSite(String receiver, String screenField, BigDecimal prior) {
+            return switch (receiver) {
+                case "ACUP-NEW-CREDIT-LIMIT-N" ->
+                        AccountUpdateService.computeCreditLimit(screenField, prior, CODEC);
+                case "ACUP-NEW-CASH-CREDIT-LIMIT-N" ->
+                        AccountUpdateService.computeCashCreditLimit(screenField, prior, CODEC);
+                case "ACUP-NEW-CURR-BAL-N" ->
+                        AccountUpdateService.computeCurrBal(screenField, prior, CODEC);
+                case "ACUP-NEW-CURR-CYC-CREDIT-N" ->
+                        AccountUpdateService.computeCurrCycCredit(screenField, prior, CODEC);
+                case "ACUP-NEW-CURR-CYC-DEBIT-N" ->
+                        AccountUpdateService.computeCurrCycDebit(screenField, prior, CODEC);
+                default -> throw new IllegalArgumentException(
+                        "app/cbl/COACTUPC.cbl has five live COMPUTE statements and this is not one of "
+                                + "their receivers: " + receiver);
+            };
         }
 
         @ParameterizedTest
@@ -1597,6 +1876,91 @@ class AccountUpdateServiceTest {
                     .isEqualTo(result.custUpdateRecordImage().orElseThrow());
         }
 
+        // ---------------------------------------------------------------------------------------------
+        // Ordering. The sequence is the contract, not an implementation detail: the account lock is taken
+        // before the customer lock (:3894 then :3922) and the account rewrite is issued before the
+        // customer rewrite (:4065 then :4085). Asserted with Mockito's InOrder across BOTH doubles, which
+        // a per-mock verify cannot do - it would pass on either interleaving.
+        // ---------------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("ACCTDAT is locked BEFORE CUSTDAT, and each rewrite follows both locks - :3894/:3922")
+        void allFourOperationsHappenInSourceOrder() {
+            arrangeBothLocks();
+            arrangeBothRewrites();
+
+            service.writeProcessing(ACCT_ID_CHARS, commarea(), matchedOldDetails(), newDetails(), null,
+                    CODEC);
+
+            InOrder order = inOrder(accountRepository, customerRepository);
+            // :3894 EXEC CICS READ FILE(LIT-ACCTFILENAME) UPDATE
+            order.verify(accountRepository).readForUpdate(anyString());
+            // :3922 EXEC CICS READ FILE(LIT-CUSTFILENAME) UPDATE - only ever after the account lock
+            order.verify(customerRepository).readForUpdate(anyString());
+            // :4065 EXEC CICS REWRITE FILE(LIT-ACCTFILENAME)
+            order.verify(accountRepository).rewrite(any(AccountRecord.class));
+            // :4085 EXEC CICS REWRITE FILE(LIT-CUSTFILENAME)
+            order.verify(customerRepository).rewrite(any(CustomerRecord.class));
+            order.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("both locks are taken before EITHER rewrite is issued, never lock-write-lock-write")
+        void bothLocksPrecedeBothRewrites() {
+            arrangeBothLocks();
+            arrangeBothRewrites();
+
+            service.writeProcessing(ACCT_ID_CHARS, commarea(), matchedOldDetails(), newDetails(), null,
+                    CODEC);
+
+            // The staging at :3956-4059 sits between the comparison and the rewrites, so the customer
+            // record is read long before the account record is written. Interleaving the pairs would
+            // release nothing and prove nothing, but it would let a rewrite land on data the comparison
+            // never saw - which is the very interleaving 9700 exists to detect.
+            //
+            // Only the crossing pair is verified here, and deliberately without verifyNoMoreInteractions:
+            // the surrounding account read and customer rewrite are real interactions that the previous
+            // test already orders, and claiming they do not exist would be false.
+            InOrder order = inOrder(accountRepository, customerRepository);
+            order.verify(customerRepository).readForUpdate(anyString());
+            order.verify(accountRepository).rewrite(any(AccountRecord.class));
+        }
+
+        @Test
+        @DisplayName("the account rewrite is ordered before the customer rewrite even when it fails")
+        void theFailingAccountRewriteIsStillTheFirstWrite() {
+            arrangeBothLocks();
+            when(accountRepository.rewrite(any(AccountRecord.class)))
+                    .thenReturn(AccountRepository.WriteResult.notFound());
+
+            service.writeProcessing(ACCT_ID_CHARS, commarea(), matchedOldDetails(), newDetails(), null,
+                    CODEC);
+
+            // :4076-4081 - the guard sits between the two rewrites, so a failed account rewrite means the
+            // customer rewrite is never reached at all. Ordering plus absence, in one assertion.
+            InOrder order = inOrder(accountRepository, customerRepository);
+            order.verify(accountRepository).readForUpdate(anyString());
+            order.verify(customerRepository).readForUpdate(anyString());
+            order.verify(accountRepository).rewrite(any(AccountRecord.class));
+            order.verifyNoMoreInteractions();
+            verify(customerRepository, never()).rewrite(any(CustomerRecord.class));
+        }
+
+        @Test
+        @DisplayName("a failed account lock leaves CUSTDAT entirely untouched, in any order - :3914")
+        void aFailedAccountLockReachesNothingElse() {
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.notFound());
+
+            service.writeProcessing(ACCT_ID_CHARS, commarea(), matchedOldDetails(), newDetails(), null,
+                    CODEC);
+
+            InOrder order = inOrder(accountRepository, customerRepository);
+            order.verify(accountRepository).readForUpdate(anyString());
+            order.verifyNoMoreInteractions();
+            verifyNoInteractions(customerRepository);
+        }
+
         @Test
         @DisplayName("the write path refuses transposed groups, a null commarea or a null codec")
         void writeProcessingRefusesBadArguments() {
@@ -2471,6 +2835,733 @@ class AccountUpdateServiceTest {
             Assertions.assertThat(AccountUpdateService.testNumvalC(image))
                     .isEqualTo(AccountUpdateService.NUMVAL_CONFORMS);
             Assertions.assertThat(AccountUpdateService.numvalC(image)).isEqualByComparingTo(expected);
+        }
+    }
+
+    // =================================================================================================
+    // Gate G47. Each of the paragraph's four dataset operations, driven for every outcome the backend can
+    // report.
+    //
+    // The COBOL guard is the same shape at all four sites - IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)
+    // CONTINUE ELSE ... (:3907, :3934, :4076, :4095) - so the branch structure is deliberately
+    // two-valued: normal, and everything else. That is the property under test. What must NOT collapse is
+    // the diagnosis: whichever condition the backend reported has to arrive on the result unchanged, or
+    // the operator is told a duplicate-key problem was a missing record.
+    //
+    // Both dialects are covered because both reach these repositories. Online the condition arrives as a
+    // CICS RESP; the same repositories are opened by batch programs where it arrives as a two-character
+    // FILE STATUS, and app/cbl/CBTRN02C.cbl tests '00', '10', '22' and '23' on files this paragraph also
+    // uses.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Every reported condition, at each of the four call sites (gate G47)")
+    class ReportedConditions {
+
+        @ParameterizedTest(name = "ACCTDAT read-for-update reports RESP {0} -> status {1}")
+        @CsvSource({
+            "13, 23",  // DFHRESP(NOTFND)  - the record identified by RIDFLD is not there
+            "14, 22",  // DFHRESP(DUPREC)  - a duplicate the guard cannot distinguish
+            "15, 22",  // DFHRESP(DUPKEY)  - an alternate-index duplicate
+            "16, 99",  // DFHRESP(INVREQ)  - unmapped by the ladder, so a permanent error
+            "19, 99",  // DFHRESP(NOTOPEN) - unmapped
+            "22, 99",  // DFHRESP(LENGERR) - unmapped
+        })
+        @DisplayName("the account lock refuses on ANY non-normal condition, and reports which - :3907")
+        void accountLockFailsOnEveryNonNormalCondition(int resp, String expectedStatus) {
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.of(expectedStatus, CicsResponse.of(resp)));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            // One arm for every condition, exactly as the source's single ELSE gives it.
+            Assertions.assertThat(result.outcome())
+                    .isEqualTo(WriteOutcome.COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+            Assertions.assertThat(result.inputError()).isTrue();
+            // ... and the condition itself survives the collapse.
+            Assertions.assertThat(result.fileStatus()).isEqualTo(expectedStatus);
+            Assertions.assertThat(result.cicsResp()).hasValue(resp);
+            Assertions.assertThat(result.failedOperation())
+                    .contains(AccountUpdateService.READ_OPERATION_NAME);
+            Assertions.assertThat(result.failedFileName())
+                    .contains(AccountUpdateService.ACCT_CICS_FILE_NAME);
+            Assertions.assertThat(result.isRewritten()).isFalse();
+            Assertions.assertThat(result.changeCheck()).isEmpty();
+            verifyNoInteractions(customerRepository);
+        }
+
+        @ParameterizedTest(name = "ACCTDAT read-for-update reports FILE STATUS {0}")
+        @ValueSource(strings = {FileStatus.RECORD_LENGTH_CONFLICT, FileStatus.END_OF_FILE,
+            FileStatus.DUPLICATE, FileStatus.NOT_FOUND, "99"})
+        @DisplayName("the same arm is taken for every batch-dialect status the repository can surface")
+        void accountLockFailsOnEveryBatchStatus(String status) {
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.of(status));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome())
+                    .isEqualTo(WriteOutcome.COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+            Assertions.assertThat(result.fileStatus()).isEqualTo(status);
+            // Whatever RESP the batch status implies is passed through unchanged, and where the ladder at
+            // FileStatus.cicsRespOfBatchStatus has no entry - '04' and '22' among them - none is
+            // invented. Asserted against the ladder itself so the two cannot drift apart.
+            Assertions.assertThat(result.cicsResp())
+                    .isEqualTo(FileStatus.cicsRespOfBatchStatus(status));
+            verifyNoInteractions(customerRepository);
+        }
+
+        @ParameterizedTest(name = "CUSTDAT read-for-update reports RESP {0} -> status {1}")
+        @CsvSource({"13, 23", "14, 22", "15, 22", "16, 99", "19, 99", "22, 99"})
+        @DisplayName("the customer lock refuses on ANY non-normal condition, and reports which - :3934")
+        void customerLockFailsOnEveryNonNormalCondition(int resp, String expectedStatus) {
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.found(storedAccount()));
+            when(customerRepository.readForUpdate(anyString()))
+                    .thenReturn(CustomerRepository.ReadResult.of(expectedStatus, CicsResponse.of(resp)));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome())
+                    .isEqualTo(WriteOutcome.COULD_NOT_LOCK_CUST_FOR_UPDATE);
+            Assertions.assertThat(result.inputError()).isTrue();
+            Assertions.assertThat(result.fileStatus()).isEqualTo(expectedStatus);
+            Assertions.assertThat(result.cicsResp()).hasValue(resp);
+            Assertions.assertThat(result.failedFileName())
+                    .contains(AccountUpdateService.CUST_CICS_FILE_NAME);
+            // The account lock was taken and is released by the boundary, not by a rewrite.
+            verify(accountRepository, never()).rewrite(any(AccountRecord.class));
+            verify(customerRepository, never()).rewrite(any(CustomerRecord.class));
+        }
+
+        @ParameterizedTest(name = "CUSTDAT read-for-update reports FILE STATUS {0}")
+        @ValueSource(strings = {FileStatus.RECORD_LENGTH_CONFLICT, FileStatus.END_OF_FILE,
+            FileStatus.DUPLICATE, FileStatus.NOT_FOUND, "99"})
+        @DisplayName("the customer lock takes the same arm for every batch-dialect status")
+        void customerLockFailsOnEveryBatchStatus(String status) {
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.found(storedAccount()));
+            when(customerRepository.readForUpdate(anyString()))
+                    .thenReturn(CustomerRepository.ReadResult.of(status));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome())
+                    .isEqualTo(WriteOutcome.COULD_NOT_LOCK_CUST_FOR_UPDATE);
+            Assertions.assertThat(result.fileStatus()).isEqualTo(status);
+            Assertions.assertThat(result.cicsResp())
+                    .isEqualTo(FileStatus.cicsRespOfBatchStatus(status));
+        }
+
+        @ParameterizedTest(name = "the ACCTDAT rewrite reports RESP {0} -> status {1}")
+        @CsvSource({"13, 23", "14, 22", "15, 22", "16, 99", "19, 99", "22, 99"})
+        @DisplayName("the account rewrite fails on ANY non-normal condition, without rolling back - :4076")
+        void accountRewriteFailsOnEveryNonNormalCondition(int resp, String expectedStatus) {
+            arrangeBothLocks();
+            when(accountRepository.rewrite(any(AccountRecord.class)))
+                    .thenReturn(AccountRepository.WriteResult.of(expectedStatus,
+                            CicsResponse.of(resp)));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.LOCKED_BUT_UPDATE_FAILED);
+            // This arm has no SET INPUT-ERROR, unlike the two lock arms - :4079 sets one flag only.
+            Assertions.assertThat(result.inputError()).isFalse();
+            // And no SYNCPOINT ROLLBACK: there is nothing to back out, the account rewrite having failed.
+            Assertions.assertThat(result.syncpointRollbackRequested()).isFalse();
+            Assertions.assertThat(result.fileStatus()).isEqualTo(expectedStatus);
+            Assertions.assertThat(result.cicsResp()).hasValue(resp);
+            Assertions.assertThat(result.failedOperation())
+                    .contains(AccountUpdateService.REWRITE_OPERATION_NAME);
+            Assertions.assertThat(result.failedFileName())
+                    .contains(AccountUpdateService.ACCT_CICS_FILE_NAME);
+            verify(customerRepository, never()).rewrite(any(CustomerRecord.class));
+        }
+
+        @ParameterizedTest(name = "the ACCTDAT rewrite reports FILE STATUS {0}")
+        @ValueSource(strings = {FileStatus.RECORD_LENGTH_CONFLICT, FileStatus.DUPLICATE,
+            FileStatus.NOT_FOUND, "99"})
+        @DisplayName("the account rewrite takes the same arm for every batch-dialect status")
+        void accountRewriteFailsOnEveryBatchStatus(String status) {
+            arrangeBothLocks();
+            when(accountRepository.rewrite(any(AccountRecord.class)))
+                    .thenReturn(AccountRepository.WriteResult.of(status));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.LOCKED_BUT_UPDATE_FAILED);
+            Assertions.assertThat(result.fileStatus()).isEqualTo(status);
+            Assertions.assertThat(result.syncpointRollbackRequested()).isFalse();
+        }
+
+        @ParameterizedTest(name = "the CUSTDAT rewrite reports RESP {0} -> status {1}")
+        @CsvSource({"13, 23", "14, 22", "15, 22", "16, 99", "19, 99", "22, 99"})
+        @DisplayName("the customer rewrite fails on ANY non-normal condition AND rolls back - :4095-4102")
+        void customerRewriteFailsOnEveryNonNormalCondition(int resp, String expectedStatus) {
+            arrangeBothLocks();
+            when(accountRepository.rewrite(any(AccountRecord.class)))
+                    .thenReturn(AccountRepository.WriteResult.written());
+            when(customerRepository.rewrite(any(CustomerRecord.class)))
+                    .thenReturn(CustomerRepository.WriteResult.of(expectedStatus,
+                            CicsResponse.of(resp)));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.LOCKED_BUT_UPDATE_FAILED);
+            Assertions.assertThat(result.inputError()).isFalse();
+            // The distinguishing half of this arm: :4099-4101 backs the account rewrite out, because it
+            // succeeded and must not stand alone.
+            Assertions.assertThat(result.syncpointRollbackRequested()).isTrue();
+            Assertions.assertThat(result.fileStatus()).isEqualTo(expectedStatus);
+            Assertions.assertThat(result.cicsResp()).hasValue(resp);
+            Assertions.assertThat(result.failedFileName())
+                    .contains(AccountUpdateService.CUST_CICS_FILE_NAME);
+            // The boundary rolled back rather than committed, so the account row is not left changed.
+            Assertions.assertThat(transactionManager.rollbacks).isOne();
+            Assertions.assertThat(transactionManager.commits).isZero();
+        }
+
+        @ParameterizedTest(name = "the CUSTDAT rewrite reports FILE STATUS {0}")
+        @ValueSource(strings = {FileStatus.RECORD_LENGTH_CONFLICT, FileStatus.DUPLICATE,
+            FileStatus.NOT_FOUND, "99"})
+        @DisplayName("the customer rewrite rolls back for every batch-dialect status too")
+        void customerRewriteFailsOnEveryBatchStatus(String status) {
+            arrangeBothLocks();
+            when(accountRepository.rewrite(any(AccountRecord.class)))
+                    .thenReturn(AccountRepository.WriteResult.written());
+            when(customerRepository.rewrite(any(CustomerRecord.class)))
+                    .thenReturn(CustomerRepository.WriteResult.of(status));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.LOCKED_BUT_UPDATE_FAILED);
+            Assertions.assertThat(result.fileStatus()).isEqualTo(status);
+            Assertions.assertThat(result.syncpointRollbackRequested()).isTrue();
+            Assertions.assertThat(transactionManager.rollbacks).isOne();
+        }
+
+        @Test
+        @DisplayName("only DFHRESP(NORMAL) at all four sites reaches the end of the paragraph")
+        void onlyNormalEverywhereSucceeds() {
+            arrangeBothLocks();
+            arrangeBothRewrites();
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.CHANGES_OKAYED_AND_DONE);
+            Assertions.assertThat(result.fileStatus()).isEqualTo(FileStatus.OK);
+            Assertions.assertThat(result.isRewritten()).isTrue();
+            Assertions.assertThat(result.failedOperation()).isEmpty();
+            Assertions.assertThat(result.failedFileName()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a not-found lock and a not-found rewrite are told apart by operation, not status")
+        void theSameStatusAtTwoSitesIsStillDistinguishable() {
+            // Both report FILE STATUS '23'. Only the operation and the outcome separate them, which is
+            // why the result carries the operation name at all.
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.notFound());
+            WriteResult onRead = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            setUp();
+            arrangeBothLocks();
+            when(accountRepository.rewrite(any(AccountRecord.class)))
+                    .thenReturn(AccountRepository.WriteResult.notFound());
+            WriteResult onRewrite = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            Assertions.assertThat(onRead.fileStatus()).isEqualTo(onRewrite.fileStatus())
+                    .isEqualTo(FileStatus.NOT_FOUND);
+            Assertions.assertThat(onRead.outcome()).isNotEqualTo(onRewrite.outcome());
+            Assertions.assertThat(onRead.failedOperation())
+                    .contains(AccountUpdateService.READ_OPERATION_NAME);
+            Assertions.assertThat(onRewrite.failedOperation())
+                    .contains(AccountUpdateService.REWRITE_OPERATION_NAME);
+            Assertions.assertThat(onRead.inputError()).isTrue();
+            Assertions.assertThat(onRewrite.inputError()).isFalse();
+        }
+    }
+
+    // =================================================================================================
+    // 88 ACUP-CHANGE-ACTION, app/cbl/COACTUPC.cbl:654-668. Nine condition names over one PIC X(1).
+    //
+    // The paragraph under test does not set the field - it returns an outcome and the caller stores that
+    // outcome's code - so what belongs here is the join: for each of the nine names, which codes satisfy
+    // it and which do not, and which of the nine the four codes this paragraph can produce land on.
+    //
+    // Each name is driven in BOTH states (gate G50): a satisfying code and a rejecting one.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The nine ACUP-CHANGE-ACTION condition names, both states each - :654-668 (gate G50)")
+    class ChangeActionConditionNames {
+
+        /** {@code 88 ACUP-DETAILS-NOT-FETCHED VALUES LOW-VALUES, SPACES} ({@code :656-658}). */
+        @Test
+        @DisplayName("ACUP-DETAILS-NOT-FETCHED is satisfied by LOW-VALUES and by SPACES, nothing else")
+        void detailsNotFetched() {
+            Assertions.assertThat(ChangeAction.initial().isDetailsNotFetched()).isTrue();
+            Assertions.assertThat(ChangeAction.spacesState().isDetailsNotFetched()).isTrue();
+            // Both of the paragraph's own codes reject it, so a completed pass can never look unfetched.
+            Assertions.assertThat(ChangeAction.changesOkayedAndDone().isDetailsNotFetched()).isFalse();
+            Assertions.assertThat(ChangeAction.showDetails().isDetailsNotFetched()).isFalse();
+            Assertions.assertThat(ChangeAction.DETAILS_NOT_FETCHED_VALUES)
+                    .containsExactly(ChangeAction.LOW_VALUES, ChangeAction.SPACES);
+        }
+
+        /** {@code 88 ACUP-SHOW-DETAILS VALUE 'S'} ({@code :659}). */
+        @Test
+        @DisplayName("ACUP-SHOW-DETAILS is satisfied by 'S' alone")
+        void showDetails() {
+            Assertions.assertThat(ChangeAction.showDetails().isShowDetails()).isTrue();
+            Assertions.assertThat(ChangeAction.of("S").isShowDetails()).isTrue();
+            Assertions.assertThat(ChangeAction.changesNotOk().isShowDetails()).isFalse();
+            Assertions.assertThat(ChangeAction.initial().isShowDetails()).isFalse();
+        }
+
+        /** {@code 88 ACUP-CHANGES-MADE VALUES 'E','N','C','L','F'} ({@code :660-662}). */
+        @Test
+        @DisplayName("ACUP-CHANGES-MADE spans five codes and excludes 'S' and the unfetched pair")
+        void changesMade() {
+            Assertions.assertThat(ChangeAction.CHANGES_MADE_VALUES)
+                    .containsExactly(ChangeAction.CHANGES_NOT_OK,
+                            ChangeAction.CHANGES_OK_NOT_CONFIRMED,
+                            ChangeAction.CHANGES_OKAYED_AND_DONE,
+                            ChangeAction.CHANGES_OKAYED_LOCK_ERROR,
+                            ChangeAction.CHANGES_OKAYED_BUT_FAILED);
+            Assertions.assertThat(ChangeAction.CHANGES_MADE_VALUES)
+                    .allSatisfy(code -> Assertions.assertThat(ChangeAction.of(code).isChangesMade())
+                            .as("%s satisfies ACUP-CHANGES-MADE", code).isTrue());
+            Assertions.assertThat(ChangeAction.showDetails().isChangesMade()).isFalse();
+            Assertions.assertThat(ChangeAction.initial().isChangesMade()).isFalse();
+            Assertions.assertThat(ChangeAction.spacesState().isChangesMade()).isFalse();
+        }
+
+        /** {@code 88 ACUP-CHANGES-NOT-OK VALUE 'E'} ({@code :663}). */
+        @Test
+        @DisplayName("ACUP-CHANGES-NOT-OK is satisfied by 'E' alone, and this paragraph never sets it")
+        void changesNotOk() {
+            Assertions.assertThat(ChangeAction.changesNotOk().isChangesNotOk()).isTrue();
+            Assertions.assertThat(ChangeAction.changesOkNotConfirmed().isChangesNotOk()).isFalse();
+            // 'E' is the edit-failure code, set by the validation paragraphs rather than by 9600, so no
+            // outcome of the write path can produce it.
+            Assertions.assertThat(EnumSet.allOf(WriteOutcome.class))
+                    .noneMatch(outcome -> ChangeAction.of(outcome.changeActionCode()).isChangesNotOk());
+        }
+
+        /** {@code 88 ACUP-CHANGES-OK-NOT-CONFIRMED VALUE 'N'} ({@code :664}). */
+        @Test
+        @DisplayName("ACUP-CHANGES-OK-NOT-CONFIRMED is satisfied by 'N' alone, and 9600 never sets it")
+        void changesOkNotConfirmed() {
+            Assertions.assertThat(ChangeAction.changesOkNotConfirmed().isChangesOkNotConfirmed())
+                    .isTrue();
+            Assertions.assertThat(ChangeAction.changesOkayedAndDone().isChangesOkNotConfirmed())
+                    .isFalse();
+            Assertions.assertThat(EnumSet.allOf(WriteOutcome.class))
+                    .noneMatch(outcome ->
+                            ChangeAction.of(outcome.changeActionCode()).isChangesOkNotConfirmed());
+        }
+
+        /** {@code 88 ACUP-CHANGES-OKAYED-AND-DONE VALUE 'C'} ({@code :665}). */
+        @Test
+        @DisplayName("ACUP-CHANGES-OKAYED-AND-DONE is satisfied by 'C' - and by the customer lock failure")
+        void changesOkayedAndDone() {
+            Assertions.assertThat(ChangeAction.changesOkayedAndDone().isChangesOkayedAndDone()).isTrue();
+            Assertions.assertThat(ChangeAction.changesOkayedButFailed().isChangesOkayedAndDone())
+                    .isFalse();
+            // THE LEGACY DEFECT, restated from the condition-name side: two outcomes carry 'C', so this
+            // condition cannot tell a completed update from a customer lock that was never taken.
+            Assertions.assertThat(EnumSet.allOf(WriteOutcome.class).stream()
+                    .filter(outcome ->
+                            ChangeAction.of(outcome.changeActionCode()).isChangesOkayedAndDone())
+                    .toList())
+                    .containsExactlyInAnyOrder(WriteOutcome.CHANGES_OKAYED_AND_DONE,
+                            WriteOutcome.COULD_NOT_LOCK_CUST_FOR_UPDATE);
+        }
+
+        /** {@code 88 ACUP-CHANGES-FAILED VALUES 'L','F'} ({@code :666}). */
+        @Test
+        @DisplayName("ACUP-CHANGES-FAILED spans 'L' and 'F', the two arms that reached a backend")
+        void changesFailed() {
+            Assertions.assertThat(ChangeAction.CHANGES_FAILED_VALUES)
+                    .containsExactly(ChangeAction.CHANGES_OKAYED_LOCK_ERROR,
+                            ChangeAction.CHANGES_OKAYED_BUT_FAILED);
+            Assertions.assertThat(ChangeAction.changesOkayedLockError().isChangesFailed()).isTrue();
+            Assertions.assertThat(ChangeAction.changesOkayedButFailed().isChangesFailed()).isTrue();
+            Assertions.assertThat(ChangeAction.changesOkayedAndDone().isChangesFailed()).isFalse();
+            Assertions.assertThat(ChangeAction.showDetails().isChangesFailed()).isFalse();
+        }
+
+        /** {@code 88 ACUP-CHANGES-OKAYED-LOCK-ERROR VALUE 'L'} ({@code :667}). */
+        @Test
+        @DisplayName("ACUP-CHANGES-OKAYED-LOCK-ERROR is satisfied by 'L', which only the account lock sets")
+        void changesOkayedLockError() {
+            Assertions.assertThat(ChangeAction.changesOkayedLockError().isChangesOkayedLockError())
+                    .isTrue();
+            Assertions.assertThat(ChangeAction.changesOkayedButFailed().isChangesOkayedLockError())
+                    .isFalse();
+            Assertions.assertThat(EnumSet.allOf(WriteOutcome.class).stream()
+                    .filter(outcome ->
+                            ChangeAction.of(outcome.changeActionCode()).isChangesOkayedLockError())
+                    .toList())
+                    .containsExactly(WriteOutcome.COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+        }
+
+        /** {@code 88 ACUP-CHANGES-OKAYED-BUT-FAILED VALUE 'F'} ({@code :668}). */
+        @Test
+        @DisplayName("ACUP-CHANGES-OKAYED-BUT-FAILED is satisfied by 'F', which only a rewrite sets")
+        void changesOkayedButFailed() {
+            Assertions.assertThat(ChangeAction.changesOkayedButFailed().isChangesOkayedButFailed())
+                    .isTrue();
+            Assertions.assertThat(ChangeAction.changesOkayedLockError().isChangesOkayedButFailed())
+                    .isFalse();
+            Assertions.assertThat(EnumSet.allOf(WriteOutcome.class).stream()
+                    .filter(outcome ->
+                            ChangeAction.of(outcome.changeActionCode()).isChangesOkayedButFailed())
+                    .toList())
+                    .containsExactly(WriteOutcome.LOCKED_BUT_UPDATE_FAILED);
+        }
+
+        @ParameterizedTest(name = "{0} stores a recognised ACUP-CHANGE-ACTION code")
+        @EnumSource(WriteOutcome.class)
+        @DisplayName("every outcome's code is one of the nine states, never an unrecognised byte")
+        void everyOutcomeCodeIsARecognisedState(WriteOutcome outcome) {
+            ChangeAction action = ChangeAction.of(outcome.changeActionCode());
+
+            Assertions.assertThat(action.value()).hasSize(ChangeAction.RECORD_LENGTH);
+            Assertions.assertThat(action.isUnrecognised()).isFalse();
+            // No arm of this paragraph can leave the screen looking as though details were never
+            // fetched - it only runs once they have been.
+            Assertions.assertThat(action.isDetailsNotFetched()).isFalse();
+
+            if (outcome == WriteOutcome.DATA_WAS_CHANGED_BEFORE_UPDATE) {
+                // 'S' is NOT one of ACUP-CHANGES-MADE's five values (:660-662), and that is deliberate
+                // rather than an oversight: a stale screen is answered by re-showing the record that was
+                // actually stored, so the field goes back to ACUP-SHOW-DETAILS and the operator reviews
+                // fresh values. Nothing was changed, so claiming changes were made would be false.
+                Assertions.assertThat(action.isShowDetails()).isTrue();
+                Assertions.assertThat(action.isChangesMade()).isFalse();
+            } else {
+                // The other four arms all attempted the update, so all four report changes made.
+                Assertions.assertThat(action.isChangesMade()).isTrue();
+                Assertions.assertThat(action.isShowDetails()).isFalse();
+            }
+        }
+
+        @Test
+        @DisplayName("the five outcomes partition into ACUP-SHOW-DETAILS and ACUP-CHANGES-MADE, no gaps")
+        void theOutcomesPartitionAcrossTheTwoReachableStates() {
+            Set<WriteOutcome> showDetails = EnumSet.noneOf(WriteOutcome.class);
+            Set<WriteOutcome> changesMade = EnumSet.noneOf(WriteOutcome.class);
+            for (WriteOutcome outcome : WriteOutcome.values()) {
+                ChangeAction action = ChangeAction.of(outcome.changeActionCode());
+                if (action.isShowDetails()) {
+                    showDetails.add(outcome);
+                }
+                if (action.isChangesMade()) {
+                    changesMade.add(outcome);
+                }
+            }
+
+            Assertions.assertThat(showDetails)
+                    .containsExactly(WriteOutcome.DATA_WAS_CHANGED_BEFORE_UPDATE);
+            Assertions.assertThat(changesMade).containsExactlyInAnyOrder(
+                    WriteOutcome.COULD_NOT_LOCK_ACCT_FOR_UPDATE,
+                    WriteOutcome.COULD_NOT_LOCK_CUST_FOR_UPDATE,
+                    WriteOutcome.LOCKED_BUT_UPDATE_FAILED,
+                    WriteOutcome.CHANGES_OKAYED_AND_DONE);
+            // A partition: every outcome lands in exactly one of the two, so no arm is unaccounted for.
+            Assertions.assertThat(showDetails).doesNotContainAnyElementsOf(changesMade);
+            Assertions.assertThat(showDetails.size() + changesMade.size())
+                    .isEqualTo(WriteOutcome.values().length);
+        }
+
+        @ParameterizedTest(name = "the write path actually reaches {0}")
+        @EnumSource(WriteOutcome.class)
+        @DisplayName("each outcome is reachable, so no condition name is driven from a fabricated code")
+        void everyOutcomeIsReachableFromTheParagraph(WriteOutcome outcome) {
+            arrangeOutcome(outcome);
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    outcome == WriteOutcome.DATA_WAS_CHANGED_BEFORE_UPDATE
+                            ? changedOldDetails() : matchedOldDetails(),
+                    newDetails(), null, CODEC);
+
+            Assertions.assertThat(result.outcome()).isEqualTo(outcome);
+            Assertions.assertThat(result.changeActionCode()).isEqualTo(outcome.changeActionCode());
+        }
+
+        /**
+         * Arranges the doubles so the paragraph reaches {@code outcome}.
+         *
+         * @param outcome the arm to reach
+         */
+        private void arrangeOutcome(WriteOutcome outcome) {
+            switch (outcome) {
+                case COULD_NOT_LOCK_ACCT_FOR_UPDATE -> when(accountRepository.readForUpdate(anyString()))
+                        .thenReturn(AccountRepository.ReadResult.notFound());
+                case COULD_NOT_LOCK_CUST_FOR_UPDATE -> {
+                    when(accountRepository.readForUpdate(anyString()))
+                            .thenReturn(AccountRepository.ReadResult.found(storedAccount()));
+                    when(customerRepository.readForUpdate(anyString()))
+                            .thenReturn(CustomerRepository.ReadResult.notFound());
+                }
+                case DATA_WAS_CHANGED_BEFORE_UPDATE -> arrangeBothLocks();
+                case LOCKED_BUT_UPDATE_FAILED -> {
+                    arrangeBothLocks();
+                    when(accountRepository.rewrite(any(AccountRecord.class)))
+                            .thenReturn(AccountRepository.WriteResult.notFound());
+                }
+                case CHANGES_OKAYED_AND_DONE -> {
+                    arrangeBothLocks();
+                    arrangeBothRewrites();
+                }
+                default -> throw new IllegalStateException(
+                        "app/cbl/COACTUPC.cbl:3889-4106 has five arms and this is not one: " + outcome);
+            }
+        }
+
+        /**
+         * An {@code ACUP-OLD-DETAILS} snapshot that disagrees with the stored record at one item, so the
+         * comparison at {@code :4117} fails and the paragraph takes its changed-record arm.
+         *
+         * @return the snapshot
+         */
+        private AccountUpdateDetails changedOldDetails() {
+            AccountUpdateDetails snapshot = matchedOldDetails();
+            return snapshot.withAcctData(new AccountData(12345678901L, "Y",
+                    new BigDecimal("0.01"), new BigDecimal("5000.00"), new BigDecimal("1000.00"),
+                    "2020", "01", "15",
+                    "2025", "12", "31",
+                    "2022", "06", "30",
+                    new BigDecimal("250.75"), new BigDecimal("99.99"), "GROUP01"));
+        }
+    }
+
+    // =================================================================================================
+    // Gates G43 and G44, the negative half: the concurrency control is a field-for-field re-read and
+    // NOTHING ELSE.
+    //
+    // Every test above proves the comparison happens. These prove the alternative was not taken. A
+    // version column would satisfy "detect concurrent modification" while breaking the two constraints
+    // that actually bind: it is a schema change (forbidden - JDBC to the existing backend, no DDL, no
+    // migrations), and the byte layouts are fixed at 300 and 500 by app/cpy/CVACT01Y.cpy and
+    // app/cpy/CVCUS01Y.cpy, so there is nowhere to put one.
+    //
+    // Asserted reflectively rather than by eye, because the point is that it stays true.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("No version column and no persistence mapping anywhere (gates G43, G44, G22)")
+    class NoVersionColumn {
+
+        /** The three types the write path touches: the service and the two records it rewrites. */
+        private final List<Class<?>> writePathTypes =
+                List.of(AccountUpdateService.class, AccountRecord.class, CustomerRecord.class);
+
+        /**
+         * Annotation simple names that would betray an object-relational mapping. Matched on the name
+         * rather than the type, because the whole point is that no such type is on the classpath to
+         * import.
+         */
+        private final List<String> mappingAnnotationNames =
+                List.of("Version", "Entity", "Table", "Id", "Column", "GeneratedValue", "Embeddable",
+                        "MappedSuperclass", "OptimisticLocking", "Lock");
+
+        /** Field-name fragments a row-version counter is spelled with. */
+        private final List<String> rowVersionNameFragments =
+                List.of("version", "revision", "rowver", "optlock", "lockversion", "etag", "seqno",
+                        "sequencenumber", "modcount", "updatecount", "timestamp", "lastmodified");
+
+        @Test
+        @DisplayName("no type on the write path carries a persistence or locking annotation")
+        void noPersistenceAnnotations() {
+            for (Class<?> type : writePathTypes) {
+                assertNoMappingAnnotation(type, type.getAnnotations(), "the type itself");
+                for (Field field : type.getDeclaredFields()) {
+                    assertNoMappingAnnotation(type, field.getAnnotations(), "field " + field.getName());
+                }
+                for (Method method : type.getDeclaredMethods()) {
+                    assertNoMappingAnnotation(type, method.getAnnotations(),
+                            "method " + method.getName());
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("no annotation on the write path comes from a persistence package")
+        void noPersistencePackages() {
+            for (Class<?> type : writePathTypes) {
+                Assertions.assertThat(type.getAnnotations())
+                        .as("%s must carry no jakarta/javax persistence annotation", type.getSimpleName())
+                        .allSatisfy(annotation -> Assertions
+                                .assertThat(annotation.annotationType().getName())
+                                .doesNotContain("jakarta.persistence")
+                                .doesNotContain("javax.persistence")
+                                .doesNotContain("hibernate"));
+            }
+        }
+
+        @Test
+        @DisplayName("no field on the write path is named like a row-version counter")
+        void noRowVersionField() {
+            for (Class<?> type : writePathTypes) {
+                for (Field field : type.getDeclaredFields()) {
+                    String name = field.getName().toLowerCase(Locale.ROOT).replace("_", "");
+                    Assertions.assertThat(rowVersionNameFragments)
+                            .as("%s.%s must not be a row-version counter: the check at "
+                                            + "app/cbl/COACTUPC.cbl:4109-4194 compares every field "
+                                            + "instead", type.getSimpleName(), field.getName())
+                            .noneSatisfy(fragment -> Assertions.assertThat(name).contains(fragment));
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("neither record's declared width leaves room for a version column - 300 and 500")
+        void theByteLayoutsHaveNoRoomForOne() {
+            // app/cpy/CVACT01Y.cpy and app/cpy/CVCUS01Y.cpy fix these, and gates G19 and G21 hold them.
+            Assertions.assertThat(AccountRecord.RECORD_LENGTH).isEqualTo(300);
+            Assertions.assertThat(CustomerRecord.RECORD_LENGTH).isEqualTo(500);
+
+            arrangeBothLocks();
+            arrangeBothRewrites();
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            // The rewritten images are exactly the declared widths, so nothing was appended to carry one.
+            Assertions.assertThat(result.acctUpdateRecordImage()).get().asString()
+                    .hasSize(AccountRecord.RECORD_LENGTH);
+            Assertions.assertThat(result.custUpdateRecordImage()).get().asString()
+                    .hasSize(CustomerRecord.RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the detection is a comparison: it names the fields that differ, not a stale counter")
+        void detectionIsAComparisonAndSaysSo() {
+            AccountRecord changed = storedAccount();
+            changed.setAcctCreditLimit(new BigDecimal("6000.00"));
+            when(accountRepository.readForUpdate(anyString()))
+                    .thenReturn(AccountRepository.ReadResult.found(changed));
+            when(customerRepository.readForUpdate(anyString()))
+                    .thenReturn(customerFound(storedCustomer()));
+
+            WriteResult result = service.writeProcessing(ACCT_ID_CHARS, commarea(),
+                    matchedOldDetails(), newDetails(), null, CODEC);
+
+            // A version column can only ever report "something changed". This reports WHICH field, by its
+            // COBOL name, which is the observable difference between the two designs.
+            ChangeCheck check = result.changeCheck().orElseThrow();
+            Assertions.assertThat(check.dataWasChanged()).isTrue();
+            Assertions.assertThat(check.differingItems())
+                    .containsExactly(ComparedItem.ACCT_CREDIT_LIMIT);
+            Assertions.assertThat(check.describeDifferences()).contains("ACCT-CREDIT-LIMIT");
+            Assertions.assertThat(ComparedItem.ACCT_CREDIT_LIMIT.sourceLine()).isEqualTo("4119");
+        }
+
+        @Test
+        @DisplayName("the service names no DDL and no dataset literal, so no schema artefact exists")
+        void noDdlAndNoHardCodedDatasetName() {
+            // Gate G44 for this file, and gate G46 alongside it: the dataset names live in
+            // application.yml, and the only file names the service holds are the CICS FILE literals the
+            // COBOL itself declares - LIT-ACCTFILENAME PIC X(8) VALUE 'ACCTDAT ' (:573-574) and
+            // LIT-CUSTFILENAME PIC X(8) VALUE 'CUSTDAT ' (:575-576). Eight characters including the
+            // trailing space, because that is what a PIC X(8) holds and the pad is part of the value.
+            Assertions.assertThat(AccountUpdateService.ACCT_CICS_FILE_NAME)
+                    .isEqualTo("ACCTDAT ").hasSize(8);
+            Assertions.assertThat(AccountUpdateService.CUST_CICS_FILE_NAME)
+                    .isEqualTo("CUSTDAT ").hasSize(8);
+            // Neither is a dataset name: those are AWS.M2.CARDDEMO.* and appear only in configuration.
+            Assertions.assertThat(AccountUpdateService.ACCT_CICS_FILE_NAME).doesNotContain(".");
+            Assertions.assertThat(AccountUpdateService.CUST_CICS_FILE_NAME).doesNotContain(".");
+
+            for (Field field : AccountUpdateService.class.getDeclaredFields()) {
+                if (field.getType() != String.class || !Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                field.setAccessible(true);
+                String value = readStaticString(field);
+                if (value == null) {
+                    continue;
+                }
+                String upper = value.toUpperCase(Locale.ROOT);
+                Assertions.assertThat(upper)
+                        .as("%s must hold no DDL", field.getName())
+                        .doesNotContain("CREATE TABLE")
+                        .doesNotContain("ALTER TABLE")
+                        .doesNotContain("DROP TABLE")
+                        .doesNotContain("ADD COLUMN");
+                Assertions.assertThat(upper)
+                        .as("%s must not hard-code a dataset name", field.getName())
+                        .doesNotContain("AWS.M2.CARDDEMO");
+            }
+        }
+
+        @Test
+        @DisplayName("no double or float reaches the write path, in a signature or a field (gate G22)")
+        void noBinaryFloatingPointOnTheWritePath() {
+            for (Class<?> type : writePathTypes) {
+                for (Field field : type.getDeclaredFields()) {
+                    Assertions.assertThat(field.getType())
+                            .as("%s.%s must not be binary floating point: every PIC 9V9 is a BigDecimal",
+                                    type.getSimpleName(), field.getName())
+                            .isNotIn(double.class, float.class, Double.class, Float.class);
+                }
+                for (Method method : type.getDeclaredMethods()) {
+                    Assertions.assertThat(method.getReturnType())
+                            .as("%s.%s must not return binary floating point", type.getSimpleName(),
+                                    method.getName())
+                            .isNotIn(double.class, float.class, Double.class, Float.class);
+                    Assertions.assertThat(method.getParameterTypes())
+                            .as("%s.%s must take no binary floating point parameter",
+                                    type.getSimpleName(), method.getName())
+                            .doesNotContain(double.class, float.class, Double.class, Float.class);
+                }
+            }
+        }
+
+        /**
+         * Fails if any of {@code annotations} is one an object-relational mapping would add.
+         *
+         * @param type        the type being inspected, for the failure message
+         * @param annotations the annotations to inspect
+         * @param where       where on the type they were found, for the failure message
+         */
+        private void assertNoMappingAnnotation(Class<?> type, Annotation[] annotations, String where) {
+            for (Annotation annotation : annotations) {
+                String simpleName = annotation.annotationType().getSimpleName();
+                Assertions.assertThat(mappingAnnotationNames)
+                        .as("%s (%s) carries @%s; the concurrency check at "
+                                        + "app/cbl/COACTUPC.cbl:4109-4194 is a field-for-field re-read "
+                                        + "and introducing a mapping would be the schema change the plan "
+                                        + "forbids", type.getSimpleName(), where, simpleName)
+                        .doesNotContain(simpleName);
+            }
+        }
+
+        /**
+         * Reads a static {@code String} constant, or {@code null} when it is not readable.
+         *
+         * @param field the field to read
+         * @return its value, or {@code null}
+         */
+        private String readStaticString(Field field) {
+            try {
+                return (String) field.get(null);
+            } catch (IllegalAccessException unreadable) {
+                return null;
+            }
         }
     }
 

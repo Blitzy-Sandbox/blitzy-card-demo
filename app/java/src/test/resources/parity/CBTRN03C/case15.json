@@ -1,12 +1,14 @@
 {
   "program": "CBTRN03C",
   "caseId": "case15",
-  "description": "A zero amount, which blanks every masked column. Both masks make all eleven digit positions Z, and the IBM rule for an all-Z item is that a value of zero blanks the ENTIRE field - so the detail amount is fifteen spaces rather than a rendered 0.00, and so are the page total and the grand total, which are still zero after the end-of-file arm has added zero to them a second time. The decimal point disappears with them. A translation that rendered '0.00', or '+0.00', or that suppressed only the leading zeros and left the point, differs from this case in every one of those three columns.",
+  "description": "DEFECT 2, PRESERVED AND QUANTIFIED (practice B5). The same double count case07 pins on one record, measured here across three so the doubling is arithmetically unmistakable rather than merely present. The amounts are 10.00, 20.00 and then a deliberately large, round 1000.00 on the last record: the page total before the end-of-file arm is 1030.00, the total the report actually carries is 2030.00, and a difference of exactly 1000.00 between two round figures cannot be mistaken for a rounding artefact, a mask artefact or a truncation - which a doubling of, say, 100.00 into 200.00 arguably can. THE MECHANISM. app/cbl/CBTRN03C.cbl:249 is a READ ... INTO, and a COBOL READ ... INTO transfers nothing AT END, so when TRANFILE-STATUS reports '10' the EVALUATE arm at :255 moves 16 to APPL-RESULT, which is the value 88 APPL-EOF names at :152, and :264 moves 'Y' to END-OF-FILE while TRAN-RECORD still holds record three - the last one successfully read - byte for byte. Control returns to the loop, the range test at :173-174 re-reads that stale record's TRAN-PROC-TS (1:10), which is 2022-07-06 and therefore still inside the reporting range - exactly on its inclusive upper bound, chosen so the <= WS-END-DATE comparison is the thing that passes - so CONTINUE is taken and control falls through to :179. IF END-OF-FILE = 'N' is now false, the ELSE arm at :197-203 runs, and :200-201 adds TRAN-AMT to WS-PAGE-TOTAL and WS-ACCOUNT-TOTAL for the SECOND time, the first having been at :287-288 when record three was reported. 1110-WRITE-PAGE-TOTALS then writes the inflated page total and :297 rolls it into WS-GRAND-TOTAL, so the inflation propagates. THE ARITHMETIC. 10.00 + 20.00 + 1000.00 = 1030.00, which is what the WS-PAGE-TOTAL diagnostic at :199 shows because it is emitted before the addition; then + 1000.00 = 2030.00, which is what row 7's Page Total line carries and, through :297, what row 9's Grand Total line carries. The correct total - the sum of the three amounts, counted once each - would have been 1030.00, and encoding 1030.00 here would be a behaviour change and a parity violation: it would silently repair every report this program has ever produced. WS-ACCOUNT-TOTAL is inflated identically, to 2030.00, and is then discarded: the end-of-file arm performs the page and grand totals and never 1120-WRITE-ACCOUNT-TOTALS (:306), whose only caller is :183 on a card change, and all three records carry card 0500024453765740, so NO Account Total line appears anywhere in this report and none must be added. TWO BYTE-EXACT DISTINCTIONS. The literal at :198 is 'TRAN-AMT ' WITH a trailing space and the literal at :199 is 'WS-PAGE-TOTAL' WITHOUT one; the inconsistency is in the source and is reproduced rather than tidied, which is why the second line's label and value run together. And the two values on those lines are plain PIC S9(09)V99 USAGE DISPLAY items, so a COBOL DISPLAY emits their eleven stored bytes with the sign overpunched into the low-order one - 0000010000{ for 1000.00 and 0000010300{ for 1030.00 - whereas the amounts on the report lines are numeric-edited through PIC -ZZZ,ZZZ,ZZZ.ZZ and PIC +ZZZ,ZZZ,ZZZ.ZZ (app/cpy/CVTRA07Y.cpy) and read '       1,000.00' and '+      2,030.00'. Rendering one where the other belongs is a classic silent diff, and this case pins both forms of the same 1030.00 and 2030.00 side by side. TEN RECORDS, COUNTER NINE. Four first-time headers (:324-341, counter 0 to 4), three detail lines (:361-374, counter to 7), the page total and its trailing rule (:292-303, counter to 9) and the grand total - which 1110-WRITE-GRAND-TOTALS (:318-322) writes WITHOUT an ADD 1 TO WS-LINE-COUNTER, the only write paragraph in the program that does not advance it. So ten records leave WS-LINE-COUNTER at nine, and MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) at :282 is evaluated as MOD(4,20), MOD(5,20) and MOD(6,20) - never zero - so no page break fires and the defect is the only thing happening in the run. Every amount and every total is non-zero, so the all-Z zero rule that blanks a masked item entirely is not in play here. PROVENANCE (practice B12). Every value above is statically derived by structured reading of app/cbl/CBTRN03C.cbl and cross-checked against the byte layouts of app/cpy/CVTRA05Y.cpy, CVTRA03Y.cpy, CVTRA04Y.cpy, CVACT03Y.cpy and CVTRA07Y.cpy, the DD and DCB contracts of app/jcl/TRANREPT.jcl and app/proc/TRANREPT.prc, and the real US-ASCII fixtures in app/data/ASCII - the account id 00000000050 is row 1 of cardxref.txt and every transaction type and category key seeded here exists in trantype.txt and trancatg.txt. It is NOT captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment (AAP 0.7.6 documents eight verified blockers; risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000001501010001POS TERM  Case 15 record one - a small round amount                                                           0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-01-09.15.00.0000012022-02-01-09.15.00.000001                    ",
+        "TRN0000000001502010002POS TERM  Case 15 record two - a small round amount                                                           0000000200{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-15-13.45.30.0000022022-04-15-13.45.30.000002                    ",
+        "TRN0000000001503010005POS TERM  Case 15 record three - the large amount the end-of-file arm adds twice                              0000010000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-23.59.59.0000032022-07-06-23.59.59.000003                    "
       ]
     },
     "CARDXREF": {
@@ -49,22 +51,32 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                                          "
+      "expectedBytes": "TRN0000000001501 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................                                    "
+      "expectedBytes": "TRN0000000001502 00000000050 01-Purchase        0002-Regular Cash Advance          POS TERM                20.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "TRN0000000001503 00000000050 01-Purchase        0005-Interest Amount               POS TERM             1,000.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................                                    "
+      "expectedBytes": "Page Total ......................................................................................+      2,030.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 8,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 9,
+      "expectedBytes": "Grand Total......................................................................................+      2,030.00                     "
     }
   ],
   "expectedFinalState": [
@@ -91,22 +103,32 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                                          "
+      "expectedBytes": "TRN0000000001501 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................                                    "
+      "expectedBytes": "TRN0000000001502 00000000050 01-Purchase        0002-Regular Cash Advance          POS TERM                20.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "TRN0000000001503 00000000050 01-Purchase        0005-Interest Amount               POS TERM             1,000.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................                                    "
+      "expectedBytes": "Page Total ......................................................................................+      2,030.00                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 8,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 9,
+      "expectedBytes": "Grand Total......................................................................................+      2,030.00                     "
     }
   ],
   "expectedReturnCode": 0,
@@ -121,15 +143,23 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000001501010001POS TERM  Case 15 record one - a small round amount                                                           0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-01-09.15.00.0000012022-02-01-09.15.00.000001                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000000000{"
+      "text": "TRN0000000001502010002POS TERM  Case 15 record two - a small round amount                                                           0000000200{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-15-13.45.30.0000022022-04-15-13.45.30.000002                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000000000{"
+      "text": "TRN0000000001503010005POS TERM  Case 15 record three - the large amount the end-of-file arm adds twice                              0000010000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-23.59.59.0000032022-07-06-23.59.59.000003                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRAN-AMT 0000010000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "WS-PAGE-TOTAL0000010300{"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -146,13 +176,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 8,
+      "rowCount": 10,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 8,
+      "rowCount": 10,
       "recordLength": 133
     }
   ]

@@ -1,0 +1,112 @@
+{
+  "program": "CORPT00C",
+  "caseId": "case14",
+  "description": "FUNCTION NUMVAL-C ACCEPTING an embedded space, and the normalise-in-place edit that follows it. SDTMMI arrives as ' 7' and SDTDDI as '1 '; :305-307 and :309-311 pass each through NUMVAL-C into WS-NUM-99 PIC 99 and move the result BACK INTO THE SAME symbolic-map item, so the screen that is next sent shows '07' and '01'. That in-place rewrite is only possible because 01 CORPT0AO REDEFINES CORPT0AI - the input and output views are one buffer - and it is asserted here on the send rather than inferred. CONFIRMI is spaces, so SUBMIT-JOB-TO-INTRDR's guard at :464 fires and :465-470 STRINGs 'Please confirm to print the ' DELIMITED BY SIZE, WS-REPORT-NAME DELIMITED BY SPACE and ' report...' DELIMITED BY SIZE - which is where the ten-byte WS-REPORT-NAME contributes only its six significant characters. Nothing is handed to the queue: the emit loop at :498-508 is entered with ERR-FLG-ON and its body runs zero times. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2026-08-09T14:05:06",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "CUSTOMI": "Y",
+      "SDTMMI": " 7",
+      "SDTDDI": "1 ",
+      "SDTYYYYI": "2026",
+      "EDTMMI": "12",
+      "EDTDDI": "31",
+      "EDTYYYYI": "2026",
+      "CONFIRMI": " "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "CORPT00C",
+    "nextMapset": "CORPT00",
+    "nextMap": "CORPT0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CR00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "08/09/26",
+          "PGMNAMEO": "CORPT00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "14:05:06",
+          "MONTHLYO": " ",
+          "YEARLYO": " ",
+          "CUSTOMO": "Y",
+          "SDTMMO": "07",
+          "SDTDDO": "01",
+          "SDTYYYYO": "2026",
+          "EDTMMO": "12",
+          "EDTDDO": "31",
+          "EDTYYYYO": "2026",
+          "CONFIRMO": " ",
+          "ERRMSGO": "Please confirm to print the Custom report...                                  "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "CONFIRML",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Please confirm to print the Custom report...                                    "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Please confirm to print the Custom report...                                  "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "PROCESS ENTER KEY"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": []
+}

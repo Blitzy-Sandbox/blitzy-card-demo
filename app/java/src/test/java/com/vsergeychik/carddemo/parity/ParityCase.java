@@ -1304,9 +1304,11 @@ public record ParityCase(
                     + "USRIDINL or FNAMEL - COBOL positions the cursor by moving -1 into it, so the "
                     + "length item is the cursor");
             termination = Objects.requireNonNull(termination, "ExpectedResponse.termination is "
-                + "required: declare XCTL when control transfers to another program, or "
-                + "RETURN_TRANSID when the transaction returns to itself. The two are not "
-                + "interchangeable - an XCTL never reaches the EXEC CICS RETURN that follows it.");
+                + "required: declare XCTL when control transfers to another program, "
+                + "RETURN_TRANSID when the transaction returns to itself, or RETURN_NO_TRANSID for "
+                + "the bare EXEC CICS RETURN that ends the pseudo-conversation. The three are not "
+                + "interchangeable - an XCTL never reaches the EXEC CICS RETURN that follows it, and "
+                + "a bare RETURN names no transaction to carry the commarea back to.");
         }
 
         /**
@@ -1383,12 +1385,15 @@ public record ParityCase(
     }
 
     /**
-     * How an online invocation ended.
+     * How an online invocation ended - the three exits CICS actually gives these programs.
      *
      * <p>The distinction is behavioural rather than cosmetic. {@code EXEC CICS XCTL} transfers
      * control and never returns, so the {@code EXEC CICS RETURN TRANSID(...)} that follows it in the
      * source is simply not reached - a translation that performed both would have invented a
-     * behaviour, and one that performed neither would have lost the navigation.
+     * behaviour, and one that performed neither would have lost the navigation. A <em>bare</em>
+     * {@code EXEC CICS RETURN} is a third outcome again: it names no transaction, so the
+     * pseudo-conversation ends rather than continuing, and the client has nothing to send the
+     * commarea back to.
      */
     public enum Termination {
 
@@ -1403,7 +1408,28 @@ public record ParityCase(
          * The transaction returned to itself, pseudo-conversationally, with the commarea carried
          * forward - {@code EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)}.
          */
-        RETURN_TRANSID
+        RETURN_TRANSID,
+
+        /**
+         * The bare {@code EXEC CICS RETURN} - no {@code TRANSID} and no {@code COMMAREA} - so the
+         * conversation <strong>ends</strong> and the terminal is released.
+         *
+         * <p>Reached from a {@code SEND-PLAIN-TEXT} paragraph, which transmits unformatted text and
+         * then returns from inside itself. {@code app/cbl/COSGN00C.cbl:162-172} is the worked
+         * example: the PF3 arm at {@code :88-90} performs it, and because the {@code RETURN} sits at
+         * {@code :171-172} the {@code EXEC CICS RETURN TRANSID(WS-TRANID)
+         * COMMAREA(CARDDEMO-COMMAREA)} at {@code :98-102} is <em>unreachable</em> on that path.
+         * Three other programs declare the same paragraph - {@code COACTVWC}, {@code COCRDLIC} and
+         * {@code COCRDSLC}.
+         *
+         * <p>This constant exists because neither of the other two can express that exit without
+         * misstating it. {@code XCTL} would claim a transfer that never happened, and
+         * {@code RETURN_TRANSID} would claim the pseudo-conversation continues - which is precisely
+         * the normalisation the parity contract exists to prevent. The name is
+         * {@code user.SignOnService.Termination.RETURN_NO_TRANSID} verbatim, so the model and the
+         * production code name the same exit the same way rather than through a translation table.
+         */
+        RETURN_NO_TRANSID
     }
 
     /**

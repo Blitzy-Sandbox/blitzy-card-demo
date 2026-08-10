@@ -1,13 +1,13 @@
 {
   "program": "CBACT03C",
   "caseId": "case06",
-  "description": "OPEN INPUT at :120 reports FILE STATUS '35' - the dataset is not available - which takes the :123 arm, moves 12 into APPL-RESULT at :124, fails the 88 APPL-AOK test at :126 and runs :129-132: DISPLAY 'ERROR OPENING XREFFILE', then 9910-DISPLAY-IO-STATUS, then 9999-ABEND-PROGRAM. Four lines and RETURN-CODE 12. The five seeded rows are deliberately present and deliberately unread: a failed open must short-circuit the entire PERFORM UNTIL at :74, so a translation that read even one row would emit two extra lines here. '35' is numeric with a first byte that is not '9', so 9910 takes its ELSE arm at :170-172 and the image is '0000' with the status overlaid at (3:2), giving 0035.",
+  "description": "OPEN INPUT at :120 reports FILE STATUS '35' - the dataset is not available - so :121 fails, the :123 arm moves 12 into APPL-RESULT at :124, the 88 APPL-AOK test at :126 fails and :129-132 run in order: DISPLAY 'ERROR OPENING XREFFILE', then 9910-DISPLAY-IO-STATUS, then 9999-ABEND-PROGRAM. Four lines and RETURN-CODE 12, with no closing banner because :85 is never reached. '35' is numeric and its first byte is not '9', so 9910 takes its ELSE arm at :170-172: '0000' with the status overlaid at (3:2), giving 0035 - the companion case07 drives the same paragraph's IF arm at :162-168 with '92'. The one seeded row is the UPPER KEY BOUNDARY, deliberately present and deliberately unread: XREF-CARD-NUM 9805583408996588 is the highest key in app/data/ASCII/cardxref.txt, its line 50, written out here as one verbatim 36-character row. A failed open must short-circuit the whole PERFORM UNTIL at :74, and because DISPLAY CARD-XREF-RECORD is active TWICE - at :96 inside the '00' arm of 1000-XREFFILE-GET-NEXT and again at :78 in the mainline loop - a translation that read this single row anyway would emit TWO extra 50-character lines here rather than one, so one row is enough to catch it. That defect is preserved rather than tidied (practice B5). This very row is read on a successful open by case17, and case03 reads the lowest key alone, so those two bracket the cluster while this case pins what happens to the top boundary when the open fails; the rowIndex below is 0 because it is the first and only row of the SEEDED dataset, not because the row is fixture line 50. Every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CBACT03C.cbl cross-checked against app/cpy/CVACT03Y.cpy for the 16+9+11+14 byte layout, app/jcl/READXREF.jcl for the STEP05 DD contract and its absent PARM, and app/data/ASCII/cardxref.txt for the row itself - nothing was captured from a running COBOL program, because none can be run in this environment (AAP 0.7.6, risk R-A, practice B12).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 5
+      "rows": [
+        "980558340899658800000004000000000040"
+      ]
     }
   },
   "jobParameters": {},
@@ -16,27 +16,13 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "050002445376574000000005000000000050              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 1,
-      "expectedBytes": "068358619817151600000002700000000027              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 2,
-      "expectedBytes": "092387719324733000000000200000000002              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 3,
-      "expectedBytes": "092798710863623200000002000000000020              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 4,
-      "expectedBytes": "098249621362979500000001200000000012              "
+      "fields": {
+        "XREF-CARD-NUM": "9805583408996588",
+        "XREF-CUST-ID": "000000040",
+        "XREF-ACCT-ID": "00000000040",
+        "FILLER": "              "
+      },
+      "expectedBytes": "980558340899658800000004000000000040              "
     }
   ],
   "expectedReturnCode": 12,
@@ -68,7 +54,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 5,
+      "rowCount": 1,
       "recordLength": 50
     }
   ]

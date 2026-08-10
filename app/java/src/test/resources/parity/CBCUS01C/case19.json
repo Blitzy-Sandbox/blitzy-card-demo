@@ -1,0 +1,102 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case19",
+  "description": "Five records from the middle of the shipped fixture, zero-based rows 20 through 24. The browse starts at the lowest key present rather than at CUST-ID 000000001, which is a different thing from starting at the beginning of the file: a translation that seeded a browse position from a literal low key rather than from the first record would find nothing here. Twelve lines - the two banners and five pairs - and five final-state rows.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 20,
+      "rowCount": 5
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "000000021Jerrold                  Adolphus                 Maggio                   401 Haylie Crest                                  Apt. 320                                          North Myrnaton                                    CAUSA72407     (399)526-3254  (326)193-1118  336490822000000000000276562601977-11-150011744660Y163                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "000000022Allene                   Icie                     Brown                    4467 Donnie Crossroad                             Apt. 437                                          Anabelton                                         MDUSA01993-9116(231)251-5792  (494)652-0009  292059024000000000006911598531994-02-200024791470Y597                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "000000023Johnson                  Blanca                   Ruecker                  2433 Jacobi Forks                                 Apt. 845                                          Hendersonbury                                     KSUSA78239-9466(981)873-1589  (131)638-5974  944154289000000000002689671221998-12-070075158529Y337                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 3,
+      "expectedBytes": "000000024Stefanie                 Verla                    Dickinson                6367 Stracke River                                Apt. 444                                          East Otho                                         KSUSA15414     (617)348-9142  (330)116-5634  017590544000000000004392446331996-01-240005459662Y711                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 4,
+      "expectedBytes": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000021Jerrold                  Adolphus                 Maggio                   401 Haylie Crest                                  Apt. 320                                          North Myrnaton                                    CAUSA72407     (399)526-3254  (326)193-1118  336490822000000000000276562601977-11-150011744660Y163                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000021Jerrold                  Adolphus                 Maggio                   401 Haylie Crest                                  Apt. 320                                          North Myrnaton                                    CAUSA72407     (399)526-3254  (326)193-1118  336490822000000000000276562601977-11-150011744660Y163                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000022Allene                   Icie                     Brown                    4467 Donnie Crossroad                             Apt. 437                                          Anabelton                                         MDUSA01993-9116(231)251-5792  (494)652-0009  292059024000000000006911598531994-02-200024791470Y597                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000022Allene                   Icie                     Brown                    4467 Donnie Crossroad                             Apt. 437                                          Anabelton                                         MDUSA01993-9116(231)251-5792  (494)652-0009  292059024000000000006911598531994-02-200024791470Y597                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000023Johnson                  Blanca                   Ruecker                  2433 Jacobi Forks                                 Apt. 845                                          Hendersonbury                                     KSUSA78239-9466(981)873-1589  (131)638-5974  944154289000000000002689671221998-12-070075158529Y337                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000023Johnson                  Blanca                   Ruecker                  2433 Jacobi Forks                                 Apt. 845                                          Hendersonbury                                     KSUSA78239-9466(981)873-1589  (131)638-5974  944154289000000000002689671221998-12-070075158529Y337                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000024Stefanie                 Verla                    Dickinson                6367 Stracke River                                Apt. 444                                          East Otho                                         KSUSA15414     (617)348-9142  (330)116-5634  017590544000000000004392446331996-01-240005459662Y711                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000024Stefanie                 Verla                    Dickinson                6367 Stracke River                                Apt. 444                                          East Otho                                         KSUSA15414     (617)348-9142  (330)116-5634  017590544000000000004392446331996-01-240005459662Y711                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 5,
+      "recordLength": 500
+    }
+  ]
+}

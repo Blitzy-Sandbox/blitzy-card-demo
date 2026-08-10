@@ -1,13 +1,13 @@
 {
   "program": "CBACT03C",
   "caseId": "case07",
-  "description": "The same failed OPEN as case06 but reporting the VSAM extended status '92', which drives the OTHER arm of 9910-DISPLAY-IO-STATUS at :162-168 - the one taken when IO-STAT1 = '9'. That arm is genuine byte arithmetic and is the most easily mistranslated paragraph in the program: IO-STAT1 is moved to IO-STATUS-04(1:1), TWO-BYTES-BINARY is zeroed, IO-STAT2 is deposited into TWO-BYTES-RIGHT through the REDEFINES at :54-56, and the resulting unsigned value fills IO-STATUS-0403 PIC 999. The second byte here is '2', whose code point is 50, so the image is 9050 and NOT 0092. A translation that formatted the two characters directly would emit 0092 and this case is what says so.",
+  "description": "The VSAM extended status '92' reported by OPEN INPUT at :120, seeded from a mid-file window so that one case pins two independent readings. First the status arithmetic: '92' takes the :123 arm, which moves 12 into APPL-RESULT, and 9910-DISPLAY-IO-STATUS then takes its OTHER arm at :162-168 - the one guarded by IO-STAT1 = '9' - which is genuine byte arithmetic and the most easily mistranslated paragraph in the program. IO-STAT1 is moved to IO-STATUS-04(1:1), TWO-BYTES-BINARY is zeroed, IO-STAT2 is deposited into TWO-BYTES-RIGHT through the REDEFINES at :54-56, and the resulting unsigned value fills IO-STATUS-0403 PIC 999. The second byte here is '2', whose code point is 50, so the image is 9050 and NOT 0092; a translation that formatted the two characters directly would emit 0092, and this case is what says so. Second the addressing, which is the ambiguity this case exists to remove: the four seeded rows are fixture LINES 24 to 27 of app/data/ASCII/cardxref.txt - card numbers 5671184478505844, 5787351228879339, 5975117516616077 and 6009619150674526 - a window anchored at neither end of the key range, and they occupy SEEDED-DATASET indices 0, 1, 2 and 3. Every rowIndex in expectedFinalState is a zero-based position in the seeded dataset and is NEVER a fixture line number, so these four expectations are 0 to 3 and are not 23 to 26 and not 24 to 27; fromRow narrows the fixture before seeding, and after that narrowing the dataset has its own addressing. case06 fails the same OPEN over the head of the fixture, so the two together also prove the status arithmetic is independent of which rows were seeded. expectedFinalState is accordingly the pre-state, unchanged: a failed OPEN reads nothing, rewrites nothing and closes nothing, so all four rows stand exactly as seeded and each is pinned twice over - field by field, with XREF-CARD-NUM at 0, XREF-CUST-ID at 16, XREF-ACCT-ID at 25 and the FILLER PIC X(14) at 36, and as the whole 50-byte image CVACT03Y declares - so an off-by-one in any offset is reported against the field it corrupted rather than as an unreadable whole-image mismatch. expectedWrites is empty because this program names no output dataset at all: OPEN INPUT is its only OPEN and its 178 lines hold no WRITE, no REWRITE and no DELETE, whatever the prompt-mandated name AccountBalanceUpdateJob suggests. The doubled DISPLAY CARD-XREF-RECORD at :96 and :78, which pairs every record's 50-character image consecutively and makes a clean run 2 + 2n lines, is deliberately NOT reached here: the abend at :132 fires before the PERFORM UNTIL loop is ever entered, so the only lines are the opening banner at :71, ERROR OPENING XREFFILE at :129, the status line at :168 and ABENDING PROGRAM at :155 - four lines, no record image, and no closing banner at :85. Every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CBACT03C.cbl, cross-checked against app/cpy/CVACT03Y.cpy for the byte layout, app/jcl/READXREF.jcl for the STEP05 and DD contract, and app/data/ASCII/cardxref.txt for the input rows; nothing was captured from a running COBOL program, because none can be run in this environment (AAP 0.7.6, risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
       "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 5
+      "fromRow": 23,
+      "rowCount": 4
     }
   },
   "jobParameters": {},
@@ -16,27 +16,46 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "050002445376574000000005000000000050              "
+      "fields": {
+        "XREF-CARD-NUM": "5671184478505844",
+        "XREF-CUST-ID": "000000018",
+        "XREF-ACCT-ID": "00000000018",
+        "FILLER": "              "
+      },
+      "expectedBytes": "567118447850584400000001800000000018              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
-      "expectedBytes": "068358619817151600000002700000000027              "
+      "fields": {
+        "XREF-CARD-NUM": "5787351228879339",
+        "XREF-CUST-ID": "000000047",
+        "XREF-ACCT-ID": "00000000047",
+        "FILLER": "              "
+      },
+      "expectedBytes": "578735122887933900000004700000000047              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 2,
-      "expectedBytes": "092387719324733000000000200000000002              "
+      "fields": {
+        "XREF-CARD-NUM": "5975117516616077",
+        "XREF-CUST-ID": "000000042",
+        "XREF-ACCT-ID": "00000000042",
+        "FILLER": "              "
+      },
+      "expectedBytes": "597511751661607700000004200000000042              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 3,
-      "expectedBytes": "092798710863623200000002000000000020              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 4,
-      "expectedBytes": "098249621362979500000001200000000012              "
+      "fields": {
+        "XREF-CARD-NUM": "6009619150674526",
+        "XREF-CUST-ID": "000000005",
+        "XREF-ACCT-ID": "00000000005",
+        "FILLER": "              "
+      },
+      "expectedBytes": "600961915067452600000000500000000005              "
     }
   ],
   "expectedReturnCode": 12,
@@ -68,7 +87,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 5,
+      "rowCount": 4,
       "recordLength": 50
     }
   ]

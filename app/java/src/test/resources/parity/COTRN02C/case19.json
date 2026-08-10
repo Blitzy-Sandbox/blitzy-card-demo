@@ -1,0 +1,184 @@
+{
+  "program" : "COTRN02C",
+  "caseId" : "case19",
+  "description" : "The insert - the whole reason risk R-B matters. Everything validates, CONFIRMI holds 'Y', so the EVALUATE at :169 takes the first arm at :171 and performs ADD-TRANSACTION. :444 moves HIGH-VALUES into TRAN-ID, :445-447 position a browse past the end, read the record with the highest key and end the browse, :448 moves that key into WS-TRAN-ID-N PIC 9(16) and :449 adds one - so a master whose highest key is ...0003 yields ...0004. :450 INITIALIZE TRAN-RECORD and :451-467 fill it, including a second FUNCTION NUMVAL-C conversion of TRNAMTI at :456 whose result is stored into TRAN-AMT PIC S9(09)V99 as the zoned image 0000000123D - eleven characters, the trailing digit carrying the positive overpunch. The record written at :713 is the full 350 bytes CVTRA05Y declares, trailing FILLER PIC X(20) included and space filled (gates G19, G21). The write reports NORMAL, so :725 INITIALIZE-ALL-FIELDS blanks all fifteen receivers before the notice is composed - which is why every input field on the sent screen is blank and the cursor is back on ACTIDINL - :727 moves DFHGREEN into ERRMSGC, and :728-733 STRING two literals, TRAN-ID DELIMITED BY SPACE and a full stop into WS-MESSAGE. The two literals each carry a space at the joining edge, so the notice contains two spaces after 'successfully.'; and a zero-filled sixteen-digit key contains no space, so all sixteen digits appear. TRANSACT is left holding four rows in key sequence.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "CCXREF" : {
+      "rows" : [ ],
+      "fixture" : "cardxref.txt",
+      "fromRow" : 0,
+      "rowCount" : 5,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    },
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
+      "fixture" : null,
+      "fromRow" : null,
+      "rowCount" : null,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    }
+  },
+  "jobParameters" : { },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHENTER",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "mapFields" : {
+      "ACTIDINI" : "00000000050",
+      "CARDNINI" : "                ",
+      "TTYPCDI" : "01",
+      "TCATCDI" : "0001",
+      "TRNSRCI" : "POS TERM  ",
+      "TDESCI" : "COFFEE AND A NEWSPAPER",
+      "TRNAMTI" : "+00000012.34",
+      "TORIGDTI" : "2022-07-18",
+      "TPROCDTI" : "2022-07-18",
+      "MIDI" : "123456789",
+      "MNAMEI" : "KWIK-E-MART",
+      "MCITYI" : "SPRINGFIELD",
+      "MZIPI" : "0000012345",
+      "CONFIRMI" : "Y"
+    },
+    "forcedOutcomes" : { }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN02C",
+    "nextMapset" : "COTRN02",
+    "nextMap" : "COTRN2A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT02-TRNID-FIRST" : "                ",
+      "CDEMO-CT02-TRNID-LAST" : "                ",
+      "CDEMO-CT02-PAGE-NUM" : "00000000",
+      "CDEMO-CT02-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT02-TRN-SEL-FLG" : " ",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT02",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN02C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "ACTIDINO" : "           ",
+        "CARDNINO" : "                ",
+        "TTYPCDO" : "  ",
+        "TCATCDO" : "    ",
+        "TRNSRCO" : "          ",
+        "TDESCO" : "                                                            ",
+        "TRNAMTO" : "            ",
+        "TORIGDTO" : "          ",
+        "TPROCDTO" : "          ",
+        "MIDO" : "         ",
+        "MNAMEO" : "                              ",
+        "MCITYO" : "                         ",
+        "MZIPO" : "          ",
+        "CONFIRMO" : " ",
+        "ERRMSGO" : "Transaction added successfully.  Your Tran ID is 0000000000000004.            "
+      },
+      "attributes" : {
+        "ERRMSGC" : "DFHGREEN"
+      }
+    } ],
+    "cursorField" : "ACTIDINL",
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "fields" : {
+      "TRAN-ID" : "0000000000000004",
+      "TRAN-TYPE-CD" : "01",
+      "TRAN-CAT-CD" : "0001",
+      "TRAN-SOURCE" : "POS TERM  ",
+      "TRAN-DESC" : "COFFEE AND A NEWSPAPER                                                                              ",
+      "TRAN-AMT" : "0000000123D",
+      "TRAN-MERCHANT-ID" : "123456789",
+      "TRAN-MERCHANT-NAME" : "KWIK-E-MART                                       ",
+      "TRAN-MERCHANT-CITY" : "SPRINGFIELD                                       ",
+      "TRAN-MERCHANT-ZIP" : "0000012345",
+      "TRAN-CARD-NUM" : "0500024453765740",
+      "TRAN-ORIG-TS" : "2022-07-18                ",
+      "TRAN-PROC-TS" : "2022-07-18                ",
+      "FILLER" : "                    "
+    },
+    "expectedBytes" : "0000000000000004010001POS TERM  COFFEE AND A NEWSPAPER                                                                              0000000123D123456789KWIK-E-MART                                       SPRINGFIELD                                       000001234505000244537657402022-07-18                2022-07-18                                    "
+  } ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "fields" : { },
+    "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "fields" : { },
+    "expectedBytes" : "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "fields" : { },
+    "expectedBytes" : "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 3,
+    "fields" : { },
+    "expectedBytes" : "0000000000000004010001POS TERM  COFFEE AND A NEWSPAPER                                                                              0000000123D123456789KWIK-E-MART                                       SPRINGFIELD                                       000001234505000244537657402022-07-18                2022-07-18                                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "Transaction added successfully.  Your Tran ID is 0000000000000004.              "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "Transaction added successfully.  Your Tran ID is 0000000000000004.            "
+  } ],
+  "normalisations" : [ {
+    "dataset" : "CCXREF",
+    "kind" : "CARDXREF_FILLER_PAD_36_TO_50"
+  } ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "WRITES",
+    "rowCount" : 1,
+    "recordLength" : 350
+  }, {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 4,
+    "recordLength" : 350
+  } ]
+}

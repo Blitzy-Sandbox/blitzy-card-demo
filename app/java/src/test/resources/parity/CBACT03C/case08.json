@@ -1,7 +1,7 @@
 {
   "program": "CBACT03C",
   "caseId": "case08",
-  "description": "The very first READ at :93 reports '30' - a permanent I/O error - so the third arm at :100 moves 12 into APPL-RESULT, 88 APPL-AOK is false at :104, 88 APPL-EOF is false at :107, and :110-113 run: DISPLAY 'ERROR READING XREFFILE', 9910-DISPLAY-IO-STATUS, then the abend. Four lines and RETURN-CODE 12, with no record line at all: the failing READ does not reach the :96 display and the abend never reaches :78, so a failed read contributes ZERO lines rather than one. The three seeded rows prove it - a translation that displayed the record area on the failing arm would emit them.",
+  "description": "The very first READ at app/cbl/CBACT03C.cbl:93 reports FILE STATUS '30', a permanent I/O error, so neither named arm is taken - :94 tests only '00' and :98 only '10' - and the third arm at :100-101 moves 12 into APPL-RESULT. 88 APPL-AOK is then false at :104 and 88 APPL-EOF is false at :107, so :110-113 run in order - DISPLAY 'ERROR READING XREFFILE', 9910-DISPLAY-IO-STATUS, 9999-ABEND-PROGRAM - and :158 ends the run carrying RETURN-CODE 12. Four lines and not one record line: the failing READ never reaches the :96 DISPLAY, which sits on the '00' arm alone, and the abend never returns to the :78 DISPLAY in the mainline loop, so a failed read contributes ZERO lines rather than one. The three seeded rows are what prove it - a translation that displayed the record area on the failing arm, or that let the abend fall through to :78, would emit them here. '30' is numeric and its first byte is not '9', so :162 takes the ELSE arm at :170-172 and the image is 0030 rather than a code-point rendering. Each row is pinned twice over: field by field in the order app/cpy/CVACT03Y.cpy declares - XREF-CARD-NUM X(16) at 0, XREF-CUST-ID 9(09) at 16, XREF-ACCT-ID 9(11) at 25, FILLER X(14) at 36 - and as the complete 50-character image, so a difference is localised to the span that holds it while the total width still proves the FILLER the shipped data omits was emitted at all. The seed stays at that shipped 36 bytes, because the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation is the single owner of the widening: the fourteen spaces above are its work, not this file's. Nothing is written - :120 issues OPEN INPUT and the 178 lines hold no WRITE, REWRITE or DELETE - so the dataset is left exactly as seeded, which is the positive proof behind the prompt-mandated name AccountBalanceUpdateJob. Provenance: every expected value here is statically derived by structured reading of app/cbl/CBACT03C.cbl, cross-checked against app/cpy/CVACT03Y.cpy for the layout, app/jcl/READXREF.jcl for the step and DD contract - STEP05 is a bare EXEC PGM=CBACT03C with no PARM, which is why jobParameters is empty - and app/data/ASCII/cardxref.txt for the rows. It was never captured from a live COBOL execution, which is impossible in this environment; only that provenance is substituted, and the field-for-field diffing and the diff-count-equals-zero gate stand unchanged.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
@@ -16,16 +16,34 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
       "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
       "expectedBytes": "092387719324733000000000200000000002              "
     }
   ],

@@ -1,0 +1,50 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case04",
+  "description": "The last-record boundary. The browse is positioned on the highest key in the file, CUST-ID 000000050, so the very next READ after the one that delivers it is the one that reports '10'. The loop must display that single record twice and then stop: a translation that read one record too many would emit a third image, and one that stopped a record early would emit none. The record is the fiftieth row of the shipped fixture, taken from zero-based row 49, so the bytes are production-shaped rather than constructed.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

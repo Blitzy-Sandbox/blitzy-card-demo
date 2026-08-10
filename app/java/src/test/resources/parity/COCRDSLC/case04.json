@@ -1,7 +1,7 @@
 {
   "program": "COCRDSLC",
   "caseId": "case04",
-  "description": "The WHEN OTHER arm of 9100-GETCARD-BYACCTCARD at :762-771 - an unexpected RESP from the CARDDAT read, which the seeded data alone cannot produce, so the outcome is forced. WS-FILE-ERROR-MESSAGE is composed at :767-770 from ERROR-OPNAME 'READ', ERROR-FILE 'CARDDAT ' in a PIC X(9) receiver, and the RESP and RESP2 values each rendered as nine unsigned digits left-justified in a PIC X(10) item; the 80-byte group is then MOVEd into WS-RETURN-MSG PIC X(75), losing the trailing five spaces. Note the nesting the source has and this case pins: at :764-766 the IF WS-RETURN-MSG-OFF guard wraps the FLAG, not the message, so FLG-ACCTFILTER-NOT-OK is set and FLG-CARDFILTER-NOT-OK is left BLANK.",
+  "description": "WHEN CDEMO-PGM-REENTER at :357 with both criteria valid and the account deliberately MISMATCHED against the card, which is this folder's gate G45 headline. The operator types ACCTSIDI '00000000002' beside CARDSIDI '0683586198171516'; fixture row 1 records that card's CARD-ACCT-ID as '00000000027', account '00000000002' owns row 2's '0923877193247330' instead, and all fifty fixture accounts are distinct, so account-to-card is strictly 1:1 and the mismatch is genuine. The read succeeds regardless, because 9100-GETCARD-BYACCTCARD keys on the sixteen-byte card number ALONE: :739's MOVE CC-ACCT-ID-N TO WS-CARD-RID-ACCT-ID is commented out, so WS-CARD-RID-ACCT-ID is never populated and the account never enters the key, and :752-754 takes DFHRESP(NORMAL) and sets FOUND-CARDS-FOR-ACCOUNT. A mismatched account is silently irrelevant - verified legacy behaviour preserved as found (practice B5), not a defect introduced. 9150-GETCARD-BYACCT at :779-812 is UNREACHABLE, the only occurrences of 9150 being its own two labels while 9000-READ-DATA at :726-730 performs 9100 alone, so the CARDAIX finder is NOT invoked and no CARDAIX input is declared: CARDAIX is a second finder over the one CARDDAT base cluster, never a second table. The expectations below prove the key - a translation that read on the account, or through CARDAIX, would return row 2's Enrico Rosenbaum expiring 2024-08-11 and differ in every projected field. ACCTSIDO echoes the REQUESTED account: :676-677's MOVE CC-ACCT-ID TO CDEMO-ACCT-ID overwrites the '00000000027' the previous turn carried, then :464-465 paints ACCTSIDO from CC-ACCT-ID. Two asymmetries are reproduced rather than normalised (B5): :676 moves the ALPHANUMERIC CC-ACCT-ID view where :717 moves the NUMERIC CC-CARD-NUM-N REDEFINES view, and the FILLER REDEFINES at :85-90 splits '2025-07-13' into year, month and day of which only EXPYEARO and EXPMONO exist, so the day is computed and never surfaced (gate G34). :596-602 captures the RECEIVE RESP and never tests it; that gap stays. This turn did not arrive from the card list - CDEMO-FROM-PROGRAM 'COCRDSLC', CDEMO-LAST-MAPSET 'COCRDSL' - so :509-511 moves DFHBMFSE rather than DFHBMPRF and :526-530's DFHDFCOL does not fire; both are CCRDSLAI input-group items, so CardSelectControllerTest asserts them and only the fifteen xxxC and fifteen xxxH output items appear here. With neither filter NOT-OK nor BLANK the cursor EVALUATE at :514-524 falls to WHEN OTHER and lands on ACCTSIDL, and no DFHRED and no '*' is written even though the context IS re-entry, because :541-551 guards the asterisk on BLANK AND CDEMO-PGM-REENTER together - the no-error side of gate G38. :562-566 then SETs CDEMO-PGM-REENTER, so the response context stays 1, and COMMON-RETURN at :394-406 returns the 160-byte commarea plus its 12-byte trailer under TRANSID('CCDL'): all state in the payload, none server-side (gate G37, rule R6). The clock is pinned to 2022-07-19T23:16:00 - the version-footer stamp of app/cpy/CVACT02Y.cpy and app/cpy/CVCRD01Y.cpy, the two copybooks this case pins - so CURDATEO is '07/19/22' and CURTIMEO '23:16:00' every run (B7). The name says Select; the program is a detail VIEW, per its own :4 header, README.md:213-231 and app/csd/CARDDEMO.CSD:220's DESCRIPTION(VIEW CARD DETAIL). Rule R1 keeps the mandated name and takes behaviour from the source, so the divergence is documented, not repaired (B4). Provenance (B12): derived by structured reading of app/cbl/COCRDSLC.cbl, the CVACT02Y byte layout, the COCRDSL.CPY xxxI PICTURE clauses, app/bms/COCRDSL.bms and the real ASCII fixture - never captured from a live COBOL execution, which plan 0.7.6 proves impossible here with eight blockers (risk R-A). Gates G32, G35 and G39 have no call site: all nine GO TOs here are forward early-exit or shared-terminal jumps and CBSTM03A alone forms backward loops; there is no CALL 'CEE3ABD' in COCRDSLC, whose abend path is the CICS-native HANDLE ABEND into ABEND ABCODE('9999'); and the map declares no PAGENO.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -13,57 +13,53 @@
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:33",
+    "pinnedClock": "2022-07-19T23:16:00",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CCLI",
-      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "ADMIN001",
-      "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "0",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000050",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0683586198171516",
-      "CDEMO-LAST-MAP": "CCRDLIA",
-      "CDEMO-LAST-MAPSET": "COCRDLI"
-    },
-    "mapFields": {
-      "CARDSIDI": "0683586198171516"
-    },
-    "forcedOutcomes": {
-      "read": {
-        "outcome": "OTHER",
-        "resp": 22,
-        "resp2": 3
-      }
-    }
-  },
-  "expectedResponse": {
-    "nextMapset": "COCRDSL",
-    "nextMap": "CCRDSLA",
-    "navigation": {
-      "CDEMO-FROM-TRANID": "CCLI",
-      "CDEMO-FROM-PROGRAM": "COCRDLIC",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "ADMIN001",
-      "CDEMO-USER-TYPE": "A",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-ID": "00000000027",
       "CDEMO-ACCT-STATUS": " ",
       "CDEMO-CARD-NUM": "0683586198171516",
-      "CDEMO-LAST-MAP": "CCRDLIA",
-      "CDEMO-LAST-MAPSET": "COCRDLI"
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000002",
+      "CARDSIDI": "0683586198171516"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDSLC",
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000002",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0683586198171516",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
     },
     "sends": [
       {
@@ -73,15 +69,15 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COCRDSLC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "ACCTSIDO": "00000000050",
+          "CURTIMEO": "23:16:00",
+          "ACCTSIDO": "00000000002",
           "CARDSIDO": "0683586198171516",
-          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CRDSTCDO": "\u0000",
-          "EXPMONO": "\u0000\u0000",
-          "EXPYEARO": "\u0000\u0000\u0000\u0000",
-          "INFOMSGO": "Please enter Account and Card Number    ",
-          "ERRMSGO": "File Error: READ     on CARDDAT   returned RESP 000000022 ,RESP2 000000003      ",
+          "CRDNAMEO": "Ward Jones                                        ",
+          "CRDSTCDO": "Y",
+          "EXPMONO": "07",
+          "EXPYEARO": "2025",
+          "INFOMSGO": "   Displaying requested details         ",
+          "ERRMSGO": "                                                                                ",
           "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
         },
         "attributes": {
@@ -91,7 +87,7 @@
           "PGMNAMEC": "DFHDFCOL",
           "TITLE02C": "DFHDFCOL",
           "CURTIMEC": "DFHDFCOL",
-          "ACCTSIDC": "DFHRED",
+          "ACCTSIDC": "DFHDFCOL",
           "CARDSIDC": "DFHDFCOL",
           "CRDNAMEC": "DFHDFCOL",
           "CRDSTCDC": "DFHDFCOL",

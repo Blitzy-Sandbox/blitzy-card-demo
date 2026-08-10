@@ -1,0 +1,30 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case08",
+  "description": "The fatal open, from a customer master that is not there to be opened. The case declares no CUSTFILE input at all, which is how it states that - a dataset a case says nothing about is omitted from \"inputs\" entirely. 0000-CUSTFILE-OPEN at app/cbl/CBCUS01C.cbl:L118-L134 moves 8 into APPL-RESULT before the OPEN, sees a status other than '00', moves 12, and takes its ELSE arm: DISPLAY 'ERROR OPENING CUSTFILE', then MOVE CUSTFILE-STATUS TO IO-STATUS and Z-DISPLAY-IO-STATUS, then Z-ABEND-PROGRAM. The status is rendered through the extended branch at L162-L168 because its first byte is '9', giving FILE STATUS IS: NNNN9000, and the CALL 'CEE3ABD' at L158 carries APPL-RESULT 12 out as the RETURN-CODE. No record is read, no display fires, 9000-CUSTFILE-CLOSE is never performed and the L85 banner is never reached.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {},
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING CUSTFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

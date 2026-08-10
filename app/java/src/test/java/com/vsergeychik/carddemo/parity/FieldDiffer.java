@@ -1330,8 +1330,9 @@ public final class FieldDiffer {
         compareResponseScalar("termination", nameOf(expected.termination()),
             nameOf(observed.termination()),
             "how the transaction ended. XCTL transfers control and never returns, so the EXEC CICS "
-                + "RETURN that follows it in the source is not reached; the two are not "
-                + "interchangeable", diffs);
+                + "RETURN that follows it in the source is not reached, and a bare RETURN names no "
+                + "transaction to carry the commarea back to; the three are not interchangeable",
+            diffs);
 
         compareNavigation(expected.navigation(), observed.navigation(), diffs);
         compareSends(expected.sends(), observed.sends(), diffs);

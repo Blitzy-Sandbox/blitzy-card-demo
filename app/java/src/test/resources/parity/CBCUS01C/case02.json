@@ -1,0 +1,36 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case02",
+  "description": "The customer master exists and holds no record. The first READ at app/cbl/CBCUS01C.cbl:L93 reports '10', so 1000-CUSTFILE-GET-NEXT moves 16 into APPL-RESULT, the 88 APPL-EOF condition at L107 holds, END-OF-FILE becomes 'Y' at L108, and the mainline's second IF END-OF-FILE = 'N' guard at L77 suppresses the display for the read that found nothing - so neither of the two displays fires. The whole of SYSOUT is the two banners, and the dataset-level expectation states what no row expectation can: the dataset was opened and holds zero rows at its declared 500-byte width.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "empty": true,
+      "recordLength": 500,
+      "copybook": "CVCUS01Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 500
+    }
+  ]
+}

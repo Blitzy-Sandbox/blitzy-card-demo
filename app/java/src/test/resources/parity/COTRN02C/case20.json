@@ -1,0 +1,170 @@
+{
+  "program" : "COTRN02C",
+  "caseId" : "case20",
+  "description" : "Two conditions in one run, both of which only this case can reach. First, the empty master: TRANSACT is declared empty, so the READPREV at :675 reports DFHRESP(ENDFILE) and :688-689 move ZEROS into TRAN-ID without raising the error flag - an empty file is a normal condition here, :449 adds one to zero, and the first record ever written carries identifier ...0001. Getting that arm wrong is the difference between an empty master being loadable and being permanently unloadable. Second, the duplicate write: the identifier is a high-water mark taken without a lock, so two operators adding at once can compute the same next key, and the case forces DFHRESP(DUPREC) to reach :735-741 - one shared arm for DUPKEY and DUPREC, two WHEN clauses over a single action. 'Tran ID already exist...' is reported with the cursor on ACTIDINL, that arm carries no DISPLAY so no console line is emitted, and ERRMSGC keeps the map's default colour because only the NORMAL arm sets one. The record is still reported on the write channel - the program handed those 350 bytes to the dataset and the dataset refused them, which is an observation about the program - while the final state stays empty, which is an observation about the dataset. CONFIRMI holds the lower-case 'y', the second of the two WHENs at :171-172, so the two spellings are not interchangeable by accident.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "CCXREF" : {
+      "rows" : [ ],
+      "fixture" : "cardxref.txt",
+      "fromRow" : 0,
+      "rowCount" : 5,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    },
+    "TRANSACT" : {
+      "rows" : [ ],
+      "fixture" : null,
+      "fromRow" : null,
+      "rowCount" : null,
+      "empty" : true,
+      "recordLength" : 350,
+      "copybook" : "CVTRA05Y"
+    }
+  },
+  "jobParameters" : { },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHENTER",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "mapFields" : {
+      "ACTIDINI" : "00000000050",
+      "CARDNINI" : "                ",
+      "TTYPCDI" : "01",
+      "TCATCDI" : "0001",
+      "TRNSRCI" : "POS TERM  ",
+      "TDESCI" : "COFFEE AND A NEWSPAPER",
+      "TRNAMTI" : "+00000012.34",
+      "TORIGDTI" : "2022-07-18",
+      "TPROCDTI" : "2022-07-18",
+      "MIDI" : "123456789",
+      "MNAMEI" : "KWIK-E-MART",
+      "MCITYI" : "SPRINGFIELD",
+      "MZIPI" : "0000012345",
+      "CONFIRMI" : "y"
+    },
+    "forcedOutcomes" : {
+      "write" : {
+        "outcome" : "DUPLICATE",
+        "resp" : null,
+        "resp2" : null
+      }
+    }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN02C",
+    "nextMapset" : "COTRN02",
+    "nextMap" : "COTRN2A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT02-TRNID-FIRST" : "                ",
+      "CDEMO-CT02-TRNID-LAST" : "                ",
+      "CDEMO-CT02-PAGE-NUM" : "00000000",
+      "CDEMO-CT02-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT02-TRN-SEL-FLG" : " ",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT02",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN02C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "ACTIDINO" : "00000000050",
+        "CARDNINO" : "0500024453765740",
+        "TTYPCDO" : "01",
+        "TCATCDO" : "0001",
+        "TRNSRCO" : "POS TERM  ",
+        "TDESCO" : "COFFEE AND A NEWSPAPER                                      ",
+        "TRNAMTO" : "+00000012.34",
+        "TORIGDTO" : "2022-07-18",
+        "TPROCDTO" : "2022-07-18",
+        "MIDO" : "123456789",
+        "MNAMEO" : "KWIK-E-MART                   ",
+        "MCITYO" : "SPRINGFIELD              ",
+        "MZIPO" : "0000012345",
+        "CONFIRMO" : "y",
+        "ERRMSGO" : "Tran ID already exist...                                                      "
+      },
+      "attributes" : {
+        "ERRMSGC" : "DFHDFCOL"
+      }
+    } ],
+    "cursorField" : "ACTIDINL",
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "fields" : {
+      "TRAN-ID" : "0000000000000001",
+      "TRAN-TYPE-CD" : "01",
+      "TRAN-CAT-CD" : "0001",
+      "TRAN-SOURCE" : "POS TERM  ",
+      "TRAN-DESC" : "COFFEE AND A NEWSPAPER                                                                              ",
+      "TRAN-AMT" : "0000000123D",
+      "TRAN-MERCHANT-ID" : "123456789",
+      "TRAN-MERCHANT-NAME" : "KWIK-E-MART                                       ",
+      "TRAN-MERCHANT-CITY" : "SPRINGFIELD                                       ",
+      "TRAN-MERCHANT-ZIP" : "0000012345",
+      "TRAN-CARD-NUM" : "0500024453765740",
+      "TRAN-ORIG-TS" : "2022-07-18                ",
+      "TRAN-PROC-TS" : "2022-07-18                ",
+      "FILLER" : "                    "
+    },
+    "expectedBytes" : "0000000000000001010001POS TERM  COFFEE AND A NEWSPAPER                                                                              0000000123D123456789KWIK-E-MART                                       SPRINGFIELD                                       000001234505000244537657402022-07-18                2022-07-18                                    "
+  } ],
+  "expectedFinalState" : [ ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "Tran ID already exist...                                                        "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "Tran ID already exist...                                                      "
+  } ],
+  "normalisations" : [ {
+    "dataset" : "CCXREF",
+    "kind" : "CARDXREF_FILLER_PAD_36_TO_50"
+  } ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "WRITES",
+    "rowCount" : 1,
+    "recordLength" : 350
+  }, {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 0,
+    "recordLength" : 350
+  } ]
+}

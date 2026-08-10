@@ -1,0 +1,57 @@
+{
+  "program": "CORPT00C",
+  "caseId": "case01",
+  "description": "MAIN-PARA's EIBCALEN = 0 guard at :172-174. No communication area travelled, so the program cannot know who called it: :173 moves 'COSGN00C' into CDEMO-TO-PROGRAM and RETURN-TO-PREV-SCREEN transfers at :548-551 without sending a map and without handing one record to the queue. The area carried forward is this program's own initial CARDDEMO-COMMAREA with only the three fields :543-547 writes set, and CDEMO-PGM-CONTEXT back at ZEROS. EIBAID is never read on this path, so no AID is declared: declaring one would suggest the key mattered. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 0,
+    "aid": null,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {},
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COSGN00C",
+    "nextMapset": null,
+    "nextMap": null,
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CR00",
+      "CDEMO-FROM-PROGRAM": "CORPT00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "cursorField": null,
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "                                                                              "
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": []
+}

@@ -1,0 +1,121 @@
+{
+  "program": "COACTVWC",
+  "caseId": "case15",
+  "description": "The other half of both fallbacks at :328-339: blank from-fields send the user to the main menu, CM00 and COMEN01C, rather than nowhere. Two OR conditions each test LOW-VALUES and SPACES; spaces are what a commarea INITIALIZE leaves, so this is the reachable half, and it is the one that decides where a user who pressed PF3 on a directly-entered transaction ends up.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CCXREF": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    },
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    },
+    "CUSTDAT": {
+      "fixture": "custdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHPF3",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000050"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COMEN01C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CAVW",
+      "CDEMO-FROM-PROGRAM": "COACTVWC",
+      "CDEMO-TO-TRANID": "CM00",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CACTVWA",
+      "CDEMO-LAST-MAPSET": "COACTVW"
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "CCXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "CCXREF",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case09",
+  "description": "The fatal open again, with the numeric branch of Z-DISPLAY-IO-STATUS this time. OPEN INPUT at app/cbl/CBCUS01C.cbl:L120 reports '35' - the classic 'the file was not available' status - and because both of its bytes are digits and the first is not '9', L162's class condition is false and the paragraph takes its ELSE arm at L170-L172: '0000' with the two status characters overlaid at one-based positions three and four, giving FILE STATUS IS: NNNN0035. That is a different branch of the same paragraph case08 drives, and only a case whose status is numeric can reach it. The dataset is declared holding two records deliberately: the run must abend in the open without reading either of them, so a translation that opened lazily and read first would emit two extra pairs of lines.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING CUSTFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0035"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

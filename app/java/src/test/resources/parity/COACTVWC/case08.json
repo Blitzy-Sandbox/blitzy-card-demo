@@ -1,0 +1,242 @@
+{
+  "program": "COACTVWC",
+  "caseId": "case08",
+  "description": "WHEN DFHRESP(NOTFND) of 9200-GETCARDXREF-BYACCT at :741-758, produced by seeded rows rather than by a forced outcome: the CXACAIX window holds accounts 27, 2 and 20 and the filter names 50. The STRING at :747-757 composes 81 characters into WS-RETURN-MSG PIC X(75), so the last six are lost - the truncation is the assertion. FLG-ACCTFILTER-NOT-OK then makes the guard at :697 fire, which is the ONE guard in 9000-READ-ACCT that really does stop the sequence, so neither ACCTDAT nor CUSTDAT is read.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CCXREF": {
+      "fixture": "cardxref.txt",
+      "fromRow": 1,
+      "rowCount": 3
+    },
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    },
+    "CUSTDAT": {
+      "fixture": "custdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000050"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COACTVWC",
+    "nextMapset": "COACTVW",
+    "nextMap": "CACTVWA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CAVW",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COACTVWC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:32",
+          "ACCTSIDO": "00000000050",
+          "ACSTTUSO": "\u0000",
+          "ADTOPENO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACRDLIMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "AEXPDTO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSHLIMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "AREISDTO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACURBALO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACRCYCRO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "AADDGRPO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACRCYDBO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSTNUMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSTSSNO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSTDOBO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSTFCOO": "\u0000\u0000\u0000",
+          "ACSFNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSMNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSLNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSADL1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSSTTEO": "\u0000\u0000",
+          "ACSADL2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSZIPCO": "\u0000\u0000\u0000\u0000\u0000",
+          "ACSCITYO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSCTRYO": "\u0000\u0000\u0000",
+          "ACSPHN1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSGOVTO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSPHN2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSEFTCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSPFLGO": "\u0000",
+          "INFOMSGO": "Enter or update id of account to display     ",
+          "ERRMSGO": "Account:00000000050 not found in Cross ref file.  Resp:000000013  Reas:0000   "
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHRED",
+          "ACSTTUSC": "DFHDFCOL",
+          "ADTOPENC": "DFHDFCOL",
+          "ACRDLIMC": "DFHDFCOL",
+          "AEXPDTC": "DFHDFCOL",
+          "ACSHLIMC": "DFHDFCOL",
+          "AREISDTC": "DFHDFCOL",
+          "ACURBALC": "DFHDFCOL",
+          "ACRCYCRC": "DFHDFCOL",
+          "AADDGRPC": "DFHDFCOL",
+          "ACRCYDBC": "DFHDFCOL",
+          "ACSTNUMC": "DFHDFCOL",
+          "ACSTSSNC": "DFHDFCOL",
+          "ACSTDOBC": "DFHDFCOL",
+          "ACSTFCOC": "DFHDFCOL",
+          "ACSFNAMC": "DFHDFCOL",
+          "ACSMNAMC": "DFHDFCOL",
+          "ACSLNAMC": "DFHDFCOL",
+          "ACSADL1C": "DFHDFCOL",
+          "ACSSTTEC": "DFHDFCOL",
+          "ACSADL2C": "DFHDFCOL",
+          "ACSZIPCC": "DFHDFCOL",
+          "ACSCITYC": "DFHDFCOL",
+          "ACSCTRYC": "DFHDFCOL",
+          "ACSPHN1C": "DFHDFCOL",
+          "ACSGOVTC": "DFHDFCOL",
+          "ACSPHN2C": "DFHDFCOL",
+          "ACSEFTCC": "DFHDFCOL",
+          "ACSPFLGC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "ACSTTUSH": "DFHDFHI",
+          "ADTOPENH": "DFHDFHI",
+          "ACRDLIMH": "DFHDFHI",
+          "AEXPDTH": "DFHDFHI",
+          "ACSHLIMH": "DFHDFHI",
+          "AREISDTH": "DFHDFHI",
+          "ACURBALH": "DFHDFHI",
+          "ACRCYCRH": "DFHDFHI",
+          "AADDGRPH": "DFHDFHI",
+          "ACRCYDBH": "DFHDFHI",
+          "ACSTNUMH": "DFHDFHI",
+          "ACSTSSNH": "DFHDFHI",
+          "ACSTDOBH": "DFHDFHI",
+          "ACSTFCOH": "DFHDFHI",
+          "ACSFNAMH": "DFHDFHI",
+          "ACSMNAMH": "DFHDFHI",
+          "ACSLNAMH": "DFHDFHI",
+          "ACSADL1H": "DFHDFHI",
+          "ACSSTTEH": "DFHDFHI",
+          "ACSADL2H": "DFHDFHI",
+          "ACSZIPCH": "DFHDFHI",
+          "ACSCITYH": "DFHDFHI",
+          "ACSCTRYH": "DFHDFHI",
+          "ACSPHN1H": "DFHDFHI",
+          "ACSGOVTH": "DFHDFHI",
+          "ACSPHN2H": "DFHDFHI",
+          "ACSEFTCH": "DFHDFHI",
+          "ACSPFLGH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 0,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 1,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 2,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "CCXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "CCXREF",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

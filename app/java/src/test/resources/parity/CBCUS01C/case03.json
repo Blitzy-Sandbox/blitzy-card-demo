@@ -1,0 +1,70 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case03",
+  "description": "One record, pinned field by field rather than as an image - and the field that matters most here is CUST-DOB-YYYY-MM-DD. app/cpy/CVCUS01Y.cpy spells it with dashes; app/cpy/CUSTREC.cpy spells the same 10-byte span at the same offset CUST-DOB-YYYYMMDD, and the statement package models that copybook separately as Stm03CustomerRecord. Naming the field here means a translation that collapsed the two layouts onto one type, or renamed this span to the CUSTREC spelling, is reported as a missing field rather than passing silently. All 19 spans are named because a partial expectation asserts nothing about the bytes it leaves out. Four lines: the banner, the record twice, the banner.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000001",
+        "CUST-FIRST-NAME": "Immanuel                 ",
+        "CUST-MIDDLE-NAME": "Madeline                 ",
+        "CUST-LAST-NAME": "Kessler                  ",
+        "CUST-ADDR-LINE-1": "618 Deshaun Route                                 ",
+        "CUST-ADDR-LINE-2": "Apt. 802                                          ",
+        "CUST-ADDR-LINE-3": "Altenwerthshire                                   ",
+        "CUST-ADDR-STATE-CD": "NC",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "12546     ",
+        "CUST-PHONE-NUM-1": "(908)119-8310  ",
+        "CUST-PHONE-NUM-2": "(373)693-8684  ",
+        "CUST-SSN": "020973888",
+        "CUST-GOVT-ISSUED-ID": "00000000000049368437",
+        "CUST-DOB-YYYY-MM-DD": "1961-06-08",
+        "CUST-EFT-ACCOUNT-ID": "0053581756",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "274",
+        "FILLER": "                                                                                                                                                                        "
+      }
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

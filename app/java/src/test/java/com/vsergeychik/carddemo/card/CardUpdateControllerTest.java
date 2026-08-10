@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -13,6 +14,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.card.CardRepository.CardReadResult;
 import com.vsergeychik.carddemo.card.CardUpdateController.Conversation;
@@ -26,6 +28,7 @@ import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.ChangeAction;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CommArea;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.DetailGroup;
 import com.vsergeychik.carddemo.card.dto.CardUpdateResponse;
+import com.vsergeychik.carddemo.card.dto.CardUpdateResponse.ScreenField;
 import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.BmsAttributes;
@@ -33,17 +36,23 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig;
+import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -61,11 +70,91 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 /**
  * {@link CardUpdateController} - the {@code COCRDUPC} / {@code CCUP} credit-card update screen.
  *
+ * <p>The unit under test migrates {@code app/cbl/COCRDUPC.cbl} (1,560 lines), reached in CICS as
+ * transaction {@code CCUP} - {@code app/csd/CARDDEMO.CSD:367},
+ * {@code DESCRIPTION(CREDIT CARD UPDATE TRANSACTION)} - which sends and receives mapset
+ * {@code COCRDUP}, map {@code CCRDUPA}. The map's field contract is
+ * {@code app/cpy-bms/COCRDUP.CPY} beside {@code app/bms/COCRDUP.bms}; the record it edits is
+ * {@code app/cpy/CVACT02Y.cpy}; the work area it carries is {@code app/cpy/CVCRD01Y.cpy}. All five are
+ * read as the contract and <strong>cited in comments only</strong> - not one of them is opened at
+ * runtime by this test (practice B3), so the parity oracle cannot be perturbed by running the suite.
+ *
+ * <h2>Governing rules: there are none, and that is a finding rather than an omission</h2>
+ *
+ * <p>{@code review_rules} returns exactly one line - "No user rules provided." - and that single line
+ * is the whole document. <strong>No user-specified rule governs this file.</strong> None has been
+ * invented to fill the space, and the absence is not treated as licence to lower the bar. The binding
+ * standard is therefore enterprise best practice as codified by the Agent Action Plan in
+ * <strong>&sect;0.10.2 B1-B12</strong> together with the absolutes in <strong>&sect;0.8.9</strong>.
+ * Those are plan directives, and are never described here as "user rules". The ones this file answers
+ * to directly:
+ *
+ * <ul>
+ *   <li><strong>B1 / B2</strong> - only the closed test stack the module already declares: JUnit
+ *       Jupiter, Mockito, AssertJ and Spring Test's {@code MockMvc}. JUnit 5 only, no new dependency
+ *       and no version literal anywhere below.</li>
+ *   <li><strong>B3</strong> - the COBOL, copybook, BMS and CSD sources are quoted, never read or
+ *       written.</li>
+ *   <li><strong>B5</strong> - behaviour is preserved including its quirks. The empty-bodied
+ *       {@code WHEN}, the body two arms share, the condition name tested twice and the two 88-levels
+ *       carrying one byte pattern are all real, and are asserted rather than tidied.</li>
+ *   <li><strong>B6</strong> - no card number, CVV or embossed name is masked, redacted or truncated,
+ *       in a payload, an assertion or a failure message.</li>
+ *   <li><strong>B7</strong> - determinism. {@link #FIXED_CLOCK} is injected because
+ *       {@code 3100-SCREEN-INIT} reads {@code FUNCTION CURRENT-DATE} at {@code :1055} and again at
+ *       {@code :1062}; nothing here reads a wall clock, depends on test ordering, or touches a
+ *       network.</li>
+ *   <li><strong>B8</strong> - explicit over implicit: no wildcard import, an explicitly named
+ *       {@link Charset}, and no dataset name in any form.</li>
+ *   <li><strong>B9</strong> - no static mutable state. Every {@code static} member here is
+ *       {@code final} and immutable; the three collaborators are per-test instance fields rebuilt by
+ *       {@link #setUp()}.</li>
+ *   <li><strong>B11</strong> - widths and field names are asserted explicitly against the symbolic
+ *       map, one at a time. Nothing is compared by reflective deep equality, because a reflective
+ *       comparison that passes proves only that two objects agree, not that either matches the
+ *       copybook.</li>
+ *   <li><strong>&sect;0.8.9</strong> - a copybook field is never renamed, and that includes the
+ *       misspelling four of them share: {@code CARD-EXPIRAION-DATE},
+ *       {@code CARD-UPDATE-EXPIRAION-DATE}, {@code CCUP-OLD-EXPIRAION-DATE} and
+ *       {@code CCUP-NEW-EXPIRAION-DATE}. The conventionally spelled form of that word appears
+ *       nowhere in this file - only the copybook's own spelling does, which is what a mechanical
+ *       scan for the corrected spelling is meant to confirm.</li>
+ * </ul>
+ *
+ * <h2>The gates this file is answerable for</h2>
+ *
+ * <p><strong>G9</strong> every payload field traces to a {@code DFHMDF} definition -
+ * {@link PayloadContract}. <strong>G30</strong> every {@code WHEN} in source order with
+ * {@code WHEN OTHER} last - {@link DecideAction}, {@link StateAlphabet}. <strong>G37</strong> no
+ * server-side session state - {@link Statelessness}. <strong>G38</strong> both {@code ENTER} and
+ * {@code REENTER}, with the highlight only on re-entry - {@link Screen}. <strong>G40</strong> the
+ * {@code XCTL} site resolves to a {@code nextProgram} response field - {@link Dispatcher},
+ * {@link Statelessness}. <strong>G47</strong> each {@link FileStatus} outcome per repository call site
+ * - {@link BaseRead}. <strong>G50</strong> both states of every 88-level touched -
+ * {@link ChangeActionConditions}, {@link StateAlphabet}, {@link MessageLiterals}.
+ * <strong>G51</strong> service logic is not re-asserted here - see below. <strong>G49</strong> branch
+ * coverage at or above 0.90 for {@code com.vsergeychik.carddemo.card}. <strong>G52</strong> no
+ * wildcard import. <strong>G53</strong> no static mutable state. <strong>G54</strong> the suite runs
+ * non-interactively, with no watch mode and no ordering dependence.
+ *
+ * <h2>Division of labour with {@link CardUpdateServiceTest} - gate G51</h2>
+ *
+ * <p>This is a hard boundary, not a preference. The write path
+ * ({@code 9200-WRITE-PROCESSING}, {@code :1420-1494}) and the optimistic-concurrency check
+ * ({@code 9300-CHECK-CHANGE-IN-REC}, {@code :1498-1523}) live in {@link CardUpdateService} and are
+ * asserted field by field in {@code CardUpdateServiceTest}. Here the service is
+ * <strong>stubbed and nothing more</strong>: this file asserts only what the controller itself owns -
+ * the eight-arm state machine, the projection of the map, navigation and statelessness. There is
+ * deliberately <strong>no</strong> assertion below of the six-field {@code CCUP-OLD-DETAILS} versus
+ * re-read comparison; a {@code CCUP-OLD} reference in this file is stub setup, never a verification of
+ * the comparison itself. Asserting it twice would let the two suites drift apart and would say
+ * nothing about the controller.
+ *
  * <p>Every test that asserts a <em>decision</em> instantiates the controller <strong>directly</strong>
  * with a mocked {@link CardRepository}, a mocked {@link CardUpdateService} and a fixed {@link Clock}.
- * There is no Spring context and no {@code MockMvc} in the decision path, which is gate
- * <strong>G51</strong>: an eight-arm {@code EVALUATE} is asserted where it lives, and a failure names the
- * paragraph rather than an HTTP status.
+ * There is no Spring context and no {@code MockMvc} in the decision path, which is the other half of
+ * gate <strong>G51</strong>: an eight-arm {@code EVALUATE} is asserted where it lives, and a failure
+ * names the paragraph rather than an HTTP status.
  *
  * <p>{@link HttpWiring} is the one exception, and only in mechanism. It asserts the transport contract -
  * that {@code PUT /api/cards/{cardNum}} routes, that the path variable and the optional query parameters
@@ -159,6 +248,51 @@ class CardUpdateControllerTest {
         request.setNavigationContext(commarea);
         request.setCommArea(trailer);
         return request;
+    }
+
+    /**
+     * A request with every one of the six editable screen fields typed, so that
+     * {@code 1200-EDIT-MAP-INPUTS} finds nothing to complain about.
+     *
+     * <p>{@code 1100-RECEIVE-MAP:594-638} reads {@code ACCTSID}, {@code CARDSID}, {@code CRDNAME},
+     * {@code CRDSTCD}, {@code EXPMON}, {@code EXPYEAR} and {@code EXPDAY} into
+     * {@code CCUP-NEW-DETAILS}; a field left unset arrives blank, and a blank editable field is an
+     * input error. So a test that needs the {@code 'S'} arm to <em>advance</em> has to supply all
+     * seven, and the status is flipped to {@code N} against {@link #oldDetails()}'s {@code Y} so that
+     * {@code NO-CHANGES-DETECTED} ({@code :682}) is false as well.
+     *
+     * @param commarea the {@code CARDDEMO-COMMAREA} to carry
+     * @param trailer  the 329-byte {@code WS-THIS-PROGCOMMAREA} to carry
+     * @return a request that survives all six edit paragraphs
+     */
+    private static CardUpdateRequest typedRequest(NavigationContext commarea, CommArea trailer) {
+        CardUpdateRequest typed = request(ACCOUNT_NUMBER, CARD_NUMBER, commarea, trailer);
+        typed.setCrdname("JOHN Q PUBLIC");
+        typed.setCrdstcd("N");
+        typed.setExpmon("04");
+        typed.setExpyear("2026");
+        typed.setExpday("30");
+        return typed;
+    }
+
+    /**
+     * The trailer a real conversation carries once {@code 9000-READ-DATA} has run: the state byte plus
+     * the {@code CCUP-OLD-DETAILS} snapshot the fetch left behind.
+     *
+     * <p>Supplying the snapshot matters even for tests that never look at it. {@code 1200:671-672}
+     * moves {@code CCUP-OLD-ACCTID} and {@code CCUP-OLD-CARDID} into {@code CDEMO-ACCT-ID PIC 9(11)}
+     * and {@code CDEMO-CARD-NUM PIC 9(16)}, so an initialised - blank - snapshot is eleven spaces
+     * arriving at a zoned {@code DISPLAY} receiver, and the program abends. Which is faithful: CICS
+     * would never reach {@code 'S'} without having fetched first.
+     *
+     * @param action the state byte to carry
+     * @return the trailer as the previous turn would have returned it
+     */
+    private static CommArea fetchedTrailer(ChangeAction action) {
+        return CommArea.initialised()
+                .withChangeAction(action)
+                .withOldDetails(oldDetails())
+                .withNewDetails(newDetails());
     }
 
     /** A commarea in the {@code CDEMO-PGM-REENTER} state with both keys carried. */
@@ -2979,6 +3113,927 @@ class CardUpdateControllerTest {
             assertThat(envelope).isNotNull();
             assertThat(envelope.screenMetadata()).isNotNull();
             assertThat(envelope.screenMetadata().fields()).hasSize(17);
+        }
+    }
+
+    // =================================================================================================
+    // The remaining four groups take the same eight arms, the same nineteen literals and the same
+    // seventeen fields and assert them as COMPLETE SETS rather than one case at a time. A per-case test
+    // proves a case behaves; a set test proves nothing was left out - which is the property gates G9,
+    // G30, G37 and G50 actually name.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The CCUP-CHANGE-ACTION alphabet - every byte, routed through :949-1027 (G30, G50)")
+    class StateAlphabet {
+
+        /**
+         * {@code CCUP-CHANGE-ACTION} is one byte wide and only nine values mean anything to it. This
+         * table walks every one of them through {@code 2000-DECIDE-ACTION} and records the arm it lands
+         * on, in the order {@code app/cbl/COCRDUPC.cbl:949-1027} tests them.
+         *
+         * <p>The two rows worth pausing on are {@code 'L'} and {@code 'F'}. Both are
+         * {@code CCUP-CHANGES-FAILED} ({@code :288}) and both are {@code CCUP-CHANGES-MADE}
+         * ({@code :282-284}), so they read like states the paragraph handles - and it does not. Neither
+         * appears in any of the seven qualified {@code WHEN}s, so both reach {@code WHEN OTHER} at
+         * {@code :1019} and <strong>abend</strong>. That is not a defect to be smoothed over: it is why
+         * {@code 0000-MAIN:437-439} intercepts those two states and transfers control before
+         * {@code 2000} is ever performed, which {@code Dispatcher} asserts separately. Adding an
+         * {@code 'L'} or {@code 'F'} arm here would silently delete that interception.
+         *
+         * @param state    the single byte in {@code CCUP-CHANGE-ACTION}
+         * @param expected the state the paragraph leaves behind, or {@code ABEND}
+         */
+        @ParameterizedTest(name = "[{index}] {0} -> {1}")
+        @CsvSource({
+            // token     | resulting CCUP-CHANGE-ACTION, or ABEND
+            "LOW_VALUES,S",  // :954 DETAILS-NOT-FETCHED, x'00' form  -> shared body reads, sets 'S'
+            "SPACES,S",      // :954 DETAILS-NOT-FETCHED, x'40' form  -> the same shared body
+            "S,S_TO_N",      // :971 SHOW-DETAILS, input clean        -> 'N'
+            "E,E",           // :982 CHANGES-NOT-OK                   -> CONTINUE, stays 'E'
+            "N,N",           // :1006 bare OK-NOT-CONFIRMED, no PF5   -> CONTINUE, stays 'N'
+            "C,S",           // :1011 OKAYED-AND-DONE                 -> 'S'
+            "L,ABEND",       // :1019 WHEN OTHER - CHANGES-FAILED is NOT an arm of this paragraph
+            "F,ABEND",       // :1019 WHEN OTHER - likewise
+            "Q,ABEND"})      // :1019 WHEN OTHER - and any byte outside the alphabet
+        @DisplayName("every byte lands on exactly one arm, and three of them abend - :949-1027")
+        void everyStateByteLandsOnItsArm(String token, String expected) {
+            // The two figurative constants are named rather than written, because a CSV cell holding
+            // x'00' or a lone space is trimmed to the empty string before it reaches the test - and
+            // CCUP-CHANGE-ACTION is never empty, it is one byte wide with VALUE LOW-VALUES (:276-277).
+            String state = switch (token) {
+                case "LOW_VALUES" -> ChangeAction.LOW_VALUES;
+                case "SPACES" -> ChangeAction.SPACES;
+                default -> token;
+            };
+            when(repository.readByCardNumber(anyString())).thenReturn(normalRead());
+            Conversation task = taskWithValidKeys(ChangeAction.of(state));
+            task.ccWorkArea.setCcardAidCondition(AidKey.ENTER);
+
+            if ("ABEND".equals(expected)) {
+                assertThatThrownBy(() -> controller.decideAction2000(task))
+                        .as("%s matches no WHEN before :1019, so WHEN OTHER is the only arm left", token)
+                        .isInstanceOf(AbendException.class);
+                assertThat(task.abendData.abendMsg().trim()).isEqualTo("UNEXPECTED DATA SCENARIO");
+                return;
+            }
+
+            controller.decideAction2000(task);
+
+            // 'S' is the one arm whose outcome depends on more than the state byte: :972-977 advances to
+            // 'N' only when neither INPUT-ERROR nor NO-CHANGES-DETECTED holds, and a task built by
+            // taskWithValidKeys has INITIALIZE's blank input flags rather than INPUT-ERROR, so it
+            // advances. The three-way split itself is asserted in DecideAction.
+            String want = "S_TO_N".equals(expected) ? "N" : expected;
+            assertThat(task.changeAction().value()).isEqualTo(want);
+        }
+
+        /**
+         * {@code 10 CCUP-CHANGE-ACTION PIC X(1) VALUE LOW-VALUES} - {@code :276-277}.
+         *
+         * <p>The declared {@code VALUE} clause, asserted on a request that carries no commarea at all.
+         * {@code x'00'} and not a space, not a Java {@code null} and not the empty string: the field is
+         * always exactly one character, and on the very first call that character is binary zero. It
+         * matters because {@code x'00'} is what makes the first {@code ENTER} take the shared
+         * {@code :954}/{@code :958} body instead of abending at {@code :1019}.
+         */
+        @Test
+        @DisplayName("VALUE LOW-VALUES is the state of a first request carrying no commarea - :276-277")
+        void theDeclaredInitialValueIsLowValues() {
+            CardUpdateRequest request = request("", "", null, CommArea.initialised());
+            Conversation task = new Conversation();
+
+            controller.main0000(request, new CardUpdateResponse(), task, 0, CicsAid.DFHENTER);
+
+            assertThat(task.changeAction().value())
+                    .as("app/cbl/COCRDUPC.cbl:277 declares VALUE LOW-VALUES, which is x'00'")
+                    .isEqualTo("\u0000");
+            assertThat(ChangeAction.LOW_VALUES).isEqualTo("\u0000");
+            assertThat(ChangeAction.RECORD_LENGTH)
+                    .as("PIC X(1) - one byte, and the first of the 329")
+                    .isEqualTo(1);
+            assertThat(task.changeAction().isDetailsNotFetched()).isTrue();
+        }
+
+        /**
+         * {@code :988-991} - the confirm arm performs {@code 9200-WRITE-PROCESSING}
+         * <strong>once</strong>.
+         *
+         * <p>{@code PERFORM ... THRU} executes its range a single time; it is not a loop and it is not
+         * conditional on anything inside {@code 9200}. A retry, or a second call from the inner
+         * {@code EVALUATE} reading the outcome, would post a card update twice over - so the count is
+         * asserted, not just the fact of the call.
+         */
+        @ParameterizedTest(name = "[{index}] outcome {0} still writes exactly once")
+        @CsvSource({"COULD_NOT_LOCK_FOR_UPDATE", "LOCKED_BUT_UPDATE_FAILED",
+            "DATA_WAS_CHANGED_BEFORE_UPDATE", "CHANGES_OKAYED_AND_DONE"})
+        @DisplayName("the confirm arm performs 9200 exactly once, whatever it returns - :990-991")
+        void theConfirmArmWritesExactlyOnce(WriteOutcome outcome) {
+            when(service.writeProcessing(any(), any(), any(), anyString(), any()))
+                    .thenReturn(writeResult(outcome));
+            Conversation task = task(reentered(), ChangeAction.changesOkNotConfirmed());
+            task.setOldDetails(oldDetails());
+            task.setNewDetails(newDetails());
+            task.ccWorkArea.setCcardAidCondition(AidKey.PFK05);
+
+            controller.decideAction2000(task);
+
+            verify(service, times(1)).writeProcessing(any(), any(), any(), anyString(), any());
+        }
+
+        /**
+         * And the six arms that are not the confirm arm perform it <strong>never</strong>.
+         *
+         * <p>{@code verify(service, never())} is the source-order proof the class documentation names:
+         * {@code 'N'} without {@code PF5} reaches the bare {@code WHEN} at {@code :1006} only because
+         * {@code :988} was tested first and demanded the key. Move {@code :1006} above {@code :988} and
+         * this row still passes for every other state while {@code PF5} quietly stops saving - so the
+         * {@code 'N'} row here is the one that fails, and it fails loudly.
+         */
+        @ParameterizedTest(name = "[{index}] state ''{0}'' never writes")
+        @ValueSource(strings = {"\u0000", " ", "S", "E", "N", "C"})
+        @DisplayName("every other arm performs 9200 never - :954, :971, :982, :1006, :1011")
+        void everyOtherArmWritesNever(String state) {
+            when(repository.readByCardNumber(anyString())).thenReturn(normalRead());
+            Conversation task = taskWithValidKeys(ChangeAction.of(state));
+            task.ccWorkArea.setCcardAidCondition(AidKey.ENTER);
+
+            controller.decideAction2000(task);
+
+            verify(service, never()).writeProcessing(any(), any(), any(), anyString(), any());
+        }
+    }
+
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The message literals, byte for byte - :156-214 (G50)")
+    class MessageLiterals {
+
+        /**
+         * The nineteen {@code WS-RETURN-MSG} condition names of {@code :173-214}, each at the
+         * {@code X(75)} width {@code SET} would have produced.
+         *
+         * <p>Read left to right this is the copybook: the literal exactly as the source quotes it, and
+         * the line it was quoted from. A {@code SET} on an alphanumeric item assigns the literal and
+         * space-fills the remainder, so each constant must be the literal followed by spaces to
+         * seventy-five - never trimmed, never truncated, never padded to some other width.
+         *
+         * @param actual  the transcribed constant
+         * @param literal the literal as {@code app/cbl/COCRDUPC.cbl} quotes it
+         */
+        private void assertReturnMessage(String actual, String literal) {
+            assertThat(actual)
+                    .as("the literal itself, before the pad")
+                    .startsWith(literal);
+            assertThat(actual)
+                    .as("88-levels on WS-RETURN-MSG PIC X(75) are space-filled to 75 by SET, :173")
+                    .hasSize(CardUpdateController.WS_RETURN_MSG_LENGTH)
+                    .isEqualTo(literal + " ".repeat(
+                            CardUpdateController.WS_RETURN_MSG_LENGTH - literal.length()));
+        }
+
+        @Test
+        @DisplayName("the six edit-paragraph messages, 1210 to 1260 - :177-200")
+        void theSixEditParagraphMessages() {
+            // 1210-EDIT-ACCOUNT, :177-178
+            assertReturnMessage(CardUpdateController.WS_PROMPT_FOR_ACCT,
+                    "Account number not provided");
+            // 1220-EDIT-CARD, :179-180
+            assertReturnMessage(CardUpdateController.WS_PROMPT_FOR_CARD, "Card number not provided");
+            // 1230-EDIT-NAME, :181-184 - two messages, blank and non-alphabetic
+            assertReturnMessage(CardUpdateController.WS_PROMPT_FOR_NAME, "Card name not provided");
+            assertReturnMessage(CardUpdateController.WS_NAME_MUST_BE_ALPHA,
+                    "Card name can only contain alphabets and spaces");
+            // 1240-EDIT-CARDSTATUS, :195-196
+            assertReturnMessage(CardUpdateController.CARD_STATUS_MUST_BE_YES_NO,
+                    "Card Active Status must be Y or N");
+            // 1250-EDIT-EXPIRY-MON, :197-198
+            assertReturnMessage(CardUpdateController.CARD_EXPIRY_MONTH_NOT_VALID,
+                    "Card expiry month must be between 1 and 12");
+            // 1260-EDIT-EXPIRY-YEAR, :199-200
+            assertReturnMessage(CardUpdateController.CARD_EXPIRY_YEAR_NOT_VALID,
+                    "Invalid card expiry year");
+        }
+
+        @Test
+        @DisplayName("the input, change and read messages - :185-188, :201-214")
+        void theRemainingReturnMessages() {
+            assertReturnMessage(CardUpdateController.NO_SEARCH_CRITERIA_RECEIVED,
+                    "No input received");                                       // :185-186
+            assertReturnMessage(CardUpdateController.NO_CHANGES_DETECTED,
+                    "No change detected with respect to values fetched.");      // :187-188, tested :973
+            assertReturnMessage(CardUpdateController.SEARCHED_CARD_NOT_NUMERIC,
+                    "Card number if supplied must be a 16 digit number");       // :193-194
+            assertReturnMessage(CardUpdateController.DID_NOT_FIND_ACCT_IN_CARDXREF,
+                    "Did not find this account in cards database");             // :201-202
+            assertReturnMessage(CardUpdateController.DID_NOT_FIND_ACCTCARD_COMBO,
+                    "Did not find cards for this search condition");            // :203-204
+            assertReturnMessage(CardUpdateController.XREF_READ_ERROR,
+                    "Error reading Card Data File");                            // :211-212
+            assertReturnMessage(CardUpdateController.CODING_TO_BE_DONE,
+                    "Looks Good.... so far");                                   // :213-214, four dots
+        }
+
+        /**
+         * {@code 88 WS-EXIT-MESSAGE VALUE 'PF03 pressed.Exiting              '} - {@code :175-176}.
+         *
+         * <p>Fourteen spaces sit <strong>inside the quotes</strong>, before the pad to {@code X(75)}
+         * ever runs. They are invisible on a screen and invisible in a diff, and the only way to keep
+         * them is to assert the literal's own length: thirty-four characters, of which twenty are text.
+         * A transcription that trims the literal first would produce a constant that still passes a
+         * {@code startsWith} check and still renders identically, so the length is asserted explicitly
+         * before the padded form.
+         */
+        @Test
+        @DisplayName("'PF03 pressed.Exiting              ' keeps its fourteen inner spaces - :175-176")
+        void theExitMessageKeepsItsTrailingSpaces() {
+            String literal = "PF03 pressed.Exiting              ";
+
+            assertThat(literal)
+                    .as("20 characters of text plus 14 trailing spaces, as the source quotes it")
+                    .hasSize(34);
+            assertThat(literal.strip()).hasSize(20);
+            assertReturnMessage(CardUpdateController.WS_EXIT_MESSAGE, literal);
+            assertThat(CardUpdateController.WS_EXIT_MESSAGE.charAt(33))
+                    .as("the last character inside the quotes is a space, not the start of the pad")
+                    .isEqualTo(' ');
+        }
+
+        /**
+         * The 88-aliasing trap: <strong>two condition names over one byte pattern</strong>.
+         *
+         * <p>{@code 88 SEARCHED-ACCT-ZEROES} ({@code :189-190}) and
+         * {@code 88 SEARCHED-ACCT-NOT-NUMERIC} ({@code :191-192}) declare the
+         * <em>byte-identical</em> literal {@code 'Account number must be a non zero 11 digit number'}.
+         * That is legal COBOL and it is transcribed as written rather than collapsed, but it has a
+         * consequence for testing that is easy to get wrong: <strong>the two conditions cannot be
+         * distinguished by the message they produce.</strong> Testing "which condition fired" by reading
+         * the message text would pass whichever one actually fired, so gate G50 is satisfied here by
+         * driving each condition from its own <em>input</em> - an all-zeroes account for the first, a
+         * non-numeric account for the second - and asserting that both inputs are rejected while the
+         * text stays common to them.
+         *
+         * <p>A second thing is true of this pair in this program specifically, and it is why the
+         * assertion below is about the constants rather than about a screen: {@code 1210-EDIT-ACCOUNT}
+         * sets <em>neither</em> name. Its blank arm sets {@link CardUpdateController#WS_PROMPT_FOR_ACCT}
+         * and its not-numeric arm moves a different, 52-character literal
+         * ({@link CardUpdateController#ACCOUNT_FILTER_MUST_BE_11_DIGITS}). Both aliases are dead
+         * declarations, preserved because a dead declaration is still behaviour (B5), and the live
+         * message is asserted separately so the two can never be confused.
+         */
+        @Test
+        @DisplayName("SEARCHED-ACCT-ZEROES and -NOT-NUMERIC are one byte pattern, two names - :189-192")
+        void theTwoAccountConditionsShareOneLiteral() {
+            String shared = "Account number must be a non zero 11 digit number";
+
+            assertReturnMessage(CardUpdateController.SEARCHED_ACCT_ZEROES, shared);
+            assertReturnMessage(CardUpdateController.SEARCHED_ACCT_NOT_NUMERIC, shared);
+            assertThat(CardUpdateController.SEARCHED_ACCT_NOT_NUMERIC)
+                    .as("byte-identical: :190 and :192 quote the same 49 characters, so no test may "
+                            + "ever tell the two condition names apart by their text")
+                    .isEqualTo(CardUpdateController.SEARCHED_ACCT_ZEROES);
+            assertThat(CardUpdateController.ACCOUNT_FILTER_MUST_BE_11_DIGITS)
+                    .as("and the message 1210-EDIT-ACCOUNT actually moves at :744-746 is a DIFFERENT "
+                            + "literal, so neither alias can be mistaken for the live one")
+                    .isNotEqualTo(CardUpdateController.SEARCHED_ACCT_ZEROES);
+        }
+
+        /**
+         * The same pair, driven by <strong>input</strong> rather than by text - the half of gate G50 the
+         * shared literal makes necessary.
+         *
+         * <p>An all-zeroes account is the {@code SEARCHED-ACCT-ZEROES} case; a non-numeric one is the
+         * {@code SEARCHED-ACCT-NOT-NUMERIC} case. Both are rejected by {@code 1210-EDIT-ACCOUNT}, and
+         * the assertion is on the <em>flag</em> ({@code FLG-ACCTFILTER-NOT-OK}) plus the input that
+         * produced it, never on which of two identical strings came back.
+         *
+         * @param typed the eleven characters typed into {@code ACCTSID}
+         */
+        @ParameterizedTest(name = "[{index}] ACCTSID ''{0}'' is rejected")
+        @ValueSource(strings = {"00000000000", "0000000000A"})
+        @DisplayName("both aliased conditions are driven by input, not by message text - :189-192")
+        void theTwoAccountConditionsAreDistinguishedByInput(String typed) {
+            Conversation task = task(reentered(), ChangeAction.showDetails());
+            task.ccWorkArea.setCcAcctId(typed);
+
+            controller.editAccount1210(task);
+
+            assertThat(task.wsEditAcctFlag)
+                    .as("neither an all-zeroes nor a non-numeric account may set FLG-ACCTFILTER-ISVALID")
+                    .isNotEqualTo(CardUpdateController.FLG_FILTER_ISVALID);
+            assertThat(task.returnMessageOff())
+                    .as("and a rejection always leaves a message behind")
+                    .isFalse();
+        }
+
+        /**
+         * {@code 05 WS-INFO-MSG PIC X(40)} and its seven condition names - {@code :157-171}.
+         *
+         * <p>Forty characters, not seventy-five: {@code WS-INFO-MSG} and {@code WS-RETURN-MSG} are
+         * different fields with different widths, and a literal padded to the wrong one paints a screen
+         * that is wrong from {@code INFOMSGO} onwards.
+         *
+         * @param actual  the transcribed constant
+         * @param literal the literal as the source quotes it
+         */
+        private void assertInfoMessage(String actual, String literal) {
+            assertThat(actual)
+                    .as("88-levels on WS-INFO-MSG PIC X(40) are space-filled to 40, :157")
+                    .hasSize(CardUpdateController.WS_INFO_MSG_LENGTH)
+                    .isEqualTo(literal + " ".repeat(
+                            CardUpdateController.WS_INFO_MSG_LENGTH - literal.length()));
+        }
+
+        @Test
+        @DisplayName("the six informational messages at X(40) - :160-171")
+        void theSixInformationalMessages() {
+            assertInfoMessage(CardUpdateController.FOUND_CARDS_FOR_ACCOUNT,
+                    "Details of selected card shown above");                    // :160-161
+            assertInfoMessage(CardUpdateController.PROMPT_FOR_SEARCH_KEYS,
+                    "Please enter Account and Card Number");                    // :162-163
+            assertInfoMessage(CardUpdateController.PROMPT_FOR_CHANGES,
+                    "Update card details presented above.");                    // :164-165, full stop
+            assertInfoMessage(CardUpdateController.PROMPT_FOR_CONFIRMATION,
+                    "Changes validated.Press F5 to save");                      // :166-167, no space
+            assertInfoMessage(CardUpdateController.CONFIRM_UPDATE_SUCCESS,
+                    "Changes committed to database");                           // :168-169
+            assertInfoMessage(CardUpdateController.INFORM_FAILURE,
+                    "Changes unsuccessful. Please try again");                  // :170-171
+        }
+
+        /**
+         * {@code 88 WS-NO-INFO-MESSAGE VALUES SPACES LOW-VALUES} - {@code :158-159}.
+         *
+         * <p>The seventh condition name, and the only one on this field with <strong>two</strong>
+         * values. Both forms are forty characters and both satisfy the condition, so both are asserted:
+         * a transcription that kept only {@code SPACES} would leave the freshly reset screen - which
+         * {@code 3100:1053} fills with {@code LOW-VALUES} - failing a condition the source says it
+         * satisfies.
+         */
+        @Test
+        @DisplayName("WS-NO-INFO-MESSAGE has TWO values, spaces and low-values - :158-159")
+        void theNoInfoMessageConditionHasTwoValues() {
+            assertThat(CardUpdateController.WS_INFO_MSG_SPACES)
+                    .hasSize(CardUpdateController.WS_INFO_MSG_LENGTH)
+                    .isEqualTo(" ".repeat(CardUpdateController.WS_INFO_MSG_LENGTH));
+            assertThat(CardUpdateController.WS_INFO_MSG_LOW_VALUES)
+                    .hasSize(CardUpdateController.WS_INFO_MSG_LENGTH)
+                    .isEqualTo("\u0000".repeat(CardUpdateController.WS_INFO_MSG_LENGTH));
+            assertThat(CardUpdateController.WS_INFO_MSG_LOW_VALUES)
+                    .as("x'00' and x'40' are different bytes; :158-159 accepts both and this asserts "
+                            + "they were not collapsed into one constant")
+                    .isNotEqualTo(CardUpdateController.WS_INFO_MSG_SPACES);
+        }
+
+        /**
+         * {@code 88 WS-RETURN-MSG-OFF VALUE SPACES} - {@code :174}.
+         *
+         * <p>Spaces, and not {@code LOW-VALUES}. {@code app/cpy/CVCRD01Y.cpy:29-30} declares a
+         * similarly named {@code CCARD-RETURN-MSG-OFF} whose value <em>is</em> {@code LOW-VALUES}, and
+         * this program never references it. Both states of the condition are driven, because it is the
+         * guard behind every "first error wins" decision in the six edit paragraphs.
+         */
+        @Test
+        @DisplayName("WS-RETURN-MSG-OFF is SPACES, both states driven - :174")
+        void theReturnMessageOffConditionIsSpaces() {
+            assertThat(CardUpdateController.WS_RETURN_MSG_OFF)
+                    .hasSize(CardUpdateController.WS_RETURN_MSG_LENGTH)
+                    .isEqualTo(" ".repeat(CardUpdateController.WS_RETURN_MSG_LENGTH));
+
+            Conversation task = task(reentered(), ChangeAction.showDetails());
+            assertThat(task.returnMessageOff())
+                    .as(":384 SETs WS-RETURN-MSG-OFF during initialisation, so the true state is the "
+                            + "state a task starts in")
+                    .isTrue();
+
+            task.wsReturnMsg = CardUpdateController.WS_PROMPT_FOR_ACCT;
+            assertThat(task.returnMessageOff())
+                    .as("and the false state is any message at all")
+                    .isFalse();
+        }
+    }
+
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The payload contract - 17 DFHMDF fields and nothing else (G9)")
+    class PayloadContract {
+
+        /**
+         * Every payload field, its width, and the {@code app/cpy-bms/COCRDUP.CPY} line the width was
+         * read from - all seventeen, in declaration order.
+         *
+         * <p>The count and the order are both contract. {@code app/bms/COCRDUP.bms} carries thirty-four
+         * {@code DFHMDF} entries, of which seventeen are name-labelled and seventeen are unnamed
+         * literals; only the labelled ones become payload members, which is why the number is 17 and
+         * not 34. The widths come from the symbolic map's {@code xxxI} items rather than from the
+         * {@code bms} {@code LENGTH=} operands, because the {@code xxxI} item is what the program's
+         * {@code MOVE}s actually target.
+         *
+         * @param name         the {@code DFHMDF} label
+         * @param width        the declared {@code xxxI} width
+         * @param copybookLine the line of the {@code xxxI} declaration
+         */
+        @ParameterizedTest(name = "[{index}] {0} is X({1}) at COCRDUP.CPY:{2}")
+        @CsvSource({
+            "TRNNAME,4,24",
+            "TITLE01,40,30",
+            "CURDATE,8,36",
+            "PGMNAME,8,42",
+            "TITLE02,40,48",
+            "CURTIME,8,54",
+            "ACCTSID,11,60",
+            "CARDSID,16,66",
+            "CRDNAME,50,72",
+            "CRDSTCD,1,78",
+            "EXPMON,2,84",
+            "EXPYEAR,4,90",
+            "EXPDAY,2,96",
+            "INFOMSG,40,102",
+            "ERRMSG,80,108",
+            "FKEYS,21,114",
+            "FKEYSC,18,120"})
+        @DisplayName("each field carries the width its xxxI item declares - COCRDUP.CPY:24-120")
+        void eachFieldCarriesItsDeclaredWidth(String name, int width, int copybookLine) {
+            assertThat(CardUpdateRequest.declaredLength(name))
+                    .as("the request side reads %s from COCRDUP.CPY:%d", name, copybookLine)
+                    .isEqualTo(width);
+
+            ScreenField field = CardUpdateResponse.fieldOf(name);
+            assertThat(field.length())
+                    .as("and the response side must agree, or a round trip changes the width")
+                    .isEqualTo(width);
+            assertThat(field.name()).isEqualTo(name);
+        }
+
+        /**
+         * Seventeen, in that order, and no eighteenth.
+         *
+         * <p>{@code EXPDAY} is the row that makes this map unlike its neighbour: {@code COCRDSL} has no
+         * expiry-day field at all, so a DTO cloned from the card-select screen would be one field short
+         * and the shortfall would only show up as a missing day on a saved expiry date.
+         */
+        @Test
+        @DisplayName("seventeen fields in copybook order, EXPDAY among them - COCRDUP.CPY:24-120")
+        void seventeenFieldsInCopybookOrder() {
+            assertThat(CardUpdateResponse.namedFieldPrefixes())
+                    .containsExactly("TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME",
+                            "ACCTSID", "CARDSID", "CRDNAME", "CRDSTCD", "EXPMON", "EXPYEAR", "EXPDAY",
+                            "INFOMSG", "ERRMSG", "FKEYS", "FKEYSC");
+            assertThat(CardUpdateResponse.namedFields()).hasSize(17);
+            assertThat(CardUpdateResponse.namedFieldPrefixes())
+                    .as("EXPDAY is unique to COCRDUP: COCRDSL declares no expiry-day field")
+                    .contains(CardUpdateResponse.EXPDAY);
+        }
+
+        /**
+         * The {@code FKEYSC} collision, asserted on the two lines that cause it.
+         *
+         * <p>{@code app/cpy-bms/COCRDUP.CPY:214} declares {@code 02 FKEYSC PICTURE X} - that is
+         * <strong>{@code FKEYS}'s colour byte</strong>, one character wide. {@code :220} declares
+         * {@code 02 FKEYSCC PICTURE X} - that is the colour byte of the <em>field</em> named
+         * {@code FKEYSC}, whose payload item is {@code FKEYSCO PIC X(18)} at {@code :224}. So the same
+         * eight characters mean two unrelated things four lines apart, and a mapper that reaches a
+         * colour byte by appending {@code C} to a field name, or reaches a field by stripping a
+         * trailing {@code C}, merges them and silently deletes an eighteen-byte field.
+         *
+         * <p>Both are asserted here: the two fields exist with their own widths, and the two colour
+         * bytes are reached by <em>field name</em> so that neither can stand in for the other.
+         */
+        @Test
+        @DisplayName("FKEYSC at :214 is FKEYS's colour byte; FKEYSCC at :220 is FKEYSC's - :214, :220")
+        void theFkeyscCollisionDoesNotCollapse() {
+            ScreenField fkeys = CardUpdateResponse.fieldOf(CardUpdateResponse.FKEYS);
+            ScreenField fkeysc = CardUpdateResponse.fieldOf(CardUpdateResponse.FKEYSC);
+
+            assertThat(fkeys.length())
+                    .as("FKEYSO PIC X(21) at app/cpy-bms/COCRDUP.CPY:218")
+                    .isEqualTo(21);
+            assertThat(fkeysc.length())
+                    .as("FKEYSCO PIC X(18) at app/cpy-bms/COCRDUP.CPY:224 - a field of its own, not a "
+                            + "suffixed view of FKEYS")
+                    .isEqualTo(18);
+            assertThat(fkeysc.fieldOffset())
+                    .as("and it occupies its own span, after FKEYS rather than inside it")
+                    .isGreaterThan(fkeys.fieldOffset());
+
+            CardUpdateResponse response = new CardUpdateResponse();
+            assertThat(response.getFkeyso()).hasSize(21);
+            assertThat(response.getFkeysco()).hasSize(18);
+            assertThat(response.attributesOf(CardUpdateResponse.FKEYS))
+                    .as("FKEYSC at :214 is this quad's colour byte, reached by the name FKEYS")
+                    .isNotSameAs(response.attributesOf(CardUpdateResponse.FKEYSC));
+        }
+
+        /**
+         * The metadata items are <strong>not</strong> JSON members.
+         *
+         * <p>{@code app/cpy-bms/COCRDUP.CPY} declares seven items around every payload field: on the
+         * input side {@code xxxL} ({@code COMP PIC S9(4)}, the length CICS reports), {@code xxxF} (the
+         * flag byte) and {@code xxxA} (its {@code REDEFINES} attribute view); on the output side
+         * {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} - colour, protection, highlight and
+         * validation. They are validation and highlight metadata, addressable in Java and asserted
+         * elsewhere in this class, and they must never reach the wire: seventeen fields times seven
+         * items is 119 extra members that would swell the body and expose attribute bytes as if they
+         * were data.
+         *
+         * <p>Asserted by serialising both directions and looking for every one of the 119.
+         *
+         * <p><strong>One name has to be excluded, and the reason is the collision itself.</strong>
+         * Appending {@code C} to the field {@code FKEYS} spells {@code FKEYSC} - which is not
+         * {@code FKEYS}'s colour item at all in Java, but the <em>name of the seventeenth field</em>,
+         * whose payload member is legitimately on the wire. {@code FKEYS}'s colour item is the
+         * {@code 02 FKEYSC PICTURE X} of {@code app/cpy-bms/COCRDUP.CPY:214}, reached here through
+         * {@code attributesOf(FKEYS)} rather than by spelling, exactly so the two cannot be confused.
+         * So the sweep skips any generated name that is itself a declared field, and the skip is
+         * asserted rather than silent - a search that did not skip it would report the real
+         * {@code FKEYSC} field as a leaked attribute byte and invite someone to delete it.
+         */
+        @Test
+        @DisplayName("xxxL/F/A and xxxC/P/H/V are metadata, absent from JSON - COCRDUP.CPY:19-124")
+        void metadataItemsAreNotJsonMembers() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            CardUpdateResponse response = new CardUpdateResponse();
+            CardUpdateRequest requestBody = new CardUpdateRequest();
+
+            JsonNode responseJson = mapper.readTree(mapper.writeValueAsString(response));
+            JsonNode requestJson = mapper.readTree(mapper.writeValueAsString(requestBody));
+
+            List<String> fields = CardUpdateResponse.namedFieldPrefixes();
+            List<String> leaked = new ArrayList<>();
+            List<String> skippedAsRealFields = new ArrayList<>();
+            int checked = 0;
+            for (String field : fields) {
+                for (String suffix : List.of("L", "F", "A", "C", "P", "H", "V")) {
+                    String generated = field + suffix;
+                    if (fields.contains(generated)) {
+                        skippedAsRealFields.add(generated);
+                        continue;
+                    }
+                    checked++;
+                    String member = generated.toLowerCase(Locale.ROOT);
+                    if (responseJson.has(member)) {
+                        leaked.add("response." + member);
+                    }
+                    if (requestJson.has(member)) {
+                        leaked.add("request." + member);
+                    }
+                }
+            }
+
+            assertThat(leaked)
+                    .as("17 fields x 7 metadata items = 119 names, of which %d are checked; the xxxI "
+                            + "and xxxO items are the only payload", checked)
+                    .isEmpty();
+            assertThat(skippedAsRealFields)
+                    .as("FKEYS + 'C' spells the SEVENTEENTH FIELD, not FKEYS's colour byte - "
+                            + "app/cpy-bms/COCRDUP.CPY:214 against :220. It is the only such name, and "
+                            + "skipping it by spelling is why the colour byte is reached by field name")
+                    .containsExactly(CardUpdateResponse.FKEYSC);
+            assertThat(checked).isEqualTo(fields.size() * 7 - 1);
+            assertThat(responseJson.has("fkeysco"))
+                    .as("while the payload item of the FIELD FKEYSC is present, at its own name")
+                    .isTrue();
+            assertThat(requestJson.has("fkeysc"))
+                    .as("and on the request side it is the xxxI item, also at its own name")
+                    .isTrue();
+        }
+
+        /**
+         * {@code TITLE01O} and {@code TITLE02O} come from {@code COTTL01Y}, at {@code X(40)} each.
+         *
+         * <p>{@code 3100-SCREEN-INIT:1057-1058} moves {@code CCDA-TITLE01} and {@code CCDA-TITLE02}
+         * into them, so the constants are the screen's, not this program's, and the width has to match
+         * the map's forty or the second title would be truncated into the first field's span.
+         */
+        @Test
+        @DisplayName("TITLE01 and TITLE02 are the COTTL01Y constants at X(40) - :1057-1058")
+        void theTwoTitlesAreTheSharedConstants() {
+            assertThat(ScreenTitles.TITLE_LENGTH).isEqualTo(40);
+            assertThat(ScreenTitles.CCDA_TITLE01).hasSize(40);
+            assertThat(ScreenTitles.CCDA_TITLE02).hasSize(40);
+            assertThat(CardUpdateResponse.fieldOf(CardUpdateResponse.TITLE01).length())
+                    .isEqualTo(ScreenTitles.TITLE_LENGTH);
+            assertThat(CardUpdateResponse.fieldOf(CardUpdateResponse.TITLE02).length())
+                    .isEqualTo(ScreenTitles.TITLE_LENGTH);
+        }
+
+        /**
+         * The expiry projection: three separate two- and four-character fields over one ten-character
+         * stored value, and the two separators never surface.
+         *
+         * <p>{@code CVACT02Y} stores {@code CARD-EXPIRAION-DATE} as {@code X(10)} in
+         * {@code YYYY-MM-DD} form - <strong>the misspelling is the field's real name</strong> and is
+         * preserved (&sect;0.8.9). {@code 9000-READ-DATA:1361-1366} splits it with COBOL reference
+         * modification, whose subscripts are 1-based: {@code (1:4)}, {@code (6:2)} and {@code (9:2)},
+         * which in Java are {@code substring(0,4)}, {@code substring(5,7)} and {@code substring(8,10)}.
+         * Positions 5 and 8 - the two dashes - belong to no field, so an off-by-one in either direction
+         * puts a dash on the screen or drops a digit.
+         */
+        @Test
+        @DisplayName("EXPYEAR/EXPMON/EXPDAY are (1:4)/(6:2)/(9:2), the dashes excluded - :1361-1366")
+        void theExpiryProjectionExcludesTheSeparators() {
+            String stored = "2026-04-30";
+            assertThat(stored).hasSize(CardUpdateRequest.CardUpdateRecord
+                    .CARD_UPDATE_EXPIRAION_DATE_LENGTH);
+
+            assertThat(stored.substring(0, 4)).isEqualTo("2026");
+            assertThat(stored.substring(5, 7)).isEqualTo("04");
+            assertThat(stored.substring(8, 10)).isEqualTo("30");
+            assertThat(stored.charAt(4)).as("1-based position 5 is a separator, not data").isEqualTo('-');
+            assertThat(stored.charAt(7)).as("1-based position 8 likewise").isEqualTo('-');
+
+            assertThat(CardUpdateResponse.fieldOf(CardUpdateResponse.EXPYEAR).length()).isEqualTo(4);
+            assertThat(CardUpdateResponse.fieldOf(CardUpdateResponse.EXPMON).length()).isEqualTo(2);
+            assertThat(CardUpdateResponse.fieldOf(CardUpdateResponse.EXPDAY).length()).isEqualTo(2);
+            assertThat(CardUpdateRequest.CardDetails.EXPIRAION_DATE_LENGTH)
+                    .as("4 + 2 + 2: the commarea's own copy of the date is separator-FREE at 8 bytes, "
+                            + "while the record's is 10 with dashes - :297-300 against CVACT02Y")
+                    .isEqualTo(8);
+        }
+    }
+
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Statelessness, the commarea and navigation (G37, G40)")
+    class Statelessness {
+
+        /**
+         * Gate G37, asserted structurally rather than by prose.
+         *
+         * <p>CICS is pseudo-conversational: the terminal holds the conversation and the program holds
+         * nothing between tasks. The faithful translation is that the server holds nothing between
+         * requests either - so there must be no {@code @SessionAttributes} on the class and no
+         * {@code HttpSession} in any method signature. Both are checked by looking at the class, because
+         * a comment saying "no session" is not a test and a session introduced by a later edit would
+         * pass every other assertion in this file.
+         */
+        @Test
+        @DisplayName("no @SessionAttributes on the class and no HttpSession in any signature - G37")
+        void thereIsNoServerSideSessionState() {
+            List<String> sessionAnnotations = new ArrayList<>();
+            for (java.lang.annotation.Annotation annotation
+                    : CardUpdateController.class.getAnnotations()) {
+                String name = annotation.annotationType().getSimpleName();
+                if (name.contains("Session")) {
+                    sessionAnnotations.add(name);
+                }
+            }
+            assertThat(sessionAnnotations)
+                    .as("CICS is pseudo-conversational; a session attribute would make the Java "
+                            + "stateful where the COBOL is not")
+                    .isEmpty();
+
+            List<String> sessionParameters = new ArrayList<>();
+            for (Method method : CardUpdateController.class.getDeclaredMethods()) {
+                for (Parameter parameter : method.getParameters()) {
+                    String type = parameter.getType().getName();
+                    if (type.contains("HttpSession") || type.contains("SessionStatus")) {
+                        sessionParameters.add(method.getName() + "(" + type + ")");
+                    }
+                }
+            }
+            assertThat(sessionParameters).isEmpty();
+        }
+
+        /**
+         * The 329 bytes, and where each of them comes from.
+         *
+         * <p>{@code app/cbl/COCRDUPC.cbl:274-321} declares {@code 01 WS-THIS-PROGCOMMAREA} as
+         * {@code CCUP-CHANGE-ACTION X(1)} + {@code CCUP-OLD-DETAILS} + {@code CCUP-NEW-DETAILS} +
+         * {@code CARD-UPDATE-RECORD}, and the arithmetic is
+         * <strong>1 + 89 + 89 + 150 = 329</strong>. Each 89 is
+         * {@code 11 + 16 + 3 + 50 + (4 + 2 + 2) + 1}, whose parenthesised eight is the separator-free
+         * {@code CCUP-{OLD,NEW}-EXPIRAION-DATE}; the 150 is
+         * {@code 16 + 11 + 3 + 50 + 10 + 1 + FILLER X(59)}, and dropping that filler - declared at
+         * {@code :321} and carrying no data - would leave the record 91 bytes wide and every offset
+         * after it wrong.
+         *
+         * <p>Beside it travels {@code CARDDEMO-COMMAREA} at 160 bytes ({@code app/cpy/COCOM01Y.cpy}).
+         * Both areas are request and response payload members; neither is held anywhere.
+         */
+        @Test
+        @DisplayName("1 + 89 + 89 + 150 = 329, and 160 beside it - :274-321")
+        void theCommareaArithmetic() {
+            assertThat(ChangeAction.RECORD_LENGTH).isEqualTo(1);
+            assertThat(CardDetails.RECORD_LENGTH)
+                    .as("11 + 16 + 3 + 50 + 8 + 1, the 8 being the separator-free EXPIRAION date")
+                    .isEqualTo(89);
+            assertThat(CardUpdateRequest.CardUpdateRecord.RECORD_LENGTH)
+                    .as("16 + 11 + 3 + 50 + 10 + 1 + FILLER X(59) at :321")
+                    .isEqualTo(150);
+            assertThat(CardUpdateRequest.CardUpdateRecord.FILLER_LENGTH).isEqualTo(59);
+
+            assertThat(CommArea.RECORD_LENGTH)
+                    .as("1 + 89 + 89 + 150")
+                    .isEqualTo(ChangeAction.RECORD_LENGTH + CardDetails.RECORD_LENGTH
+                            + CardDetails.RECORD_LENGTH
+                            + CardUpdateRequest.CardUpdateRecord.RECORD_LENGTH)
+                    .isEqualTo(329);
+            assertThat(NavigationContext.COMMAREA_LENGTH)
+                    .as("CARDDEMO-COMMAREA travels beside it, at its own declared width")
+                    .isEqualTo(160);
+        }
+
+        /**
+         * Both areas are on the wire, in both directions.
+         *
+         * <p>If either were dropped from the payload the conversation could not continue, because there
+         * is nowhere else for it to live. Asserted on the serialised body rather than on the object, so
+         * that a {@code @JsonIgnore} added to either accessor fails here.
+         */
+        @Test
+        @DisplayName("both the 329-byte trailer and the 160-byte commarea are serialised - G37")
+        void bothAreasTravelInThePayload() throws Exception {
+            when(repository.readByCardNumber(anyString())).thenReturn(normalRead());
+            ObjectMapper mapper = new ObjectMapper();
+
+            ResponseEntity<ScreenResponse<CardUpdateResponse>> answer = controller.updateCardDetail(
+                    CARD_NUMBER,
+                    typedRequest(reentered(), fetchedTrailer(ChangeAction.showDetails())),
+                    null, null, null);
+
+            JsonNode body = mapper.readTree(mapper.writeValueAsString(screenOf(answer)));
+            assertThat(body.has("commArea"))
+                    .as("WS-THIS-PROGCOMMAREA, all 329 bytes of it")
+                    .isTrue();
+            assertThat(body.has("navigationContext"))
+                    .as("CARDDEMO-COMMAREA, all 160")
+                    .isTrue();
+            assertThat(body.get("commArea").has("changeAction"))
+                    .as("including the one byte the whole state machine turns on")
+                    .isTrue();
+        }
+
+        /**
+         * Two identical requests produce two identical responses.
+         *
+         * <p>The definition of statelessness that can actually be tested: the response is a function of
+         * the request alone. Nothing accumulates, nothing is remembered, and the second call cannot
+         * observe that the first happened. The clock is fixed, so even the heading is identical
+         * (practice B7).
+         */
+        @Test
+        @DisplayName("the same request twice gives the same response - G37, B7")
+        void thesameRequestTwiceGivesTheSameResponse() {
+            when(repository.readByCardNumber(anyString())).thenReturn(normalRead());
+
+            CardUpdateResponse first = screenOf(controller.updateCardDetail(CARD_NUMBER,
+                    typedRequest(reentered(), fetchedTrailer(ChangeAction.showDetails())),
+                    null, null, null));
+            CardUpdateResponse second = screenOf(controller.updateCardDetail(CARD_NUMBER,
+                    typedRequest(reentered(), fetchedTrailer(ChangeAction.showDetails())),
+                    null, null, null));
+
+            assertThat(second)
+                    .as("a second call must not be able to tell that a first one happened")
+                    .isEqualTo(first);
+        }
+
+        /**
+         * And the converse: <strong>the state machine cannot advance unless the client sends the
+         * commarea back.</strong>
+         *
+         * <p>This is the assertion that proves there is no hidden store. The first call is given the
+         * trailer in {@code CCUP-SHOW-DETAILS} and comes back one arm further on, at
+         * {@code CCUP-CHANGES-OK-NOT-CONFIRMED} ({@code :976}). The second call is identical except
+         * that the trailer is left at its initialised {@code LOW-VALUES} - and it goes back to the
+         * beginning, because the server kept nothing. If any state were held anywhere, the second call
+         * would resume where the first left off.
+         */
+        @Test
+        @DisplayName("a transition is impossible unless the client returns the commarea - G37")
+        void noTransitionWithoutTheReturnedCommarea() {
+            when(repository.readByCardNumber(anyString())).thenReturn(normalRead());
+
+            CardUpdateResponse carried = screenOf(controller.updateCardDetail(CARD_NUMBER,
+                    typedRequest(reentered(), fetchedTrailer(ChangeAction.showDetails())),
+                    null, null, null));
+
+            assertThat(carried.getCommArea().changeAction().isChangesOkNotConfirmed())
+                    .as(":971-976 advances SHOW-DETAILS to CHANGES-OK-NOT-CONFIRMED when the input is "
+                            + "clean, and the new state goes back to the client")
+                    .isTrue();
+
+            CardUpdateResponse withheld = screenOf(controller.updateCardDetail(CARD_NUMBER,
+                    typedRequest(reentered(), CommArea.initialised()),
+                    null, null, null));
+
+            assertThat(withheld.getCommArea().changeAction().isChangesOkNotConfirmed())
+                    .as("withhold the trailer and the advance is simply not available: there is no "
+                            + "session, no cache and no static field for it to have been kept in")
+                    .isFalse();
+        }
+
+        /**
+         * Gate G40 - the {@code XCTL} becomes a field, not a redirect.
+         *
+         * <p>{@code app/cbl/COCRDUPC.cbl:473-474} is
+         * {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)}, preceded at
+         * {@code :469-471} by {@code EXEC CICS SYNCPOINT} - the transfer commits first and does not come
+         * back. An HTTP redirect would be the wrong shape twice over: it would put the next screen's
+         * identity in a {@code Location} header where a client cannot read it as data, and it would make
+         * the server decide the navigation. So the answer is {@code 200} with the target named in the
+         * body, and the client chooses.
+         */
+        @Test
+        @DisplayName("XCTL is a nextProgram field: 200, no redirect, no Location header - :473-474")
+        void theTransferIsAFieldAndNotARedirect() {
+            ResponseEntity<ScreenResponse<CardUpdateResponse>> answer = controller.updateCardDetail(
+                    CARD_NUMBER,
+                    request(ACCOUNT_NUMBER, CARD_NUMBER,
+                            reentered().withFromProgram("").withFromTranid(""),
+                            CommArea.initialised()),
+                    // The AID travels as an UNSIGNED byte value: DFHPF3 is x'F3', so 243 and not the
+                    // -13 a plain (int) cast of the signed byte would produce. The controller refuses
+                    // anything outside 0-255 rather than narrowing it, because on this screen a
+                    // misnarrowed AID could land on PF5 and save.
+                    null, null, CicsAid.DFHPF3 & 0xFF);
+
+            assertThat(answer.getStatusCode())
+                    .as("the transfer target is data, so the status is a plain 200")
+                    .isEqualTo(HttpStatus.OK);
+            assertThat(answer.getStatusCode().is3xxRedirection()).isFalse();
+            assertThat(answer.getHeaders().getLocation())
+                    .as("no Location header: an XCTL is not a redirect and the client is not being told "
+                            + "where to go, it is being told where control went")
+                    .isNull();
+            assertThat(screenOf(answer).getNextProgram().trim())
+                    .as(":449-454 defaults CDEMO-TO-PROGRAM to LIT-MENUPGM when there is no caller, and "
+                            + ":474 transfers to it")
+                    .isEqualTo(CardUpdateController.LIT_MENUPGM);
+        }
+
+        /**
+         * {@code PfKeyResolver} must agree with this program's inline {@code EIBAID} tests.
+         *
+         * <p>{@code COCRDUPC} copies {@code 'CSSTRPFY'} at {@code :1528}, so the shared resolver is
+         * literally this program's own key mapping. Three properties of {@code CSSTRPFY} are asserted
+         * because each is a way the translation could drift:
+         *
+         * <ul>
+         *   <li>{@code DFHPF13} through {@code DFHPF24} <strong>fold</strong> onto {@code PFK01}
+         *       through {@code PFK12} - the copybook writes all twenty-four arms out and the second
+         *       twelve set the same condition names as the first twelve. Because the tokens are enum
+         *       singletons the fold is observable by identity, not merely by value.</li>
+         *   <li>There is <strong>no {@code WHEN OTHER}</strong>. An unrecognised byte sets nothing, so
+         *       the resolver returns an empty {@link Optional} rather than substituting
+         *       {@code ENTER}.</li>
+         *   <li>There is <strong>no {@code DFHPA3} branch</strong>. The constant exists in
+         *       {@link CicsAid} but {@code CSSTRPFY} never tests it, so PA3 is unrecognised.</li>
+         * </ul>
+         */
+        @Test
+        @DisplayName("PF13-PF24 fold onto PFK01-PFK12, by identity - CSSTRPFY via :1528")
+        void theResolverFoldsTheSecondTwelveKeys() {
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF13))
+                    .containsSame(PfKeyResolver.resolve(CicsAid.DFHPF1).orElseThrow());
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15))
+                    .containsSame(AidKey.PFK03);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF17))
+                    .containsSame(AidKey.PFK05);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF24))
+                    .as("the twelfth of the folded arms lands on the twelfth token")
+                    .containsSame(AidKey.PFK12);
+        }
+
+        @Test
+        @DisplayName("the resolver has no WHEN OTHER and no DFHPA3 branch - CSSTRPFY")
+        void theResolverHasNoDefaultArmAndNoPa3() {
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPA3))
+                    .as("CSSTRPFY tests DFHPA1 and DFHPA2 and stops; PA3 matches no arm")
+                    .isEmpty();
+            assertThat(PfKeyResolver.resolve((byte) 0x01))
+                    .as("no WHEN OTHER means an unrecognised AID sets nothing - it does NOT become "
+                            + "ENTER, which would silently turn a stray byte into a submit")
+                    .isEmpty();
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHENTER)).containsSame(AidKey.ENTER);
+        }
+
+        /**
+         * The three keys this program acts on, and the resolver's agreement with them.
+         *
+         * <p>{@code COCRDUPC} tests {@code DFHPF3} (exit, {@code :435}), {@code DFHPF5} (confirm the
+         * save, {@code :989}) and {@code DFHPF12} (cancel back to the fetched values, {@code :958}).
+         * Every other key is coerced to {@code ENTER} by {@code :422-424}, which {@code Dispatcher}
+         * asserts; here the point is only that the resolver names the same three keys the inline tests
+         * do.
+         */
+        @Test
+        @DisplayName("PF3, PF5 and PF12 are the keys this program acts on - :435, :958, :989")
+        void theThreeKeysThisProgramActsOn() {
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF3)).containsSame(AidKey.PFK03);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF5)).containsSame(AidKey.PFK05);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF12)).containsSame(AidKey.PFK12);
+
+            assertThat(PfKeyResolver.isPf3(CicsAid.DFHPF3)).isTrue();
+            assertThat(PfKeyResolver.isPf5(CicsAid.DFHPF5)).isTrue();
+            assertThat(PfKeyResolver.isPf12(CicsAid.DFHPF12)).isTrue();
+            assertThat(PfKeyResolver.isPf3(CicsAid.DFHPF5))
+                    .as("and they are distinct: PF5 saves, PF3 leaves")
+                    .isFalse();
         }
     }
 }

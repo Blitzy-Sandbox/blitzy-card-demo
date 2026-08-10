@@ -1,0 +1,166 @@
+{
+  "program": "COSGN00C",
+  "caseId": "case11",
+  "description": "WHEN OTHER at :252-256 - every response EVALUATE WS-RESP-CD did not enumerate. No arrangement of ten well-formed rows can make a keyed EXEC CICS READ report anything other than RESP 0 or RESP 13, so this arm is unreachable from the data and the outcome is forced: the repository reports a permanent error carrying no RESP at all, which cannot be mistaken for either of the two numbers :222 and :247 name. :253 moves 'Y' into WS-ERR-FLG, :254 moves 'Unable to verify the User ...' into WS-MESSAGE and :255 moves -1 into USERIDL - the same cursor target as the not-found arm, and a different message, which is what tells the two apart.\n\nThe forced outcome is declared for the read and for nothing else, because the read is the only file operation COSGN00C performs. The harness refuses a run that declares a forced outcome nothing asked for, so this case also proves the read was actually reached - a run that answered from the blank-field chain would leave the outcome unconsumed and fail loudly.\n\nUSRSEC is seeded from app/jcl/DUSRSECJ.jcl:35-44, whose ten in-stream rows are 57 characters where app/cpy/CSUSR01Y.cpy declares 80: SEC-USR-ID X(08) at 0, SEC-USR-FNAME X(20) at 8, SEC-USR-LNAME X(20) at 28, SEC-USR-PWD X(08) at 48, SEC-USR-TYPE X(01) at 56 - which is 57 - then SEC-USR-FILLER X(23) at 57, which is 80. The 23-byte shortfall is supplied once at seed time by the declared USRSEC_FILLER_PAD_57_TO_80 normalisation and never hand-padded, and the 80-character expectedFinalState images prove that span was emitted as 23 spaces - a record missing it would be short by exactly 23. The same job corroborates the target width twice, with DCB=(LRECL=80,RECFM=FB) on SYSUT2 and RECORDSIZE(80,80) KEYS(8,0) on the cluster. The dataset is addressed by its binding key USRSEC - the CICS file name at :39 - and never by a dataset name. expectedWrites is empty as a positive assertion: COSGN00C contains no WRITE, REWRITE or DELETE on any path, and the read at :211-219 does not even specify UPDATE, so it takes no lock and holds no record. expectedReturnCode is 0 because grep -c RETURN-CODE over the program is 0.\n\nDeterminism and the two substitutions. POPULATE-HEADER-INFO opens with MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at :179, so the clock is pinned rather than read: 2022-07-19T23:12:33, traceable to this program's own version footer at :259 and expressed as a fixed local date-time so no timezone can shift it. Through app/cpy/CSDAT01Y.cpy, WS-CURDATE-MM-DD-YY is MM '/' DD '/' YY with YY taken from WS-CURDATE-YEAR(3:2), giving CURDATEO exactly 07/19/22 at its PIC X(8); WS-CURTIME-HH-MM-SS is HH ':' MM ':' SS, eight bytes, moved into CURTIMEO which app/cpy-bms/COSGN00.CPY:122 declares PIC X(9) - hence 23:12:33 followed by exactly one trailing space. Note that width: the sibling COUSR02 map declares its CURTIMEO PIC X(8) and the two must not be conflated. APPLID and SYSID come from EXEC CICS ASSIGN at :198-204, which has no Java equivalent and which neither application.yml nor application-test.yml binds, so CICSAWS1 and AWS1 space-padded to PIC X(8) are pinned constants standing in for those two calls; all twenty cases use the same pair, and the substitution is stated rather than hidden.\n\nProvenance. Every expected value above is statically derived - by structured reading of app/cbl/COSGN00C.cbl cross-checked against app/cpy/CSUSR01Y.cpy for the record layout, app/cpy/COCOM01Y.cpy for the communication area, app/cpy/COTTL01Y.cpy and app/cpy/CSMSG01Y.cpy and app/cpy/CSDAT01Y.cpy for the literals and the header, app/cpy-bms/COSGN00.CPY with app/bms/COSGN00.bms for the screen field shapes, app/csd/CARDDEMO.CSD for transaction CC00, and app/jcl/DUSRSECJ.jcl:35-44 for the ten seed rows. It was never captured from a live COBOL execution, which is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository. Only the provenance of the expected values is substituted; the twenty cases, the field-for-field diffing and the diff-count-equals-zero gate all stand.\n\nThe unit is SignOnService, driven as a plain object with a fixture-backed SecUserRepository, and the eleven-field screen is projected by SignOnController, also a plain object - no MockMvc, no HTTP, no servlet container and no JobLauncher in the path. All conversation state travels in the payload, so no server-side session exists to hold any of it. The password stays plaintext because app/cbl/COSGN00C.cbl:223 compares it in plaintext; that is an inherited property of the legacy design and an explicit non-goal of this migration, not something to correct here. Neither the backward-GO TO restructuring gate nor the abend gate applies: grep -c \"GO TO\" and grep -c CEE3ABD over app/cbl/COSGN00C.cbl are both 0, and neither is faked.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "USERIDI": "ADMIN003",
+      "PASSWDI": "PASSWORD"
+    },
+    "forcedOutcomes": {
+      "read": {
+        "outcome": "OTHER"
+      }
+    }
+  },
+  "expectedResponse": {
+    "nextMapset": "COSGN00",
+    "nextMap": "COSGN0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN003",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CC00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COSGN00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33 ",
+          "APPLIDO": "CICSAWS1",
+          "SYSIDO": "AWS1    ",
+          "USERIDO": "ADMIN003",
+          "PASSWDO": "PASSWORD",
+          "ERRMSGO": "Unable to verify the User ...                                                 "
+        },
+        "attributes": {}
+      }
+    ],
+    "cursorField": "USERIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 10,
+      "recordLength": 80
+    }
+  ]
+}

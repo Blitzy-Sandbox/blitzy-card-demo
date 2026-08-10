@@ -1,0 +1,64 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case18",
+  "description": "Two records seeded inline at exactly the copybook width, with every byte of both pinned on both channels. Each of the four record lines is exactly 500 characters and so is each final-state row, which is the total-width assertion gate G19 asks for stated the plain way: an image one byte short or one byte long is a different string and is reported as such. Seeding the rows inline rather than by fixture range is deliberate - the 500 characters are in the case file, so the width the case asserts is visible in the case rather than inferred from a file it names.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "rows": [
+        "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        ",
+        "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 500
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case13",
+  "description": "The third READ reports '23', record not found. In the online programs that status is an ordinary branch - DFHRESP(NOTFND) drives a 'not found in customer master' message - and here it is fatal, because L94 tests only '00' and L98 only '10' and everything else falls to L101. A sequential browse of an input file cannot actually report '23', and routing it through the arm anyway is exactly what the arm is for: it is the WHEN OTHER of the read's guard chain, and gate G47 requires it be exercised at this call site. Four records are seeded and two are displayed before the abend.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 4
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

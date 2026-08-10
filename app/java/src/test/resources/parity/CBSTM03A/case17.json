@@ -1,0 +1,38 @@
+{
+  "program": "CBSTM03A",
+  "caseId": "case17",
+  "description": "COND=(0,NE) on STEP040 (app/jcl/CREASTMT.JCL:L79): a preceding step that returned 4 bypasses the statement step entirely, so CBSTM03A never runs - no TIOT walk, no open, no record - and the job reports the highest executed condition code, 4, rather than zero.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "0500024453765740TRAN000000000001010001POS TERM  Step never executed                                                                                 0000000010{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+      ]
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt"
+    },
+    "CUSTFILE": {
+      "fixture": "custdata.txt"
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 4,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": []
+}

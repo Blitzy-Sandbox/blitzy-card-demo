@@ -1,0 +1,139 @@
+{
+  "program" : "COTRN02C",
+  "caseId" : "case03",
+  "description" : "First entry carrying a selection - the source's own quirk, reproduced rather than repaired. :124 tests CDEMO-CT02-TRN-SELECTED against SPACES AND LOW-VALUES and :126-127 moves it into CARDNINI, the CARD NUMBER field, because map COTRN2A has no transaction-identifier field to move it into; the slot most likely came from COTRN01C, where the same commarea field really does key a transaction. :128 then performs PROCESS-ENTER-KEY on the strength of it. VALIDATE-INPUT-KEY-FIELDS finds ACTIDINI at low-values from :122, so the EVALUATE at :195 falls to the card arm at :210: the value is numeric, FUNCTION NUMVAL at :218 converts it, :220-221 normalises it back over the screen field, and READ-CCXREF-FILE at :222 finds the row on the CCXREF base cluster - the second of this dataset's two access paths - so :223 moves XREF-ACCT-ID into ACTIDINI. VALIDATE-INPUT-DATA-FIELDS then rejects on its first arm, :251-256, because TTYPCDI is low-values. The cursor is reported on ACTIDINL rather than TTYPCDL: both length items hold -1, and a 3270 places the cursor in the first such field in map declaration order.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "CCXREF" : {
+      "rows" : [ ],
+      "fixture" : "cardxref.txt",
+      "fromRow" : 0,
+      "rowCount" : 5,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    },
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
+      "fixture" : null,
+      "fromRow" : null,
+      "rowCount" : null,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    }
+  },
+  "jobParameters" : { },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : null,
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "0",
+      "CDEMO-CT02-TRN-SELECTED" : "0683586198171516"
+    },
+    "mapFields" : { },
+    "forcedOutcomes" : { }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN02C",
+    "nextMapset" : "COTRN02",
+    "nextMap" : "COTRN2A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT02-TRNID-FIRST" : "                ",
+      "CDEMO-CT02-TRNID-LAST" : "                ",
+      "CDEMO-CT02-PAGE-NUM" : "00000000",
+      "CDEMO-CT02-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT02-TRN-SEL-FLG" : " ",
+      "CDEMO-CT02-TRN-SELECTED" : "0683586198171516"
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT02",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN02C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "ACTIDINO" : "00000000027",
+        "CARDNINO" : "0683586198171516",
+        "TTYPCDO" : "\u0000\u0000",
+        "TCATCDO" : "\u0000\u0000\u0000\u0000",
+        "TRNSRCO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "TDESCO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "TRNAMTO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "TORIGDTO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "TPROCDTO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "MIDO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "MNAMEO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "MCITYO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "MZIPO" : "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "CONFIRMO" : "\u0000",
+        "ERRMSGO" : "Type CD can NOT be empty...                                                   "
+      },
+      "attributes" : {
+        "ERRMSGC" : "DFHDFCOL"
+      }
+    } ],
+    "cursorField" : "ACTIDINL",
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "fields" : { },
+    "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "fields" : { },
+    "expectedBytes" : "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "fields" : { },
+    "expectedBytes" : "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "Type CD can NOT be empty...                                                     "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "Type CD can NOT be empty...                                                   "
+  } ],
+  "normalisations" : [ {
+    "dataset" : "CCXREF",
+    "kind" : "CARDXREF_FILLER_PAD_36_TO_50"
+  } ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 3,
+    "recordLength" : 350
+  } ]
+}

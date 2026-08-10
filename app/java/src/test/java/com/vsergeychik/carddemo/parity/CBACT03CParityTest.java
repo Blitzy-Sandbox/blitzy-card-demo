@@ -94,8 +94,11 @@ import org.springframework.beans.factory.ObjectProvider;
  * behaviour comes from the source</em>. It is registered in AAP 0.8.4 and honoured here rather than
  * corrected, because adding write logic to match a class name would be a new feature and therefore a
  * parity violation (practices B4 and B5). Concretely: <strong>an expectation in this file that
- * asserted an output record would be wrong</strong>, so {@code case19} instead asserts the absence of
- * one on both channels at once, and {@link NoWrites} proves the same thing structurally.
+ * asserted an output record would be wrong</strong>, so every one of the twenty cases declares an
+ * empty write channel - which this model treats as a positive assertion that nothing was written, not
+ * as an absence of interest - and pins each seeded row unchanged on the final-state channel, so a row
+ * rewritten in place is caught as well as a row added. {@code case19} makes that statement at full
+ * volume, over all fifty rows, and {@link NoWrites} proves the same thing structurally.
  *
  * <h2>The cross-reference fixture is 36 bytes wide where the copybook declares 50</h2>
  * <p>{@code app/cpy/CVACT03Y.cpy} declares {@code CARD-XREF-RECORD} as
@@ -348,21 +351,45 @@ class CBACT03CParityTest {
     /**
      * One scenario per case, in case order - the arranged input side of all twenty cases.
      *
-     * <p>Twelve cases run everything cleanly and differ only in what they seed; eight arrange a
+     * <p>Eight cases run everything cleanly and differ only in what they seed; twelve arrange a
      * failure, and between them they reach all three abend sites and both arms of
-     * {@code 9910-DISPLAY-IO-STATUS}:
+     * {@code 9910-DISPLAY-IO-STATUS} - the extended arm from all three sites:
      * <ul>
-     *   <li>{@code case06} and {@code case07} fail the {@code OPEN} at {@code :120}, the second with
-     *       the extended status {@code '92'} that drives the {@code IO-STAT1 = '9'} arm at
-     *       {@code :162-168};</li>
+     *   <li>{@code case06}, {@code case07} and {@code case18} fail the {@code OPEN} at {@code :120}.
+     *       {@code case07} uses the extended status {@code '92'} that drives the
+     *       {@code IO-STAT1 = '9'} arm at {@code :162-168}; {@code case18} uses a second ordinary
+     *       status, {@code '37'}, at the same call site, so that the four digits of the
+     *       {@code IO-STATUS-04} image are proved to be substituted from the reported status rather
+     *       than hard-coded - {@code case06} alone cannot show that, because one status is consistent
+     *       with a constant. {@code case18} also seeds three readable rows and expects none of them
+     *       displayed, which is what proves the failed open at {@code :72} short-circuits the
+     *       {@code PERFORM UNTIL} at {@code :74} whatever the dataset holds;</li>
      *   <li>{@code case08} fails the very first {@code READ}; {@code case09} fails the fourth with
      *       {@code '04'}; {@code case10} fails the third with {@code '23'} and {@code case11} the
      *       fifth with {@code '22'} - two statuses that are ordinary branches in the online programs
      *       and fatal here, because {@code :94} tests only {@code '00'} and {@code :98} only
-     *       {@code '10'};</li>
-     *   <li>{@code case12} and {@code case13} fail the {@code CLOSE} at {@code :138}, the second with
-     *       the extended status {@code '96'} and on a run that read nothing at all.</li>
+     *       {@code '10'}; {@code case15} fails the second with {@code '30'}, the same status
+     *       {@code case08} reports on the first, so the four-character image is proved to track the
+     *       status the read reported rather than the position it reported it at; and {@code case16}
+     *       fails the third with the extended status {@code '90'}, which is the only arrangement that
+     *       reaches the {@code IO-STAT1 = '9'} arm from {@code 1000-XREFFILE-GET-NEXT} rather than
+     *       from the open or the close paragraph;</li>
+     *   <li>{@code case12}, {@code case13} and {@code case19} fail the {@code CLOSE} at
+     *       {@code :138}: {@code case12} with {@code '42'} after two records, {@code case13} with the
+     *       extended status {@code '96'} on a run that read nothing at all, and {@code case19} with
+     *       {@code '30'} after the whole fifty-row file - the only one of the three that proves the
+     *       three failure lines are appended after a complete hundred-line record stream, and the only
+     *       arrangement under which {@code ADD 12 TO ZERO GIVING APPL-RESULT} at {@code :142} is
+     *       reached at volume.</li>
      * </ul>
+     *
+     * <p>The three extended-status arrangements are deliberately one per call site - {@code '92'} on
+     * the open, {@code '90'} on the read, {@code '96'} on the close. The arm they share encodes the
+     * <em>second</em> status character's code point into a {@code PIC 9(4) BINARY} through a
+     * {@code REDEFINES}, so its output differs per character rather than per site: {@code '2'} is 50
+     * and gives {@code 9050}, {@code '0'} is 48 and gives {@code 9048}, {@code '6'} is 54 and gives
+     * {@code 9054}. Three sites and three distinct images together rule out both a paragraph that is
+     * right at one site by accident and a renderer that formats the two characters directly.
      *
      * <p>Deeply immutable: an unmodifiable view over a map of records built once by
      * {@link #declaredScenarios()}. Declaration order is preserved so a diagnostic lists the entries
@@ -391,11 +418,11 @@ class CBACT03CParityTest {
         declared.put("case12", Scenario.closeFails("42"));
         declared.put("case13", Scenario.closeFails("96"));
         declared.put("case14", Scenario.clean());
-        declared.put("case15", Scenario.clean());
-        declared.put("case16", Scenario.clean());
+        declared.put("case15", Scenario.readFailsAfter(1, "30"));
+        declared.put("case16", Scenario.readFailsAfter(2, "90"));
         declared.put("case17", Scenario.clean());
-        declared.put("case18", Scenario.clean());
-        declared.put("case19", Scenario.clean());
+        declared.put("case18", Scenario.openFails("37"));
+        declared.put("case19", Scenario.closeFails("30"));
         declared.put("case20", Scenario.clean());
         return Collections.unmodifiableMap(declared);
     }
@@ -576,13 +603,20 @@ class CBACT03CParityTest {
     /**
      * The one failing {@code READ} outcome, built through the factory that owns its status.
      *
-     * <p>The status is not stamped onto a generic outcome: each of the four is produced by the
-     * factory {@link CardXrefRepository} publishes for it, so the {@code RESP} value, the
-     * {@code RESP2} value and the presence or absence of a record are the ones the production
-     * repository would report. That matters because {@code CBACT03C} branches on the status alone -
-     * {@code :94} tests {@code '00'} and {@code :98} tests {@code '10'}, and everything else falls
-     * to {@code :101} - so a case that arranged the right status through the wrong outcome would
-     * still reach the right arm while asserting a condition that cannot occur.
+     * <p>The status is not stamped onto a generic outcome: each of the three the repository names -
+     * not found, record-length conflict and duplicate key - is produced by the factory
+     * {@link CardXrefRepository} publishes for it, so the {@code RESP} value, the {@code RESP2} value
+     * and the presence or absence of a record are the ones the production repository would report.
+     * That matters because {@code CBACT03C} branches on the status alone - {@code :94} tests
+     * {@code '00'} and {@code :98} tests {@code '10'}, and everything else falls to {@code :101} - so
+     * a case that arranged the right status through the wrong outcome would still reach the right arm
+     * while asserting a condition that cannot occur.
+     *
+     * <p>Anything the repository does not name falls through to {@code ReadResult.other}, which
+     * carries the two characters and nothing else. That is the honest representation of a status the
+     * repository has no vocabulary for, and it is the path {@code case08}'s {@code '30'} and
+     * {@code case16}'s extended {@code '90'} take - the latter reaching the {@code IO-STAT1 = '9'} arm
+     * of {@code 9910-DISPLAY-IO-STATUS} from this paragraph.
      *
      * @param status the status the read reports
      * @param seeded the seeded rows, needed only for the duplicate outcome, which returns a record
@@ -665,7 +699,7 @@ class CBACT03CParityTest {
      * the repository to reach - so "the dataset still holds exactly what it held" is true from the
      * outset. Recording it first is what puts it in the fingerprint on the abend path as well as the
      * normal one: {@code CALL 'CEE3ABD'} at {@code :158} does not return, so anything recorded after
-     * {@code execute} would be absent from precisely the eight cases that need it most.
+     * {@code execute} would be absent from precisely the twelve cases that need it most.
      *
      * <p><strong>Output goes to the recorder, not to a return value.</strong> A run that displays six
      * lines and then abends has emitted those six lines, and they belong in the fingerprint. The
@@ -986,19 +1020,23 @@ class CBACT03CParityTest {
             }
 
             assertThat(openFailures)
-                .as("app/cbl/CBACT03C.cbl:132 - the abend inside 0000-XREFFILE-OPEN")
-                .containsExactly("case06", "case07");
+                .as("app/cbl/CBACT03C.cbl:132 - the abend inside 0000-XREFFILE-OPEN, reached with "
+                    + "three different statuses so the rendered image is proved to track the "
+                    + "reported one")
+                .containsExactly("case06", "case07", "case18");
             assertThat(readFailures)
                 .as("app/cbl/CBACT03C.cbl:113 - the abend inside 1000-XREFFILE-GET-NEXT")
-                .containsExactly("case08", "case09", "case10", "case11");
+                .containsExactly("case08", "case09", "case10", "case11", "case15", "case16");
             assertThat(closeFailures)
-                .as("app/cbl/CBACT03C.cbl:150 - the abend inside 9000-XREFFILE-CLOSE")
-                .containsExactly("case12", "case13");
+                .as("app/cbl/CBACT03C.cbl:150 - the abend inside 9000-XREFFILE-CLOSE, reached after "
+                    + "two records, after none, and after the whole fifty-row file")
+                .containsExactly("case12", "case13", "case19");
             assertThat(extendedArm)
                 .as("the IO-STAT1 = '9' arm of 9910-DISPLAY-IO-STATUS at :162-168, reached from the "
-                    + "OPEN paragraph and from the CLOSE paragraph so the shared paragraph is proved "
-                    + "shared rather than incidentally right at one site")
-                .containsExactly("case07", "case13");
+                    + "OPEN paragraph, the READ paragraph and the CLOSE paragraph so the shared "
+                    + "paragraph is proved shared at every one of its three call sites rather than "
+                    + "incidentally right at one")
+                .containsExactly("case07", "case13", "case16");
             assertThat(clean)
                 .as("the remaining cases run to completion and differ only in what they seed")
                 .isEqualTo(ParityHarness.CASES_PER_PROGRAM
@@ -1339,8 +1377,9 @@ class CBACT03CParityTest {
     class TheAbend {
 
         @Test
-        @DisplayName("the eight arranged failures expect RETURN-CODE 12 and end with the abend line")
-        void theEightArrangedFailuresExpectTwelveAndEndWithTheAbendLine() {
+        @DisplayName("the twelve arranged failures expect RETURN-CODE 12 and end with the abend "
+            + "line")
+        void theTwelveArrangedFailuresExpectTwelveAndEndWithTheAbendLine() {
             int failures = 0;
             for (ParityCase parityCase : cases()) {
                 Scenario scenario = scenarioFor(parityCase.caseId());
@@ -1366,14 +1405,15 @@ class CBACT03CParityTest {
                     .isEqualTo(AccountBalanceUpdateJob.START_OF_EXECUTION);
             }
             assertThat(failures)
-                .as("two failed opens, four failed reads and two failed closes - the whole of the "
+                .as("three failed opens, six failed reads and three failed closes - the whole of "
+                    + "the "
                     + "scenario table's failure half")
-                .isEqualTo(8);
+                .isEqualTo(12);
         }
 
         @Test
-        @DisplayName("the twelve clean cases expect RETURN-CODE 0 and end with the closing banner")
-        void theTwelveCleanCasesExpectZeroAndEndWithTheClosingBanner() {
+        @DisplayName("the eight clean cases expect RETURN-CODE 0 and end with the closing banner")
+        void theEightCleanCasesExpectZeroAndEndWithTheClosingBanner() {
             int cleanCases = 0;
             for (ParityCase parityCase : cases()) {
                 if (scenarioFor(parityCase.caseId()).failingStatus() != null) {
@@ -1391,8 +1431,8 @@ class CBACT03CParityTest {
                     .doesNotContain(AbendException.ABEND_DISPLAY_TEXT);
             }
             assertThat(cleanCases)
-                .as("twenty cases less the eight that arrange a failure")
-                .isEqualTo(12);
+                .as("twenty cases less the twelve that arrange a failure")
+                .isEqualTo(8);
         }
 
         @Test

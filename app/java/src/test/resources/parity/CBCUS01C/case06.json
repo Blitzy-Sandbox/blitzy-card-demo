@@ -1,0 +1,70 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case06",
+  "description": "The trailing FILLER, named and pinned. CVCUS01Y ends in FILLER PIC X(168) at offset 332, and the differ addresses an unnamed span by that name, so this expectation states all 168 of its characters explicitly - spaces, which is what every row of the shipped fixture carries there. Two gates ride on it: the record is 500 bytes only if the FILLER is present (G19), and it is space-filled only if nothing trimmed or rewrote it (G21). Because the expectation names all 19 spans, their lengths sum to 500 and the total width is asserted by construction: drop the FILLER and 168 bytes go unaccounted for. Driven through CustomerService, whose decision logic this is, rather than through the job that wires it.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 9,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000010",
+        "CUST-FIRST-NAME": "Maybell                  ",
+        "CUST-MIDDLE-NAME": "Creola                   ",
+        "CUST-LAST-NAME": "Mann                     ",
+        "CUST-ADDR-LINE-1": "77933 Adah Dale                                   ",
+        "CUST-ADDR-LINE-2": "Suite 343                                         ",
+        "CUST-ADDR-LINE-3": "Andersonfurt                                      ",
+        "CUST-ADDR-STATE-CD": "CT",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "44803-4279",
+        "CUST-PHONE-NUM-1": "(614)594-2619  ",
+        "CUST-PHONE-NUM-2": "(667)057-0235  ",
+        "CUST-SSN": "754755746",
+        "CUST-GOVT-ISSUED-ID": "00000000000212824755",
+        "CUST-DOB-YYYY-MM-DD": "1980-06-11",
+        "CUST-EFT-ACCOUNT-ID": "0093803568",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "476",
+        "FILLER": "                                                                                                                                                                        "
+      }
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

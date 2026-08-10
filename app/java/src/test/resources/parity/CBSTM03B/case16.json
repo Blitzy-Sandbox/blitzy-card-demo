@@ -1,7 +1,7 @@
 {
   "program": "CBSTM03B",
   "caseId": "case16",
-  "description": "FD-ACCT-DATA is declared TWICE - app/cbl/CBSTM03B.CBL:63 gives it PIC X(318) inside FD-TRNXFILE-REC and :78 gives it PIC X(289) inside FD-ACCTFILE-REC. That is legal COBOL because the two live in different FD records, and in Java they are distinct fields on distinct types. This case reads both in one run so that the two spans are stated side by side: the TRNXFILE area carries 350 bytes whose data span is bytes 33 to 350, and the ACCTFILE area carries 300 bytes whose data span is bytes 12 to 300. The values differ, the widths differ, and a translation that conflated the two names would have to fail one of them.",
+  "description": "ACCTFILE OPEN succeeds and returns FILE STATUS '00' on the fourth and last named EVALUATE arm, with both FD-ACCT-DATA spans read side by side in one run. THE ARM. EVALUATE LK-M03B-DD (app/cbl/CBSTM03B.CBL:118) tests its arms in source order - 'TRNXFILE' (:119), 'XREFFILE' (:121), 'CUSTFILE' (:123), then 'ACCTFILE' (:125) - so call 3 reaching the ACCTFILE arm is evidence that the three earlier names were tested and rejected without control falling into WHEN OTHER (:127-128), which performs no I/O and, because its GO TO 9999-GOBACK jumps past every nnn900-EXIT, would leave LK-M03B-RC stale rather than '00'. A Java switch or if-chain that reordered the arms could still satisfy the TRNXFILE cases and fail here, which is why the ordering is asserted and not assumed. THE PATH. :126 performs 4000-ACCTFILE-PROC THRU 4999-EXIT; IF M03B-OPEN (:208) is true, so OPEN INPUT ACCT-FILE (:209) runs and GO TO 4900-EXIT (:210) leaves the paragraph before any further guard; 4900-EXIT (:225-226) MOVEs ACCTFILE-STATUS TO LK-M03B-RC and 4999-EXIT (:228-229) EXITs. A successful OPEN INPUT yields '00'. THE STATUS AREA. ACCTFILE-STATUS (:95-97) is the fourth and last of four independent two-byte areas (:83-97), none of which carries a VALUE clause, so the '00' pinned here belongs to that area alone and says nothing about the other three - which is the whole point of asserting OPEN on every DD across the suite (TRNXFILE in case01, XREFFILE in case05, CUSTFILE in case09, ACCTFILE here and in case13). Either value satisfies the caller: CBSTM03A's 8400-ACCTFILE-OPEN (app/cbl/CBSTM03A.CBL:801-816) primes MOVE ZERO TO WS-M03B-RC (:804), CALLs (:805) and tests IF WS-M03B-RC = '00' OR '04' (:807), displaying 'ERROR OPENING ACCTFILE' (:810) and abending (:812) on anything else - and it is the last of the four opens, so the whole statement run hinges on it. ACCESS MODE. ACCTFILE is ORGANIZATION INDEXED, ACCESS MODE IS RANDOM, RECORD KEY IS FD-ACCT-ID (:49-53), so 4000-ACCTFILE-PROC guards only M03B-OPEN (:208), M03B-READ-K (:213) and M03B-CLOSE (:220). There is no sequential-READ guard at all, which is why call 4 is a keyed read: MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) TO FD-ACCT-ID (:214) then READ INTO LK-M03B-FLDT (:215). Its key span carries '00000000001' padded to 25 bytes and LK-M03B-KEY-LN PIC S9(4) carries the zoned image '001A', whose trailing 'A' is the positive overpunch of the low-order digit of 11 - the width CBSTM03A:398 COMPUTEs from LENGTH OF XREF-ACCT-ID PIC 9(11). A non-keyed call renders a length of 0 as '000{' for the same reason. THE DUPLICATED NAME. FD-ACCT-DATA is declared twice - PIC X(318) at :63 inside FD-TRNXFILE-REC and PIC X(289) at :78 inside FD-ACCTFILE-REC - which is legal COBOL because the two sit in different FD records. Reading both in one run states them side by side, so a translation that collapsed the one COBOL name into one Java field would have to fail one of them. THE WIDTHS, re-derivable by hand. LK-M03B-AREA is 1040 = 8 + 1 + 2 + 25 + 4 + 1000 (:100-112); the TRNXFILE record is 350 = 16 + 16 + 318 (:60-63); the ACCTFILE record is 300 = 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 from app/cpy/CVACT01Y.cpy, whose ACCT-EXPIRAION-DATE is misspelled in the copybook and is therefore pinned misspelled here, and whose trailing FILLER X(178) is pinned as spaces because omitting it would shift every offset after byte 122 and leave the record short. Both OPEN images name LK-M03B-FLDT explicitly as 1000 spaces, because on the OPEN path the untouched record area is itself the assertion; the two read images leave that span to expectedBytes, which pins all 1040 bytes of every image regardless. Every byte is US-ASCII, the code page of the authoritative app/data/ASCII fixtures, and never a platform default. WHAT IS NOT HERE. expectedReturnCode is 0 because CBSTM03B contains no RETURN-CODE reference and no CALL statement - it GOBACKs without touching one, and LK-M03B-RC is a FILE STATUS, not a return code. expectedMessages is empty because CBSTM03B contains no DISPLAY statement at all; 'ERROR OPENING ACCTFILE' belongs to its caller. No normalisation applies: acctdata rows are a full 300 bytes on disk with FILLER already space-filled, and the suite's only two pads are cardxref 36 to 50 and USRSEC 57 to 80. M03B-WRITE 'W' (:107) and M03B-REWRITE 'Z' (:108) stay declared and undriven here, as they are SET nowhere in app/cbl. All four SELECTs are OPEN INPUT and no paragraph writes, so both seeded datasets are read back afterwards and pinned unchanged - the read-only proof no area image could give - and the keyed read's target row is pinned field by field across all thirteen CVACT01Y spans, so the 289-byte ACCTFILE data span is stated by name and not only as bytes. PROVENANCE. Every expected value above was derived statically - by structured reading of the line numbers cited, the CVACT01Y byte offsets and the real bytes of app/data/ASCII/acctdata.txt - and was never captured from, recorded against or replayed from any execution of the COBOL. That execution is empirically impossible here: cobc refuses CBSTM03B at :116 because PROCEDURE DIVISION USING is a subprogram entry rather than an executable main, its indexed file handler is reported disabled, and no Language Environment CEE service exists. AAP section 0.7.6 records the eight verified blockers and section 0.9.11 escalates the deviation as risk R-A: only the provenance of these values changes - 20 cases per program, field-for-field diffing and the diff-count-equals-zero gate per module all stand.",
   "unitKind": "COMPONENT",
   "inputs": {
     "TRNXFILE": {
@@ -25,7 +25,10 @@
       "fields": {
         "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -35,7 +38,9 @@
       "fields": {
         "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "R",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{"
       },
       "expectedBytes": "TRNXFILER00                         000{05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -45,7 +50,10 @@
       "fields": {
         "LK-M03B-DD": "ACCTFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -55,7 +63,9 @@
       "fields": {
         "LK-M03B-DD": "ACCTFILE",
         "LK-M03B-OPER": "K",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "00000000001              ",
+        "LK-M03B-KEY-LN": "001A"
       },
       "expectedBytes": "ACCTFILEK0000000000001              001A00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     }
@@ -70,7 +80,21 @@
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "fields": {},
+      "fields": {
+        "ACCT-ID": "00000000001",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001940{",
+        "ACCT-CREDIT-LIMIT": "00000020200{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000010200{",
+        "ACCT-OPEN-DATE": "2014-11-20",
+        "ACCT-EXPIRAION-DATE": "2025-05-20",
+        "ACCT-REISSUE-DATE": "2025-05-20",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
@@ -89,6 +113,18 @@
       "channel": "WRITES",
       "rowCount": 4,
       "recordLength": 1040
+    },
+    {
+      "dataset": "TRNXFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 300
     }
   ]
 }

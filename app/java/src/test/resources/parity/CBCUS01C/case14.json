@@ -1,0 +1,68 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case14",
+  "description": "The fifth READ reports '22', duplicate key - the other status that is an ordinary branch in the online programs and fatal in this one, and the second half of gate G47 at this call site. Like '23' it cannot arise from a sequential read of an input file, and like '23' it is not special-cased: L101 moves 12, the WHEN OTHER arm displays its error text and the rendered status, and the abend carries 12 out. Six records are seeded and four are displayed twice each before the failure, so eight record lines precede the three fatal ones.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 6
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000004Delbert                  Kaia                     Parisian                 638 Blanda Gateway                                Apt. 076                                          Lake Virginie                                     MIUSA39035-0455(801)603-4121  (156)074-6837  660354258000000000000685792491985-01-130040802739Y776                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000004Delbert                  Kaia                     Parisian                 638 Blanda Gateway                                Apt. 076                                          Lake Virginie                                     MIUSA39035-0455(801)603-4121  (156)074-6837  660354258000000000000685792491985-01-130040802739Y776                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0022"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

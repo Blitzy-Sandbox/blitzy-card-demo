@@ -1007,9 +1007,9 @@ class ParityCaseTest {
         }
 
         @ParameterizedTest
-        @DisplayName("both terminations are expressible, so neither is decorative")
+        @DisplayName("every termination is expressible, so none of the three is decorative")
         @EnumSource(Termination.class)
-        void bothTerminationsAreExpressible(Termination termination) {
+        void everyTerminationIsExpressible(Termination termination) {
             ExpectedResponse response = new ExpectedResponse(null, null, null, Map.of(), List.of(),
                 null, termination);
 

@@ -87,16 +87,20 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       period is the one closing the entire {@code PERFORM UNTIL ... END-PERFORM.} at {@code :206} -
  *       not the {@code END-IF} two lines below. So the first record whose {@code TRAN-PROC-TS (1:10)}
  *       falls outside the reporting range does not get skipped: it truncates the report and suppresses
- *       the page and grand totals at {@code :202-203} entirely. {@code case06} pins that from inside a
- *       run, {@code case08} pins it firing on the first record, and {@code case17} pins it firing on an
- *       empty input. Turning the break into a {@code continue} makes all three fail.</li>
+ *       the page and grand totals at {@code :202-203} entirely. {@code case08} pins it firing on the
+ *       first record and {@code case17} pins it firing on an empty input. Turning the break into a
+ *       {@code continue} makes both fail. The complement is pinned too: {@code case06} keeps all five
+ *       of its records inside the range, with the first and the last sitting <em>on</em> the inclusive
+ *       boundaries, so the arm is never taken and the loop runs to end of file.</li>
  *   <li><strong>The end-of-file arm adds the last amount twice</strong> - {@code :197-203}. A COBOL
  *       {@code READ ... INTO} leaves its receiving area untouched {@code AT END}, so {@code TRAN-RECORD}
  *       still holds the last record read - whose {@code TRAN-AMT} {@code 1100-WRITE-TRANSACTION-REPORT}
  *       has already added to both accumulators at {@code :287-288}. Adding it again at {@code :200-201}
  *       overstates the final page total and, through {@code :297}, the grand total. {@code case07} pins
- *       the doubling numerically and {@code case16} pins the high-order truncation it causes at the top
- *       of {@code PIC S9(09)V99}. Removing the addition makes both fail.</li>
+ *       the doubling numerically, {@code case06} pins it at the foot of a five-record run where the
+ *       five amounts sum to 1,819.34 and both totals nonetheless read 1,880.53, and {@code case16} pins
+ *       the high-order truncation it causes at the top of {@code PIC S9(09)V99}. Removing the addition
+ *       makes all three fail.</li>
  * </ul>
  * <p>Neither is fixed here. Fixing either would change every report this program has ever produced,
  * which is a behaviour change and a parity violation (practice B5).
@@ -434,10 +438,12 @@ class CBTRN03CParityTest {
      *
      * <p>The mask <em>is</em> the value: a report amount is a fifteen-character image, not a number
      * that happens to be formatted, so every one of these is an equality on characters. Three cases in
-     * the fixture set depend on the three rules asserted here - {@code case14} on the fixed leading
-     * sign and the comma that falls inside the suppressed run, {@code case15} on the all-{@code Z} zero
-     * rule that blanks the entire item including its decimal point, and {@code case16} on a value that
-     * fills every position.
+     * the fixture set depend on the rules asserted here - {@code case14} on the fixed leading sign and
+     * the comma that falls inside the suppressed run, {@code case15} on a four-digit amount and a
+     * four-digit total whose thousands comma prints because suppression has already stopped, and
+     * {@code case16} on a value that fills every position. The all-{@code Z} zero rule - a value of
+     * zero blanks the entire item, the decimal point included - is asserted here directly rather than
+     * through a fixture, because every amount and every total across the twenty cases is non-zero.
      */
     @Test
     @DisplayName("the -ZZZ,ZZZ,ZZZ.ZZ and +ZZZ,ZZZ,ZZZ.ZZ masks render exactly (G24)")

@@ -1,13 +1,14 @@
 {
   "program": "CBACT03C",
   "caseId": "case16",
-  "description": "Five rows taken from the middle of the fixture, 25 through 29, so the run starts at neither the first key nor the last. Twelve lines, and the record lines must appear in ascending key order - 5975..., 6009..., 6349..., 6503..., 6509... - because ACCESS MODE IS SEQUENTIAL at :31 over a KSDS delivers records in RECORD KEY order, and the mainline loop displays each one as it arrives with nothing buffered or reordered. Line ORDER is what this case exists to pin: a translation that read the whole file before displaying, or that sorted, would produce the same twelve lines in a different sequence and every other case here would still pass.",
+  "description": "The third READ at :93 reports '90', after two records have been read and displayed. The status is neither '00' at :94 nor '10' at :98, so :101 moves 12 into APPL-RESULT, 88 APPL-AOK is false at :104, 88 APPL-EOF is false at :107, and :110-113 run: DISPLAY 'ERROR READING XREFFILE', then 9910-DISPLAY-IO-STATUS, then 9999-ABEND-PROGRAM. Eight lines and RETURN-CODE 12, with TIMING 0 at :156 and ABCODE 999 at :157. There is NO 'END OF EXECUTION OF PROGRAM CBACT03C' line: CALL 'CEE3ABD' at :158 does not return, so :83 and :85 are never reached. Four record lines for two records, because DISPLAY CARD-XREF-RECORD is live twice - at :96 inside the '00' arm and again at :78 in the mainline loop - and that duplication is reproduced rather than tidied (practice B5). THE FIRST ARM OF 9910-DISPLAY-IO-STATUS, REACHED FROM THE READ PARAGRAPH: this is the only case that reaches the :162-168 arm from 1000-XREFFILE-GET-NEXT; case07 reaches it from the OPEN at :120 and case13 from the CLOSE at :138, so between the three the shared paragraph is proved shared at every one of its call sites rather than incidentally right at one. The arm is genuine byte arithmetic and is the most easily mistranslated paragraph in the program, so it is derived here statement by statement rather than by analogy with another case (practice B11). For '90': (1) '90' IS numeric, but IO-STAT1 is '9', so the OR at :162-163 makes the condition true and the FIRST arm runs, not the ELSE at :169-172; (2) MOVE IO-STAT1 TO IO-STATUS-04(1:1) puts '9' into character 1 of the four-character image; (3) MOVE 0 TO TWO-BYTES-BINARY zeroes the PIC 9(4) BINARY declared at :53; (4) MOVE IO-STAT2 TO TWO-BYTES-RIGHT deposits the character code of '0' into the low-order byte through the TWO-BYTES-ALPHA REDEFINES at :54-56, and under US-ASCII '0' is 0x30, so the field holds 48; (5) MOVE TWO-BYTES-BINARY TO IO-STATUS-0403 renders 48 into a PIC 999 as the zero-filled '048'; (6) IO-STATUS-04 is therefore '9' followed by '048'; (7) :168 displays the literal 'FILE STATUS IS: NNNN' immediately followed by that image, which is FILE STATUS IS: NNNN9048 in 24 characters. The NNNN of the literal is emitted verbatim and is not a placeholder the image replaces. THE VALUE IS ENCODING-DEPENDENT, AND THIS IS THE ONLY PLACE IN THE FOLDER WHERE THAT IS TRUE, so the reasoning is written down rather than left to be re-guessed. 9048 is correct because ParityHarness.FIXTURE_CHARSET names US-ASCII explicitly, where '0' is 0x30 = 48. Under IBM037 the same character occupies 0xF0 = 240, step 5 would render '240', and a mainframe reading EBCDIC would display the very same literal followed by the image 9240 instead. Neither of the two near-miss images belongs in expectedMessages here, and both are named only so that a reader can rule them out: 0090 is the ELSE-arm rendering, which a status whose first character is '9' can never reach, and 9240 is the EBCDIC value of this same arm. AAP 0.8.9 forbids relying on a platform default charset and practice B8 requires the code page to be named, and it is that pinned code page - not luck - that makes this expectation deterministic (practice B7). THE INJECTED CONDITION IS NAMED IN THIS PROSE because ParityCase offers a batch case no other channel: forcedOutcomes belongs to ParityCase.ScreenRequest, and requireOnlineMember refuses a screenRequest on a BATCH_JOB case, so the fallback of naming the call site and the two-character status is taken here exactly as case06 through case13 take it, and CBACT03CParityTest arranges it as Scenario.readFailsAfter(2, '90') - a status that is not '23', '04' or '22', so the repository reports it through ReadResult.other and CBACT03C falls to :101 on the status alone. inputs holds the two rows verbatim at their shipped 36 bytes and the declared CARDXREF_FILLER_PAD_36_TO_50 supplies CVACT03Y's absent FILLER PIC X(14) once, at seed time, through its single owner; nothing here pre-pads. expectedWrites is empty because OPEN INPUT at :120 and the total absence of WRITE, REWRITE and DELETE mean the job whose prompt-mandated name says Update writes nothing at all (AAP rule R1, register 0.8.4); expectedFinalState pins both seeded rows unchanged instead, which is the positive proof that no output record exists to name. Every expected value here was DERIVED by reading the COBOL statement by statement and cross-checking app/cbl/CBACT03C.cbl, app/cpy/CVACT03Y.cpy, app/jcl/READXREF.jcl and app/data/ASCII/cardxref.txt; nothing was captured from a running COBOL program, because none can be run in this environment - AAP 0.7.6 lists eight independently verified blockers and AAP 0.9.11 escalates the substitution as risk R-A (practice B12). Only the provenance of the expected values changes: the twenty cases, the field-for-field diffing and the zero-diff gate all stand.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 25,
-      "rowCount": 5
+      "rows": [
+        "050002445376574000000005000000000050",
+        "068358619817151600000002700000000027"
+      ]
     }
   },
   "jobParameters": {},
@@ -16,30 +17,15 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "597511751661607700000004200000000042              "
+      "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
-      "expectedBytes": "600961915067452600000000500000000005              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 2,
-      "expectedBytes": "634925033164850900000001500000000015              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 3,
-      "expectedBytes": "650353518179599200000004800000000048              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 4,
-      "expectedBytes": "650923036255381600000003000000000030              "
+      "expectedBytes": "068358619817151600000002700000000027              "
     }
   ],
-  "expectedReturnCode": 0,
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -47,47 +33,31 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "597511751661607700000004200000000042              "
+      "text": "050002445376574000000005000000000050              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "597511751661607700000004200000000042              "
+      "text": "050002445376574000000005000000000050              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "600961915067452600000000500000000005              "
+      "text": "068358619817151600000002700000000027              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "600961915067452600000000500000000005              "
+      "text": "068358619817151600000002700000000027              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "634925033164850900000001500000000015              "
+      "text": "ERROR READING XREFFILE"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "634925033164850900000001500000000015              "
+      "text": "FILE STATUS IS: NNNN9048"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "650353518179599200000004800000000048              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "650353518179599200000004800000000048              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "650923036255381600000003000000000030              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "650923036255381600000003000000000030              "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -100,7 +70,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 5,
+      "rowCount": 2,
       "recordLength": 50
     }
   ]

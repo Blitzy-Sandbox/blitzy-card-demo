@@ -1,13 +1,16 @@
 {
   "program": "CBACT03C",
   "caseId": "case11",
-  "description": "All four seeded rows are read and displayed, and the READ that should have reported end of file reports '22' instead - a duplicate key. Twelve lines: the banner, eight record lines, and the three failure lines, with no END OF EXECUTION. The mirror image of case10 on the other recognised-elsewhere status, positioned at the very end of the browse so that it also proves the loop does not treat 'no more records' as end of file by inference. Only a status of exactly '10' sets END-OF-FILE at :108; anything else at that position abends.",
+  "description": "The zero-fill minimum, carried on the fifth READ reporting '22'. Four rows are read and displayed cleanly and the READ that would have reported end of file reports a duplicate key instead, so app/cbl/CBACT03C.cbl:94 ('00') is false, :98 ('10') is false, :101 moves 12, and :110, :112 and :113 emit the three failure lines before the abend at :158 - twelve lines, RETURN-CODE 12 and no closing banner at :85. Positioned at the very end of the browse, which is what makes it the mirror image of case10 on the other recognised-elsewhere status and also proves the loop never treats 'no more records' as end of file by inference: only an exact '10' sets END-OF-FILE at :108. The rows are the last four of the dataset, 0-based fixture rows 45 to 48 of app/data/ASCII/cardxref.txt written out verbatim at the 36 characters the shipped data measures, and the LAST of them - fixture row 48, base key 9680294154603697 - carries the smallest numeric values anywhere in the cluster: XREF-CUST-ID 000000001, eight leading zeros then a 1, and XREF-ACCT-ID 00000000001, ten leading zeros then a 1, both verified as the unique minima by scanning columns 17-25 and 26-36 of all fifty rows rather than assumed. That row is therefore displayed twice AND handed back alongside DUPKEY by the failing read, so the same bytes are asserted on both the clean path and the failure path. This is the tripwire for a decode that trims, or parses and reformats, or represents a PIC 9 span numerically: any of the three collapses 000000001 to 1, shortens the record below CVACT03Y's 50 bytes and fails the width and byte-image assertions at once. It is also why every PIC 9(09) and PIC 9(11) value below is written as a zero-padded digit STRING and never as a JSON number - ParityCase.ExpectedRecord.fields is a Map<String, String>, a JSON number would silently discard exactly the leading zeros this case exists to prove, and stating the choice here rather than leaving it implicit is what practice B8 asks for. XREF-CUST-ID and XREF-ACCT-ID are scale-free PIC 9 spans and CVACT03Y declares no signed-decimal field at all, so per AAP rule R4 they are integral spans compared as bytes and no fixed-point or rounding concept enters this case anywhere. Each record appears on two consecutive identical lines because DISPLAY CARD-XREF-RECORD is active twice, at :96 on the '00' arm and again at :78 in the mainline loop; the defect is preserved rather than tidied (practice B5). The failing read itself contributes no record line, because :96 sits on the '00' arm only. No output record is expected on any dataset or channel: the prompt-mandated name says Update and the program issues OPEN INPUT at :120 with no WRITE, REWRITE or DELETE in its 178 lines (AAP rule R1, register 0.8.4). Every expected value here was derived STATICALLY, by reading app/cbl/CBACT03C.cbl statement by statement against app/cpy/CVACT03Y.cpy for the byte layout, app/jcl/READXREF.jcl for the step and DD contract, and app/data/ASCII/cardxref.txt for the input rows; nothing was captured from a running COBOL program, because none can be run in this environment (AAP 0.7.6, risk R-A, practice B12).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 20,
-      "rowCount": 4
+      "rows": [
+        "905629793166401100000002500000000025",
+        "934910747586921400000001700000000017",
+        "950173372142989300000000900000000009",
+        "968029415460369700000000100000000001"
+      ]
     }
   },
   "jobParameters": {},
@@ -16,22 +19,46 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "485945261287706500000000700000000007              "
+      "fields": {
+        "XREF-CARD-NUM": "9056297931664011",
+        "XREF-CUST-ID": "000000025",
+        "XREF-ACCT-ID": "00000000025",
+        "FILLER": "              "
+      },
+      "expectedBytes": "905629793166401100000002500000000025              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
-      "expectedBytes": "540709985047986600000002100000000021              "
+      "fields": {
+        "XREF-CARD-NUM": "9349107475869214",
+        "XREF-CUST-ID": "000000017",
+        "XREF-ACCT-ID": "00000000017",
+        "FILLER": "              "
+      },
+      "expectedBytes": "934910747586921400000001700000000017              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 2,
-      "expectedBytes": "565683054498121600000004600000000046              "
+      "fields": {
+        "XREF-CARD-NUM": "9501733721429893",
+        "XREF-CUST-ID": "000000009",
+        "XREF-ACCT-ID": "00000000009",
+        "FILLER": "              "
+      },
+      "expectedBytes": "950173372142989300000000900000000009              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 3,
-      "expectedBytes": "567118447850584400000001800000000018              "
+      "fields": {
+        "XREF-CARD-NUM": "9680294154603697",
+        "XREF-CUST-ID": "000000001",
+        "XREF-ACCT-ID": "00000000001",
+        "FILLER": "              "
+      },
+      "expectedBytes": "968029415460369700000000100000000001              "
     }
   ],
   "expectedReturnCode": 12,
@@ -42,35 +69,35 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "485945261287706500000000700000000007              "
+      "text": "905629793166401100000002500000000025              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "485945261287706500000000700000000007              "
+      "text": "905629793166401100000002500000000025              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "540709985047986600000002100000000021              "
+      "text": "934910747586921400000001700000000017              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "540709985047986600000002100000000021              "
+      "text": "934910747586921400000001700000000017              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "565683054498121600000004600000000046              "
+      "text": "950173372142989300000000900000000009              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "565683054498121600000004600000000046              "
+      "text": "950173372142989300000000900000000009              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "567118447850584400000001800000000018              "
+      "text": "968029415460369700000000100000000001              "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "567118447850584400000001800000000018              "
+      "text": "968029415460369700000000100000000001              "
     },
     {
       "channel": "DISPLAY_LINE",

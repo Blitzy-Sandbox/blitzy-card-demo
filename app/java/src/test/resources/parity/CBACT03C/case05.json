@@ -1,14 +1,16 @@
 {
   "program": "CBACT03C",
   "caseId": "case05",
-  "description": "Three rows already at the copybook's full 50 bytes whose trailing FILLER PIC X(14) span holds text rather than spaces. This is the case that distinguishes the two candidate images of a record and pins the right one: DISPLAY CARD-XREF-RECORD at :78 and :96 names the 01 group item, so it writes the record AREA that READ ... INTO filled - the row's own bytes, FILLER included - and not a re-encoding assembled from the three decoded fields, which would emit fourteen spaces there whatever the row held. Both candidates agree on every row of the shipped fixture, because its FILLER is blank; they disagree here, and the expectation says which one is correct. No normalisation is declared because nothing is short.",
+  "description": "Five records - the five lowest base keys of app/data/ASCII/cardxref.txt, its rows 1 to 5, in ascending XREF-CARD-NUM order - which makes this the folder's canonical small-volume happy-path block: OPEN INPUT succeeds at :120, five READs succeed at :93, the sixth reports end of file and sets END-OF-FILE to 'Y' at :108, CLOSE succeeds at :138, and RETURN-CODE is never moved anywhere in the program's 178 lines, so it returns zero. Twelve lines, which is 2 + (2 x 5). The line count is doubled because DISPLAY CARD-XREF-RECORD is active TWICE: once at :96, inside the '00' arm of 1000-XREFFILE-GET-NEXT, and again at :78 in the mainline PERFORM UNTIL loop. The record area is unchanged between the two, so each record contributes two byte-identical 50-character lines, consecutively and grouped per record, never alternating between records. The doubling is a property of this source rather than of the family - CBACT02C's inner copy is commented out and CBACT01C displays from a labelled paragraph - and it is preserved rather than tidied. The rows are written out inline at the copybook's full 50 bytes with a populated FILLER PIC X(14) span, rather than at the 36 bytes the shipped fixture measures, and no normalisation is declared because nothing here is short. That is the point of this case: it distinguishes the two candidate images of a record and pins the correct one. DISPLAY CARD-XREF-RECORD names the 01 group item, so it writes the record AREA that READ XREFFILE-FILE INTO CARD-XREF-RECORD filled at :93 - the row's own bytes, FILLER included - and not an image re-encoded from the three decoded fields, which would emit fourteen spaces in that span whatever the row held. Both candidates agree on every row of the shipped fixture, because its FILLER is blank; they disagree here, and the expectation states which one is correct. No output record is expected on any dataset or channel: the program issues OPEN INPUT and contains no WRITE, no REWRITE and no DELETE, so expectedWrites is empty and XREFFILE is left holding exactly the five rows it was seeded with - the name AccountBalanceUpdateJob comes from the prompt and the behaviour from the source (AAP rule R1, register 0.8.4). Every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CBACT03C.cbl, cross-checked against app/cpy/CVACT03Y.cpy for the 16 + 9 + 11 + 14 byte layout, app/jcl/READXREF.jcl for the STEP05 EXEC PGM contract and its single XREFFILE DD with no PARM, and app/data/ASCII/cardxref.txt for the input rows. Nothing was captured from a running COBOL program, because no COBOL program can be run in this environment - a documented and escalated deviation, AAP 0.7.6 and risk R-A.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
       "rows": [
         "050002445376574000000005000000000050FILLERBYTES-01",
         "068358619817151600000002700000000027FILLERBYTES-02",
-        "092387719324733000000000200000000002FILLERBYTES-03"
+        "092387719324733000000000200000000002FILLERBYTES-03",
+        "092798710863623200000002000000000020FILLERBYTES-04",
+        "098249621362979500000001200000000012FILLERBYTES-05"
       ]
     }
   },
@@ -47,6 +49,28 @@
         "FILLER": "FILLERBYTES-03"
       },
       "expectedBytes": "092387719324733000000000200000000002FILLERBYTES-03"
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "fields": {
+        "XREF-CARD-NUM": "0927987108636232",
+        "XREF-CUST-ID": "000000020",
+        "XREF-ACCT-ID": "00000000020",
+        "FILLER": "FILLERBYTES-04"
+      },
+      "expectedBytes": "092798710863623200000002000000000020FILLERBYTES-04"
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "fields": {
+        "XREF-CARD-NUM": "0982496213629795",
+        "XREF-CUST-ID": "000000012",
+        "XREF-ACCT-ID": "00000000012",
+        "FILLER": "FILLERBYTES-05"
+      },
+      "expectedBytes": "098249621362979500000001200000000012FILLERBYTES-05"
     }
   ],
   "expectedReturnCode": 0,
@@ -81,6 +105,22 @@
     },
     {
       "channel": "DISPLAY_LINE",
+      "text": "092798710863623200000002000000000020FILLERBYTES-04"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092798710863623200000002000000000020FILLERBYTES-04"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "098249621362979500000001200000000012FILLERBYTES-05"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "098249621362979500000001200000000012FILLERBYTES-05"
+    },
+    {
+      "channel": "DISPLAY_LINE",
       "text": "END OF EXECUTION OF PROGRAM CBACT03C"
     }
   ],
@@ -89,7 +129,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 3,
+      "rowCount": 5,
       "recordLength": 50
     }
   ]

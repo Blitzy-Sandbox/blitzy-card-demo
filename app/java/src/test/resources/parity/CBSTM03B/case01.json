@@ -1,7 +1,7 @@
 {
   "program": "CBSTM03B",
   "caseId": "case01",
-  "description": "app/cbl/CBSTM03B.CBL:135-137 - 1000-TRNXFILE-PROC's IF M03B-OPEN, OPEN INPUT TRNX-FILE, GO TO 1900-EXIT, then 1900-EXIT's MOVE TRNXFILE-STATUS TO LK-M03B-RC. The whole of the observable behaviour is the 1040-byte area the CALL leaves behind, which is why the expectation pins it byte for byte: LK-M03B-DD X(08) 'TRNXFILE', LK-M03B-OPER X(01) 'O', LK-M03B-RC X(02) '00', LK-M03B-KEY X(25) spaces, LK-M03B-KEY-LN S9(4) as the signed zoned image '000{' for zero, and LK-M03B-FLDT X(1000) still entirely spaces because an OPEN reads no record. That last span is the 1000-byte padding assertion in its purest form - the area is 1040 bytes whether or not a record was read.",
+  "description": "Gate G48 on the TRNXFILE DD's OPEN, and this folder's primary assertion of gate G12. app/cbl/CBSTM03B.CBL:118-128's ordered EVALUATE LK-M03B-DD matches WHEN 'TRNXFILE' (:119) before any later arm and performs 1000-TRNXFILE-PROC THRU 1999-EXIT (:120); inside that paragraph (:133) the first guard IF M03B-OPEN (:135) is true, so OPEN INPUT TRNX-FILE (:136) runs and GO TO 1900-EXIT (:137) transfers past the READ (:140) and CLOSE (:146) guards; 1900-EXIT (:151-152) then performs the unconditional MOVE TRNXFILE-STATUS TO LK-M03B-RC and 1999-EXIT (:154-155) EXITs. A successful OPEN INPUT on an existing indexed dataset reports '00'. Because the whole observable behaviour of one CALL is the shared 1040-byte area, the expectation pins all six linkage spans by name and as the complete image: LK-M03B-DD X(08) 'TRNXFILE', LK-M03B-OPER X(01) 'O', LK-M03B-RC X(02) '00', LK-M03B-KEY X(25) 25 spaces because an OPEN reads no key, LK-M03B-KEY-LN S9(4) as the signed zoned image '000{' - a brace because the sign of a positive zero is overpunched into the low-order byte - and LK-M03B-FLDT X(1000) still 1000 spaces because an OPEN delivers no record. 8 + 1 + 2 + 25 + 4 + 1000 = 1040, re-derivable from the LINKAGE SECTION at :100-112 without tooling (practice B11). No TRNXFILE row is claimed on the writes channel, for the same reason: nothing was read, and an extra record would be a difference in its own right. The two seeded 350-byte rows are pinned unchanged afterwards, field by field including the trailing FILLER X(20) that carries the record's full width (gates G19 and G21) - the read-only proof, since all four SELECTs are OPEN INPUT and no paragraph writes. The unit is StatementGenerationJobB, whose prompt-mandated name is honoured verbatim under rule R1 while its nature is a Spring @Component and not a Spring Batch Job (gate G12, implicit requirement I3): the source header reads 'Type : BATCH COBOL Subroutine', no EXEC PGM=CBSTM03B exists anywhere in app/jcl, app/proc or app/csd, and CBSTM03A calls it thirteen times. The divergence is recorded rather than quietly resolved (practice B4). unitKind is therefore COMPONENT and the unit is reached through a typed method with no JobLauncher and no HTTP layer in the path (gate G51), which is also why jobParameters is empty - a job parameter comes from a JCL PARM and this subroutine has no way to receive one. expectedReturnCode is 0 because CBSTM03B never assigns RETURN-CODE; the two-byte LK-M03B-RC is a FILE STATUS carried in the linkage area and the two are never conflated. expectedMessages is empty because CBSTM03B contains no DISPLAY statement at all; the diagnostic for this very operation, DISPLAY 'ERROR OPENING TRNXFILE', belongs to the caller at app/cbl/CBSTM03A.CBL:739, which is what decides what a status means. Operation codes 'W' (:107) and 'Z' (:108) are declared in the linkage area and tested by no IF in any of the four paragraphs; they stay unexercised here and in every sibling case, preserved unimplemented rather than tidied away (practice B5). Provenance (practice B12, risk R-A): these expected values are STATICALLY DERIVED and were NEVER captured from a COBOL execution, which AAP 0.7.6 proves impossible in this environment across eight independently verified blockers and 0.9.11 escalates for explicit confirmation. They come from the line numbers cited above, from the byte offsets of app/cpy/COSTM01.CPY (TRNX-KEY 32 + TRNX-REST 318 = 350), and from app/jcl/CREASTMT.JCL STEP010, whose SORT FIELDS=(263,16,CH,A,1,16,CH,A) and OUTREC FIELDS=(1:263,16, 17:1,262, 279:279,50) over a KEYS(32 0) RECORDSIZE(350 350) cluster were applied mechanically to rows 20 and 101 (0-based) of app/data/ASCII/dailytran.txt, leaving bytes 329-350 blank-filled by SORT. Both rows carry card 0500024453765740, which is cardxref.txt row 0's XREF-CARD-NUM, so the seed is coherent with the other three DDs; they are seeded inline because TRNXFILE is a derived dataset with no ASCII fixture and the fixture count is fixed at nine. The trailing 'H' and '{' in TRNX-AMT are zoned sign overpunches on PIC S9(09)V99 ('{' = +0 through 'I' = +9), so the images denote +183.88 and +14.00 and are reproduced as bytes rather than normalised to a signed literal. All byte content is US-ASCII, stated explicitly and never taken from the platform default (practice B8).",
   "unitKind": "COMPONENT",
   "inputs": {
     "TRNXFILE": {
@@ -21,7 +21,10 @@
       "fields": {
         "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     }
@@ -30,13 +33,43 @@
     {
       "dataset": "TRNXFILE",
       "rowIndex": 0,
-      "fields": {},
+      "fields": {
+        "TRNX-CARD-NUM": "0500024453765740",
+        "TRNX-ID": "0000000058866561",
+        "TRNX-TYPE-CD": "01",
+        "TRNX-CAT-CD": "0001",
+        "TRNX-SOURCE": "POS TERM  ",
+        "TRNX-DESC": "Purchase at Blick-Rippin                                                                            ",
+        "TRNX-AMT": "0000001838H",
+        "TRNX-MERCHANT-ID": "800000000",
+        "TRNX-MERCHANT-NAME": "Blick-Rippin                                      ",
+        "TRNX-MERCHANT-CITY": "East Julien                                       ",
+        "TRNX-MERCHANT-ZIP": "87157     ",
+        "TRNX-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRNX-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
       "expectedBytes": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
     },
     {
       "dataset": "TRNXFILE",
       "rowIndex": 1,
-      "fields": {},
+      "fields": {
+        "TRNX-CARD-NUM": "0500024453765740",
+        "TRNX-ID": "0000000329724245",
+        "TRNX-TYPE-CD": "01",
+        "TRNX-CAT-CD": "0001",
+        "TRNX-SOURCE": "POS TERM  ",
+        "TRNX-DESC": "Purchase at Reichel Group                                                                           ",
+        "TRNX-AMT": "0000000140{",
+        "TRNX-MERCHANT-ID": "800000000",
+        "TRNX-MERCHANT-NAME": "Reichel Group                                     ",
+        "TRNX-MERCHANT-CITY": "Port Romanfort                                    ",
+        "TRNX-MERCHANT-ZIP": "95843     ",
+        "TRNX-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRNX-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
       "expectedBytes": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
     }
   ],
@@ -49,6 +82,12 @@
       "channel": "WRITES",
       "rowCount": 1,
       "recordLength": 1040
+    },
+    {
+      "dataset": "TRNXFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
     }
   ]
 }

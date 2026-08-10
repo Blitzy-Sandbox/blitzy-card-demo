@@ -1,7 +1,7 @@
 {
   "program": "COUSR00C",
   "caseId": "case01",
-  "description": "MAIN-PARA's EIBCALEN = 0 guard at app/cbl/COUSR00C.cbl:110-112. No communication area was passed, so the program moves 'COSGN00C' into CDEMO-TO-PROGRAM and performs RETURN-TO-PREV-SCREEN at once: :508's test finds CDEMO-TO-PROGRAM already set, :511-513 stamp CU00, COUSR00C and a zero program context, and the XCTL at :514-517 transfers. No map is sent and USRSEC is never opened, which makes the response the entire observable behaviour of this path - so every one of the 16 COCOM01Y fields and all 6 fields of the 34-byte CDEMO-CU00-INFO extension are pinned here. The commarea carried forward is WORKING-STORAGE's initial state, because the MOVE DFHCOMMAREA(1:EIBCALEN) at :114 is never reached. EIBAID is not read on this path, so no AID is declared. Statelessness (gate G37): nothing is retained on the server - the whole conversation state is in this payload.",
+  "description": "EIBCALEN = 0 - the no-communication-area guard at app/cbl/COUSR00C.cbl:110-112, and the only one of the twenty cases that drives it. Nothing was passed, so :111 moves 'COSGN00C' into CDEMO-TO-PROGRAM and :112 performs RETURN-TO-PREV-SCREEN at once: :508's test finds CDEMO-TO-PROGRAM already set and leaves it alone, :511-513 stamp CU00, COUSR00C and a zero program context, and the XCTL at :514-517 transfers. No map is painted - SEND-USRLST-SCREEN is reached from :119, :254, :276, :329, :377, :606, :613, :640, :647, :674 and :681, and none of those is on this path - and USRSEC is never opened, so the response together with the untouched file is the entire observable behaviour here. That is why 'sends' is empty rather than absent, and why all sixteen app/cpy/COCOM01Y.cpy fields and all six spans of the 34-byte CDEMO-CU00-INFO extension (:67-75, 8+8+8+1+1+8; COTRN00C's equivalent is 58 and is not copied) are pinned. The area carried forward is WORKING-STORAGE's initial state, because the MOVE DFHCOMMAREA(1:EIBCALEN) at :114 is never reached: CDEMO-PGM-CONTEXT is still the PIC 9(01) zero of CDEMO-PGM-ENTER and CDEMO-CU00-NEXT-PAGE-FLG still carries the VALUE 'N' it is declared with at :70. EIBAID is not read on this path, so no AID is declared, and no received map item either, because :121's RECEIVE belongs to the re-entry branch. Nothing is painted, so this path has no SEL0001I..SEL0010I image at all and the LOW-VALUES-versus-space question that :117 MOVE LOW-VALUES TO COUSR0AO raises is a property of the first-entry cases rather than of this one. expectedMessages is empty because no send and no DISPLAY is reached; the three DISPLAY sites at :608, :642 and :676 are all WHEN OTHER arms of a browse this case never starts. expectedReturnCode is 0, and holds for all twenty cases: the program contains no MOVE ... TO RETURN-CODE and no CALL 'CEE3ABD', and every path ends at the EXEC CICS RETURN TRANSID('CU00') COMMAREA(CARDDEMO-COMMAREA) of :141-144. PROVENANCE (practice B12, risk R-A): every expected value here was DERIVED BY STRUCTURED READING of the COBOL and its copybooks and was NOT captured from, recorded against or replayed from any execution of the legacy program - executing it is impossible in this environment, which has no z/OS or CICS runtime, whose COBOL compiler reports its indexed file handler disabled, and which is missing the IBM-supplied DFHAID and DFHBMSCA. Only the provenance of the expected values is substituted; the twenty cases, the field-for-field diffing and the diff-count-of-zero gate are all preserved. The derivation rests on app/cbl/COUSR00C.cbl:56-75, :98-144, :149-232, :282-331, :384-441, :446-501, :506-517 and :562-581; app/cpy/COCOM01Y.cpy:19-44, whose spans sum to 160; app/cpy/CSUSR01Y.cpy:17-23, whose 8+20+20+8+1 = 57 plus the NAMED SEC-USR-FILLER X(23) make 80; and app/jcl/DUSRSECJ.jcl, whose :35-44 supply the seed and whose :48 DCB=(LRECL=80,RECFM=FB) and :64-66 IDCAMS DEFINE CLUSTER KEYS(8,0) RECORDSIZE(80,80) fix that width independently. app/csd/CARDDEMO.CSD:88-99 defines FILE(USRSEC) with ADD, BROWSE, DELETE, READ and UPDATE; this program uses browse alone. SEED: USRSEC has no ASCII fixture - app/data/ASCII holds nine and none of them is a security-user file - so its rows are always inline. All ten here are VERBATIM in-stream records of app/jcl/DUSRSECJ.jcl:35-44 at their in-stream width of exactly 57 characters, and none is SYNTHESIZED; the fifteen synthesized USER0006..USER0020 extensions belong to the cases that have to cross the ten-row page boundary, and this path reads no record at all. No row is pre-padded: the 23-byte shortfall is the absent SEC-USR-FILLER, and it is carried to 80 once, at seed time, by the single USRSEC_FILLER_PAD_57_TO_80 normalisation declared below, which the harness and FieldDiffer own. SEC-USR-PWD stays the plaintext eight-character literal the legacy design stores and compares at app/cbl/COSGN00C.cbl (practice B6) - hashing, masking or omitting it would change what this contract asserts. CONVENTIONS THIS CASE ESTABLISHES for case02..case20 (practice B8, explicit over implicit). jobParameters is OMITTED rather than declared empty: COUSR00C is not a batch job and takes no JCL PARM, and ParityCase refuses a job parameter for any unitKind but BATCH_JOB, so the three conversation scalars travel as screenRequest.eibcalen, screenRequest.aid and screenRequest.commarea['CDEMO-PGM-CONTEXT'] instead - which is also how gate G37 and rule R6 are met, since no server-side session state exists anywhere in the path. The code page is named US-ASCII explicitly and never defaulted. The clock is pinned to 2022-07-19T23:12:34, which is the source's own version stamp at :694 rather than an invented instant, because POPULATE-HEADER-INFO calls FUNCTION CURRENT-DATE at :564 on every send and an unpinned header would make a case irreproducible; this path sends nothing, so the value is carried for uniformity rather than asserted. USRSEC is addressed by its binding key throughout and never by a dataset name (gate G46). Each expectedFinalState row is pinned BOTH field by field - the six app/cpy/CSUSR01Y.cpy spans in declaration order, with SEC-USR-FILLER named because the copybook names it - AND as the whole 80-byte image, so the values, the total width and the filler having been emitted as spaces rather than zeros are all asserted (gates G19, G21); expectedDatasets then adds the count no row expectation can make, that USRSEC still holds exactly ten rows at its 80-byte width, which is what 'the browse changed nothing' means. Page size ten is BEHAVIOUR, not configuration (gate G39): it is hard-coded at :293, :300, :347 and :352 and by 02 USER-REC OCCURS 10 TIMES at :57, and it appears nowhere in this file as a tunable. RULE R1: the plan mandates the class name UserMenuController, but the Function header at app/cbl/COUSR00C.cbl:5 reads 'List all users from USRSEC file', app/bms/COUSR00.bms paints 'List Users' at POS=(4,35), and README.md records CU00 the same way. The name comes from the plan and the behaviour from the source: this is a paginated list screen and nothing here expects menu-shaped behaviour.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -62,51 +62,131 @@
     {
       "dataset": "USRSEC",
       "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "ADMIN001",
+        "SEC-USR-FNAME": "MARGARET            ",
+        "SEC-USR-LNAME": "GOLD                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 1,
+      "fields": {
+        "SEC-USR-ID": "ADMIN002",
+        "SEC-USR-FNAME": "RUSSELL             ",
+        "SEC-USR-LNAME": "RUSSELL             ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 2,
+      "fields": {
+        "SEC-USR-ID": "ADMIN003",
+        "SEC-USR-FNAME": "RAYMOND             ",
+        "SEC-USR-LNAME": "WHITMORE            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 3,
+      "fields": {
+        "SEC-USR-ID": "ADMIN004",
+        "SEC-USR-FNAME": "EMMANUEL            ",
+        "SEC-USR-LNAME": "CASGRAIN            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 4,
+      "fields": {
+        "SEC-USR-ID": "ADMIN005",
+        "SEC-USR-FNAME": "GRANVILLE           ",
+        "SEC-USR-LNAME": "LACHAPELLE          ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 5,
+      "fields": {
+        "SEC-USR-ID": "USER0001",
+        "SEC-USR-FNAME": "LAWRENCE            ",
+        "SEC-USR-LNAME": "THOMAS              ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 6,
+      "fields": {
+        "SEC-USR-ID": "USER0002",
+        "SEC-USR-FNAME": "AJITH               ",
+        "SEC-USR-LNAME": "KUMAR               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 7,
+      "fields": {
+        "SEC-USR-ID": "USER0003",
+        "SEC-USR-FNAME": "LAURITZ             ",
+        "SEC-USR-LNAME": "ALME                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 8,
+      "fields": {
+        "SEC-USR-ID": "USER0004",
+        "SEC-USR-FNAME": "AVERARDO            ",
+        "SEC-USR-LNAME": "MAZZI               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 9,
+      "fields": {
+        "SEC-USR-ID": "USER0005",
+        "SEC-USR-FNAME": "LEE                 ",
+        "SEC-USR-LNAME": "TING                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
     }
   ],
@@ -116,6 +196,14 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 10,
+      "recordLength": 80
     }
   ]
 }

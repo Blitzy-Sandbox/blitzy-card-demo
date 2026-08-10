@@ -1,0 +1,78 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case05",
+  "description": "Key order, not insertion order. app/cbl/CBCUS01C.cbl:L29-L33 declares CUSTFILE as ORGANIZATION INDEXED, ACCESS MODE SEQUENTIAL, RECORD KEY FD-CUST-ID, so a sequential pass reads in ascending CUST-ID order whatever order the records were loaded in. The three rows are therefore seeded in descending key order - CUST-ID 000000003, then 000000002, then 000000001 - and the expected display sequence is the ascending one. A translation that browsed in physical order would emit these three pairs backwards and every line would differ.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "rows": [
+        "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        ",
+        "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        ",
+        "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 500
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case10",
+  "description": "The fatal open with an extended status whose second byte is a printable character. OPEN INPUT reports '92', so L162's IO-STAT1 = '9' test holds and the paragraph renders the first byte verbatim and the second as the three-digit decimal value of its byte: '2' is 50, so the line is FILE STATUS IS: NNNN9050 and not NNNN0092. That distinction is the whole point of the TWO-BYTES-BINARY / TWO-BYTES-ALPHA redefinition at L53-L56, and a translation that simply concatenated the two status characters would pass case09 and fail here.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING CUSTFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9050"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

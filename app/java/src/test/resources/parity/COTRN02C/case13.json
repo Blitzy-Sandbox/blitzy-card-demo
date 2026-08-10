@@ -1,0 +1,154 @@
+{
+  "program" : "COTRN02C",
+  "caseId" : "case13",
+  "description" : "The positional amount check at :339-351, which is the FUNCTION NUMVAL-C guard and the prime source of silent divergence. The key resolution succeeded first - :208-209 read the CXACAIX path and moved XREF-CARD-NUM into CARDNINI, which is why both key fields are populated on the sent screen - and the eleven-arm empty cascade at :251-320 and the numeric cascade at :322-337 both passed. TRNAMTI is '100000012.34': (1:1) is a digit rather than '-' or '+', so the first WHEN of the EVALUATE at :340 matches and 'Amount should be in format -99999999.99' is reported with the cursor on TRNAMTL. The four WHENs are an OR of positional tests, so any one of them rejects; the conversion at :383 and the in-place renormalisation at :384-386 are never reached and the field is echoed exactly as typed.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "CCXREF" : {
+      "rows" : [ ],
+      "fixture" : "cardxref.txt",
+      "fromRow" : 0,
+      "rowCount" : 5,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    },
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
+      "fixture" : null,
+      "fromRow" : null,
+      "rowCount" : null,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    }
+  },
+  "jobParameters" : { },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHENTER",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "mapFields" : {
+      "ACTIDINI" : "00000000050",
+      "CARDNINI" : "                ",
+      "TTYPCDI" : "01",
+      "TCATCDI" : "0001",
+      "TRNSRCI" : "POS TERM  ",
+      "TDESCI" : "COFFEE AND A NEWSPAPER",
+      "TRNAMTI" : "100000012.34",
+      "TORIGDTI" : "2022-07-18",
+      "TPROCDTI" : "2022-07-18",
+      "MIDI" : "123456789",
+      "MNAMEI" : "KWIK-E-MART",
+      "MCITYI" : "SPRINGFIELD",
+      "MZIPI" : "0000012345",
+      "CONFIRMI" : "Y"
+    },
+    "forcedOutcomes" : { }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN02C",
+    "nextMapset" : "COTRN02",
+    "nextMap" : "COTRN2A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT02-TRNID-FIRST" : "                ",
+      "CDEMO-CT02-TRNID-LAST" : "                ",
+      "CDEMO-CT02-PAGE-NUM" : "00000000",
+      "CDEMO-CT02-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT02-TRN-SEL-FLG" : " ",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT02",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN02C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "ACTIDINO" : "00000000050",
+        "CARDNINO" : "0500024453765740",
+        "TTYPCDO" : "01",
+        "TCATCDO" : "0001",
+        "TRNSRCO" : "POS TERM  ",
+        "TDESCO" : "COFFEE AND A NEWSPAPER                                      ",
+        "TRNAMTO" : "100000012.34",
+        "TORIGDTO" : "2022-07-18",
+        "TPROCDTO" : "2022-07-18",
+        "MIDO" : "123456789",
+        "MNAMEO" : "KWIK-E-MART                   ",
+        "MCITYO" : "SPRINGFIELD              ",
+        "MZIPO" : "0000012345",
+        "CONFIRMO" : "Y",
+        "ERRMSGO" : "Amount should be in format -99999999.99                                       "
+      },
+      "attributes" : {
+        "ERRMSGC" : "DFHDFCOL"
+      }
+    } ],
+    "cursorField" : "TRNAMTL",
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "fields" : { },
+    "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "fields" : { },
+    "expectedBytes" : "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "fields" : { },
+    "expectedBytes" : "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "Amount should be in format -99999999.99                                         "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "Amount should be in format -99999999.99                                       "
+  } ],
+  "normalisations" : [ {
+    "dataset" : "CCXREF",
+    "kind" : "CARDXREF_FILLER_PAD_36_TO_50"
+  } ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 3,
+    "recordLength" : 350
+  } ]
+}

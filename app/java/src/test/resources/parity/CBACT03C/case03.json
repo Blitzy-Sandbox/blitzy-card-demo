@@ -1,13 +1,14 @@
 {
   "program": "CBACT03C",
   "caseId": "case03",
-  "description": "One record only, the fixture's first row 0500024453765740/000000005/00000000050, which decomposes as XREF-CARD-NUM X(16), XREF-CUST-ID 9(09) and XREF-ACCT-ID 9(11) exactly as app/cpy/CVACT03Y.cpy declares them. The smallest run that still takes both READ arms in order: '00' at :94 for the row, then '10' at :98 for end of file. Four lines - banner, the record twice, banner - which is the 2 + 2n shape at n = 1, and the case that makes the doubled display impossible to mistake for an accident of volume.",
+  "description": "Two records - the two lowest base keys the fixture holds, 0500024453765740 then 0683586198171516 - written out literally at the 36 characters app/data/ASCII/cardxref.txt measures. The expected line order is record-1, record-1, record-2, record-2, and that ORDER is the whole point of the case: it is what proves the doubled DISPLAY GROUPS PER RECORD rather than alternating between them. :96 fires inside 1000-XREFFILE-GET-NEXT, on the '00' arm of the READ that has just filled the record area with record 1, and :78 then fires for that same unchanged area in the mainline loop; only once both have fired does the PERFORM UNTIL at :74 iterate and fetch record 2. A translation that emitted record-1, record-2, record-1, record-2 would produce the same six lines and the same multiset of them, so nothing but the order distinguishes it - which is why two DISTINCT records are needed here and why a single-record case cannot make this statement at all. Six lines is the 2 + 2n shape at n = 2. Every expected value is DERIVED, never captured: read from app/cbl/CBACT03C.cbl and cross-checked against app/cpy/CVACT03Y.cpy for the 16 + 9 + 11 + FILLER PIC X(14) = 50 byte layout, app/jcl/READXREF.jcl for the STEP05 DD contract and its absent PARM, and app/data/ASCII/cardxref.txt for the rows themselves - no COBOL was executed to obtain any of it (AAP risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 1
+      "rows": [
+        "050002445376574000000005000000000050",
+        "068358619817151600000002700000000027"
+      ]
     }
   },
   "jobParameters": {},
@@ -23,6 +24,17 @@
         "FILLER": "              "
       },
       "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
+      "expectedBytes": "068358619817151600000002700000000027              "
     }
   ],
   "expectedReturnCode": 0,
@@ -41,6 +53,14 @@
     },
     {
       "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
       "text": "END OF EXECUTION OF PROGRAM CBACT03C"
     }
   ],
@@ -54,7 +74,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 2,
       "recordLength": 50
     }
   ]

@@ -1,0 +1,250 @@
+{
+  "program": "CORPT00C",
+  "caseId": "case06",
+  "description": "The WHEN MONTHLYI arm at :213-238 with CONFIRMI = 'Y', which is the headline case: it emits all seventeen eighty-byte records of 02 JOB-DATA-1 (:83-125) through the job-submission port, in emission order, each pinned byte for byte. On 9 August 2026 the arm composes 2026-08-01 from WS-CURDATE-YEAR, WS-CURDATE-MONTH and the literal '01' (:217-219), then moves 1 into the day, adds 1 to the month (:223-224) and subtracts a single day through FUNCTION DATE-OF-INTEGER of FUNCTION INTEGER-OF-DATE at :229-230 to reach 2026-08-31 - the last day of the current month. Both dates land in four distinct storage locations: PARM-START-DATE-1 in record 11's SYMNAMES line, PARM-END-DATE-1 in record 12's, and PARM-START-DATE-2 and PARM-END-DATE-2 in record 15, which is the DATEPARM record CBTRN03C reads. Record 17 is '/*EOF': :502 recognises it and :504 sets END-LOOP-YES, but :507 performs the write unconditionally afterwards, so the sentinel is itself emitted and the count is seventeen rather than sixteen. The write succeeds, so :445 finds the error flag off, INITIALIZE-ALL-FIELDS blanks the ten input items (:636-645), :448 moves DFHGREEN into ERRMSGC and :449-452 STRINGs WS-REPORT-NAME DELIMITED BY SPACE with ' report submitted for printing ...' DELIMITED BY SIZE. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2026-08-09T14:05:06",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "MONTHLYI": "Y",
+      "CONFIRMI": "Y"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "CORPT00C",
+    "nextMapset": "CORPT00",
+    "nextMap": "CORPT0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CR00",
+      "CDEMO-TO-PROGRAM": "CORPT00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CR00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "08/09/26",
+          "PGMNAMEO": "CORPT00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "14:05:06",
+          "MONTHLYO": " ",
+          "YEARLYO": " ",
+          "CUSTOMO": " ",
+          "SDTMMO": "  ",
+          "SDTDDO": "  ",
+          "SDTYYYYO": "    ",
+          "EDTMMO": "  ",
+          "EDTDDO": "  ",
+          "EDTYYYYO": "    ",
+          "CONFIRMO": " ",
+          "ERRMSGO": "Monthly report submitted for printing ...                                     "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      }
+    ],
+    "cursorField": "MONTHLYL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "JOBS",
+      "rowIndex": 0,
+      "fields": {
+        "JCL-RECORD": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+      },
+      "expectedBytes": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 1,
+      "fields": {
+        "JCL-RECORD": "// NOTIFY=&SYSUID                                                               "
+      },
+      "expectedBytes": "// NOTIFY=&SYSUID                                                               "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 2,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 3,
+      "fields": {
+        "JCL-RECORD": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
+      },
+      "expectedBytes": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 4,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 5,
+      "fields": {
+        "JCL-RECORD": "//STEP10 EXEC PROC=TRANREPT                                                     "
+      },
+      "expectedBytes": "//STEP10 EXEC PROC=TRANREPT                                                     "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 6,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 7,
+      "fields": {
+        "JCL-RECORD": "//STEP05R.SYMNAMES DD *                                                         "
+      },
+      "expectedBytes": "//STEP05R.SYMNAMES DD *                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 8,
+      "fields": {
+        "JCL-RECORD": "TRAN-CARD-NUM,263,16,ZD                                                         "
+      },
+      "expectedBytes": "TRAN-CARD-NUM,263,16,ZD                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 9,
+      "fields": {
+        "JCL-RECORD": "TRAN-PROC-DT,305,10,CH                                                          "
+      },
+      "expectedBytes": "TRAN-PROC-DT,305,10,CH                                                          "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 10,
+      "fields": {
+        "JCL-RECORD": "PARM-START-DATE,C'2026-08-01'                                                   "
+      },
+      "expectedBytes": "PARM-START-DATE,C'2026-08-01'                                                   "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 11,
+      "fields": {
+        "JCL-RECORD": "PARM-END-DATE,C'2026-08-31'                                                     "
+      },
+      "expectedBytes": "PARM-END-DATE,C'2026-08-31'                                                     "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 12,
+      "fields": {
+        "JCL-RECORD": "/*                                                                              "
+      },
+      "expectedBytes": "/*                                                                              "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 13,
+      "fields": {
+        "JCL-RECORD": "//STEP10R.DATEPARM DD *                                                         "
+      },
+      "expectedBytes": "//STEP10R.DATEPARM DD *                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 14,
+      "fields": {
+        "JCL-RECORD": "2026-08-01 2026-08-31                                                           "
+      },
+      "expectedBytes": "2026-08-01 2026-08-31                                                           "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 15,
+      "fields": {
+        "JCL-RECORD": "/*                                                                              "
+      },
+      "expectedBytes": "/*                                                                              "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 16,
+      "fields": {
+        "JCL-RECORD": "/*EOF                                                                           "
+      },
+      "expectedBytes": "/*EOF                                                                           "
+    }
+  ],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Monthly report submitted for printing ...                                       "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Monthly report submitted for printing ...                                     "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "PROCESS ENTER KEY"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "JOBS",
+      "channel": "WRITES",
+      "rowCount": 17,
+      "recordLength": 80
+    }
+  ]
+}

@@ -1,13 +1,11 @@
 {
   "program": "CBACT03C",
   "caseId": "case19",
-  "description": "The positive proof that this job writes NOTHING - which matters because its prompt-mandated name, AccountBalanceUpdateJob, says Update and the verified source performs no update of any kind. app/cbl/CBACT03C.cbl:120 issues OPEN INPUT and the program has no WRITE, no REWRITE and no DELETE anywhere in its 178 lines, so no update is possible even in principle. The assertion is made two ways at once. No record is expected on the writes channel, and the differ reports any observed write that no expectation accounts for, so a single stray record written to any dataset fails this case. And all six rows of XREFFILE are pinned byte for byte as the run left them, so a row rewritten in place - which no empty write list could detect - fails it too. The behaviour is preserved, not corrected: adding write logic to match the class name would be a new feature and a parity violation.",
+  "description": "Full volume at the CLOSE site: all 50 rows of app/data/ASCII/cardxref.txt are read and displayed, the READ that follows the last one reports '10' and sets 88 APPL-EOF so the loop at :74-81 ends normally, and the CLOSE at :138 then reports the injected '30' - a permanent data error. 9000-XREFFILE-CLOSE takes its :141 arm, ADD 12 TO ZERO GIVING APPL-RESULT at :142 makes APPL-RESULT 12, 88 APPL-AOK is false at :144, and :147-150 run: DISPLAY 'ERROR CLOSING XREFFILE', 9910-DISPLAY-IO-STATUS, then 9999-ABEND-PROGRAM. 104 lines and RETURN-CODE 12, which is 4 + 2n for n = 50. What only a full-volume close failure can pin is ORDER AT SCALE: the three failure lines are appended AFTER all 100 record lines and BEFORE the closing banner, because :83 sits between the loop and :85 - and no END OF EXECUTION line is emitted at all, because CALL 'CEE3ABD' at :158 does not return. A translation that closed early, that truncated or dropped a record line at volume, or that let :85 run after a failed close would each fail here and nowhere else. Both arithmetic sites of the close ladder are exercised in one run: the dead ADD 8 TO ZERO GIVING at :137 and the fatal ADD 12 TO ZERO GIVING at :142, which is reachable ONLY through a close failure - case12 reaches it with two rows and case13 with none, and this is the only case that reaches it with the whole file. DISPLAY CARD-XREF-RECORD names the 01 group item, so each of the 100 lines carries CVACT03Y's trailing FILLER X(14) as fourteen spaces; the 36-byte fixture rows are supplied that span once, at seed time, by CARDXREF_FILLER_PAD_36_TO_50 and nothing re-pads afterwards. All 50 rows are also pinned unchanged on the final-state channel: OPEN INPUT at :120 and the absence of any WRITE, REWRITE or DELETE in the 178 lines mean the prompt-mandated name AccountBalanceUpdateJob updates nothing (AAP rule R1, register 0.8.4), and this is that proof at full volume rather than at a handful of rows. INJECTED CONDITION: call site CLOSE at :138, status '30'. A BATCH_JOB case cannot carry a ForcedOutcome - that member belongs to ParityCase.ScreenRequest, which ParityCase refuses for a batch case - so the outcome is arranged by CBACT03CParityTest's scenario table, keyed by case identifier, exactly as case06 through case13 arrange theirs; naming it here as well keeps the arrangement greppable from the case file. The verified Language Environment parameters are ABCODE 999 and TIMING 0 (:156-157). STATICALLY DERIVED, NEVER CAPTURED: every expected value was obtained by structured reading of app/cbl/CBACT03C.cbl cross-checked against app/cpy/CVACT03Y.cpy for the 50-byte layout, app/jcl/READXREF.jcl for the step and DD contract, and app/data/ASCII/cardxref.txt for the rows; no COBOL was executed, because none can be in this environment (AAP 0.7.6, risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "XREFFILE": {
-      "fixture": "cardxref.txt",
-      "fromRow": 40,
-      "rowCount": 6
+      "fixture": "cardxref.txt"
     }
   },
   "jobParameters": {},
@@ -16,35 +14,255 @@
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "804058041034868000000002600000000026              "
+      "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 1,
-      "expectedBytes": "811254583423973500000002300000000023              "
+      "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 2,
-      "expectedBytes": "826259360247307600000004900000000049              "
+      "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 3,
-      "expectedBytes": "851786695820600800000001400000000014              "
+      "expectedBytes": "092798710863623200000002000000000020              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 4,
-      "expectedBytes": "893136935189478300000000800000000008              "
+      "expectedBytes": "098249621362979500000001200000000012              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 5,
+      "expectedBytes": "101408656522435000000004400000000044              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000003700000000037              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 7,
+      "expectedBytes": "156140910649160000000003500000000035              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 8,
+      "expectedBytes": "274530372000209000000003900000000039              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 9,
+      "expectedBytes": "276083679710756500000002400000000024              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 10,
+      "expectedBytes": "287196825281249000000000600000000006              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 11,
+      "expectedBytes": "294013936230044900000002200000000022              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 12,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 13,
+      "expectedBytes": "326076361233756000000001000000000010              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 14,
+      "expectedBytes": "376628198415515400000004100000000041              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 15,
+      "expectedBytes": "394024601614148900000001900000000019              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 16,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 17,
+      "expectedBytes": "401150089177736700000001300000000013              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 18,
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 19,
+      "expectedBytes": "453478410271395100000003600000000036              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 20,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 21,
+      "expectedBytes": "540709985047986600000002100000000021              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 22,
+      "expectedBytes": "565683054498121600000004600000000046              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 23,
+      "expectedBytes": "567118447850584400000001800000000018              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 24,
+      "expectedBytes": "578735122887933900000004700000000047              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 25,
+      "expectedBytes": "597511751661607700000004200000000042              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 26,
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 27,
+      "expectedBytes": "634925033164850900000001500000000015              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 28,
+      "expectedBytes": "650353518179599200000004800000000048              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 29,
+      "expectedBytes": "650923036255381600000003000000000030              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 30,
+      "expectedBytes": "672300046320776400000002800000000028              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 31,
+      "expectedBytes": "672705519061601400000001600000000016              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 32,
+      "expectedBytes": "683267604769808700000003300000000033              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 33,
+      "expectedBytes": "702663761503227700000003100000000031              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 34,
+      "expectedBytes": "705826726183775200000004300000000043              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 35,
+      "expectedBytes": "709414275105555100000003200000000032              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 36,
+      "expectedBytes": "725150814918888300000002900000000029              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 37,
+      "expectedBytes": "737933563466114200000004500000000045              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 38,
+      "expectedBytes": "742768486342320900000001100000000011              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 39,
+      "expectedBytes": "744387098889753000000003800000000038              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 40,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 41,
+      "expectedBytes": "811254583423973500000002300000000023              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 42,
+      "expectedBytes": "826259360247307600000004900000000049              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 43,
+      "expectedBytes": "851786695820600800000001400000000014              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 44,
+      "expectedBytes": "893136935189478300000000800000000008              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 45,
       "expectedBytes": "905629793166401100000002500000000025              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 46,
+      "expectedBytes": "934910747586921400000001700000000017              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 47,
+      "expectedBytes": "950173372142989300000000900000000009              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 48,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 49,
+      "expectedBytes": "980558340899658800000004000000000040              "
     }
   ],
-  "expectedReturnCode": 0,
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -52,6 +270,326 @@
     },
     {
       "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092798710863623200000002000000000020              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092798710863623200000002000000000020              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "098249621362979500000001200000000012              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "098249621362979500000001200000000012              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "101408656522435000000004400000000044              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "101408656522435000000004400000000044              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "114216769287893100000003700000000037              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "114216769287893100000003700000000037              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "156140910649160000000003500000000035              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "156140910649160000000003500000000035              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "274530372000209000000003900000000039              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "274530372000209000000003900000000039              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "276083679710756500000002400000000024              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "276083679710756500000002400000000024              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "287196825281249000000000600000000006              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "287196825281249000000000600000000006              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "294013936230044900000002200000000022              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "294013936230044900000002200000000022              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "298809135309431200000000400000000004              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "298809135309431200000000400000000004              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "326076361233756000000001000000000010              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "326076361233756000000001000000000010              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "376628198415515400000004100000000041              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "376628198415515400000004100000000041              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "394024601614148900000001900000000019              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "394024601614148900000001900000000019              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "399916924637588500000000300000000003              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "399916924637588500000000300000000003              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "401150089177736700000001300000000013              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "401150089177736700000001300000000013              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "438527147662781900000003400000000034              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "438527147662781900000003400000000034              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "453478410271395100000003600000000036              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "453478410271395100000003600000000036              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "485945261287706500000000700000000007              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "485945261287706500000000700000000007              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "540709985047986600000002100000000021              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "540709985047986600000002100000000021              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "565683054498121600000004600000000046              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "565683054498121600000004600000000046              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "567118447850584400000001800000000018              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "567118447850584400000001800000000018              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "578735122887933900000004700000000047              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "578735122887933900000004700000000047              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "597511751661607700000004200000000042              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "597511751661607700000004200000000042              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "600961915067452600000000500000000005              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "600961915067452600000000500000000005              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "634925033164850900000001500000000015              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "634925033164850900000001500000000015              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650353518179599200000004800000000048              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650353518179599200000004800000000048              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650923036255381600000003000000000030              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650923036255381600000003000000000030              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "672300046320776400000002800000000028              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "672300046320776400000002800000000028              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "672705519061601400000001600000000016              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "672705519061601400000001600000000016              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "683267604769808700000003300000000033              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "683267604769808700000003300000000033              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "702663761503227700000003100000000031              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "702663761503227700000003100000000031              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "705826726183775200000004300000000043              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "705826726183775200000004300000000043              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "709414275105555100000003200000000032              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "709414275105555100000003200000000032              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "725150814918888300000002900000000029              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "725150814918888300000002900000000029              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "737933563466114200000004500000000045              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "737933563466114200000004500000000045              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "742768486342320900000001100000000011              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "742768486342320900000001100000000011              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "744387098889753000000003800000000038              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "744387098889753000000003800000000038              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
       "text": "804058041034868000000002600000000026              "
     },
     {
@@ -100,7 +638,47 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+      "text": "934910747586921400000001700000000017              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "934910747586921400000001700000000017              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "950173372142989300000000900000000009              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "950173372142989300000000900000000009              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "968029415460369700000000100000000001              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "968029415460369700000000100000000001              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0030"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -113,7 +691,7 @@
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 6,
+      "rowCount": 50,
       "recordLength": 50
     }
   ]

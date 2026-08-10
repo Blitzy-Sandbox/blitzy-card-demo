@@ -1,0 +1,242 @@
+{
+  "program": "COACTVWC",
+  "caseId": "case12",
+  "description": "WHEN DFHRESP(NOTFND) of 9400-GETCUSTDATA-BYCUST at :839-857. Two details separate this arm from the two above it. It sets FLG-CUSTFILTER-NOT-OK - the CUSTOMER flag at :841, not the account flag - so ACCTSIDC stays DFHDFCOL and the account number is NOT coloured red for a customer failure. And it moves ERROR-RESP and ERROR-RESP2 at :843-844, OUTSIDE the IF WS-RETURN-MSG-OFF guard, where the other two paragraphs move them inside it. The account projection still runs, because FOUND-ACCT-IN-MASTER was set before the customer read failed.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CCXREF": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    },
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    },
+    "CUSTDAT": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000050"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COACTVWC",
+    "nextMapset": "COACTVW",
+    "nextMap": "CACTVWA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CAVW",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COACTVWC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:32",
+          "ACCTSIDO": "00000000050",
+          "ACSTTUSO": "Y",
+          "ADTOPENO": "2011-04-22",
+          "ACRDLIMO": "+      6,169.00",
+          "AEXPDTO": "2023-03-09",
+          "ACSHLIMO": "+      4,587.00",
+          "AREISDTO": "2023-03-09",
+          "ACURBALO": "+        492.00",
+          "ACRCYCRO": "+           .00",
+          "AADDGRPO": "          ",
+          "ACRCYDBO": "+           .00",
+          "ACSTNUMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSTSSNO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSTDOBO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSTFCOO": "\u0000\u0000\u0000",
+          "ACSFNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSMNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSLNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSADL1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSSTTEO": "\u0000\u0000",
+          "ACSADL2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSZIPCO": "\u0000\u0000\u0000\u0000\u0000",
+          "ACSCITYO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSCTRYO": "\u0000\u0000\u0000",
+          "ACSPHN1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSGOVTO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSPHN2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSEFTCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "ACSPFLGO": "\u0000",
+          "INFOMSGO": "Enter or update id of account to display     ",
+          "ERRMSGO": "CustId:000000050 not found in customer master.Resp: 000000013  REAS:0000000   "
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "ACSTTUSC": "DFHDFCOL",
+          "ADTOPENC": "DFHDFCOL",
+          "ACRDLIMC": "DFHDFCOL",
+          "AEXPDTC": "DFHDFCOL",
+          "ACSHLIMC": "DFHDFCOL",
+          "AREISDTC": "DFHDFCOL",
+          "ACURBALC": "DFHDFCOL",
+          "ACRCYCRC": "DFHDFCOL",
+          "AADDGRPC": "DFHDFCOL",
+          "ACRCYDBC": "DFHDFCOL",
+          "ACSTNUMC": "DFHDFCOL",
+          "ACSTSSNC": "DFHDFCOL",
+          "ACSTDOBC": "DFHDFCOL",
+          "ACSTFCOC": "DFHDFCOL",
+          "ACSFNAMC": "DFHDFCOL",
+          "ACSMNAMC": "DFHDFCOL",
+          "ACSLNAMC": "DFHDFCOL",
+          "ACSADL1C": "DFHDFCOL",
+          "ACSSTTEC": "DFHDFCOL",
+          "ACSADL2C": "DFHDFCOL",
+          "ACSZIPCC": "DFHDFCOL",
+          "ACSCITYC": "DFHDFCOL",
+          "ACSCTRYC": "DFHDFCOL",
+          "ACSPHN1C": "DFHDFCOL",
+          "ACSGOVTC": "DFHDFCOL",
+          "ACSPHN2C": "DFHDFCOL",
+          "ACSEFTCC": "DFHDFCOL",
+          "ACSPFLGC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "ACSTTUSH": "DFHDFHI",
+          "ADTOPENH": "DFHDFHI",
+          "ACRDLIMH": "DFHDFHI",
+          "AEXPDTH": "DFHDFHI",
+          "ACSHLIMH": "DFHDFHI",
+          "AREISDTH": "DFHDFHI",
+          "ACURBALH": "DFHDFHI",
+          "ACRCYCRH": "DFHDFHI",
+          "AADDGRPH": "DFHDFHI",
+          "ACRCYDBH": "DFHDFHI",
+          "ACSTNUMH": "DFHDFHI",
+          "ACSTSSNH": "DFHDFHI",
+          "ACSTDOBH": "DFHDFHI",
+          "ACSTFCOH": "DFHDFHI",
+          "ACSFNAMH": "DFHDFHI",
+          "ACSMNAMH": "DFHDFHI",
+          "ACSLNAMH": "DFHDFHI",
+          "ACSADL1H": "DFHDFHI",
+          "ACSSTTEH": "DFHDFHI",
+          "ACSADL2H": "DFHDFHI",
+          "ACSZIPCH": "DFHDFHI",
+          "ACSCITYH": "DFHDFHI",
+          "ACSCTRYH": "DFHDFHI",
+          "ACSPHN1H": "DFHDFHI",
+          "ACSGOVTH": "DFHDFHI",
+          "ACSPHN2H": "DFHDFHI",
+          "ACSEFTCH": "DFHDFHI",
+          "ACSPFLGH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "CCXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "CCXREF",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "program": "COCRDSLC",
   "caseId": "case06",
-  "description": "The re-entry path's NOTFND: both criteria pass the edits, the CARDDAT read at :742-750 finds nothing, and :755-761 turns both filter flags NOT-OK while setting DID-NOT-FIND-ACCTCARD-COMBO under the WS-RETURN-MSG-OFF guard. The typed criteria are still echoed, because :465 and :471 move CC-ACCT-ID and CC-CARD-NUM - the work area the edits filled - and the commarea's own values are only what the emptiness tests at :462 and :468 read.",
+  "description": "Both filters blank by the SPACES route, and the three-step message overwrite that decides which complaint survives. 2200-EDIT-MAP-INPUTS sets INPUT-OK, FLG-CARDFILTER-ISVALID and FLG-ACCTFILTER-ISVALID at :610-612, then :615-627 turns eleven typed blanks into CC-ACCT-ID LOW-VALUES and sixteen into CC-CARD-NUM LOW-VALUES. Step one: 2210-EDIT-ACCOUNT sets FLG-ACCTFILTER-NOT-OK at :648, matches the not-supplied test at :651-653 on its LOW-VALUES disjunct, sets INPUT-ERROR and FLG-ACCTFILTER-BLANK, finds WS-RETURN-MSG-OFF still true from :264 and so claims the one message slot with the account prompt WS-PROMPT-FOR-ACCT declares at :138-139, zeroes CDEMO-ACCT-ID at :659 and leaves at :660. Step two: 2220-EDIT-CARD repeats that shape, but its IF WS-RETURN-MSG-OFF at :696 now fails, so FLG-CARDFILTER-BLANK is set while WS-PROMPT-FOR-CARD at :140-141 is never set - the flag survives and only the message is suppressed. Step three: the cross-field edit at :637-640 carries no message guard at all and overwrites whatever step one left, so the line that reaches the screen is 'No input received', 17 characters in WS-RETURN-MSG PIC X(75) and 17 then 63 spaces once :494 moves it into ERRMSGO PIC X(80). Neither of the other two texts is written anywhere in this case, and that ordering is exactly what gate G30 protects. INPUT-ERROR at :360 then sends the map and goes to COMMON-RETURN, so 9000-READ-DATA is never reached, no CARDDAT read is issued, and the seeded rows are asserted byte for byte as seeded. Both flags are BLANK rather than NOT-OK - SET FLG-ACCTFILTER-BLANK replaced the earlier setting on the same one-byte field, '0' NOT-OK, '1' ISVALID, ' ' BLANK at :55-62 - so the colour guards at :533-539 are false and :541-551 fires instead, moving an asterisk over the LOW-VALUES that 1200-SETUP-SCREEN-VARS wrote into ACCTSIDO and CARDSIDO and DFHRED into both colours, gated on CDEMO-PGM-REENTER. MOVE '*' space-fills its X(11) and X(16) receivers rather than leaving LOW-VALUES behind, because a one-character literal moved to an alphanumeric item pads on the right. COCRDSLC copies no CSSETATY: it re-implements that highlight inline and gates the BLANK path on re-entry while leaving the NOT-OK path ungated, so this case owns the gated side of gate G38 and the NOT-OK cases own the other - the two must not be flattened together. The cursor EVALUATE at :515-524 is ordered and arm one wins on its second condition, FLG-ACCTFILTER-BLANK, so ACCTSIDL takes the -1 before the card arm is considered. The turn arrives from the main menu with CDEMO-PGM-CONTEXT 1, which makes the second conjunct of :269-270 false and keeps the passed area rather than initialising it, and it arrives carrying account 50, which is what makes the :659 zeroing observable in the returned context; the carried card number is already zero because the blank path value projects as zero before any arm is chosen. The clock is pinned to 2022-07-19T23:16:00, so CURDATEO and CURTIMEO are literals rather than today. Gates G32, G35 and G39 have no site here: every GO TO in this program is a forward early exit or the shared COMMON-RETURN, so there is no backward loop to restructure; there is no CALL 'CEE3ABD' anywhere in COCRDSLC, whose abend path is the CICS-native HANDLE ABEND at :250-252 into ABEND ABCODE('9999'); and COCRDSL declares no PAGENO. The class is called CardSelectController because the migration plan names it so, while the source Function header, README.md:220 and CARDDEMO.CSD:220 DESCRIPTION(VIEW CARD DETAIL) all call it a card detail view - honoured verbatim per rule R1 and documented rather than corrected per practice B4. Every expected value here was derived by structured reading of app/cbl/COCRDSLC.cbl against the app/cpy-bms/COCRDSL.CPY widths, the app/cpy/CVACT02Y.cpy record layout, app/bms/COCRDSL.bms and the real US-ASCII fixture; none of it was captured from a running COBOL program, because this environment cannot run one.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -13,15 +13,15 @@
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:33",
+    "pinnedClock": "2022-07-19T23:16:00",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CCDL",
-      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
@@ -29,13 +29,13 @@
       "CDEMO-CUST-LNAME": "                         ",
       "CDEMO-ACCT-ID": "00000000050",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "9999999999999999",
-      "CDEMO-LAST-MAP": "CCRDSLA",
-      "CDEMO-LAST-MAPSET": "COCRDSL"
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "ACCTSIDI": "00000000050",
-      "CARDSIDI": "9999999999999999"
+      "ACCTSIDI": "           ",
+      "CARDSIDI": "                "
     },
     "forcedOutcomes": {}
   },
@@ -44,22 +44,22 @@
     "nextMapset": "COCRDSL",
     "nextMap": "CCRDSLA",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CCDL",
-      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-ID": "00000000000",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "9999999999999999",
-      "CDEMO-LAST-MAP": "CCRDSLA",
-      "CDEMO-LAST-MAPSET": "COCRDSL"
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
     },
     "sends": [
       {
@@ -69,15 +69,15 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COCRDSLC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "ACCTSIDO": "00000000050",
-          "CARDSIDO": "9999999999999999",
+          "CURTIMEO": "23:16:00",
+          "ACCTSIDO": "*          ",
+          "CARDSIDO": "*               ",
           "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CRDSTCDO": "\u0000",
           "EXPMONO": "\u0000\u0000",
           "EXPYEARO": "\u0000\u0000\u0000\u0000",
           "INFOMSGO": "Please enter Account and Card Number    ",
-          "ERRMSGO": "Did not find cards for this search condition                                    ",
+          "ERRMSGO": "No input received                                                               ",
           "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
         },
         "attributes": {

@@ -1,0 +1,112 @@
+{
+  "program": "CBSTM03A",
+  "caseId": "case13",
+  "description": "FILE STATUS '37' on the XREFFILE sequential read takes WHEN OTHER of the EVALUATE at L353-L362 - the guard this program's file-status convention is stated in - so the run abends after all four opens and before any statement is composed.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "0500024453765740TRAN000000000001010001POS TERM  Table loaded, never used                                                                            0000000010{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+      ]
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt"
+    },
+    "CUSTFILE": {
+      "fixture": "custdata.txt"
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 8,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Running JCL : CREASTMT Step STEP040 "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DD Names from TIOT: "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": TRNXFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": XREFFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": ACCTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": CUSTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": STMTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": HTMLFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ":          -- null  UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "RETURN CODE: 37"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "STMTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 80
+    },
+    {
+      "dataset": "HTMLFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 100
+    },
+    {
+      "dataset": "STMTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 80
+    },
+    {
+      "dataset": "HTMLFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 100
+    }
+  ]
+}

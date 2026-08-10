@@ -1,0 +1,112 @@
+{
+  "program": "CBSTM03A",
+  "caseId": "case12",
+  "description": "FILE STATUS '35' at the TRNXFILE open takes the ELSE of L736-L742: two DISPLAYs then 9999-ABEND-PROGRAM, whose CALL 'CEE3ABD' at L923 passes NEITHER an ABCODE NOR a TIMING - the only such site in the estate (gate G35). Both outputs were already opened at L293 and hold nothing, and DISP=(NEW,CATLG,DELETE) leaves nothing behind.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "0500024453765740TRAN000000000001010001POS TERM  Never read                                                                                          0000000010{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+      ]
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt"
+    },
+    "CUSTFILE": {
+      "fixture": "custdata.txt"
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 8,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Running JCL : CREASTMT Step STEP040 "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DD Names from TIOT: "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": TRNXFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": XREFFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": ACCTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": CUSTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": STMTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": HTMLFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ":          -- null  UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING TRNXFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "RETURN CODE: 35"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "STMTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 80
+    },
+    {
+      "dataset": "HTMLFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 100
+    },
+    {
+      "dataset": "STMTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 80
+    },
+    {
+      "dataset": "HTMLFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 100
+    }
+  ]
+}

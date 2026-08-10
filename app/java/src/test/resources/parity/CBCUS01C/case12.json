@@ -1,0 +1,60 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case12",
+  "description": "Three records are read and displayed, and the fourth READ reports '04' - a record-length conflict, which is what a stored row that is not 500 bytes looks like to a program whose record area is. It reaches the same WHEN OTHER arm at L101 that case11 reaches, from a different status and after real output has already been produced: the six record lines emitted before the failure are part of the expectation, because the mainframe spool holds what a job displayed before it abended. Rendered through the numeric branch as FILE STATUS IS: NNNN0004. Five records are seeded, so the run also stops two records short of the end of the file.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 5
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0004"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

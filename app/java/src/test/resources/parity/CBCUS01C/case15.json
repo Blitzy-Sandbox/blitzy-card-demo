@@ -1,0 +1,60 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case15",
+  "description": "The fatal close - the third and last abend site, and the only one that is reached after the loop has run to completion. All three records are read and displayed twice each, the browse reaches '10' and sets END-OF-FILE, and then CLOSE at app/cbl/CBCUS01C.cbl:L138 reports '42'. 9000-CUSTFILE-CLOSE expresses its guard arithmetically - ADD 8 TO ZERO GIVING APPL-RESULT before the close, SUBTRACT APPL-RESULT FROM APPL-RESULT on success, ADD 12 TO ZERO GIVING APPL-RESULT otherwise - and reaches the same three values the open reaches by MOVE. The ELSE arm at L147-L150 displays 'ERROR CLOSING CUSTOMER FILE', the status through the numeric branch as FILE STATUS IS: NNNN0042, and 'ABENDING PROGRAM'. The L85 banner is never emitted, which is the difference between this and a clean run: the records are all there and the closing banner is not.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0042"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

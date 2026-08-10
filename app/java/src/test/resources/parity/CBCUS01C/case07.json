@@ -1,0 +1,50 @@
+{
+  "program": "CBCUS01C",
+  "caseId": "case07",
+  "description": "A row whose FILLER is not blank, which is the sharpest test of what DISPLAY CUSTOMER-RECORD writes. The verb names the 01 group item, so it emits the record area as READ ... INTO left it - and the trailing 168 bytes of that area hold whatever the row held, because CVCUS01Y declares no field over them and this program never writes the file. A translation that rendered the decoded record instead of the stored bytes would allocate a fresh area, emit that span as 168 spaces, and differ from this expectation on both of the record's two display lines and on its final-state row. The other 332 bytes are the first row of the shipped fixture unchanged, so only the property under test varies.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "CUSTFILE": {
+      "rows": [
+        "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

@@ -1,0 +1,150 @@
+{
+  "program" : "COTRN02C",
+  "caseId" : "case10",
+  "description" : "The WHEN OTHER arm of READ-CXACAIX-FILE, :597-603, which no seeded row can reach because the source does not enumerate the condition - so the case declares a forced outcome for the read and the harness requires the run to have consumed it. :598 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD emits the pair at their declared PIC S9(09) COMP width, nine characters each, and the recorded line is the whole of it; :599-600 then reject with 'Unable to lookup Acct in XREF AIX file...' and the cursor on ACTIDINL. The RESP is 19, DFHRESP(NOTOPEN), which is what the repository reports for a dataset it could not reach - the condition a forced OTHER stands for. The DISPLAY is recorded before the two message channels because that is the order the source performs them in.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "CCXREF" : {
+      "rows" : [ ],
+      "fixture" : "cardxref.txt",
+      "fromRow" : 0,
+      "rowCount" : 5,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    },
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
+      "fixture" : null,
+      "fromRow" : null,
+      "rowCount" : null,
+      "empty" : null,
+      "recordLength" : null,
+      "copybook" : null
+    }
+  },
+  "jobParameters" : { },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHENTER",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "mapFields" : {
+      "ACTIDINI" : "00000000050"
+    },
+    "forcedOutcomes" : {
+      "read" : {
+        "outcome" : "OTHER",
+        "resp" : null,
+        "resp2" : null
+      }
+    }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN02C",
+    "nextMapset" : "COTRN02",
+    "nextMap" : "COTRN2A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "CT02",
+      "CDEMO-TO-PROGRAM" : "COTRN02C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT02-TRNID-FIRST" : "                ",
+      "CDEMO-CT02-TRNID-LAST" : "                ",
+      "CDEMO-CT02-PAGE-NUM" : "00000000",
+      "CDEMO-CT02-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT02-TRN-SEL-FLG" : " ",
+      "CDEMO-CT02-TRN-SELECTED" : "                "
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT02",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN02C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "ACTIDINO" : "00000000050",
+        "CARDNINO" : "                ",
+        "TTYPCDO" : "  ",
+        "TCATCDO" : "    ",
+        "TRNSRCO" : "          ",
+        "TDESCO" : "                                                            ",
+        "TRNAMTO" : "            ",
+        "TORIGDTO" : "          ",
+        "TPROCDTO" : "          ",
+        "MIDO" : "         ",
+        "MNAMEO" : "                              ",
+        "MCITYO" : "                         ",
+        "MZIPO" : "          ",
+        "CONFIRMO" : " ",
+        "ERRMSGO" : "Unable to lookup Acct in XREF AIX file...                                     "
+      },
+      "attributes" : {
+        "ERRMSGC" : "DFHDFCOL"
+      }
+    } ],
+    "cursorField" : "ACTIDINL",
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "fields" : { },
+    "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "fields" : { },
+    "expectedBytes" : "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "fields" : { },
+    "expectedBytes" : "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "DISPLAY_LINE",
+    "text" : "RESP:000000019REAS:000000000"
+  }, {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "Unable to lookup Acct in XREF AIX file...                                       "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "Unable to lookup Acct in XREF AIX file...                                     "
+  } ],
+  "normalisations" : [ {
+    "dataset" : "CCXREF",
+    "kind" : "CARDXREF_FILLER_PAD_36_TO_50"
+  } ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 3,
+    "recordLength" : 350
+  } ]
+}

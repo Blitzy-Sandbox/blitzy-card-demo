@@ -1,14 +1,15 @@
 {
   "program": "CBTRN03C",
   "caseId": "case03",
-  "description": "Only page totals roll into the grand total. :297 inside 1110-WRITE-PAGE-TOTALS is the one and only place WS-GRAND-TOTAL grows, and 1120-WRITE-ACCOUNT-TOTALS (:306-316) has no counterpart - it zeroes WS-ACCOUNT-TOTAL and touches the grand total not at all. Two transactions on one card and a third on another give an account total that differs from the page total, so a translation that rolled account totals in as well would show a grand total of a different value here. The last account's total is never written at all, because the end-of-file arm performs the page and grand totals only.",
+  "description": "Positive-magnitude rendering through both CVTRA07Y edit masks, at four magnitudes chosen so that each proves a property the other three cannot. Four records on the one card 0500024453765740, whose row 0 of app/data/ASCII/cardxref.txt resolves to XREF-ACCT-ID 00000000050, so :181 never sees a card change after the first and 1120-WRITE-ACCOUNT-TOTALS is never reached - the page total is therefore a clean running sum and no account block interrupts the detail run. THE TWO MASKS, WRITTEN OUT IN FULL (practice B8): TRAN-REPORT-AMT is PIC -ZZZ,ZZZ,ZZZ.ZZ and REPT-PAGE-TOTAL, REPT-ACCOUNT-TOTAL and REPT-GRAND-TOTAL are PIC +ZZZ,ZZZ,ZZZ.ZZ. Each is fifteen bytes - sign, three digits, comma, three digits, comma, three digits, point, two digits - which is nine integer and two decimal digit positions, exactly matching PIC S9(09)V99. The leading sign is a FIXED insertion character and never floats: the minus prints '-' for a negative value and a SPACE for anything else, so a positive detail amount always opens with a space, while the plus prints '+' for any non-negative value and '-' for a negative one. Z is zero suppression - a leading zero becomes a space, suppression terminates at the first significant integer digit or at the decimal point, whichever comes first, and any comma lying to the LEFT of that boundary is itself replaced by a space. THE FOUR MAGNITUDES AND THEIR DERIVED RENDERINGS: 0.99 is sub-dollar, so all nine integer Z positions and BOTH commas suppress, and because suppression stops AT the point no leading zero is printed before it - one sign space plus eleven suppressed positions then '.99', which is '            .99'. 14.00 has two significant integer digits with a zero cents pair, which proves the two cents positions are NOT suppressed once the field is non-zero - '          14.00'. 504.77 has three integer digits, so the first significant digit still falls right of both commas and neither prints - '         504.77'. 1234567.89 has seven integer digits, so the first significant digit lands left of both commas and BOTH print - '   1,234,567.89'. The page and grand totals under the plus mask are '+  2,469,655.54' and '+  2,469,655.54'. Every one of these is a String produced by an explicit formatter; no raw number is ever placed where an edited field belongs. THE ZONED ENCODINGS: TRAN-AMT occupies bytes 133-143 of CVTRA05Y as eleven zoned DISPLAY bytes with the sign overpunched into the TRAILING byte under the alphabet {ABCDEFGHI for +0 through +9 and }JKLMNOPQR for -0 through -9, which app/data/ASCII/dailytran.txt confirms at those same offsets. The four amounts encode as 0000000009I, 0000000140{, 0000005047G and 0012345678I, and each re-decodes through that alphabet to its intended value at scale 2. THE ARITHMETIC (practice B11): every monetary value here carries scale exactly 2 (G23) - TRAN-AMT is PIC S9(09)V99 in CVTRA05Y and WS-PAGE-TOTAL, WS-ACCOUNT-TOTAL and WS-GRAND-TOTAL are all PIC S9(09)V99 at :134-136, so the scale is uniform across the whole program. ROUNDED appears ZERO times in CBTRN03C and zero times across all 28 programs, so COBOL truncates excess fractional digits on store and RoundingMode.DOWN is the only faithful semantics (G24); nothing in this case may imply half-up or half-even. Because every value here is already exactly scale 2, NO truncation actually occurs, and the accumulation ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL at :287-288 is exact: 0.99 + 14.00 + 504.77 + 1234567.89 = 1235087.65, which is the value :199 displays as the zoned 0012350876E. PRESERVED DEFECT 2 (practice B5): a COBOL READ ... INTO leaves its receiving area untouched AT END, so when the read at :249 reaches end of file TRAN-RECORD still holds record four, whose TRAN-AMT of 1234567.89 :287-288 has already added to both accumulators. The end-of-file arm adds it a SECOND time at :200-201, so the final page total is 1235087.65 + 1234567.89 = 2469655.54 and, through the single ADD at :297, the grand total is that same figure. This double count is inherited legacy behaviour deliberately kept: repairing it would change every report this program has ever produced, and is a parity violation. THE LEDGER - eleven records at rows 0 through 10: :275 fires once because WS-FIRST-TIME is 'Y', so 1120-WRITE-HEADERS emits the 115-byte name header, the 133-byte blank line, the 114-byte header-1 and the 133-byte ALL '-' rule and advances WS-LINE-COUNTER from 0 to 4; FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) at :282 is then MOD(4,20), MOD(5,20), MOD(6,20) and MOD(7,20) and so breaks no page; each record adds its amount and writes one 114-byte detail line, taking the counter to 5, 6, 7 and 8. Records two through four re-read TRANTYPE at :190 and TRANCATG at :195 but NOT the cross-reference, which :181 guards behind a card change. At end of file 1110-WRITE-PAGE-TOTALS writes the 112-byte page total and a second rule and advances the counter to 10, and 1110-WRITE-GRAND-TOTALS at :318-322 writes the 112-byte grand total WITHOUT advancing it - so eleven records leave a terminal counter of 10, and the record count and the counter are deliberately different numbers. Only page totals roll into the grand total; account totals never do, and no account total is written here at all because the end-of-file arm performs the page and grand totals only. Every record reaches TRANREPT at the 133 bytes app/jcl/TRANREPT.jcl:78 and app/proc/TRANREPT.prc:76 declare as LRECL=133,RECFM=FB, right space-padded from its own layout width (G20, G21). WS-LINE-COUNTER PIC 9(09) COMP-3 at :129 and WS-PAGE-SIZE PIC 9(03) COMP-3 at :131 are the program's only packed-decimal items and are WORKING-STORAGE only - no copybook in the repository declares COMP-3, verified zero - so the fixed-width record codec never unpacks packed decimal and these two become an in-memory long and BigDecimal rather than a wire format. No amount and no total here is zero, which keeps the all-Z rule that blanks the entire fifteen-byte field out of this case; case15 owns that scenario. All four TRAN-PROC-TS values sit inside the inclusive range the DATEPARM dataset supplies - 2022-01-01 and 2022-07-06 at the boundaries, 2022-03-15 and 2022-05-20 between them - so the range test at :173-174 never diverts, and record four's timestamp is what the end-of-file arm re-tests. The range is a DATASET and never a PARM: TRANREPT.jcl:59 gives STEP10R no PARM at all, so this case declares no job parameter and instead seeds the 80-byte DATEPARM record whose shape CORPT00C.cbl:117-121 writes - a PIC X(10) date, one space, a second PIC X(10) date and 59 spaces - which READ INTO right-truncates into the 21-byte WS-DATEPARM-RECORD. CARDXREF, TRANTYPE and TRANCATG are seeded from the real fixtures; the cross-reference stays UNPADDED at its literal 36 bytes and the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's trailing FILLER PIC X(14) at seed time (G16). RETURN-CODE stays 0 because the program moves nothing to it. PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CBTRN03C.cbl, cross-checked against the copybook byte layouts in app/cpy, the DD and DCB contracts in app/jcl and app/proc, and the real US-ASCII fixtures in app/data/ASCII. It is NEVER captured from a live COBOL run, which is empirically impossible in this environment - no z/OS runtime, a disabled indexed-file handler and no Language Environment CEE* services (AAP 0.7.6, risk R-A). review_rules reports 'No user rules provided.', so no user rule governs this fixture; the binding standard is the enterprise-practice set B1-B12.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000111A999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000222B999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000003010001POS TERM  A statically derived fixture transaction                                                            0000000333C999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000006835861981715162022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000000001050001POS TERM  Statically derived fixture transaction - sub-dollar magnitude                                       0000000009I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-01-11.22.33.4444442022-01-01-11.22.33.444444                    ",
+        "TRN0000000000002010005POS TERM  Statically derived fixture transaction - two integer digits, zero cents pair                        0000000140{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
+        "TRN0000000000003020002POS TERM  Statically derived fixture transaction - three integer digits, no comma                             0000005047G999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-20-11.22.33.4444442022-05-20-11.22.33.444444                    ",
+        "TRN0000000000004070001POS TERM  Statically derived fixture transaction - seven integer digits, both commas                          0012345678I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-11.22.33.4444442022-07-06-11.22.33.444444                    "
       ]
     },
     "CARDXREF": {
@@ -51,42 +52,37 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                11.11                     "
+      "expectedBytes": "TRN0000000000001 00000000050 05-Refund          0001-Refund credit                 POS TERM                  .99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                22.22                     "
+      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0005-Interest Amount               POS TERM                14.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "Account Total....................................................................................+         33.33                     "
+      "expectedBytes": "TRN0000000000003 00000000050 02-Payment         0002-Electronic payment            POS TERM               504.77                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "TRN0000000000004 00000000050 07-Adjustment      0001-Sales draft credit adjustment POS TERM         1,234,567.89                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "TRN0000000000003 00000000027 01-Purchase        0001-Regular Sales Draft           POS TERM                33.33                     "
+      "expectedBytes": "Page Total ......................................................................................+  2,469,655.54                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 9,
-      "expectedBytes": "Page Total ......................................................................................+         99.99                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 10,
       "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
     },
     {
       "dataset": "TRANREPT",
-      "rowIndex": 11,
-      "expectedBytes": "Grand Total......................................................................................+         99.99                     "
+      "rowIndex": 10,
+      "expectedBytes": "Grand Total......................................................................................+  2,469,655.54                     "
     }
   ],
   "expectedFinalState": [
@@ -113,42 +109,37 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                11.11                     "
+      "expectedBytes": "TRN0000000000001 00000000050 05-Refund          0001-Refund credit                 POS TERM                  .99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                22.22                     "
+      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0005-Interest Amount               POS TERM                14.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "Account Total....................................................................................+         33.33                     "
+      "expectedBytes": "TRN0000000000003 00000000050 02-Payment         0002-Electronic payment            POS TERM               504.77                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "TRN0000000000004 00000000050 07-Adjustment      0001-Sales draft credit adjustment POS TERM         1,234,567.89                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "TRN0000000000003 00000000027 01-Purchase        0001-Regular Sales Draft           POS TERM                33.33                     "
+      "expectedBytes": "Page Total ......................................................................................+  2,469,655.54                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 9,
-      "expectedBytes": "Page Total ......................................................................................+         99.99                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 10,
       "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
     },
     {
       "dataset": "TRANREPT",
-      "rowIndex": 11,
-      "expectedBytes": "Grand Total......................................................................................+         99.99                     "
+      "rowIndex": 10,
+      "expectedBytes": "Grand Total......................................................................................+  2,469,655.54                     "
     }
   ],
   "expectedReturnCode": 0,
@@ -163,23 +154,27 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000111A999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000001050001POS TERM  Statically derived fixture transaction - sub-dollar magnitude                                       0000000009I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-01-01-11.22.33.4444442022-01-01-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000222B999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000002010005POS TERM  Statically derived fixture transaction - two integer digits, zero cents pair                        0000000140{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000003010001POS TERM  A statically derived fixture transaction                                                            0000000333C999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000006835861981715162022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000003020002POS TERM  Statically derived fixture transaction - three integer digits, no comma                             0000005047G999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-20-11.22.33.4444442022-05-20-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000000333C"
+      "text": "TRN0000000000004070001POS TERM  Statically derived fixture transaction - seven integer digits, both commas                          0012345678I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-07-06-11.22.33.4444442022-07-06-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000000666F"
+      "text": "TRAN-AMT 0012345678I"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "WS-PAGE-TOTAL0012350876E"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -196,13 +191,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 12,
+      "rowCount": 11,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 12,
+      "rowCount": 11,
       "recordLength": 133
     }
   ]

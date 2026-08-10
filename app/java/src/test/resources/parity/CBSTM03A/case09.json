@@ -1,0 +1,566 @@
+{
+  "program": "CBSTM03A",
+  "caseId": "case09",
+  "description": "ACCT-CURR-BAL is PIC S9(10)V99 and ST-CURR-BAL is PIC 9(9).99-, so MOVE at L484 truncates the HIGH-ORDER digit: 1234567890.12 is rendered '234567890.12 '. The ACCTFILE row is a real acctdata.txt row with only its balance span replaced, because no shipped row carries ten integer digits.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "0500024453765740TRAN000000000001010001POS TERM  Truncation witness                                                                                  0000000010{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+      ]
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000050Y12345678901B00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
+    },
+    "CUSTFILE": {
+      "fixture": "custdata.txt"
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "*******************************START OF STATEMENT*******************************"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "Aniya Alba Von                                                                  "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "1588 Nienow Cape                                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 3,
+      "expectedBytes": "Suite 187                                                                       "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 4,
+      "expectedBytes": "New OR USA 04257                                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 5,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 6,
+      "expectedBytes": "                                 Basic Details                                  "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 7,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 8,
+      "expectedBytes": "Account ID         :00000000050                                                 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 9,
+      "expectedBytes": "Current Balance    :234567890.12                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 10,
+      "expectedBytes": "FICO Score         :623                                                         "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 11,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 12,
+      "expectedBytes": "                              TRANSACTION SUMMARY                               "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 13,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 14,
+      "expectedBytes": "Tran ID         Tran Details                                         Tran Amount"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 15,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 16,
+      "expectedBytes": "TRAN000000000001 Truncation witness                               $        1.00 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 17,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 18,
+      "expectedBytes": "Total EXP:                                                        $        1.00 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 19,
+      "expectedBytes": "********************************END OF STATEMENT********************************"
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 0,
+      "expectedBytes": "<!DOCTYPE html>                                                                                     "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 1,
+      "expectedBytes": "<html lang=\"en\">                                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 2,
+      "expectedBytes": "<head>                                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 3,
+      "expectedBytes": "<meta charset=\"utf-8\">                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 4,
+      "expectedBytes": "<title>HTML Table Layout</title>                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 5,
+      "expectedBytes": "</head>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 6,
+      "expectedBytes": "<body style=\"margin:0px;\">                                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 7,
+      "expectedBytes": "<table  align=\"center\" frame=\"box\" style=\"width:70%; font:12px Segoe UI,sans-serif;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 8,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 9,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 10,
+      "expectedBytes": "<h3>Statement for Account Number: 00000000050         </h3>                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 11,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 12,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 13,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 14,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#FFAF33;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 15,
+      "expectedBytes": "<p style=\"font-size:16px\">Bank of XYZ</p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 16,
+      "expectedBytes": "<p>410 Terry Ave N</p>                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 17,
+      "expectedBytes": "<p>Seattle WA 99999</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 18,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 19,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 20,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 21,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 22,
+      "expectedBytes": "<p style=\"font-size:16px\">Aniya Alba Von  </p>                                                      "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 23,
+      "expectedBytes": "<p>1588 Nienow Cape  </p>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 24,
+      "expectedBytes": "<p>Suite 187  </p>                                                                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 25,
+      "expectedBytes": "<p>New OR USA 04257  </p>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 26,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 27,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 28,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 29,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 30,
+      "expectedBytes": "<p style=\"font-size:16px\">Basic Details</p>                                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 31,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 32,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 33,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 34,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 35,
+      "expectedBytes": "<p>Account ID         : 00000000050         </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 36,
+      "expectedBytes": "<p>Current Balance    : 234567890.12 </p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 37,
+      "expectedBytes": "<p>FICO Score         : 623                 </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 38,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 39,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 40,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 41,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 42,
+      "expectedBytes": "<p style=\"font-size:16px\">Transaction Summary</p>                                                   "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 43,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 44,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 45,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 46,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 47,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran ID</p>                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 48,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 49,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 50,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran Details</p>                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 51,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 52,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 53,
+      "expectedBytes": "<p style=\"font-size:16px\">Amount</p>                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 54,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 55,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 56,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 57,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 58,
+      "expectedBytes": "<p>TRAN000000000001</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 59,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 60,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 61,
+      "expectedBytes": "<p>Truncation witness                               </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 62,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 63,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 64,
+      "expectedBytes": "<p>        1.00 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 65,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 66,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 67,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 68,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 69,
+      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 70,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 71,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 72,
+      "expectedBytes": "</table>                                                                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 73,
+      "expectedBytes": "</body>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 74,
+      "expectedBytes": "</html>                                                                                             "
+    }
+  ],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Running JCL : CREASTMT Step STEP040 "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DD Names from TIOT: "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": TRNXFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": XREFFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": ACCTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": CUSTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": STMTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": HTMLFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ":          -- null  UCB"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "STMTFILE",
+      "channel": "WRITES",
+      "rowCount": 20,
+      "recordLength": 80
+    },
+    {
+      "dataset": "HTMLFILE",
+      "channel": "WRITES",
+      "rowCount": 75,
+      "recordLength": 100
+    }
+  ]
+}

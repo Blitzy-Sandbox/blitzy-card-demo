@@ -1,28 +1,26 @@
 {
   "program": "CBTRN03C",
   "caseId": "case02",
-  "description": "The page boundary, at exactly twenty lines. WS-PAGE-SIZE is PIC 9(03) COMP-3 VALUE 20 (:131) and WS-LINE-COUNTER is PIC 9(09) COMP-3 (:129); the first-time header write advances the counter by four before any detail line, so MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0 first holds at the SEVENTEENTH record, where the counter reads 20. That record therefore emits 1110-WRITE-PAGE-TOTALS and a fresh 1120-WRITE-HEADERS BEFORE its own detail line, which is the ordering emergent from the two IFs at :275 and :282 running in that order. Seventeen equal amounts make the boundary the only thing that can move the output.",
+  "description": "Report-line GEOMETRY: the one case that pins all seven app/cpy/CVTRA07Y.cpy layouts in a single run, including REPORT-ACCOUNT-TOTALS, which case01 never reaches. Fifteen in-range records over two cards produce one account break and one page break, so every layout is exercised and each arrives at the 133 bytes app/jcl/TRANREPT.jcl:78 and app/proc/TRANREPT.prc:76 declare as DCB=(LRECL=133,RECFM=FB,BLKSIZE=0). WIDTH ARITHMETIC, each summed from the 05-level PIC clauses and then right-space-padded by MOVE ... TO FD-REPTFILE-REC PIC X(133): REPORT-NAME-HEADER 38+41+12+10+4+10=115 (+18); WS-BLANK-LINE 133 (+0, PIC X(133) VALUE SPACES at :133); TRANSACTION-HEADER-1 17+12+19+35+14+1+16=114 (+19), where '        Amount' carries eight leading spaces; TRANSACTION-HEADER-2 133 (+0, PIC X(133) VALUE ALL '-'); TRANSACTION-DETAIL-REPORT 16+1+11+1+2+1+15+1+4+1+29+1+10+4+15+2=114 (+19); REPORT-PAGE-TOTALS 11+86+15=112 (+21); REPORT-ACCOUNT-TOTALS 13+84+15=112 (+21); REPORT-GRAND-TOTALS 11+86+15=112 (+21). The three ALL '.' leaders are 86, 84 and 86 - the account leader is two bytes shorter because 'Account Total' fills X(13) where 'Page Total' and 'Grand Total' leave X(11), so they are deliberately NOT uniform. The two FILLER PIC X(01) VALUE '-' items land at detail positions 32 and 53 and survive INITIALIZE TRANSACTION-DETAIL-REPORT (:362), because INITIALIZE without REPLACING does not touch FILLER; blanking the group before populating it would lose them. Both right-truncating alphanumeric MOVEs are pinned: TRAN-TYPE-DESC PIC X(50) into TRAN-REPORT-TYPE-DESC PIC X(15) ('Purchase' then seven spaces on card A, 'Authorization' then two on card B) and TRAN-CAT-TYPE-DESC PIC X(50) into TRAN-REPORT-CAT-DESC PIC X(29) ('Regular Sales Draft' then ten spaces on card A, and 'Online purchase authorization' at exactly 29 characters on card B, filling the receiver with no padding at all). A COBOL PIC X MOVE fills from the left and discards on the RIGHT. LEDGER, traced through :170-206 and its write paragraphs: record 1 finds WS-FIRST-TIME 'Y' so 1120-WRITE-HEADERS emits four records and the counter goes 0->4; MOD(4,20) breaks no page; the detail line takes it to 5. Record 2 changes card with WS-FIRST-TIME now 'N', so 1120-WRITE-ACCOUNT-TOTALS emits card A's account total of +      1,234.56 and its trailing rule line, zeroes WS-ACCOUNT-TOTAL and advances the counter to 7. Records 3 to 14 add one detail line each, bringing the counter to 20. Record 15 therefore satisfies MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0 at :282, so 1110-WRITE-PAGE-TOTALS and a fresh 1120-WRITE-HEADERS both run BEFORE its own detail line - the ordering emergent from the two IFs at :275 and :282 - taking the counter 20->22->26->27. That first page total is +      7,734.56, the sum of records 1 to 14, because :288 adds the current record's amount only after the page break has been written. At end of file the READ ... INTO leaves TRAN-RECORD holding record 15, and the arm at :197-204 emits its two DISPLAYs, then 1110-WRITE-PAGE-TOTALS (+      5,000.00) and 1110-WRITE-GRAND-TOTALS (+     12,734.56). Thirty records are written and the counter ends at 29: the two numbers differ because 1110-WRITE-GRAND-TOTALS at :318-322 is the one paragraph that writes a record without incrementing WS-LINE-COUNTER. THE ACCOUNT TOTAL IS NEVER ADDED TO THE GRAND TOTAL. :297 inside 1110-WRITE-PAGE-TOTALS is the only ADD ... TO WS-GRAND-TOTAL in the program, and 1120-WRITE-ACCOUNT-TOTALS contains none, so the grand total of 12,734.56 is 7,734.56 + 5,000.00 and owes nothing to the 1,234.56 account total - three totals that are three different numbers here precisely so none can be mistaken for another. PRESERVED DEFECT 2 (practice B5): the end-of-file arm adds the last amount a SECOND time at :200-201, because 1100-WRITE-TRANSACTION-REPORT already added it at :287-288 and a COBOL READ ... INTO leaves its receiving area untouched AT END. The final page total therefore reads +      5,000.00 for a single 2,500.00 record, and that doubling propagates into the grand total through :297. Note that the WS-PAGE-TOTAL diagnostic at :199 is emitted BEFORE the add, so it still shows 2,500.00. This is inherited legacy behaviour, deliberately reproduced and never repaired: correcting it would change every report this program has ever produced, which is a behaviour change and a parity violation. Every monetary value is scale exactly 2 and no rounding occurs anywhere - ROUNDED appears zero times in CBTRN03C, so truncation toward zero is the only faithful semantics. RETURN-CODE stays 0 because the program never moves anything into it. PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED by structured reading of the COBOL paragraphs, cross-checked against the copybook byte layouts in app/cpy/CVTRA07Y.cpy, CVTRA05Y.cpy, CVTRA03Y.cpy, CVTRA04Y.cpy and CVACT03Y.cpy, the JCL DCB contracts, and the real US-ASCII fixtures in app/data/ASCII. It is NOT captured from any execution of the legacy COBOL, which AAP section 0.7.6 proves empirically impossible in this environment (risk R-A). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set B1-B12.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000003010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000004010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000005010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000006010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000007010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000008010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000009010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000010010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000011010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000012010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000013010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000014010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000015010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000016010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000017010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000000001010001POS TERM  Regular sales draft on the first account                                                            0000012345F999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     05000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
+        "TRN0000000000002040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-01-11.22.33.4444442022-04-01-11.22.33.444444                    ",
+        "TRN0000000000003040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-02-11.22.33.4444442022-04-02-11.22.33.444444                    ",
+        "TRN0000000000004040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-03-11.22.33.4444442022-04-03-11.22.33.444444                    ",
+        "TRN0000000000005040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-04-11.22.33.4444442022-04-04-11.22.33.444444                    ",
+        "TRN0000000000006040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-05-11.22.33.4444442022-04-05-11.22.33.444444                    ",
+        "TRN0000000000007040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-06-11.22.33.4444442022-04-06-11.22.33.444444                    ",
+        "TRN0000000000008040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-07-11.22.33.4444442022-04-07-11.22.33.444444                    ",
+        "TRN0000000000009040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-08-11.22.33.4444442022-04-08-11.22.33.444444                    ",
+        "TRN0000000000010040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-09-11.22.33.4444442022-04-09-11.22.33.444444                    ",
+        "TRN0000000000011040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-10-11.22.33.4444442022-04-10-11.22.33.444444                    ",
+        "TRN0000000000012040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-11-11.22.33.4444442022-04-11-11.22.33.444444                    ",
+        "TRN0000000000013040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-12-11.22.33.4444442022-04-12-11.22.33.444444                    ",
+        "TRN0000000000014040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-13-11.22.33.4444442022-04-13-11.22.33.444444                    ",
+        "TRN0000000000015040002ONLINE    Final online purchase authorization, the record the end-of-file arm re-adds                         0000025000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-14-11.22.33.4444442022-04-14-11.22.33.444444                    "
       ]
     },
     "CARDXREF": {
@@ -65,87 +63,87 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM             1,234.56                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "Account Total....................................................................................+      1,234.56                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "TRN0000000000003 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "TRN0000000000004 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000002 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "TRN0000000000005 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000003 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 9,
-      "expectedBytes": "TRN0000000000006 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000004 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 10,
-      "expectedBytes": "TRN0000000000007 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000005 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 11,
-      "expectedBytes": "TRN0000000000008 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000006 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 12,
-      "expectedBytes": "TRN0000000000009 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000007 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 13,
-      "expectedBytes": "TRN0000000000010 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000008 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 14,
-      "expectedBytes": "TRN0000000000011 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000009 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 15,
-      "expectedBytes": "TRN0000000000012 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000010 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 16,
-      "expectedBytes": "TRN0000000000013 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000011 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 17,
-      "expectedBytes": "TRN0000000000014 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000012 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 18,
-      "expectedBytes": "TRN0000000000015 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000013 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 19,
-      "expectedBytes": "TRN0000000000016 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000014 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 20,
-      "expectedBytes": "Page Total ......................................................................................+        160.00                     "
+      "expectedBytes": "Page Total ......................................................................................+      7,734.56                     "
     },
     {
       "dataset": "TRANREPT",
@@ -175,12 +173,12 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 26,
-      "expectedBytes": "TRN0000000000017 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000015 00000000027 04-Authorization   0002-Online purchase authorization ONLINE               2,500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 27,
-      "expectedBytes": "Page Total ......................................................................................+         20.00                     "
+      "expectedBytes": "Page Total ......................................................................................+      5,000.00                     "
     },
     {
       "dataset": "TRANREPT",
@@ -190,7 +188,7 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 29,
-      "expectedBytes": "Grand Total......................................................................................+        180.00                     "
+      "expectedBytes": "Grand Total......................................................................................+     12,734.56                     "
     }
   ],
   "expectedFinalState": [
@@ -217,87 +215,87 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM             1,234.56                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "Account Total....................................................................................+      1,234.56                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "TRN0000000000003 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "TRN0000000000004 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000002 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "TRN0000000000005 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000003 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 9,
-      "expectedBytes": "TRN0000000000006 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000004 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 10,
-      "expectedBytes": "TRN0000000000007 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000005 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 11,
-      "expectedBytes": "TRN0000000000008 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000006 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 12,
-      "expectedBytes": "TRN0000000000009 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000007 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 13,
-      "expectedBytes": "TRN0000000000010 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000008 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 14,
-      "expectedBytes": "TRN0000000000011 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000009 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 15,
-      "expectedBytes": "TRN0000000000012 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000010 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 16,
-      "expectedBytes": "TRN0000000000013 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000011 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 17,
-      "expectedBytes": "TRN0000000000014 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000012 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 18,
-      "expectedBytes": "TRN0000000000015 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000013 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 19,
-      "expectedBytes": "TRN0000000000016 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000014 00000000027 04-Authorization   0002-Online purchase authorization ONLINE                 500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 20,
-      "expectedBytes": "Page Total ......................................................................................+        160.00                     "
+      "expectedBytes": "Page Total ......................................................................................+      7,734.56                     "
     },
     {
       "dataset": "TRANREPT",
@@ -327,12 +325,12 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 26,
-      "expectedBytes": "TRN0000000000017 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     "
+      "expectedBytes": "TRN0000000000015 00000000027 04-Authorization   0002-Online purchase authorization ONLINE               2,500.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 27,
-      "expectedBytes": "Page Total ......................................................................................+         20.00                     "
+      "expectedBytes": "Page Total ......................................................................................+      5,000.00                     "
     },
     {
       "dataset": "TRANREPT",
@@ -342,7 +340,7 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 29,
-      "expectedBytes": "Grand Total......................................................................................+        180.00                     "
+      "expectedBytes": "Grand Total......................................................................................+     12,734.56                     "
     }
   ],
   "expectedReturnCode": 0,
@@ -357,79 +355,71 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000001010001POS TERM  Regular sales draft on the first account                                                            0000012345F999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     05000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000002040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-01-11.22.33.4444442022-04-01-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000003010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000003040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-02-11.22.33.4444442022-04-02-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000004010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000004040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-03-11.22.33.4444442022-04-03-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000005010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000005040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-04-11.22.33.4444442022-04-04-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000006010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000006040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-05-11.22.33.4444442022-04-05-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000007010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000007040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-06-11.22.33.4444442022-04-06-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000008010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000008040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-07-11.22.33.4444442022-04-07-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000009010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000009040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-08-11.22.33.4444442022-04-08-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000010010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000010040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-09-11.22.33.4444442022-04-09-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000011010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000011040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-10-11.22.33.4444442022-04-10-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000012010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000012040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-11-11.22.33.4444442022-04-11-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000013010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000013040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-12-11.22.33.4444442022-04-12-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000014010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000014040002ONLINE    Online purchase authorization on the second account                                                 0000005000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-13-11.22.33.4444442022-04-13-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000015010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000015040002ONLINE    Final online purchase authorization, the record the end-of-file arm re-adds                         0000025000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      00000     06835861981715162022-04-14-11.22.33.4444442022-04-14-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000016010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRAN-AMT 0000025000{"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000017010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000000100{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000000100{"
+      "text": "WS-PAGE-TOTAL0000025000{"
     },
     {
       "channel": "DISPLAY_LINE",

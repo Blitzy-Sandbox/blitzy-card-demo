@@ -1,0 +1,83 @@
+{
+  "program": "CBSTM03A",
+  "caseId": "case10",
+  "description": "An EMPTY cross-reference: 1000-XREFFILE-GET-NEXT's first read reports '10', the WHEN '10' arm at L356-L357 sets END-OF-FILE to 'Y', and 1000-MAINLINE's PERFORM UNTIL never runs a body. Both output files are opened at L293 and closed at L339 having received no record, which is a positive assertion rather than an absence of one.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "0500024453765740TRAN000000000001010001POS TERM  Never reached                                                                                       0000000010{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+      ]
+    },
+    "XREFFILE": {
+      "empty": true,
+      "recordLength": 50,
+      "copybook": "CVACT03Y"
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt"
+    },
+    "CUSTFILE": {
+      "fixture": "custdata.txt"
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Running JCL : CREASTMT Step STEP040 "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DD Names from TIOT: "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": TRNXFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": XREFFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": ACCTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": CUSTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": STMTFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ": HTMLFILE -- valid UCB"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": ":          -- null  UCB"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "STMTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 80
+    },
+    {
+      "dataset": "HTMLFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 100
+    }
+  ]
+}
